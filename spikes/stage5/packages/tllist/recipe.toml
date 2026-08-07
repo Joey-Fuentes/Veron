@@ -38,6 +38,11 @@ unpacks to a bare `tllist/` directory rather than `tllist-1.1.0/`, so the \
 driver's default -- name-version -- would point at a directory that does not \
 exist and the configure step would die on a cwd that was never created."""
 
+[installs]
+prefixes = ["usr/include", "usr/lib/pkgconfig", "usr/share/doc"]
+files    = 4
+digest   = "be9e269015061eaa7b5bac0e3167502a298dd5ba68a422ef7902c35466868046"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

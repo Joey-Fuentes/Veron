@@ -54,6 +54,11 @@ tools STAYS ENABLED. `orcc` is the Orc compiler, and gst-plugins-base uses it \
 at BUILD time to turn .orc source files into C. Disabling it would not save \
 much and would break a consumer."""
 
+[installs]
+prefixes = ["usr/bin", "usr/include/orc-0.4", "usr/lib", "usr/lib/pkgconfig"]
+files    = 35
+digest   = "1d9a88903f1cdd3629357d8267335a981768beb9f65a0a614442e778db9d1b14"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

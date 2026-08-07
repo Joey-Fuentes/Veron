@@ -41,6 +41,11 @@ ONLY libnghttp2 IS INSTALLED, not libnghttp2_asio -- the C++ binding was \
 removed upstream and is not in 1.68.0. Recorded because its absence looks like \
 a missing feature if you go looking for it."""
 
+[installs]
+prefixes = ["usr/include/nghttp2", "usr/lib", "usr/lib/pkgconfig", "usr/share/doc", "usr/share/man"]
+files    = 12
+digest   = "d9063246cfc5e1575a962d8cdd2dbbd4b676c7635c445fbf96134f04c5d72a96"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

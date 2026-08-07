@@ -83,6 +83,11 @@ assert that a plugin actually loaded rather than that a file exists."""
 "language:rust" = "libs/gst/helpers/ptp/meson.build:23 -- add_languages('rust', required: false). Absent by design, which is what currently suppresses the setuid-root PTP helper. -Dptp-helper=disabled makes that suppression explicit rather than incidental."
 "program:setcap" = "libs/gst/helpers/ptp/meson.build:76 -- probed to decide between capabilities and setuid-root. From libcap's progs/, which this set builds but does not put on the build PATH."
 
+[installs]
+prefixes = ["usr/bin", "usr/include/gstreamer-1.0", "usr/lib", "usr/lib/gstreamer-1.0", "usr/lib/pkgconfig", "usr/libexec/gstreamer-1.0", "usr/share/aclocal", "usr/share/cmake", "usr/share/gdb", "usr/share/gstreamer-1.0", "usr/share/man"]
+files    = 153
+digest   = "2813795ba588b0dc290af814e14a6f1f2027b332310abc67895fd74fc3b82bca"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

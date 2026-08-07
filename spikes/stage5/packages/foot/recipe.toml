@@ -27,8 +27,8 @@ optional_off = ["utmp-backend", "tests", "ime"]
 configure_flags = ["--libdir=lib",
                    "-Ddocs=enabled", "-Dutmp-backend=none", "-Dtests=false",
                    "-Dgrapheme-clustering=enabled", "-Dime=false",
-                   "-Dterminfo=enabled", "-Dthemes=true",
-                   "--wrap-mode=nofallback"]
+                   "-Dterminfo=disabled", "-Dthemes=true",
+                   "-Dterminfo=disabled", "--wrap-mode=nofallback"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["foot"]
 deferral        = """
@@ -60,12 +60,39 @@ for something its font library cannot do.
 
 ime DEFAULTS TO true and is input-method support nothing in this set provides.
 
-terminfo IS KEPT ENABLED, DELIBERATELY, AND IT IS WHY ncurses IS A BUILD \
-DEPENDENCY. meson.build:410 is `tic = find_program('tic', native: true, \
-required: get_option('terminfo'))`; ncurses supplies tic. Without foot's own \
+terminfo IS DISABLED, AND THE ARGUMENT FOR ENABLING IT RESTED ON A FALSE \
+PREMISE. This recipe previously kept it on, reasoning that "without foot's own \
 terminfo entry, every program run inside foot sees TERM=foot and no \
-description, which breaks curses applications -- including nnn, the file \
-manager this terminal exists to host.
+description, which breaks curses applications -- including nnn". THAT IS NOT \
+TRUE HERE: ncurses 6.6 SHIPS A foot ENTRY, and that is precisely why the two \
+packages collided:
+
+    veron: path collision: usr/share/terminfo/f/foot
+                           claimed by foot and ncurses
+
+So the choice was never "foot's entry or nothing", it was "foot's entry or \
+ncurses'". Both describe foot; ncurses has carried the entry since 6.3.
+
+WHY foot GIVES WAY RATHER THAN ncurses. The terminfo database belongs to \
+ncurses -- it installs thousands of entries and one cannot be excluded without \
+editing its output. ncurses is rung 14 with five dependents and sits deep in a \
+published checkpoint; foot is rung 108 and a leaf. Correctness does not decide \
+this one, so cost does, and one leaf rebuild beats invalidating the tail of the \
+build.
+
+WHAT IS LOST IS foot-direct, NOT foot. foot installs two entries and ncurses \
+carries only the first, so the direct-colour variant disappears. foot's own \
+default-terminfo is `foot`, so TERM is unaffected and nothing selects \
+foot-direct unless a user sets it deliberately. If 24-bit colour in curses \
+applications later matters, the fix is foot's \
+custom-terminfo-install-location plus TERMINFO_DIRS, not re-enabling this.
+
+ncurses REMAINS A BUILD DEPENDENCY EVEN SO. meson.build:410 is `tic = \
+find_program('tic', native: true, required: get_option('terminfo'))` -- with \
+the option disabled, tic is no longer required, but foot is not linked against \
+ncurses either way (deps.link has no ncurses) and the edge is cheap to keep. \
+It is left declared because dropping it would be a second change to a package \
+that is already rebuilding for the first.
 
 docs IS ENABLED NOW THAT scdoc EXISTS. meson.build:392 resolves it as \
 `dependency('scdoc', native: true, ...)` -- a .pc lookup rather than a program \
@@ -95,7 +122,7 @@ run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libd
          "--wrap-mode=nofallback",
          "-Ddocs=enabled", "-Dutmp-backend=none", "-Dtests=false",
          "-Dgrapheme-clustering=enabled", "-Dime=false",
-         "-Dterminfo=enabled", "-Dthemes=true"]]
+         "-Dterminfo=disabled", "-Dthemes=true"]]
 
 [[steps]]
 name = "build"

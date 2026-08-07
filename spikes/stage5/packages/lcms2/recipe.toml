@@ -54,6 +54,11 @@ BLFS CROSS-CHECK: general/lcms2.html gives exactly \
 the two flags it passes. It does NOT pass --without-jpeg or --without-tiff, \
 because BLFS has both libraries and wants the tools. Veron does not."""
 
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/man"]
+files    = 15
+digest   = "8358b31f04b6853c6b9b005a5c19a61f4b784d5a4e47e4e39a2a7989bf6900bf"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

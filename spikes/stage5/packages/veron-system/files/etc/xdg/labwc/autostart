@@ -9,11 +9,30 @@
 # guard makes an absent package silent rather than noisy -- and the packages
 # ARE optional: labwc runs without any of them.
 
-# A background, so an empty desktop is visibly a desktop rather than a failure.
-# swaybg reads PNG only here -- gdk-pixbuf is declined in its recipe -- and
-# Veron ships no wallpaper, so this sets a solid colour.
-[ -x /usr/bin/swaybg ] && /usr/bin/swaybg -c '#1a1a1a' &
+# A background. swaybg reads PNG ONLY here: gdk-pixbuf is declined in its
+# recipe, so background-image.c:41 goes straight to
+# cairo_image_surface_create_from_png and any other format fails to load.
+#
+# THE IMAGE IS A GRADIENT WITH A CENTRED MARKER, NOT A FLAT COLOUR, AND THAT IS
+# FOR THE SCREENSHOT. A screenshot of a solid field looks identical whether the
+# compositor rendered it or the framebuffer was never written at all. A
+# gradient proves per-pixel output; the marker block proves geometry and
+# orientation. -c is kept as the fallback so a missing file still gives a
+# desktop rather than a black screen.
+if [ -x /usr/bin/swaybg ]; then
+    if [ -f /usr/share/veron/wallpaper.png ]; then
+        /usr/bin/swaybg -m fill -i /usr/share/veron/wallpaper.png &
+    else
+        /usr/bin/swaybg -c '#1a1a1a' &
+    fi
+fi
 
-# The status bar. yambar's foreign-toplevel plugin is what shows a window list,
-# and labwc implements that protocol through wlroots.
+# The status bar. THE config.yml GUARD USED TO BE TRUE OF A FILE THAT DID NOT
+# EXIST, so yambar was built with ten plugins enabled and never started, and
+# the guard is what made that silent. The file is now shipped beside this one.
+#
+# Its foreign-toplevel module is what shows the window list: labwc implements
+# wlr-foreign-toplevel-management through wlroots, so opening a terminal makes
+# an entry appear in the bar. That is the cheapest end-to-end proof that
+# compositor, protocol and bar are all talking.
 [ -x /usr/bin/yambar ] && [ -f /etc/xdg/yambar/config.yml ] && /usr/bin/yambar &

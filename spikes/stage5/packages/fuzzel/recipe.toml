@@ -70,6 +70,11 @@ fcft downgrade breaks fuzzel and an fcft 4.x upgrade breaks it too."""
 "pkg:threads" = "meson.build:57 -- meson's built-in pthread lookup plus cc.find_library('stdthreads', required: false). Satisfied by glibc."
 "pkg:epoll-shim" = "meson.build:72 -- required: false, a BSD compatibility shim. Linux has epoll natively."
 
+[installs]
+prefixes = ["etc/xdg/fuzzel", "usr/bin", "usr/share/doc", "usr/share/fish", "usr/share/man", "usr/share/zsh"]
+files    = 9
+digest   = "e9ed78f8a69fb46ecf8368aae72e6602f351f472e25792c907785106eba945c5"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

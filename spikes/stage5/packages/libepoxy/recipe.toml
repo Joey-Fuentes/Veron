@@ -60,6 +60,11 @@ is mesa's EGL and GLES2, which the mesa recipe pins to \
 python IS A BUILD DEPENDENCY, not an accident: libepoxy generates its \
 dispatch tables from XML at build time with python scripts."""
 
+[installs]
+prefixes = ["usr/include/epoxy", "usr/lib", "usr/lib/pkgconfig"]
+files    = 9
+digest   = "770ec4fdd44894b66f829f3707a8564df55e8c36ebae520dd5942b23b0ca2fb3"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

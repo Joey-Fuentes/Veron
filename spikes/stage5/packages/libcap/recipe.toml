@@ -111,6 +111,11 @@ unlike dejavu's composite, which is an AND over different parts."""
 "program:ldd" = "Make.Rules:21 -- run against /usr/bin/ld to derive the library directory name. Overridden with lib=lib, so this records what WOULD be consulted rather than what is."
 "host-path:/usr/include/security/pam_modules.h" = "Make.Rules:123 -- an absolute path on the BUILD host, not in the sysroot, probed to decide whether to build a PAM module. Pinned off with PAM_CAP=no."
 
+[installs]
+prefixes = ["usr/include/sys", "usr/lib", "usr/lib/pkgconfig", "usr/sbin", "usr/share/man"]
+files    = 97
+digest   = "4e5596203477b0764306b694f4223d96c83774ab0c7c5ce1223a585988ac667b"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"
