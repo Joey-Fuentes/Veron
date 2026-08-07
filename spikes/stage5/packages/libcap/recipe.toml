@@ -11,7 +11,8 @@ signature = "none -- kernel.org cgit snapshots publish no detached signature"
 crosschecked_against = []
 
 [deps]
-build        = ["pkgconf"]
+# bash IS A REAL BUILD DEPENDENCY, not a convenience. See the deferral.
+build        = ["pkgconf", "bash"]
 link         = []
 runtime      = []
 # GOLANG AND PAM_CAP ARE BOTH AUTO-DETECTED FROM THE BUILD HOST -- see the
@@ -25,6 +26,32 @@ configure_flags = ["prefix=/usr", "lib=lib", "SHARED=yes", "GOLANG=no",
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["libcap"]
 deferral        = """
+progs/mkcapshdoc.sh IS A bash SCRIPT AND THE BUILD RUNS IT. progs/Makefile:56 \
+is `./mkcapshdoc.sh > $@`, generating capshdoc.c.cf -- a C table of capability \
+explanations compiled into capsh. Its shebang is #!/bin/bash, and without bash \
+staged the build dies with a message that names the wrong thing:
+
+    /bin/sh: ./mkcapshdoc.sh: not found
+    make[1]: *** [Makefile:56: capshdoc.c.cf] Error 127
+
+The script EXISTS and is executable; its INTERPRETER does not. That is what \
+"not found" means for a shebang, and it reads as a missing file.
+
+WHY DECLARING IT IS THE FIX AND MOVING bash EARLIER IS NOT. Position in the \
+build is derived from deps and tie-broken by name -- topo_order says order is \
+"a consequence of data the recipes already carry, never authored". bash sat at \
+44 and libcap at 29 purely because nothing connected them; declaring the edge \
+moves libcap to 56, after bash at 43. Reordering bash globally would have made \
+this build succeed with the dependency still undeclared, which is exactly the \
+failure stage5-isolate exists to find and exactly what package_keys warns \
+about when it says its soundness "rests on the declarations being complete".
+
+THE ALTERNATIVE WAS PATCHING THE SHEBANG TO /bin/sh, and it is bigger than it \
+looks. The script has no [[ ]], no arrays, no local -- but it uses `let x=0` \
+and `let x=1+${x}` three times, which busybox ash does not implement. So the \
+patch would be rewriting upstream's arithmetic as well as its interpreter, to \
+avoid a dependency this set already builds.
+
 Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
 MIRRORS.tsv on both routes.
 

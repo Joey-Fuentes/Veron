@@ -48,34 +48,34 @@ between this file and the recipes fails the run.
   26. elfutils
   27. gmp
   28. lcms2
-  29. libcap
-  30. libgpg-error
-  31. libidn2
-  32. libnl
-  33. libogg
-  34. libpng
-  35. libtasn1
-  36. libtool
-  37. libvpx
-  38. libyaml
-  39. nghttp2
-  40. readline
-  41. tzdb
-  42. zstd
-  43. automake
-  44. bash
-  45. curl
-  46. freetype-bootstrap
-  47. iproute2
-  48. libarchive
-  49. libgcrypt
-  50. libvorbis
-  51. libxml2
-  52. nettle
-  53. nnn
-  54. sqlite
-  55. wpa_supplicant
-  56. git
+  29. libgpg-error
+  30. libidn2
+  31. libnl
+  32. libogg
+  33. libpng
+  34. libtasn1
+  35. libtool
+  36. libvpx
+  37. libyaml
+  38. nghttp2
+  39. readline
+  40. tzdb
+  41. zstd
+  42. automake
+  43. bash
+  44. curl
+  45. freetype-bootstrap
+  46. iproute2
+  47. libarchive
+  48. libgcrypt
+  49. libvorbis
+  50. libxml2
+  51. nettle
+  52. nnn
+  53. sqlite
+  54. wpa_supplicant
+  55. git
+  56. libcap
   57. libhyphen
   58. python
   59. ca-certificates
@@ -1025,35 +1025,6 @@ package lcms2 2.19.1
          argv ["make", "install", "DESTDIR=dest/lcms2"]
 
 ======================================================================
-package libcap 2.76
-  group        browser-substrate
-  license      BSD-3-Clause OR GPL-2.0-only
-  recipe-sha   cf4f83c662f04a5b96b1ed6a0968f9021909146340b22f0ce844c4a7c76b88a9
-
-  source
-    url        https://git.kernel.org/pub/scm/libs/libcap/libcap.git/snapshot/libcap-2.76.tar.gz
-    sha256     f6662862cb2727dcdbcd52a19c239eecb9d29c285c3768e9fb557cb027322034
-    signature  none -- kernel.org cgit snapshots publish no detached signature
-    correspond none
-
-  deps
-    build        pkgconf
-    link         -
-    runtime      -
-    optional_off golang, kdebug, pam_cap
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/libcap-2.76
-         argv ["tar", "-xf", "dl/libcap-2.76.tar.gz", "-C", "build/libcap-2.76"]
-    [02] build
-         cwd  build/libcap-2.76/libcap-2.76
-         argv ["make", "-j1", "prefix=/usr", "lib=lib", "SHARED=yes", "GOLANG=no", "PAM_CAP=no"]
-    [03] install
-         cwd  build/libcap-2.76/libcap-2.76
-         argv ["make", "install", "prefix=/usr", "lib=lib", "SHARED=yes", "GOLANG=no", "PAM_CAP=no", "DESTDIR=dest/libcap"]
-
-======================================================================
 package libgpg-error 1.56
   group        tls
   license      LGPL-2.1-or-later
@@ -1941,6 +1912,35 @@ package git 2.53.0
     [04] install
          cwd  build/git-2.53.0/git-2.53.0
          argv ["make", "DESTDIR=dest/git", "NO_PERL=1", "NO_PYTHON=1", "NO_GETTEXT=1", "install"]
+
+======================================================================
+package libcap 2.76
+  group        browser-substrate
+  license      BSD-3-Clause OR GPL-2.0-only
+  recipe-sha   01216ec2b716c0389c9a33a0dde221a4b4cefdf21d53f03b6763508165e367ee
+
+  source
+    url        https://git.kernel.org/pub/scm/libs/libcap/libcap.git/snapshot/libcap-2.76.tar.gz
+    sha256     f6662862cb2727dcdbcd52a19c239eecb9d29c285c3768e9fb557cb027322034
+    signature  none -- kernel.org cgit snapshots publish no detached signature
+    correspond none
+
+  deps
+    build        bash, pkgconf
+    link         -
+    runtime      -
+    optional_off golang, kdebug, pam_cap
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libcap-2.76
+         argv ["tar", "-xf", "dl/libcap-2.76.tar.gz", "-C", "build/libcap-2.76"]
+    [02] build
+         cwd  build/libcap-2.76/libcap-2.76
+         argv ["make", "-j1", "prefix=/usr", "lib=lib", "SHARED=yes", "GOLANG=no", "PAM_CAP=no"]
+    [03] install
+         cwd  build/libcap-2.76/libcap-2.76
+         argv ["make", "install", "prefix=/usr", "lib=lib", "SHARED=yes", "GOLANG=no", "PAM_CAP=no", "DESTDIR=dest/libcap"]
 
 ======================================================================
 package libhyphen 2.8.9
