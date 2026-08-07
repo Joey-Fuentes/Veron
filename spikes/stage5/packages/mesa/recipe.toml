@@ -1,0 +1,145 @@
+name    = "mesa"
+version = "26.1.6"
+group   = "graphics"
+license = "MIT"
+srcdir  = "mesa-26.1.6"
+
+[source]
+url       = "https://archive.mesa3d.org/mesa-26.1.6.tar.xz"
+sha256    = "5296b88a0f1e012e2cb9ada150a2bbadf728ca81e5a4fb2ab43c83a4d2158606"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+# READ OFF meson.build AND meson.options IN THE PINNED TARBALL, not recalled.
+# The digest above was verified against MIRRORS.tsv on both routes before any
+# of this was written.
+#
+# llvm ARRIVES BY A ROUTE NO .pc CAN SEE: `dependency('llvm', method:
+# 'config-tool')`. LLVM ships no pkg-config file, so the name-to-package
+# resolution the static probe is built on has nothing to match -- which is why
+# llvm was absent from MIRRORS.tsv for so long. It is a real, hard dependency
+# of llvmpipe and is declared here because a build order derived from .pc
+# names alone would put it in the wrong place.
+#
+# THE FOUR PYTHON MODULES ARE BUILD DEPENDENCIES AND NO .pc DESCRIBES THEM
+# EITHER. meson.build:1058 onwards runs the interpreter and imports them:
+#   mako >= 0.8.0   hard error, generates most of mesa's C
+#   packaging       used to compare mako's version. The `distutils` fallback
+#                   on meson.build:1067 is dead -- Python 3.12 removed it and
+#                   this set builds 3.14 -- so packaging is required outright.
+#   PyYAML          meson.build:1083. A python without it makes the candidate
+#                   loop `continue`, and the error finally raised is
+#                   "Python not found", which is not what went wrong.
+#   markupsafe      mako's own dependency.
+build        = ["meson", "ninja", "pkgconf", "python", "mako", "markupsafe",
+                "packaging", "pyyaml", "llvm", "libdrm", "wayland",
+                "wayland-protocols", "expat", "zlib", "zstd", "elfutils",
+                "libxml2"]
+link         = ["libdrm", "wayland", "expat", "zlib", "zstd", "elfutils"]
+runtime      = ["libdrm", "wayland", "expat", "zlib", "zstd", "elfutils"]
+# EVERY ONE OF THESE IS auto OR ON BY DEFAULT IN 26.1.6 AND IS TURNED OFF HERE.
+# `platforms`, `gallium-drivers` and `vulkan-drivers` all default to ['auto'],
+# which expands PER ARCHITECTURE -- see the deferral.
+optional_off = ["glx", "gles1", "gallium-rusticl", "gallium-va", "tools",
+                "build-tests", "valgrind", "libunwind", "lmsensors",
+                "html-docs", "perfetto", "video-codecs", "virtgpu_kumquat"]
+
+[declared]
+configure_flags = [
+  "-Dplatforms=wayland", "-Degl-native-platform=drm",
+  "-Dgallium-drivers=llvmpipe,softpipe,virgl", "-Dvulkan-drivers=swrast",
+  "-Dllvm=enabled", "-Dglx=disabled", "-Degl=enabled", "-Dgbm=enabled",
+  "-Dgles1=disabled", "-Dgles2=enabled", "-Dshared-glapi=enabled",
+  "-Dgallium-rusticl=false", "-Dgallium-va=disabled", "-Dvideo-codecs=",
+  "-Dtools=", "-Dbuild-tests=false", "-Dvalgrind=disabled",
+  "-Dlibunwind=disabled", "-Dlmsensors=disabled", "-Dhtml-docs=disabled",
+  "-Dperfetto=false", "--wrap-mode=nofallback",
+]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["mesa"]
+deferral        = """
+Internals not reviewed. Every statement below was read out of the pinned \
+tarball whose sha256 matches MIRRORS.tsv on both routes.
+
+FIVE FLAGS THAT NO LONGER EXIST, and any one of them makes meson refuse the \
+WHOLE command line rather than warning: osmesa, gallium-vdpau, gallium-xa, \
+gallium-nine and gallium-opencl are all absent from mesa 26.1.6's \
+meson.options. They are still in the hand-maintained list in \
+.github/workflows/mesa-config.yml, which only survives because that job \
+filters its flags against the declaration at run time. A recipe cannot filter, \
+so this list was checked against the 108 options the tarball declares, one at \
+a time, and every flag above exists.
+
+NO RUST, AND IT IS TRUE BY ACCIDENT RATHER THAN BY POLICY. meson.build:835 is \
+`if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') \
+or with_virtgpu_kumquat` then `add_languages('rust', required: true)`. \
+`vulkan-drivers` defaults to ['auto'], and the auto expansion is per \
+architecture: x86 gets ['amd','intel','intel_hasvk','nouveau','swrast'] and \
+WOULD require Rust; aarch64 gets \
+['swrast','intel','panfrost','freedreno','asahi'] and does not. So the \
+no-Rust property currently rests on nouveau being absent from one arm of an \
+upstream if-chain. `vulkan-drivers` is therefore PINNED rather than inherited: \
+upstream adding nouveau to the aarch64 list would otherwise turn the policy \
+off silently on the next version bump.
+
+GALLIUM DRIVERS ARE PINNED FOR THE SAME REASON. llvmpipe is the usable \
+software rasteriser and requires LLVM -- meson.build enforces that with \
+`.enable_if(with_gallium_llvmpipe, error_message: 'LLVMPipe Gallium driver \
+requires LLVM')`, so -Dllvm=enabled is not optional given this driver set. \
+softpipe is upstream's slow reference path. virgl is the virtio-gpu guest \
+driver, which is what this system will actually have under qemu -- the kernel \
+this chain builds has DRM_VIRTIO_GPU=y and presents /dev/dri/card0, measured \
+in the boot probe.
+
+-Dvideo-codecs= AND -Dtools= ARE EMPTY ON PURPOSE. video-codecs defaults to \
+['all_free'] and tools to []; stating both keeps a default change from adding \
+a decoder or a helper binary nobody chose.
+
+--wrap-mode=nofallback IS LOAD-BEARING HERE AND EVERYWHERE IN THIS GROUP. See \
+the wlroots recipe: a missing .pc silently becomes a git clone and a vendored \
+second copy, which inverts the build order. mesa's subprojects/ carries the \
+Rust crate wraps the earlier probe saw; they are the union of every optional \
+feature rather than anything these flags need."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+"module:mako" = "meson.build:1072 -- `import mako`, then a version compare against 0.8.0. A hard error, and no pkg-config name describes it."
+"module:packaging" = "meson.build:1065 -- `from packaging.version import Version`. The distutils fallback on the next line was removed in Python 3.12 and this set builds 3.14, so this is required rather than preferred."
+"module:yaml" = "meson.build:1083 -- `run_command(prog_python, '-c', 'import yaml')`. Failure makes the interpreter-candidate loop continue, so the eventual error names Python rather than yaml."
+"config-tool:llvm" = "dependency('llvm', method: 'config-tool') -- LLVM ships no .pc file, so llvm-config is the only route and no pkg-config name can express it."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/mesa-26.1.6.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dplatforms=wayland", "-Degl-native-platform=drm",
+         "-Dgallium-drivers=llvmpipe,softpipe,virgl",
+         "-Dvulkan-drivers=swrast",
+         "-Dllvm=enabled", "-Dglx=disabled", "-Degl=enabled", "-Dgbm=enabled",
+         "-Dgles1=disabled", "-Dgles2=enabled", "-Dshared-glapi=enabled",
+         "-Dgallium-rusticl=false", "-Dgallium-va=disabled",
+         "-Dvideo-codecs=", "-Dtools=", "-Dbuild-tests=false",
+         "-Dvalgrind=disabled", "-Dlibunwind=disabled",
+         "-Dlmsensors=disabled", "-Dhtml-docs=disabled", "-Dperfetto=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "gbm"]]
+expect = ["26.1.6"]

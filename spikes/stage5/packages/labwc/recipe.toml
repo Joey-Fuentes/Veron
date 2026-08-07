@@ -1,0 +1,158 @@
+name    = "labwc"
+version = "0.9.1"
+group   = "desktop"
+license = "GPL-2.0-only"
+srcdir  = "labwc-0.9.1"
+
+[source]
+url       = "https://github.com/labwc/labwc/archive/refs/tags/0.9.1.tar.gz"
+sha256    = "bf7a245d5fc5665329b3f5c9cb589eb33e658b8eb638cf4f4c9ad68f4b5979f0"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+# THIS TARBALL HAD NEVER BEEN READ. labwc appears in STAGE5.md's group lists,
+# in remaining-urls.txt and in two research notes, and nowhere in the tree was
+# there a single measured fact about what it requires. Everything below comes
+# out of meson.build and meson_options.txt in the pinned archive.
+#
+# THE HARD REQUIREMENTS ARE NOT BEHIND OPTIONS. meson.build:62-78 calls
+# dependency() with no `required:` for every one of these, so a missing name
+# is a loud configure error rather than a dropped feature:
+#   wayland-server >=1.19.0   wayland-protocols >=1.39   xkbcommon
+#   libdrm   libxml-2.0   glib-2.0   cairo   pangocairo
+#   libinput >=1.14   pixman-1   libpng   wlroots-0.19 (>=0.19.0 <0.20.0)
+build        = ["meson", "ninja", "pkgconf", "wlroots", "wayland",
+                "wayland-protocols", "libxkbcommon", "libdrm", "libxml2",
+                "glib", "cairo", "pango", "libinput", "pixman", "libpng",
+                "libsfdo"]
+link         = ["wlroots", "wayland", "libxkbcommon", "libdrm", "libxml2",
+                "glib", "cairo", "pango", "libinput", "pixman", "libpng",
+                "libsfdo"]
+runtime      = ["wlroots", "wayland", "libxkbcommon", "libdrm", "libxml2",
+                "glib", "cairo", "pango", "libinput", "pixman", "libpng",
+                "libsfdo"]
+# svg and icon DEFAULT TO `enabled`, which in meson means required, not
+# preferred -- the same trap as libinput's documentation='enabled'. See the
+# deferral for why `svg` is the more interesting of the two.
+optional_off = ["svg", "xwayland", "nls", "man-pages", "test",
+                "static_analyzer"]
+
+[declared]
+configure_flags = ["-Dsvg=disabled", "-Dicon=enabled", "-Dxwayland=disabled",
+                   "-Dnls=disabled", "-Dman-pages=disabled",
+                   "-Dtest=disabled", "-Dstatic_analyzer=disabled",
+                   "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["labwc"]
+deferral        = """
+Internals not reviewed. WHY IT IS HERE: labwc is the compositor -- the thing \
+wlroots, mesa, libinput and seatd exist to serve. It is the top of stage 5's \
+graphics stack and the first package whose output a user would see.
+
+THE `svg` OPTION DOES NOT DO WHAT ITS DEFAULT SUGGESTS, and this is a fresh \
+instance of the shape wlroots' `backends=auto` made famous here. \
+meson_options.txt gives `svg` the value `enabled`. meson.build:78 then reads
+
+    svg = dependency('librsvg-2.0', version: '>=2.46', required: false)
+
+with `required: false` HARDCODED -- the option is not passed to it. The only \
+thing the option controls is meson.build:120, `if get_option('svg').disabled() \
+then have_rsvg = false else have_rsvg = svg.found()`. So setting svg=enabled \
+does NOT make librsvg required; with librsvg absent labwc configures green, \
+compiles green, installs green and silently ships without SVG window buttons. \
+-Dsvg=disabled is stated because it is the only value that means anything, and \
+because a recipe claiming a feature the build does not have is worse than one \
+that declines it. librsvg is Rust and is not in this set.
+
+`icon` IS THE OPPOSITE AND IS GENUINELY REQUIRED. meson.build:60 is \
+`have_libsfdo = not get_option('icon').disabled()`, and that value is passed \
+as `required:` to THREE separate dependencies: libsfdo-basedir, \
+libsfdo-desktop and libsfdo-icon, each >=0.1.3. Leaving icon at its default \
+therefore makes all three hard requirements. This set ships libsfdo 0.1.4 and \
+its DESTDIR carries all three .pc files, verified against \
+packages/libsfdo/installs.txt rather than assumed. -Dicon=enabled is stated \
+even though it is the default, because a silent flip to disabled would drop \
+window icons with nothing pointing at the cause.
+
+xwayland IS DECLINED UNDER THE NO-X11 POLICY, and stating it matters more here \
+than usual. At `auto` it pulls xcb, xcb-ewmh, xcb-icccm and xwayland >=21.1.9, \
+all `required: get_option('xwayland')` and therefore all optional -- so the \
+result would be `have_xwayland = false` reached silently. Note also \
+meson.build:59: `wlroots.get_variable('have_xwayland')`, with no default. That \
+would be a hard configure error if wlroots did not export the variable; \
+wlroots emits have_* for every entry of its `features` dict unconditionally, \
+so it always resolves. Checked rather than assumed, because a get_variable \
+without a fallback is exactly the kind of coupling that breaks on a version \
+bump.
+
+nls AND man-pages ARE `auto` AND BOTH REACH FOR TOOLS THIS SET DOES NOT HAVE: \
+msgfmt (gettext) and scdoc respectively. Both would be dropped silently.
+
+TWO WRAP FALLBACKS. subprojects/ carries wlroots.wrap and libsfdo.wrap, both \
+git URLs. Without --wrap-mode=nofallback a missing wlroots-0.19.pc does not \
+fail the build -- meson clones wlroots 0.19 and builds it as a static \
+subproject, producing a compositor linked against a wlroots this project never \
+built, configured with labwc's default_options rather than the flags in the \
+wlroots recipe. That is precisely the DRM-less wlroots this stack exists to \
+avoid.
+
+IT INSTALLS MORE THAN THE COMPOSITOR: a lab-sensible-terminal shell script \
+into bindir, two SVG icons into the hicolor theme, labwc.desktop into \
+wayland-sessions and labwc-portals.conf into xdg-desktop-portal. None is \
+gated; they are listed here so [installs] describes a decision rather than a \
+surprise."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+"program:git" = "meson.build:44 -- find_program('git', native: true, required: false), used only to stamp a version string. There is no .git in an unpacked tarball, so this is never found and never needed."
+"program:msgfmt" = "meson.build:137 -- required: get_option('nls'). -Dnls=disabled, and no gettext in this set."
+"program:scdoc" = "docs/meson.build:1 -- required: get_option('man-pages'). -Dman-pages=disabled."
+"library:m" = "meson.build:76 -- cc.find_library('m'), libm from the stage-4 sysroot."
+"pkg:cmocka" = "meson.build:184 -- required: get_option('test'). -Dtest=disabled."
+"variable:have_xwayland" = "meson.build:59 -- wlroots.get_variable('have_xwayland'), a pkg-config VARIABLE rather than a package. wlroots exports have_* for every feature unconditionally."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/labwc-0.9.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dsvg=disabled", "-Dicon=enabled", "-Dxwayland=disabled",
+         "-Dnls=disabled", "-Dman-pages=disabled",
+         "-Dtest=disabled", "-Dstatic_analyzer=disabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+# labwc PRINTS ITS OWN FEATURE FLAGS, so the guest test can assert what was
+# actually built rather than only that a binary exists. src/main.c:56:
+#
+#   printf("labwc %s (%sxwayland %snls %srsvg %slibsfdo)\\n", ...)
+#
+# with `+` or `-` per feature. With the flags in this recipe the expected line
+# is `labwc 0.9.1 (-xwayland -nls -rsvg +libsfdo)`.
+#
+# `+libsfdo` IS THE ONE THAT MATTERS. -Dicon=enabled is what makes the three
+# libsfdo dependencies required; if that ever flipped, window icons would
+# vanish and every other check here would still pass. `-rsvg` is asserted for
+# the opposite reason: it is the state this recipe DECIDED on, and an
+# unannounced `+rsvg` would mean librsvg had entered the set without anyone
+# choosing it.
+test   = [["/usr/bin/labwc", "--version"],
+          ["/usr/bin/labwc", "--version"],
+          ["/usr/bin/labwc", "--version"]]
+expect = ["0.9.1", "+libsfdo", "-rsvg"]

@@ -78,10 +78,13 @@ between this file and the recipes fails the run.
   56. llvm
   57. harfbuzz
   58. libwebp
-  59. freetype
-  60. fontconfig
-  61. cairo
-  62. pango
+  59. mesa
+  60. freetype
+  61. wlroots
+  62. fontconfig
+  63. cairo
+  64. pango
+  65. labwc
 
 ======================================================================
 package bzip2 1.0.8
@@ -1990,6 +1993,40 @@ package libwebp 1.6.0
          argv ["make", "DESTDIR=dest/libwebp", "install"]
 
 ======================================================================
+package mesa 26.1.6
+  group        graphics
+  license      MIT
+  recipe-sha   a7dcacda241016842fa678784bb2326a17693085596e65cafdd73043d92450d4
+
+  source
+    url        https://archive.mesa3d.org/mesa-26.1.6.tar.xz
+    sha256     5296b88a0f1e012e2cb9ada150a2bbadf728ca81e5a4fb2ab43c83a4d2158606
+    signature  none published
+    correspond none
+
+  deps
+    build        elfutils, expat, libdrm, libxml2, llvm, mako, markupsafe, meson, ninja, packaging, pkgconf, python, pyyaml, wayland, wayland-protocols, zlib, zstd
+    link         elfutils, expat, libdrm, wayland, zlib, zstd
+    runtime      elfutils, expat, libdrm, wayland, zlib, zstd
+    optional_off build-tests, gallium-rusticl, gallium-va, gles1, glx, html-docs, libunwind, lmsensors, perfetto, tools, valgrind, video-codecs, virtgpu_kumquat
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/mesa-26.1.6
+         argv ["tar", "-xf", "dl/mesa-26.1.6.tar.xz", "-C", "build/mesa-26.1.6"]
+    [02] setup
+         cwd  build/mesa-26.1.6/mesa-26.1.6
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dplatforms=wayland", "-Degl-native-platform=drm", "-Dgallium-drivers=llvmpipe,softpipe,virgl", "-Dvulkan-drivers=swrast", "-Dllvm=enabled", "-Dglx=disabled", "-Degl=enabled", "-Dgbm=enabled", "-Dgles1=disabled", "-Dgles2=enabled", "-Dshared-glapi=enabled", "-Dgallium-rusticl=false", "-Dgallium-va=disabled", "-Dvideo-codecs=", "-Dtools=", "-Dbuild-tests=false", "-Dvalgrind=disabled", "-Dlibunwind=disabled", "-Dlmsensors=disabled", "-Dhtml-docs=disabled", "-Dperfetto=false"]
+    [03] build
+         cwd  build/mesa-26.1.6/mesa-26.1.6
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/mesa-26.1.6/mesa-26.1.6
+         env  DESTDIR=dest/mesa
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package freetype 2.14.1
   group        text-rendering
   license      FTL-or-GPL-2.0
@@ -2020,6 +2057,40 @@ package freetype 2.14.1
     [04] install
          cwd  build/freetype-2.14.1/freetype-2.14.1
          argv ["make", "DESTDIR=dest/freetype", "install"]
+
+======================================================================
+package wlroots 0.19.1
+  group        graphics
+  license      MIT
+  recipe-sha   3d8319cc0a0dfa8dfb5ede480acafb01e31fd54401b7c8f2d6c1cc480be48b7e
+
+  source
+    url        https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.19.1/downloads/wlroots-0.19.1.tar.gz
+    sha256     f6bace4eac8708010430411a64f42055249ee7742cac29efa1a4036988291b2b
+    signature  none published
+    correspond none
+
+  deps
+    build        hwdata, libdisplay-info, libdrm, libinput, libudev-zero, libxkbcommon, mesa, meson, ninja, pixman, pkgconf, seatd, wayland, wayland-protocols
+    link         libdisplay-info, libdrm, libinput, libudev-zero, libxkbcommon, mesa, pixman, seatd, wayland
+    runtime      libdisplay-info, libdrm, libinput, libudev-zero, libxkbcommon, mesa, pixman, seatd, wayland
+    optional_off color-management, examples, libliftoff, xcb-errors, xwayland
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/wlroots-0.19.1
+         argv ["tar", "-xf", "dl/wlroots-0.19.1.tar.gz", "-C", "build/wlroots-0.19.1"]
+    [02] setup
+         cwd  build/wlroots-0.19.1/wlroots-0.19.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dbackends=drm,libinput", "-Drenderers=gles2", "-Dallocators=gbm", "-Dsession=enabled", "-Dexamples=false", "-Dxwayland=disabled", "-Dxcb-errors=disabled", "-Dlibliftoff=disabled", "-Dcolor-management=disabled"]
+    [03] build
+         cwd  build/wlroots-0.19.1/wlroots-0.19.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/wlroots-0.19.1/wlroots-0.19.1
+         env  DESTDIR=dest/wlroots
+         argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
 package fontconfig 2.17.1
@@ -2121,5 +2192,39 @@ package pango 1.57.0
     [04] install
          cwd  build/pango-1.57.0/pango-1.57.0
          env  DESTDIR=dest/pango
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package labwc 0.9.1
+  group        desktop
+  license      GPL-2.0-only
+  recipe-sha   8b2ea1af78c90732995fc91aec4eea8dd272b8eeb3a3bb0cbd36ac3c36285fb7
+
+  source
+    url        https://github.com/labwc/labwc/archive/refs/tags/0.9.1.tar.gz
+    sha256     bf7a245d5fc5665329b3f5c9cb589eb33e658b8eb638cf4f4c9ad68f4b5979f0
+    signature  none published
+    correspond none
+
+  deps
+    build        cairo, glib, libdrm, libinput, libpng, libsfdo, libxkbcommon, libxml2, meson, ninja, pango, pixman, pkgconf, wayland, wayland-protocols, wlroots
+    link         cairo, glib, libdrm, libinput, libpng, libsfdo, libxkbcommon, libxml2, pango, pixman, wayland, wlroots
+    runtime      cairo, glib, libdrm, libinput, libpng, libsfdo, libxkbcommon, libxml2, pango, pixman, wayland, wlroots
+    optional_off man-pages, nls, static_analyzer, svg, test, xwayland
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/labwc-0.9.1
+         argv ["tar", "-xf", "dl/labwc-0.9.1.tar.gz", "-C", "build/labwc-0.9.1"]
+    [02] setup
+         cwd  build/labwc-0.9.1/labwc-0.9.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dsvg=disabled", "-Dicon=enabled", "-Dxwayland=disabled", "-Dnls=disabled", "-Dman-pages=disabled", "-Dtest=disabled", "-Dstatic_analyzer=disabled"]
+    [03] build
+         cwd  build/labwc-0.9.1/labwc-0.9.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/labwc-0.9.1/labwc-0.9.1
+         env  DESTDIR=dest/labwc
          argv ["ninja", "-C", "_b", "install"]
 

@@ -1,0 +1,147 @@
+name    = "wlroots"
+version = "0.19.1"
+group   = "graphics"
+license = "MIT"
+srcdir  = "wlroots-0.19.1"
+
+[source]
+url       = "https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.19.1/downloads/wlroots-0.19.1.tar.gz"
+sha256    = "f6bace4eac8708010430411a64f42055249ee7742cac29efa1a4036988291b2b"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+# EVERY NAME BELOW WAS READ OUT OF THE PINNED TARBALL, and the flags in
+# [declared] are what MAKE them required rather than optional. With upstream's
+# defaults most of these are `required: false` -- see the deferral.
+build        = ["meson", "ninja", "pkgconf", "wayland", "wayland-protocols",
+                "libdrm", "libxkbcommon", "pixman", "seatd", "libudev-zero",
+                "libinput", "hwdata", "libdisplay-info", "mesa"]
+link         = ["wayland", "libdrm", "libxkbcommon", "pixman", "seatd",
+                "libudev-zero", "libinput", "libdisplay-info", "mesa"]
+runtime      = ["wayland", "libdrm", "libxkbcommon", "pixman", "seatd",
+                "libudev-zero", "libinput", "libdisplay-info", "mesa"]
+# xcb-errors, libliftoff, color-management and xwayland are all `auto` and all
+# reach for something absent. `examples` defaults to TRUE and its dependencies
+# use disabler(), so the examples degrade silently rather than failing.
+optional_off = ["xcb-errors", "libliftoff", "color-management", "xwayland",
+                "examples"]
+
+[declared]
+configure_flags = ["-Dbackends=drm,libinput", "-Drenderers=gles2",
+                   "-Dallocators=gbm", "-Dsession=enabled",
+                   "-Dexamples=false", "-Dxwayland=disabled",
+                   "-Dxcb-errors=disabled", "-Dlibliftoff=disabled",
+                   "-Dcolor-management=disabled", "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["wlroots"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball; the digest matches \
+MIRRORS.tsv on both routes.
+
+`auto` DOES NOT MEAN "ON IF AVAILABLE" HERE, AND THAT IS THE WHOLE REASON \
+THIS RECIPE LOOKS OVER-SPECIFIED. backend/meson.build:5 is
+
+    if 'auto' in backends and get_option('auto_features').enabled()
+        backends = all_backends
+    elif 'auto' in backends and get_option('auto_features').disabled()
+        backends = []
+    endif
+
+`auto_features` defaults to `auto`, so NEITHER branch fires and `backends` \
+stays the literal ['auto']. `'drm' in backends` is then false, which makes \
+hwdata, libdisplay-info, libseat, libudev and libinput all `required: false`. \
+subdir('drm') is still entered, because the loop tests `backend in backends or \
+'auto' in backends`, and the first thing inside it is
+
+    if not (hwdata.found() and libdisplay_info.found() and features['session'])
+        subdir_done()
+
+So with upstream's defaults wlroots CONFIGURES GREEN, COMPILES GREEN, INSTALLS \
+GREEN and ships no DRM backend, no libinput backend and no session support. It \
+would run nested inside another compositor and nowhere else, and nothing in \
+the log would say a capability had been dropped.
+
+renderers AND allocators HAVE THE SAME CODE, WORD FOR WORD, in \
+render/meson.build:1 and render/allocator/meson.build:1. Pinning only \
+`backends` would leave a compositor with a DRM backend, no GLES2 renderer and \
+no GBM allocator. All three arrays are pinned, plus -Dsession=enabled.
+
+EIGHT WRAP FALLBACKS, AND THEY ARE THE REASON FOR --wrap-mode=nofallback. \
+subprojects/ carries wayland, wayland-protocols, libdrm, libxkbcommon, pixman, \
+seatd, libdisplay-info and libliftoff, and eight dependency() calls name them \
+with `fallback:`. A missing or unfound .pc therefore does not fail the build: \
+meson clones the subproject and vendors a SECOND copy of a library this set \
+already builds, inverting the build order silently. That is the \
+wayland-protocols `fallback: 'wayland'` incident from wave 1, one layer up and \
+eight times over.
+
+VERSION FLOORS, all satisfied by what this set ships: libdrm >=2.4.122 (have \
+2.4.134), pixman-1 >=0.43.0 (have 0.46.4), libseat >=0.2.0 (have 0.9.3), \
+libinput >=1.19.0 (have 1.31.3).
+
+mesa IS A REAL DEPENDENCY AND ARRIVES AS TWO .pc NAMES. -Dallocators=gbm \
+needs `gbm`, and -Drenderers=gles2 needs `egl` -- render/meson.build also \
+checks EGL_EGLEXT_VERSION >= 20210604 out of EGL/eglext.h and demotes the \
+renderer if the headers are older. Both names come from the mesa recipe, which \
+is why mesa builds first.
+
+libudev-zero's MISSING HOTPLUG MONITOR REACHES THIS PACKAGE TOO. Devices \
+present at start are enumerated; devices appearing later are not. Recorded in \
+that recipe and repeated here because a compositor is where it will be \
+noticed."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+"program:wayland-scanner" = "protocol/meson.build -- a build tool, found through the wayland-scanner .pc's `wayland_scanner` variable rather than as a library. Provided by the wayland recipe."
+"library:m" = "meson.build -- cc.find_library('m'), libm from the stage-4 sysroot."
+"library:rt" = "meson.build -- cc.find_library('rt'), librt from the stage-4 sysroot."
+"header-symbol:EGL_EGLEXT_VERSION" = "render/meson.build -- cc.get_define() against EGL/eglext.h, demoting the gles2 renderer if older than 20210604. A header value, not a package."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/wlroots-0.19.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dbackends=drm,libinput", "-Drenderers=gles2",
+         "-Dallocators=gbm", "-Dsession=enabled",
+         "-Dexamples=false", "-Dxwayland=disabled",
+         "-Dxcb-errors=disabled", "-Dlibliftoff=disabled",
+         "-Dcolor-management=disabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+# THE VERSION IS THE LEAST INTERESTING THING TO ASSERT ABOUT THIS PACKAGE.
+#
+# A wlroots built with upstream's defaults reports 0.19.1 and has no DRM
+# backend, no libinput backend and no session support -- that is the whole
+# failure this recipe's flags exist to prevent, and a version check cannot see
+# it. wlroots exports one pkg-config variable per feature (`have_` plus the
+# feature name underscorified, emitted unconditionally for every key of its
+# `features` dict), so the capability is directly checkable from the installed
+# .pc rather than inferred from the flags that were passed.
+#
+# If any of these comes back `false`, the compositor above would build green
+# and drive nothing.
+test   = [["/usr/bin/pkgconf", "--modversion", "wlroots-0.19"],
+          ["/usr/bin/pkgconf", "--variable=have_drm_backend", "wlroots-0.19"],
+          ["/usr/bin/pkgconf", "--variable=have_libinput_backend", "wlroots-0.19"],
+          ["/usr/bin/pkgconf", "--variable=have_session", "wlroots-0.19"],
+          ["/usr/bin/pkgconf", "--variable=have_gles2_renderer", "wlroots-0.19"],
+          ["/usr/bin/pkgconf", "--variable=have_gbm_allocator", "wlroots-0.19"]]
+expect = ["0.19.1", "true", "true", "true", "true", "true"]
