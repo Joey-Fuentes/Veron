@@ -1220,6 +1220,12 @@ rather than truncating them away behind the successes.
 - [`ROADMAP.md`](./ROADMAP.md) — the rules the driver enforces (a package's
   peculiarity stays in its recipe; global policy is a closed set; declare what
   you install; disclose what static analysis cannot find) and the ordered work.
+- [`KERNEL-CHANGES.md`](./KERNEL-CHANGES.md) — what stage 5 has measured that
+  the kernel needs, accumulated and reconciled in **one pass at the end**
+  rather than one rebuild per finding. Currently: `MODULES=n` (1423 modules
+  built, zero installed), and `CFG80211`/`MAC80211`/`RFKILL` at `=m` — which
+  is the DRM finding again, in the one place nobody went back to, and means
+  WiFi cannot work today no matter what wpa_supplicant does.
 
 ## What is not done
 
