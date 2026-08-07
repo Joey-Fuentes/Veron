@@ -20,7 +20,7 @@ optional_off = ["nls", "systemd", "bash_completion", "doc", "gtk_doc",
 [declared]
 configure_flags = ["-Dtrust_module=enabled", "-Dhash_impl=internal",
                    "-Dlibffi=enabled", "-Dsystemd=disabled",
-                   "-Dbash_completion=disabled", "-Dnls=disabled",
+                   "-Dbash_completion=disabled", "-Dnls=false",
                    "-Dgtk_doc=false", "--wrap-mode=nofallback"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["p11-kit"]
@@ -55,7 +55,21 @@ Internal is the default and is stated because the alternative is a large \
 architectural consequence hidden behind a combo option.
 
 libffi IS auto AND IS STATED enabled: it is in this set already, and p11-kit \
-uses it to build PKCS#11 closures. Left at auto it would resolve on presence."""
+uses it to build PKCS#11 closures. Left at auto it would resolve on presence.
+
+nls IS A boolean AND gtk_doc IS A boolean; THE REST ARE features, AND MIXING \
+THEM UP FAILS AT SETUP RATHER THAN SILENTLY. The first version of this recipe \
+passed -Dnls=disabled:
+
+    meson.build:1:0: ERROR: Option "nls" value disabled is not boolean
+                     (true or false)
+
+meson_options.txt is explicit about which is which -- hash_impl is a combo, \
+libffi, trust_module, systemd and bash_completion are features, and nls and \
+gtk_doc are booleans. `disabled` is a feature value and `false` is a boolean \
+one; they are not interchangeable, and there is no reason beyond upstream \
+habit that these particular options differ. Every option name in this recipe \
+was checked against that file when it was written and every TYPE was assumed."""
 
 [[steps]]
 name = "unpack"
@@ -69,7 +83,7 @@ run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
          "--wrap-mode=nofallback",
          "-Dtrust_module=enabled", "-Dhash_impl=internal", "-Dlibffi=enabled",
          "-Dsystemd=disabled", "-Dbash_completion=disabled",
-         "-Dnls=disabled", "-Dgtk_doc=false"]]
+         "-Dnls=false", "-Dgtk_doc=false"]]
 
 [[steps]]
 name = "build"

@@ -4403,6 +4403,56 @@ def cmd_selftest(a):
     # ordering is real: recipe first, upload second, build third. A gate that
     # failed here would fire on correct work and get switched off. It names
     # what to do instead.
+    # MESON OPTION VALUES MUST MATCH THEIR DECLARED TYPE.
+    #
+    # p11-kit was given -Dnls=disabled and died at setup:
+    #
+    #     meson.build:1:0: ERROR: Option "nls" value disabled is not
+    #                      boolean (true or false)
+    #
+    # `disabled` is a FEATURE value and `false` is a BOOLEAN one. p11-kit's
+    # meson_options.txt mixes both -- hash_impl is a combo, libffi,
+    # trust_module, systemd and bash_completion are features, nls and gtk_doc
+    # are booleans -- and nothing in the option NAME says which. Every option
+    # name in that recipe had been checked against the file; every option TYPE
+    # had been assumed.
+    #
+    # THIS ONLY RUNS WHERE THE SOURCE IS UNPACKED, so it is a warning rather
+    # than a gate: CI has no unpacked tree at selftest time. It is here because
+    # the check is free when writing a recipe, which is when the mistake is
+    # made.
+    _src = os.environ.get("VERON_SRC", "")
+    if _src and os.path.isdir(_src):
+        _mism = []
+        for _n, _r in sorted(load_recipes().items()):
+            _d = os.path.join(_src, _r.get("srcdir") or f"{_n}-{_r['version']}")
+            _opts = None
+            for _c in ("meson_options.txt", "meson.options"):
+                if os.path.isfile(os.path.join(_d, _c)):
+                    _opts = open(os.path.join(_d, _c)).read()
+                    break
+            if not _opts:
+                continue
+            _types = dict(re.findall(
+                r"option\(\s*'([a-z0-9_-]+)'\s*,\s*type\s*:\s*'([a-z]+)'",
+                _opts, re.S))
+            for _s in _r.get("steps", []):
+                for _argv in _s.get("run", []):
+                    for _a in _argv:
+                        _m = re.match(r"^-D([a-z0-9_-]+)=(.+)$", str(_a))
+                        if not _m:
+                            continue
+                        _k, _v = _m.groups()
+                        _t = _types.get(_k)
+                        if _t == "boolean" and _v not in ("true", "false"):
+                            _mism.append(f"{_n}: -D{_k}={_v} but it is boolean")
+                        elif _t == "feature" and _v not in ("enabled", "disabled", "auto"):
+                            _mism.append(f"{_n}: -D{_k}={_v} but it is a feature")
+        for _x in _mism:
+            print(f"  warn  meson option type -- {_x}")
+        if not _mism:
+            print("  ok    every meson option value matches its declared type")
+
     # SOURCE IS MODIFIED BY A PATCH, NEVER BY A STEP.
     #
     # ROADMAP.md's first rule makes the recipe the unit: "a reader of one
