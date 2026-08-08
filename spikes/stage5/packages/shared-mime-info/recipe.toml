@@ -88,6 +88,11 @@ absence is not an error here."""
 [undeclarable]
 "program:update-mime-database" = "The tool this package itself builds, run against its own DESTDIR in the mime-cache step to generate /usr/share/mime/mime.cache. Not a dependency on another package: a two-phase build within this one."
 
+[installs]
+prefixes = ["usr/bin", "usr/share/gettext", "usr/share/man", "usr/share/mime", "usr/share/pkgconfig"]
+files    = 1056
+digest   = "9268a4d925389cd57820ff637187864c7c8e92270de0f34888b7fe1ff034b192"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"
