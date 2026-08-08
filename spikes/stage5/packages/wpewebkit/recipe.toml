@@ -1,0 +1,262 @@
+name    = "wpewebkit"
+version = "2.52.5"
+group   = "browser"
+license = "LGPL-2.1-or-later AND BSD-2-Clause"
+srcdir  = "wpewebkit-2.52.5"
+
+[source]
+url       = "https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz"
+sha256    = "bcfc6c91db7659dcf24f6ff79ad27ac1eae1bc61dca0dbfee154706926740b3b"
+signature = "none -- wpewebkit.org publishes .asc signatures; not yet pinned here"
+crosschecked_against = []
+
+[deps]
+# EIGHTEEN find_package(... REQUIRED) IN OptionsWPE.cmake:12-27, plus the
+# GStreamer stack and bubblewrap. Every one of these was read out of that file
+# rather than inferred from what a browser usually needs.
+build        = ["cmake", "ninja", "pkgconf", "python", "unifdef", "gperf",
+                "glib", "harfbuzz", "icu", "libjpeg-turbo", "libepoxy",
+                "libgcrypt", "libsoup", "libtasn1", "libxkbcommon", "libxml2",
+                "libpng", "sqlite", "libwebp", "zlib", "cairo", "fontconfig",
+                "freetype", "libhyphen", "gstreamer", "gst-plugins-base",
+                "wayland", "wayland-protocols", "mesa", "bubblewrap"]
+link         = ["glib", "harfbuzz", "icu", "libjpeg-turbo", "libepoxy",
+                "libgcrypt", "libsoup", "libtasn1", "libxkbcommon", "libxml2",
+                "libpng", "sqlite", "libwebp", "zlib", "cairo", "fontconfig",
+                "freetype", "libhyphen", "gstreamer", "gst-plugins-base",
+                "wayland", "mesa"]
+runtime      = ["glib", "harfbuzz", "icu", "libjpeg-turbo", "libepoxy",
+                "libgcrypt", "libsoup", "libtasn1", "libxkbcommon", "libxml2",
+                "libpng", "sqlite", "libwebp", "zlib", "cairo", "fontconfig",
+                "freetype", "libhyphen", "gstreamer", "gst-plugins-base",
+                "gst-plugins-good", "gst-plugins-bad", "gst-libav",
+                "wayland", "mesa", "bubblewrap", "glib-networking"]
+# FOUR OF THESE ARE ON BY DEFAULT AND EACH IS A FATAL_ERROR WITHOUT A LIBRARY
+# THIS SET DOES NOT HAVE. See the deferral.
+optional_off = ["woff2", "libbacktrace", "sysprof-capture", "journald-log", "introspection", "documentation", "gamepad",
+                "speech-synthesis", "webdriver", "media-stream",
+                "encrypted-media", "pdfjs"]
+
+[declared]
+configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release",
+                   "-DPORT=WPE", "-DENABLE_JOURNALD_LOG=OFF",
+                   "-DENABLE_INTROSPECTION=OFF", "-DENABLE_DOCUMENTATION=OFF",
+                   "-DENABLE_GAMEPAD=OFF", "-DENABLE_SPEECH_SYNTHESIS=OFF",
+                   "-DENABLE_WEBDRIVER=OFF", "-DENABLE_MEDIA_STREAM=OFF",
+                   "-DENABLE_BUBBLEWRAP_SANDBOX=ON", "-DUSE_LIBHYPHEN=ON",
+                   "-DENABLE_PDFJS=OFF", "-DUSE_SYSTEM_MALLOC=ON",
+                   "-DENABLE_XSLT=OFF", "-DENABLE_WPE_PLATFORM=ON",
+                   "-DENABLE_WPE_LEGACY_API=OFF",
+                   "-DENABLE_WPE_PLATFORM_DRM=ON",
+                   "-DENABLE_WPE_PLATFORM_WAYLAND=ON",
+                   "-DENABLE_WPE_PLATFORM_HEADLESS=ON",
+                   "-DUSE_WOFF2=OFF",
+                   "-DUSE_LIBBACKTRACE=OFF",
+                   "-DUSE_SYSPROF_CAPTURE=OFF",
+                   "-DENABLE_MINIBROWSER=ON",
+                   "-DCMAKE_SKIP_INSTALL_RPATH=ON"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["wpewebkit"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes. This is the largest build in the project: 136 \
+minutes and rc=0, measured on a hosted runner with 107 GB free, which is the \
+number that decided self-hosted runners were not needed.
+
+OPENING THIS TARBALL ANSWERED THREE QUESTIONS THAT HAD BEEN OPEN FOR SEVERAL \
+BATCHES, AND THE ANSWERS ARE IN Source/cmake/OptionsWPE.cmake:12-27 -- eighteen \
+find_package(... REQUIRED) lines:
+
+  libgcrypt IS REQUIRED (line 17). Its recipe was written saying "why it is \
+  here is not established". It is established now.
+  libhyphen IS REQUIRED (line 262). USE_LIBHYPHEN defaults ON and a missing \
+  Hyphen_FOUND is a FATAL_ERROR.
+  libtasn1 IS REQUIRED DIRECTLY (line 19), not only through gnutls.
+  unifdef IS REQUIRED (line 25) AND DID NOT EXIST -- not a package, not \
+  pinned, not in the sysroot. It was found only by reading this file, and WPE \
+  cannot configure without it.
+
+AND TWO PINS REMAIN UNEXPLAINED. json-c appears NOWHERE in this source tree, \
+and neither does nss or nspr -- the only NSS-adjacent hit is a comment about \
+OpenSSL for SFrame encryption in GStreamerChecks.cmake. Those three artifacts \
+are pinned and no consumer has been found for any of them. json-c's recipe \
+says so; nss and nspr have no recipe and should not get one until something \
+asks for them.
+
+THE FIRST VERSION OF THIS RECIPE AUDITED OptionsWPE.cmake:12-27 AND STOPPED \
+THERE, WHICH IS WHY IT WOULD NOT HAVE BUILT. Those are the unconditional \
+find_package lines; the file continues for another 300, and two of the \
+conditional blocks are reached with their conditions ON by default:
+
+    :301  if (ENABLE_XSLT)            find_package(LibXslt 1.1.13 REQUIRED)
+    :305  if (ENABLE_WPE_LEGACY_API)  find_package(WPE REQUIRED)
+
+NEITHER libxslt NOR libwpe IS PINNED -- zero rows in MIRRORS.tsv for both. So \
+configure would have run for however long it takes to reach line 301 and then \
+stopped. Reading the top of a file and treating it as the whole story is the \
+same mistake qemu's recipe made with `configure --help`.
+
+-DENABLE_XSLT=OFF DROPS XSLT STYLESHEET PROCESSING, which is a document \
+transformation feature almost nothing on the modern web uses, and costs a \
+pinned package plus its own libxml2 version constraint.
+
+-DENABLE_WPE_PLATFORM=ON WITH -DENABLE_WPE_LEGACY_API=OFF IS THE INTERESTING \
+ONE. OptionsWPE.cmake:170 is a FATAL_ERROR unless at least one of the two is \
+enabled, so this is a choice between platform layers rather than a way to \
+avoid both. The legacy API needs libwpe, an external library. WPEPlatform is \
+in-tree and its requirements (lines 311-323) are LibInput, Udev, Wayland and \
+WaylandProtocols -- ALL FOUR ALREADY IN THIS SET. So the new layer costs \
+nothing and the old one costs a pin.
+
+DRM, WAYLAND AND HEADLESS ARE ALL KEPT. Each defaults ON and each is a \
+backend WPEPlatform can render through: DRM for a bare framebuffer, Wayland \
+for a session under labwc, headless for a test with no display. Veron will \
+use the Wayland one; the other two cost little and headless is what a CI \
+render check would want.
+
+BLFS HAS NO wpewebkit PAGE -- ONLY webkitgtk -- AND CROSS-CHECKING AGAINST IT \
+ANYWAY FOUND THREE FATAL_ERRORs. x/webkitgtk.html is the GTK port, but the two \
+share Source/cmake, so its flag list is worth diffing even though the ports \
+differ. Four flags it passes were missing here, and three of them stop the \
+build outright:
+
+  USE_WOFF2 defaults ON (OptionsWPE.cmake:283) and line 286 is
+      message(FATAL_ERROR "libwoff2dec is required for USE_WOFF2")
+    libwoff2 is not pinned -- zero rows in MIRRORS.tsv. WOFF2 is a web font
+    container; without it @font-face falls back to the other formats.
+
+  USE_LIBBACKTRACE defaults ON (line 121) and line 467 is
+      message(FATAL_ERROR "libbacktrace is required for USE_LIBBACKTRACE")
+    Also unpinned. It symbolises crash backtraces, which is a debugging aid.
+
+  USE_SYSPROF_CAPTURE defaults ON (line 130) and FindSysProfCapture.cmake
+    looks for sysprof-capture-4 by pkg-config. Unpinned. It is tracing
+    instrumentation.
+
+  ENABLE_MINIBROWSER defaults ON already; it is stated because MiniBrowser is
+    the only host program this image has for the library, and leaving the one
+    executable that can open a page to a default is not a decision.
+
+CMAKE_SKIP_INSTALL_RPATH=ON COMES FROM BLFS TOO. Without it cmake bakes the \
+build tree's library paths into the installed binaries -- the same class of \
+build-host leakage as libgpg-error's --disable-rpath and libcap's ldd \
+derivation.
+
+PERL IS REQUIRED AND IS ALREADY HERE. WebKitCommon.cmake:196-197 wants Perl \
+5.10+ and the English, FindBin and JSON::PP modules, unconditionally. The \
+stage-4 sysroot ships perl 5.44 with all three -- checked, not assumed -- so \
+this needs no package.
+
+FOUR DEFAULTS ARE ON AND EACH IS A HARD FAILURE HERE, NOT A DEGRADATION:
+
+  ENABLE_JOURNALD_LOG    default ON (line 110). Line 384: "libsystemd or \
+                         libelogind are needed for ENABLE_JOURNALD_LOG" --
+                         FATAL_ERROR. Veron has dinit and no journal.
+  ENABLE_SPEECH_SYNTHESIS default ON (line 57). Line 231: LibSpiel needed,
+                         FATAL_ERROR. Not in this set.
+  ENABLE_GAMEPAD         default ON (line 74), wants libmanette 0.2.4.
+  ENABLE_INTROSPECTION   default ON (line 109), and ENABLE_DOCUMENTATION
+                         DEPENDS on it (line 138) -- so documentation cannot
+                         be left on with introspection off.
+
+ENABLE_BUBBLEWRAP_SANDBOX IS ON AND IS KEPT ON, DELIBERATELY. Line 144 turns it \
+on for Linux, and it is the reason bubblewrap and libcap are in this set at \
+all: WPE runs its web and network processes in a bwrap sandbox. Turning it off \
+would be trading the single most valuable mitigation a browser has for a \
+smaller dependency list.
+
+WEBDRIVER AND MEDIA_STREAM ARE OFF. WebDriver is browser automation for \
+testing; MEDIA_STREAM is getUserMedia, which needs camera and microphone \
+capture this system cannot provide and which was already the reason WebRTC was \
+declined when x264 left the set.
+
+THE GStreamer PLUGIN SELECTION IS STILL PROVISIONAL AND THIS RECIPE DOES NOT \
+SETTLE IT. gst-plugins-base, good, bad and libav are declared as runtime \
+dependencies because a browser needs demuxers and decoders at play time, not \
+link time. Which specific plugins WPE requires is not stated in \
+OptionsWPE.cmake in a form that can be read mechanically, and the honest \
+position is that the sets chosen in those four recipes are a reasoned minimum \
+that a first render will test.
+
+IT HAS NEVER RENDERED A PAGE. 136 minutes and rc=0 is a compile. And the shell \
+does not exist -- MiniBrowser is a bare view with keyboard shortcuts and no \
+URL bar, so the chrome is Veron's to write. Both facts are already in \
+STAGE5.md and neither is changed by this recipe."""
+
+[undeclarable]
+"program:unifdef" = "Source/cmake/OptionsWPE.cmake:25 -- find_package(Unifdef REQUIRED). Strips #ifdef blocks from generated headers at build time. From the unifdef package, which exists because of this line."
+"program:gperf" = "WebKit generates perfect hash functions for its HTML/CSS token tables at build time."
+"pkg:Journald" = "Source/cmake/OptionsWPE.cmake:382 -- find_package(Journald), FATAL_ERROR at :384 without libsystemd or libelogind. Neither is in this set and neither will be; ENABLE_JOURNALD_LOG=OFF."
+"pkg:LibSpiel" = "OptionsWPE.cmake:229 -- required by ENABLE_SPEECH_SYNTHESIS, which defaults ON. Not in this set."
+"pkg:Manette" = "OptionsWPE.cmake:336 -- required by ENABLE_GAMEPAD, which defaults ON. Not in this set."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/wpewebkit-2.52.5.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
+         "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release",
+         "-DPORT=WPE",
+         "-DENABLE_JOURNALD_LOG=OFF", "-DENABLE_INTROSPECTION=OFF",
+         "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_GAMEPAD=OFF",
+         "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_WEBDRIVER=OFF",
+         "-DENABLE_MEDIA_STREAM=OFF", "-DENABLE_BUBBLEWRAP_SANDBOX=ON",
+         "-DUSE_LIBHYPHEN=ON", "-DENABLE_PDFJS=OFF",
+         "-DUSE_SYSTEM_MALLOC=ON", "-DENABLE_XSLT=OFF",
+         "-DENABLE_WPE_PLATFORM=ON", "-DENABLE_WPE_LEGACY_API=OFF",
+         "-DENABLE_WPE_PLATFORM_DRM=ON",
+         "-DENABLE_WPE_PLATFORM_WAYLAND=ON",
+         "-DENABLE_WPE_PLATFORM_HEADLESS=ON",
+                   "-DUSE_WOFF2=OFF",
+                   "-DUSE_LIBBACKTRACE=OFF",
+                   "-DUSE_SYSPROF_CAPTURE=OFF",
+                   "-DENABLE_MINIBROWSER=ON",
+                   "-DCMAKE_SKIP_INSTALL_RPATH=ON"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+# WHAT THESE ASSERT, AND WHAT THEY DELIBERATELY DO NOT.
+#
+# A .pc file proves a build installed something. It does not prove the browser
+# can run, and this package has never rendered a page -- 136 minutes and rc=0
+# is a compile. These tests raise the floor from "a file exists" to "the parts
+# a running browser needs are present and loadable", and stop there; actually
+# rendering is the screenshot step's job, once there is a binary to point it
+# at.
+#
+# THE HELPER PROCESSES ARE THE POINT. WebKit is multi-process: the library in
+# a host program spawns WPEWebProcess and WPENetworkProcess from
+# LIBEXEC_INSTALL_DIR, which OptionsWPE.cmake:214 sets to
+# /usr/libexec/wpe-webkit-2.0. If those are missing or unloadable the library
+# still links, the .pc still resolves, and the first page load fails at
+# runtime with nothing to attribute it to.
+#
+# ldd IS USED RATHER THAN --version BECAUSE THESE BINARIES TAKE NO ARGUMENTS
+# WORTH RUNNING. A helper process launched by hand does nothing useful and may
+# block; `ldd` answers the question that matters -- does the loader resolve
+# every DT_NEEDED -- without executing anything.
+test   = [["/usr/bin/pkgconf", "--modversion", "wpe-webkit-2.0"],
+          ["/bin/sh", "-c",
+           "test -x /usr/libexec/wpe-webkit-2.0/WPEWebProcess && echo webprocess-present"],
+          ["/bin/sh", "-c",
+           "test -x /usr/libexec/wpe-webkit-2.0/WPENetworkProcess && echo networkprocess-present"],
+          ["/bin/sh", "-c",
+           "ldd /usr/libexec/wpe-webkit-2.0/WPEWebProcess 2>&1 | grep -c 'not found'"],
+          ["/bin/sh", "-c",
+           "test -x /usr/libexec/wpe-webkit-2.0/MiniBrowser && echo minibrowser-present"]]
+expect = ["2.52.5", "webprocess-present", "networkprocess-present", "0",
+          "minibrowser-present"]
