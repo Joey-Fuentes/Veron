@@ -270,8 +270,42 @@ run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
 [[steps]]
 name = "build"
 cwd  = "$S"
-run  = [["ninja", "-C", "_b"]]
-# THE SECOND BUDGET, AND THE ONE THAT ACTUALLY STOPPED THIS BUILD.
+run  = [["ninja", "-C", "_b", "-j4"]]
+# -j4 BECAUSE NINJA IGNORES policy jobs = 1 AND DEFAULTS TO nproc + 2.
+#
+# Every other package here runs `make -j$J` with J pinned to 1, and
+# policy/defaults.toml says why: "PINNED, NOT DETECTED. Parallelism changes
+# output bytes for some builds. `nproc` would make the image depend on the
+# runner it happened to land on."
+#
+# `ninja -C _b` takes no -j, so it uses its OWN default -- nproc + 2. AND THAT
+# IS TRUE OF EVERY MESON PACKAGE HERE, not just this one: roughly forty
+# recipes invoke ninja with no -j, so `jobs = 1` has never applied to any of
+# them. It has gone unnoticed because those packages are small enough that
+# parallel and serial produce the same bytes and neither exhausts the runner.
+# wpewebkit is the first package large enough for the difference to matter.
+#
+# THAT IS A REAL HOLE IN THE POLICY'S CLAIM and it is recorded here rather
+# than quietly fixed: adding -j to forty recipes would move forty package keys
+# and discard the checkpoint, which is a change to make deliberately and not
+# in the middle of a browser bring-up.
+#
+# On a 4-core runner ninja's default is six concurrent
+# WebKit unified-source compiles, each of which can want more than 2 GB. The
+# run died at 62 minutes with exit 143 -- SIGTERM, no message, no
+# `##[error] The operation was canceled`, and none of the three timeouts
+# reached. That is what a runner going away looks like, not a timeout.
+#
+# 4 IS A MEASUREMENT, not a guess: wpewebkit has been built on this runner
+# class at -j4 before, successfully.
+#
+# WHY NOT -j1, WHICH WOULD MATCH THE POLICY. A serial WebKit build runs into
+# many hours and past any sane budget. The honest position is that this
+# package trades the policy's determinism claim for a fixed, STATED constant
+# -- deterministic across runners because it does not read nproc, which is
+# the property jobs = 1 actually exists to protect.
+#
+# THE SECOND BUDGET, AND THE ONE THAT ACTUALLY STOPPED THE RUN BEFORE THIS.
 #
 # There are two independent timeouts and widening the workflow's did nothing
 # for this one. tools/veron has DEFAULT_STEP_TIMEOUT = 1800 -- thirty minutes

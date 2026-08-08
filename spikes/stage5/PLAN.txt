@@ -4192,7 +4192,7 @@ package gst-plugins-good 1.28.1
 package wpewebkit 2.52.5
   group        browser
   license      LGPL-2.1-or-later AND BSD-2-Clause
-  recipe-sha   1d45d6824e0c09669a62a254a6292026810929ebab850d6be09389cbfc2d6155
+  recipe-sha   84bc12328e28e34f6543c6b1d279ce21d92469e700a6f77e505f08f97321833d
 
   source
     url        https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz
@@ -4215,7 +4215,7 @@ package wpewebkit 2.52.5
          argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DPORT=WPE", "-DENABLE_JOURNALD_LOG=OFF", "-DENABLE_INTROSPECTION=OFF", "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_GAMEPAD=OFF", "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_WEBDRIVER=OFF", "-DENABLE_MEDIA_STREAM=OFF", "-DENABLE_BUBBLEWRAP_SANDBOX=ON", "-DUSE_LIBHYPHEN=ON", "-DENABLE_PDFJS=OFF", "-DUSE_SYSTEM_MALLOC=ON", "-DENABLE_XSLT=OFF", "-DENABLE_WPE_PLATFORM=ON", "-DENABLE_WPE_LEGACY_API=OFF", "-DENABLE_WPE_PLATFORM_DRM=ON", "-DENABLE_WPE_PLATFORM_WAYLAND=ON", "-DENABLE_WPE_PLATFORM_HEADLESS=ON", "-DUSE_WOFF2=OFF", "-DUSE_LIBBACKTRACE=OFF", "-DUSE_SYSPROF_CAPTURE=OFF", "-DENABLE_MINIBROWSER=ON", "-DCMAKE_SKIP_INSTALL_RPATH=ON", "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy", "-DUSE_ATK=OFF", "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF", "-DUSE_GSTREAMER_GL=OFF"]
     [03] build
          cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         argv ["ninja", "-C", "_b"]
+         argv ["ninja", "-C", "_b", "-j4"]
     [04] install
          cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
          env  DESTDIR=dest/wpewebkit
