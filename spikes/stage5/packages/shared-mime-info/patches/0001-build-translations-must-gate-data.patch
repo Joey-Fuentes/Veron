@@ -1,0 +1,83 @@
+build-translations must also gate data/, which needs msgfmt unconditionally.
+
+WHY THE BUILD FAILS WITHOUT THIS:
+
+    Program msgfmt found: NO
+    data/meson.build:6:27: ERROR: Program 'msgfmt' not found or not executable
+
+-Dbuild-translations=false was already passed and did not help, because that
+option guards ONE line at meson.build:47:
+
+    if get_option('build-translations')
+        subdir('po')
+    endif
+    subdir('data')            <-- unconditional
+
+data/ is always entered, and its first statement is i18n.merge_file(), which
+merges the po catalogues into freedesktop.org.xml and therefore requires
+msgfmt. So the option names a thing it does not fully control: turning
+translations off still demands the translation toolchain.
+
+THERE IS NO gettext IN THIS SYSTEM -- not a stage-5 package and not in the
+stage-4 sysroot -- which is also why sixteen other recipes disable NLS. glib's
+own [undeclarable] entry states the general case: xgettext being absent is the
+only reason a set with no gettext recipe gets through at all.
+
+THE .in FILE IS ALREADY VALID XML, WHICH IS WHAT MAKES THE COPY SAFE. Checked,
+not assumed: data/freedesktop.org.xml.in parses with ElementTree, has 1038
+mime-type entries and contains no gettext placeholders and no @VARIABLE@
+substitutions -- zero matches for `^\s*<_` or `@[A-Z_]+@`. Translation here is
+ITS-based (its/shared-mime-info.its marks what is translatable), so
+merge_file's only effect is ADDING xml:lang variants of the human-readable
+<comment> text. Copying the input verbatim yields the same database with
+English descriptions, which is where the rest of this system already is.
+
+WHAT IS LOST IS COMMENT TEXT IN OTHER LANGUAGES -- the string a file manager
+shows for "PNG image". The globs, magic bytes, subclasses and aliases that
+xdg_mime_get_mime_type_from_file_name() actually reads are not translated and
+are unaffected.
+
+freedesktop_org_xml IS STILL ASSIGNED IN BOTH BRANCHES, and its only consumers
+are in tests/meson.build, which -Dbuild-tests=false does not enter. The
+assignment is kept so the variable means the same thing on either path rather
+than being conditionally undefined.
+
+Generated with `diff -u`, not written by hand.
+
+--- a/data/meson.build
++++ b/data/meson.build
+@@ -3,15 +3,25 @@
+     install_man('update-mime-database.1')
+ endif
+ 
+-freedesktop_org_xml = i18n.merge_file(
+-    input: 'freedesktop.org.xml.in',
+-    output: 'freedesktop.org.xml',
+-    data_dirs: '.',
+-    po_dir: '../po',
+-    type: 'xml',
+-    install: true,
+-    install_dir: get_option('datadir') / 'mime' / 'packages',
+-)
++if get_option('build-translations')
++    freedesktop_org_xml = i18n.merge_file(
++        input: 'freedesktop.org.xml.in',
++        output: 'freedesktop.org.xml',
++        data_dirs: '.',
++        po_dir: '../po',
++        type: 'xml',
++        install: true,
++        install_dir: get_option('datadir') / 'mime' / 'packages',
++    )
++else
++    freedesktop_org_xml = configure_file(
++        input: 'freedesktop.org.xml.in',
++        output: 'freedesktop.org.xml',
++        copy: true,
++        install: true,
++        install_dir: get_option('datadir') / 'mime' / 'packages',
++    )
++endif
+ 
+ install_data(
+   [ 'its/shared-mime-info.loc', 'its/shared-mime-info.its', ],

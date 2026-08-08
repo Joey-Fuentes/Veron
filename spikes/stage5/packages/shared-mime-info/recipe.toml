@@ -58,7 +58,19 @@ FOUR OPTIONS DEFAULT true AND EACH WANTS SOMETHING ABSENT:
   build-translations  po/meson.build calls i18n.gettext(), and there is no
                    gettext anywhere in this system -- not a stage-5 package
                    and not in the stage-4 sysroot. See the sixteen other
-                   recipes that disable NLS for the same reason.
+                   recipes that disable NLS for the same reason. AND THE
+                   OPTION IS NOT SUFFICIENT: it guards only `subdir('po')` at
+                   meson.build:47, while `subdir('data')` on the next line is
+                   unconditional and data/meson.build:6 calls i18n.merge_file,
+                   which needs msgfmt regardless. patches/0001 makes the
+                   option gate both. The build failed with
+
+                       Program msgfmt found: NO
+                       data/meson.build:6:27: ERROR: Program 'msgfmt' not
+                       found or not executable
+
+                   WITH -Dbuild-translations=false ALREADY SET -- an option
+                   that names a thing it does not fully control.
   update-mimedb    runs update-mime-database AFTER INSTALL. Its own option
                    text says "It should not be enabled if DESTDIR is used",
                    and every install here is into a DESTDIR.

@@ -3442,7 +3442,7 @@ package llvm 22.1.8
 package shared-mime-info 2.5.1
   group        desktop
   license      GPL-2.0-or-later
-  recipe-sha   1dc9ab028e383277aa6f9bae973f62332358c230d7873ef387b2bd1810ff4951
+  recipe-sha   e623719d754c9c12c61011758e16e554a094c40f14ec1e9f6ca99bbb817fe09d
 
   source
     url        https://gitlab.freedesktop.org/xdg/shared-mime-info/-/archive/2.5.1/shared-mime-info-2.5.1.tar.gz
@@ -3455,6 +3455,9 @@ package shared-mime-info 2.5.1
     link         glib, libxml2
     runtime      -
     optional_off build-spec, build-tests, build-translations, update-mimedb
+
+  patches (applied after unpack, in this order)
+    0001-build-translations-must-gate-data.patch
 
   commands (literal; this is exactly what runs)
     [01] unpack
