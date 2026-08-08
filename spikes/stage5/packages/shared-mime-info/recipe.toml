@@ -109,6 +109,15 @@ run  = [["ninja", "-C", "_b"]]
 [[steps]]
 name = "install"
 cwd  = "$S"
+# env DESTDIR, WITHOUT WHICH ninja install WRITES TO THE REAL /usr.
+# meson bakes the absolute prefix into its install script and honours DESTDIR
+# from the ENVIRONMENT -- there is no `install DESTDIR=x` argument the way
+# make has one. Every other meson recipe here carries this; omitting it made
+# the log read
+#     Installing src/update-mime-database to /usr/bin
+# rather than into dest/shared-mime-info, so the next step could not find the
+# tool it had just built and exited 127.
+env  = { DESTDIR = "$D" }
 run  = [["ninja", "-C", "_b", "install"]]
 
 [[steps]]

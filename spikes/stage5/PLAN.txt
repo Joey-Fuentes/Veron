@@ -3442,7 +3442,7 @@ package llvm 22.1.8
 package shared-mime-info 2.5.1
   group        desktop
   license      GPL-2.0-or-later
-  recipe-sha   e623719d754c9c12c61011758e16e554a094c40f14ec1e9f6ca99bbb817fe09d
+  recipe-sha   14454ca54c4b4d8119a26e906f427c17bc0ad894543454d8e02e9ea61d369172
 
   source
     url        https://gitlab.freedesktop.org/xdg/shared-mime-info/-/archive/2.5.1/shared-mime-info-2.5.1.tar.gz
@@ -3472,6 +3472,7 @@ package shared-mime-info 2.5.1
          argv ["ninja", "-C", "_b"]
     [04] install
          cwd  build/shared-mime-info-2.5.1/shared-mime-info-2.5.1
+         env  DESTDIR=dest/shared-mime-info
          argv ["ninja", "-C", "_b", "install"]
     [05] mime-cache
          cwd  build/shared-mime-info-2.5.1/shared-mime-info-2.5.1
