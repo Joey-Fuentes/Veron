@@ -129,4 +129,51 @@ if [ -r /etc/hostname ]; then
     [ -n "$hn" ] && /bin/busybox hostname "$hn"
 fi
 
+# DEVICE PERMISSIONS, BECAUSE devtmpfs MAKES EVERY NODE root:root 0600 AND
+# THERE IS NO udev TO FIX THEM.
+#
+# On an ordinary system udev applies rules putting /dev/dri/* in the video
+# group and /dev/input/* in input. This system has libudev-zero, which
+# provides the LIBRARY so clients can enumerate devices -- it runs no daemon
+# and applies no rules. So nothing had ever set an owner or a mode:
+#
+#     crw-------  root root  226,   0  /dev/dri/card0
+#     crw-------  root root  226, 128  /dev/dri/renderD128
+#
+# IT WENT UNNOTICED UNTIL THE BROWSER, because labwc runs as root and root
+# ignores permissions. wpewebkit does not: its web process is spawned into a
+# bubblewrap sandbox, and the first thing ever to ask for a device as a
+# non-root, non-DRM-master process was told no:
+#
+#     KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+#     Failed to create GBM buffer of size 1024x768: Permission denied
+#
+# The captured frame was wallpaper, bar and terminal -- correct, and with no
+# browser window in it.
+#
+# renderD128 IS THE ONE THAT MATTERS. Render nodes exist precisely so an
+# unprivileged client can allocate buffers WITHOUT being DRM master; card0
+# stays master-only and labwc holds it. Putting the render node in the video
+# group is what a udev rule would do, and is the minimum that unblocks the
+# web process.
+#
+# /dev/input FOLLOWS THE SAME LOGIC AND IS NOT NEEDED YET -- labwc opens those
+# through seatd, as root. It is set anyway so that the day there is a real
+# unprivileged user, one thing is already true rather than a fresh mystery.
+#
+# BUSYBOX chgrp/chmod, NOT A RULES ENGINE. Two loops that state an intent,
+# where mdevd would be a package and a daemon for the same result. If device
+# HOTPLUG ever matters -- a USB keyboard after boot -- this is the thing that
+# has to be replaced rather than extended.
+for _d in /dev/dri/renderD*; do
+    [ -e "$_d" ] || continue
+    /bin/busybox chgrp video "$_d" 2>/dev/null
+    /bin/busybox chmod 0660  "$_d" 2>/dev/null
+done
+for _d in /dev/input/event*; do
+    [ -e "$_d" ] || continue
+    /bin/busybox chgrp input "$_d" 2>/dev/null
+    /bin/busybox chmod 0660  "$_d" 2>/dev/null
+done
+
 exit $rc
