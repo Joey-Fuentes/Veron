@@ -119,12 +119,9 @@ def expand(tpl, host, sha256, name):
 def locators(sha256, name, rows, hosts):
     """Every route to these bytes, best first.
 
-    OUR MIRROR FIRST, UPSTREAM AFTER. The order comes from HOSTS.toml
-    priorities and the reasoning is written there; the short version is that
-    the old comment here claimed the mirror was "a bandwidth bill" and that
-    upstream-first meant we would "notice" rot. The bandwidth is our own repo
-    fetched by the same provider's runners, and nobody read the `miss` lines --
-    three separate upstream failures were found by their symptoms instead.
+    Upstream is tried FIRST on purpose: a normal fetch should never touch our
+    mirror, so the mirror stays a fallback rather than a bandwidth bill, and
+    upstream going dark is something we notice rather than mask.
     """
     found = []
     for r in rows:
@@ -217,12 +214,10 @@ def cmd_fetch(a):
 
     routes = locators(a.sha256, a.name, rows, hosts)
     if a.url and not any(u == a.url for _, u in routes):
-        # THE RECIPE'S OWN UPSTREAM, APPENDED RATHER THAN INSERTED. A package
-        # that has not been mirrored yet still has provenance, and refusing to
-        # fetch it would make mirroring a PREREQUISITE for building rather than
-        # a fallback -- so the url stays a route. It goes LAST now: a mirrored
-        # artifact should never reach it, and an unmirrored one still can.
-        routes.append(("upstream", a.url))
+        # THE RECIPE'S OWN UPSTREAM, tried first. A package that has not been
+        # mirrored yet still has provenance, and refusing to fetch it would
+        # make mirroring a PREREQUISITE for building rather than a fallback.
+        routes.insert(0, ("upstream", a.url))
     if not routes:
         die(f"no route to {a.sha256[:12]} ({a.name})")
 

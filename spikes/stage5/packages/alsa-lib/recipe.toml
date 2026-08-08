@@ -14,11 +14,11 @@ crosschecked_against = []
 build        = ["pkgconf"]
 link         = []
 runtime      = []
-optional_off = ["python", "rawmidi", "seq", "topology", "ucm", "hwdep"]
+optional_off = ["python", "rawmidi", "topology", "ucm", "hwdep"]
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-python", "--disable-rawmidi",
-                   "--disable-seq", "--disable-topology", "--disable-ucm"]
+                   "--disable-topology", "--disable-ucm"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["alsa-lib"]
 deferral        = """
@@ -67,16 +67,38 @@ configure script rather than assumed: the else branch of the \
 default and BLFS builds it. python is in this set, so the probe would succeed \
 here too. Disabled.
 
-FOUR COMPONENTS ARE DISABLED AND NONE OF THEM IS PLAYBACK. rawmidi, seq \
-(the ALSA sequencer), ucm (use-case manager) and topology (DSP topology) are \
-each --disable-able and none is on the path from a decoded audio buffer to a \
-sound card. mixer, pcm and hwdep stay: pcm IS the playback path, mixer is \
-volume, and hwdep is what several drivers need to initialise."""
+THREE COMPONENTS ARE DISABLED AND NONE OF THEM IS PLAYBACK. rawmidi, ucm \
+(use-case manager) and topology (DSP topology) are each --disable-able and \
+none is on the path from a decoded audio buffer to a sound card. mixer, pcm \
+and hwdep stay: pcm IS the playback path, mixer is volume, and hwdep is what \
+several drivers need to initialise.
 
-[installs]
-prefixes = ["usr/bin", "usr/include", "usr/include/alsa", "usr/include/sys", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/alsa"]
-files    = 127
-digest   = "a4932f50e9e97531cbf2b926a45fc41bbc77cfe6d73b8c731123b8f7d0ef663d"
+seq WAS IN THAT LIST AND HAD TO COME OUT, BECAUSE A CONSUMER DOES NOT SHARE \
+THIS PACKAGE'S VIEW OF WHAT IS NEEDED. The reasoning above is still correct -- \
+the ALSA sequencer is not on the playback path -- and it is the wrong test. \
+gst-plugins-base's alsa plugin compiles gstalsamidisrc.c UNCONDITIONALLY: \
+ext/alsa/meson.build lists it in alsa_sources with no option guarding it. With \
+--disable-seq the header is never installed, and the build fails with the \
+classic shape of a missing declaration:
+
+    ../ext/alsa/gstalsamidisrc.c:691:31: error: invalid type argument of
+                                        unary '*' (have 'int')
+    ../ext/alsa/gstalsamidisrc.c:692:5: error: implicit declaration of
+                                        function 'snd_seq_queue_status_free'
+
+-- the `int` is the implicit return type C assumes for an undeclared function, \
+so `*` on it is an error, and the real fault is two lines below in the message \
+order. Both symbols exist and are correctly typed in alsa-lib's own \
+include/seq.h at lines 491 and 497; --disable-seq simply stops it being \
+installed.
+
+rawmidi STAYS DISABLED. seq.h does not reference rawmidi -- checked, zero \
+occurrences -- so they are independent and only the one that is actually \
+needed is turned back on.
+
+THE ALTERNATIVE WAS -Dalsa=disabled IN gst-plugins-base, AND IT IS WORSE. \
+alsasink is the only reason alsa-lib is in this set at all; turning it off \
+would leave the package built and unused."""
 
 [[steps]]
 name = "unpack"
@@ -87,7 +109,7 @@ run  = [["tar", "-xf", "$DL/alsa-lib-1.2.14.tar.bz2", "-C", "$B"]]
 name = "configure"
 cwd  = "$S"
 run  = [["./configure", "--prefix=/usr", "--disable-python",
-         "--disable-rawmidi", "--disable-seq", "--disable-topology",
+         "--disable-rawmidi", "--disable-topology",
          "--disable-ucm"]]
 
 [[steps]]
