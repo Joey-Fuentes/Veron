@@ -53,91 +53,92 @@ between this file and the recipes fails the run.
   31. libnl
   32. libogg
   33. libpng
-  34. libtasn1
-  35. libtool
-  36. libvpx
-  37. libyaml
-  38. nghttp2
-  39. readline
-  40. tzdb
-  41. zstd
-  42. automake
-  43. bash
-  44. curl
-  45. freetype-bootstrap
-  46. iproute2
-  47. libarchive
-  48. libgcrypt
-  49. libvorbis
-  50. libxml2
-  51. nettle
-  52. nnn
-  53. sqlite
-  54. wpa_supplicant
-  55. git
-  56. libcap
-  57. libhyphen
-  58. python
-  59. ca-certificates
-  60. markupsafe
-  61. meson
-  62. ninja
-  63. packaging
-  64. pyyaml
-  65. bubblewrap
-  66. cmake
-  67. dav1d
-  68. fribidi
-  69. glib
-  70. libdisplay-info
-  71. libdrm
-  72. libevdev
-  73. libpsl
-  74. libsfdo
-  75. libxkbcommon
-  76. mako
-  77. opus
-  78. orc
-  79. p11-kit
-  80. pixman
-  81. seatd
-  82. tllist
-  83. wayland
-  84. wayland-protocols
-  85. xkeyboard-config
-  86. brotli
-  87. ffmpeg
-  88. gnutls
-  89. graphene
-  90. graphite2
-  91. gstreamer
-  92. json-c
-  93. libinput
-  94. libjpeg-turbo
-  95. llvm
-  96. utf8proc
-  97. glib-networking
-  98. harfbuzz
-  99. libwebp
-  100. mesa
-  101. freetype
-  102. libepoxy
-  103. libsoup
-  104. wlroots
-  105. fontconfig
-  106. cairo
-  107. fcft
-  108. foot
-  109. fuzzel
-  110. pango
-  111. swaybg
-  112. yambar
-  113. gst-plugins-base
-  114. labwc
-  115. gst-libav
-  116. gst-plugins-bad
-  117. gst-plugins-good
-  118. wpewebkit
+  34. libseccomp
+  35. libtasn1
+  36. libtool
+  37. libvpx
+  38. libyaml
+  39. nghttp2
+  40. readline
+  41. tzdb
+  42. zstd
+  43. automake
+  44. bash
+  45. curl
+  46. freetype-bootstrap
+  47. iproute2
+  48. libarchive
+  49. libgcrypt
+  50. libvorbis
+  51. libxml2
+  52. nettle
+  53. nnn
+  54. ruby
+  55. sqlite
+  56. wpa_supplicant
+  57. git
+  58. libcap
+  59. libhyphen
+  60. python
+  61. ca-certificates
+  62. markupsafe
+  63. meson
+  64. ninja
+  65. packaging
+  66. pyyaml
+  67. bubblewrap
+  68. cmake
+  69. dav1d
+  70. fribidi
+  71. glib
+  72. libdisplay-info
+  73. libdrm
+  74. libevdev
+  75. libpsl
+  76. libsfdo
+  77. libxkbcommon
+  78. mako
+  79. opus
+  80. orc
+  81. p11-kit
+  82. pixman
+  83. seatd
+  84. tllist
+  85. wayland
+  86. wayland-protocols
+  87. xkeyboard-config
+  88. brotli
+  89. ffmpeg
+  90. gnutls
+  91. graphene
+  92. graphite2
+  93. gstreamer
+  94. json-c
+  95. libinput
+  96. libjpeg-turbo
+  97. llvm
+  98. utf8proc
+  99. glib-networking
+  100. harfbuzz
+  101. libwebp
+  102. mesa
+  103. freetype
+  104. libepoxy
+  105. libsoup
+  106. wlroots
+  107. fontconfig
+  108. cairo
+  109. fcft
+  110. foot
+  111. fuzzel
+  112. pango
+  113. swaybg
+  114. yambar
+  115. gst-plugins-base
+  116. labwc
+  117. gst-libav
+  118. gst-plugins-bad
+  119. gst-plugins-good
 
 ======================================================================
 package bzip2 1.0.8
@@ -1234,6 +1235,38 @@ package libpng 1.6.55
          argv ["make", "DESTDIR=dest/libpng", "install"]
 
 ======================================================================
+package libseccomp 2.6.1
+  group        browser-substrate
+  license      LGPL-2.1-only
+  recipe-sha   639c7bf6c8f48aec878cdc38420b98968ea42d4d206bfcf302b706ef8e5051ee
+
+  source
+    url        https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.tar.gz
+    sha256     501f66c667225d53791b97e1d7cf85ab764c297d04881f60f38f451c4b0ee1be
+    signature  https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.tar.gz.asc
+    correspond none
+
+  deps
+    build        gperf, pkgconf
+    link         -
+    runtime      -
+    optional_off code-coverage, python, static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libseccomp-2.6.1
+         argv ["tar", "-xf", "dl/libseccomp-2.6.1.tar.gz", "-C", "build/libseccomp-2.6.1"]
+    [02] configure
+         cwd  build/libseccomp-2.6.1/libseccomp-2.6.1
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--disable-python"]
+    [03] build
+         cwd  build/libseccomp-2.6.1/libseccomp-2.6.1
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libseccomp-2.6.1/libseccomp-2.6.1
+         argv ["make", "install", "DESTDIR=dest/libseccomp"]
+
+======================================================================
 package libtasn1 4.21.0
   group        tls
   license      LGPL-2.1-or-later
@@ -1857,6 +1890,39 @@ package nnn 5.2
     [03] install
          cwd  build/nnn-5.2/nnn-5.2
          argv ["make", "install", "PREFIX=/usr", "O_NOX11=1", "DESTDIR=dest/nnn"]
+
+======================================================================
+package ruby 4.0.6
+  group        build-substrate
+  build-only   yes -- staged for later packages, not installed into the image
+  license      BSD-2-Clause OR Ruby
+  recipe-sha   488ccc63a635160b9fd62e302eba5749efc4520d953f45dd773f299ddf7c2e4b
+
+  source
+    url        https://cache.ruby-lang.org/pub/ruby/4.0/ruby-4.0.6.tar.gz
+    sha256     837d299e8f7ddf2be31a229a7a7e019d354979825117989acb3b32b1a9be262a
+    signature  none -- cache.ruby-lang.org publishes checksums on the release page rather than detached signatures
+    correspond none
+
+  deps
+    build        gmp, libffi, libyaml, pkgconf, zlib
+    link         gmp, libffi, libyaml, zlib
+    runtime      -
+    optional_off doc, openssl, rdoc, yjit, zjit
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/ruby-4.0.6
+         argv ["tar", "-xf", "dl/ruby-4.0.6.tar.gz", "-C", "build/ruby-4.0.6"]
+    [02] configure
+         cwd  build/ruby-4.0.6/ruby-4.0.6
+         argv ["./configure", "--prefix=/usr", "--disable-install-doc", "--disable-install-rdoc", "--disable-yjit", "--disable-zjit", "--with-out-ext=openssl", "--enable-shared"]
+    [03] build
+         cwd  build/ruby-4.0.6/ruby-4.0.6
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/ruby-4.0.6/ruby-4.0.6
+         argv ["make", "install", "DESTDIR=dest/ruby"]
 
 ======================================================================
 package sqlite 3.53.4
@@ -4119,38 +4185,5 @@ package gst-plugins-good 1.28.1
     [04] install
          cwd  build/gst-plugins-good-1.28.1/gst-plugins-good-1.28.1
          env  DESTDIR=dest/gst-plugins-good
-         argv ["ninja", "-C", "_b", "install"]
-
-======================================================================
-package wpewebkit 2.52.5
-  group        browser
-  license      LGPL-2.1-or-later AND BSD-2-Clause
-  recipe-sha   5546ce917f5b8085c75a9d88b0a6cc83d836bb2c4981d9f805cbd9c2bd3a36b7
-
-  source
-    url        https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz
-    sha256     bcfc6c91db7659dcf24f6ff79ad27ac1eae1bc61dca0dbfee154706926740b3b
-    signature  none -- wpewebkit.org publishes .asc signatures; not yet pinned here
-    correspond none
-
-  deps
-    build        bubblewrap, cairo, cmake, fontconfig, freetype, glib, gperf, gst-plugins-base, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, ninja, pkgconf, python, sqlite, unifdef, wayland, wayland-protocols, zlib
-    link         cairo, fontconfig, freetype, glib, gst-plugins-base, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, sqlite, wayland, zlib
-    runtime      bubblewrap, cairo, fontconfig, freetype, glib, glib-networking, gst-libav, gst-plugins-bad, gst-plugins-base, gst-plugins-good, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, sqlite, wayland, zlib
-    optional_off documentation, encrypted-media, gamepad, introspection, journald-log, libbacktrace, media-stream, pdfjs, speech-synthesis, sysprof-capture, webdriver, woff2
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/wpewebkit-2.52.5
-         argv ["tar", "-xf", "dl/wpewebkit-2.52.5.tar.xz", "-C", "build/wpewebkit-2.52.5"]
-    [02] configure
-         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DPORT=WPE", "-DENABLE_JOURNALD_LOG=OFF", "-DENABLE_INTROSPECTION=OFF", "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_GAMEPAD=OFF", "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_WEBDRIVER=OFF", "-DENABLE_MEDIA_STREAM=OFF", "-DENABLE_BUBBLEWRAP_SANDBOX=ON", "-DUSE_LIBHYPHEN=ON", "-DENABLE_PDFJS=OFF", "-DUSE_SYSTEM_MALLOC=ON", "-DENABLE_XSLT=OFF", "-DENABLE_WPE_PLATFORM=ON", "-DENABLE_WPE_LEGACY_API=OFF", "-DENABLE_WPE_PLATFORM_DRM=ON", "-DENABLE_WPE_PLATFORM_WAYLAND=ON", "-DENABLE_WPE_PLATFORM_HEADLESS=ON", "-DUSE_WOFF2=OFF", "-DUSE_LIBBACKTRACE=OFF", "-DUSE_SYSPROF_CAPTURE=OFF", "-DENABLE_MINIBROWSER=ON", "-DCMAKE_SKIP_INSTALL_RPATH=ON"]
-    [03] build
-         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         argv ["ninja", "-C", "_b"]
-    [04] install
-         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         env  DESTDIR=dest/wpewebkit
          argv ["ninja", "-C", "_b", "install"]
 

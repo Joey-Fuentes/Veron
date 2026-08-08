@@ -1,0 +1,87 @@
+name    = "libseccomp"
+version = "2.6.1"
+group   = "browser-substrate"
+license = "LGPL-2.1-only"
+srcdir  = "libseccomp-2.6.1"
+
+[source]
+url       = "https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.tar.gz"
+sha256    = "501f66c667225d53791b97e1d7cf85ab764c297d04881f60f38f451c4b0ee1be"
+signature = "https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.tar.gz.asc"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "gperf"]
+link         = []
+runtime      = []
+optional_off = ["python", "static", "code-coverage"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--disable-python"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libseccomp"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 was
+measured here and matches the value stated with it.
+
+IT IS THE SANDBOX, NOT AN ACCESSORY TO IT. wpewebkit is built with
+ENABLE_BUBBLEWRAP_SANDBOX=ON, and Source/cmake/BubblewrapSandboxChecks.cmake:4
+makes libseccomp a FATAL_ERROR for that option. The library installs the
+syscall filter that confines WebKit's web and network processes --
+Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp is the only
+consumer, and it is the difference between a browser that contains a
+compromised renderer and one that does not.
+
+HOW WPE FINDS IT: FindLibseccomp.cmake runs pkg_check_modules on `libseccomp`,
+so the .pc file is what matters rather than the soname. libseccomp.pc.in is in
+the tarball and lands in usr/lib/pkgconfig.
+
+gperf IS A HARD REQUIREMENT AND IT IS ALREADY HERE. configure.ac:126-128:
+
+    AC_CHECK_TOOL(GPERF, gperf)
+    if test -z "$GPERF"; then
+        AC_MSG_ERROR([please install gperf])
+
+It generates the syscall-name lookup tables. gperf is in this set for glib's
+sake, so the edge is declared rather than discovered.
+
+--disable-python IS THE DEFAULT AND IS STATED. configure.ac:96 probes for
+cython and the bindings need it; cython is not in this set, so the option
+would have resolved to off by absence. Naming it makes that a decision, and
+avoids a python module appearing in the image the day cython arrives for some
+other reason.
+
+--disable-static, per policy. Note the default here is `[default=yes]` --
+checked against --help rather than assumed, since alsa-lib and libgpg-error
+disagree with each other on this in the same set.
+
+THIS PACKAGE WAS FOUND LATE AND BADLY. wpewebkit's requirements were audited
+by grepping for `find_package(... REQUIRED)`, which does not match
+BubblewrapSandboxChecks.cmake's hand-written fatal check -- and BLFS's
+webkitgtk page lists libseccomp under Recommended, which was not read at all
+because only the -D flag list was. Two checks, both shaped wrong. The full
+FATAL_ERROR sweep that found this is in wpewebkit's deferral."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libseccomp-2.6.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--disable-python"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libseccomp"]]
+expect = ["2.6.1"]
