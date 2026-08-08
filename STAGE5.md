@@ -13,22 +13,37 @@ with no release tarball at all.
 
 | | count |
 |---|---|
-| pinned — digest, signature, licence, declared dependencies all read from the tarball | **111** |
-| recipes written | **48** |
-| built, installed, staged and booted | **48** |
-| artifacts mirrored | **115** |
+| pinned — digest, signature, licence, declared dependencies all read from the tarball | **121** |
+| recipes written | **121** |
+| built, installed, staged and booted | **121** |
+| install sets pinned by digest | **121** |
+| artifacts mirrored | **276 routes** |
 | artifacts with fewer than two fetch routes | **0** |
 
-**All 48 build, the image reproduces byte-for-byte, and it boots:**
+**All 121 build, the image reproduces byte-for-byte, it boots, and the browser
+renders a page:**
 
 ```
 VERON-BUILD-OK        every package built
-VERON-MANIFEST-OK     14228 paths
-VERON-LEDGER-OK       48 record(s)          VERON-STATUS-OK  unknown = 0
+VERON-MANIFEST-OK     21912 paths, 3958.4 MiB
+VERON-LEDGER-OK       121 record(s)         VERON-STATUS-OK  unknown = 0
+VERON-INSTALLS-OK     0 stray prefixes, 0 changed install sets, 0 unchecked
 VERON-IMAGE-REPRO-OK  two builds, identical bytes
 VERON-STAGE5-BOOT-OK  the packages ran under the kernel
-VERON-STAGE5-TESTS    pass=51 fail=0 none=1
+VERON-STAGE5-LOGIN-OK dinit brought up every service
+VERON-STAGE5-TESTS    pass=154 fail=0 none=2
+VERON-DHCP-OK         the client leased an address from the server VM
+VERON-NET-PING-OK     and the two machines exchanged packets
+VERON-SHOT-OK         1280x800, 1255 distinct colours
+VERON-SELFREBUILD-OK  VERON-SELFHOST-OK
 ```
+
+**The browser renders.** The screenshot job boots the image, starts labwc, and
+points MiniBrowser at a local page; the captured framebuffer is **71.7%
+`#1e6f50`** — the page's background colour, which appears nowhere else in the
+desktop — in a 1024x746 window, with the CSS gradient bar and 5,661 pixels of
+large white text. That is wpewebkit 2.52.5 on a system built from source,
+painting through `wl_shm` with no GPU.
 
 **And 31 of the 48 build from their declared dependencies alone** — measured
 by `stage5-isolate`, which composes each package's root from the stage-4
@@ -102,6 +117,77 @@ The corroboration was already being downloaded and thrown away: `probe.py`
 fetches Arch's PKGBUILD and Alpine's APKBUILD for every package and reads only
 `pkgver`, source URLs and digests. Arch's mesa PKGBUILD lists `python-mako` in
 `makedepends`.
+
+---
+
+**What is left is written down.** Everything named as missing along the way —
+persistence, login, updates, i18n, containers, the language toolchains, the
+desktop applications that do not exist yet — is in
+[`ROADMAP-STAGE5.md`](./ROADMAP-STAGE5.md), with the cost and the blocker for
+each.
+
+---
+
+## Running it on your own machine
+
+The spike publishes a GitHub release with everything needed to boot the system
+under qemu: `rootfs.img.tar.zst`, the kernel `Image`, `initramfs.cpio.gz`, and
+`IMAGE-SHA256`.
+
+```sh
+gh release download stage5/latest \
+  --pattern 'rootfs.img.tar.zst' --pattern 'IMAGE-SHA256' \
+  --pattern 'Image' --pattern 'initramfs.cpio.gz'
+sha256sum -c IMAGE-SHA256
+tar --zstd -xf rootfs.img.tar.zst
+```
+
+You need `qemu-system-aarch64`. On an x86_64 host that is **full emulation**
+under TCG, not virtualisation, so everything below is slow — this proves the
+system works, it is not a pleasant desktop.
+
+```sh
+qemu-system-aarch64 \
+  -M virt -cpu cortex-a57 -smp 4 -m 4096 \
+  -display gtk \
+  -drive file=rootfs.img,format=raw,if=virtio \
+  -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci \
+  -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
+  -kernel Image -initrd initramfs.cpio.gz \
+  -append "console=ttyAMA0 rdinit=/init panic=1 loglevel=4 veron.boot=system"
+```
+
+`-display gtk` gives a window where CI uses `-nographic`. `virtio-mouse-pci`
+is worth adding: CI never needed a pointer, so it is not in the boot lines
+elsewhere in this repo.
+
+**Then, at the console, three things are started by hand.** None of them is an
+oversight; each is a decision recorded elsewhere in this file.
+
+```sh
+dhcpcd eth0                                   # see below
+dinitctl start labwc                          # not in boot.d, deliberately
+/usr/libexec/wpe-webkit-2.0/MiniBrowser https://example.com
+```
+
+**Networking works and is not automatic.** `-netdev user` is SLIRP: NAT through
+the host, no bridge, no root, no `/dev/net/tun`. Its built-in DHCP server will
+answer `dhcpcd`, and DNS is at `10.0.2.3`. But **`boot.d` contains only
+`console`, `early-filesystems`, `seatd` and `xdg-runtime` — there is no dhcpcd
+service.** DHCP has only ever been exercised by the two-VM test, which drives
+it by hand. A system that brings its own interface up at boot is work not yet
+done, not a thing that broke.
+
+**labwc is started by hand for the reason given under "the session".** A
+compositor that fails during a package test would look like a broken system
+rather than a broken compositor, so it is kept out of `boot.d` and started
+explicitly.
+
+**There is no login.** The console service runs `getty -n`, which means no
+prompt, and `/etc/passwd` names an `/etc/shadow` that does not exist. That is
+defensible only because there is nothing listening on the network; see
+`AUTHENTICATION.md`, which records this as a condition rather than a state, and
+names the trigger — the day networking lands — that has now fired.
 
 ---
 
