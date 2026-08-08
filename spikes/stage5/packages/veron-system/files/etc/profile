@@ -27,3 +27,19 @@ export XDG_RUNTIME_DIR=/run/user/0
 # Stated rather than left to the spec default for the same reason PATH is:
 # a default that happens to be right is not a decision.
 export XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}
+
+# THE LOCALE, WITHOUT WHICH A TERMINAL IS ASCII-ONLY.
+#
+# glibc defaults to "C" when nothing is set, and C is not a UTF-8 locale. foot
+# says so in its own window -- "'C' is not a UTF-8 locale, and failed to find a
+# fallback" -- which is how this was noticed: the first working screenshot
+# showed a rendered desktop with an error banner in the terminal.
+#
+# C.UTF-8 is generated at build time by veron-system's locale step; glibc's
+# localedef and the C locale source are both in the stage-4 sysroot, so this
+# needed no new package.
+#
+# LANG RATHER THAN LC_ALL. LC_ALL is an override that a user cannot then
+# adjust per-category; LANG is the default that LC_* variables refine, which
+# is what a system-wide setting should be.
+export LANG=C.UTF-8

@@ -95,6 +95,57 @@ WHAT IS STILL MISSING FROM B5.5: the kernel is not in the image (the boot \
 test supplies it from stage 4), and there is no EFI stub. switch_root into \
 dinit works and is exercised on every run with boot_system."""
 
+[undeclarable]
+"program:localedef" = "Generates C.UTF-8 in the locale step. From glibc in the stage-4 sysroot; there is no locale package to depend on because glibc is not a stage-5 package."
+"program:gzip" = "Decompresses glibc's UTF-8.gz charmap before localedef reads it. busybox."
+
+[[steps]]
+name = "locale"
+cwd  = "$B"
+shell = """
+set -eu
+mkdir -p "$D/usr/lib/locale"
+# THE CHARMAP IS GZIPPED AND localedef IS GIVEN THE PLAIN ONE. glibc ships
+# /usr/share/i18n/charmaps/UTF-8.gz, and rather than depend on how this
+# localedef handles compression -- which differs between builds and is not
+# worth discovering in CI -- it is decompressed first and passed by path.
+gzip -dc /usr/share/i18n/charmaps/UTF-8.gz > UTF-8.charmap
+localedef --prefix="$D" --no-archive -f UTF-8.charmap -i C C.UTF-8
+rm -f UTF-8.charmap
+ls "$D/usr/lib/locale/C.utf8/LC_CTYPE" >/dev/null
+"""
+why = """
+THE IMAGE HAD NO LOCALES AT ALL, AND IT WAS VISIBLE IN THE FIRST WORKING
+SCREENSHOT. foot draws its own errors into its window, so the desktop rendered
+correctly and then showed:
+
+    'C' is not a UTF-8 locale, and failed to find a fallback
+
+foot tries C.UTF-8 and then en_US.UTF-8 (main.c:455) before giving up, and
+neither existed: there was no /usr/lib/locale directory in the image.
+
+WHY IT IS GENERATED RATHER THAN PINNED. localedef and the C locale source are
+both already in the stage-4 sysroot -- glibc puts them there -- so this needs
+no new artifact, no mirror upload and no version to track. The output is 428K
+for one locale.
+
+--no-archive GIVES A DIRECTORY, NOT locale-archive. The archive form is a
+single binary blob that a reader cannot inspect and that files.tsv records as
+one opaque entry; a directory records as the twelve LC_* files it is. For a
+system whose manifest is the point, the directory is the right shape.
+
+C.UTF-8 AND NOTHING ELSE. It is the locale glibc guarantees semantically --
+byte-order collation, ASCII semantics -- with UTF-8 encoding, which is exactly
+what a terminal needs and nothing more. Adding language locales is a decision
+about what the system claims to support, and belongs with the person who wants
+one.
+
+WHAT THIS DOES NOT FIX: xkbcommon also reports "No Compose file for locale",
+which comes from libX11's /usr/share/X11/locale tree. There is no X11 here, so
+dead-key composition stays unavailable. That is a separate absence and not a
+locale one.
+"""
+
 [[steps]]
 name = "install"
 cwd  = "$B"
@@ -109,9 +160,9 @@ cwd  = "$B"
 run  = [["sh", "-c", "mkdir -p \"$D\" && cp -a /packages/veron-system/files/. \"$D/\""]]
 
 [installs]
-prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts", "etc/xdg/labwc", "etc/xdg/yambar", "usr/share/veron"]
-files    = 26
-digest   = "f4c1faed4783023800063593f95445dcb29a57573a9fa7ca4be041d216f0f8d5"
+prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts", "etc/xdg/labwc", "etc/xdg/yambar", "usr/lib/locale", "usr/share/veron"]
+files    = 38
+digest   = "0060bb6dc0eb54f75f40895adc4dcfce4de5d75dfea9b1a4d10fc5f065ea02c1"
 [guest]
 test   = [["/bin/sh", "-c", "cat /etc/os-release | grep -c veron"]]
 expect = ["1"]

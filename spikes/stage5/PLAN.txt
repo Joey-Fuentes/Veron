@@ -715,7 +715,7 @@ package unifdef 2.12
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   ff89a2e8bb469e884fb6d8a21275a7cc43848c072f1e9f011027ebd0c87bc5a6
+  recipe-sha   ddec6e46c4a9ff408b87731c418d950ceb7e851ff944b20410432ba3c62e9076
 
   source
     url        this repository
@@ -730,7 +730,49 @@ package veron-system 0.1.0
     optional_off -
 
   commands (literal; this is exactly what runs)
-    [01] install
+    [01] locale
+         cwd  build/veron-system-0.1.0
+         SHELL (declared) why=THE IMAGE HAD NO LOCALES AT ALL, AND IT WAS VISIBLE IN THE FIRST WORKING
+SCREENSHOT. foot draws its own errors into its window, so the desktop rendered
+correctly and then showed:
+
+    'C' is not a UTF-8 locale, and failed to find a fallback
+
+foot tries C.UTF-8 and then en_US.UTF-8 (main.c:455) before giving up, and
+neither existed: there was no /usr/lib/locale directory in the image.
+
+WHY IT IS GENERATED RATHER THAN PINNED. localedef and the C locale source are
+both already in the stage-4 sysroot -- glibc puts them there -- so this needs
+no new artifact, no mirror upload and no version to track. The output is 428K
+for one locale.
+
+--no-archive GIVES A DIRECTORY, NOT locale-archive. The archive form is a
+single binary blob that a reader cannot inspect and that files.tsv records as
+one opaque entry; a directory records as the twelve LC_* files it is. For a
+system whose manifest is the point, the directory is the right shape.
+
+C.UTF-8 AND NOTHING ELSE. It is the locale glibc guarantees semantically --
+byte-order collation, ASCII semantics -- with UTF-8 encoding, which is exactly
+what a terminal needs and nothing more. Adding language locales is a decision
+about what the system claims to support, and belongs with the person who wants
+one.
+
+WHAT THIS DOES NOT FIX: xkbcommon also reports "No Compose file for locale",
+which comes from libX11's /usr/share/X11/locale tree. There is no X11 here, so
+dead-key composition stays unavailable. That is a separate absence and not a
+locale one.
+
+         | set -eu
+         | mkdir -p "dest/veron-system/usr/lib/locale"
+         | # THE CHARMAP IS GZIPPED AND localedef IS GIVEN THE PLAIN ONE. glibc ships
+         | # /usr/share/i18n/charmaps/UTF-8.gz, and rather than depend on how this
+         | # localedef handles compression -- which differs between builds and is not
+         | # worth discovering in CI -- it is decompressed first and passed by path.
+         | gzip -dc /usr/share/i18n/charmaps/UTF-8.gz > UTF-8.charmap
+         | localedef --prefix="dest/veron-system" --no-archive -f UTF-8.charmap -i C C.UTF-8
+         | rm -f UTF-8.charmap
+         | ls "dest/veron-system/usr/lib/locale/C.utf8/LC_CTYPE" >/dev/null
+    [02] install
          cwd  build/veron-system-0.1.0
          argv ["sh", "-c", "mkdir -p \"dest/veron-system\" && cp -a /packages/veron-system/files/. \"dest/veron-system/\""]
 
