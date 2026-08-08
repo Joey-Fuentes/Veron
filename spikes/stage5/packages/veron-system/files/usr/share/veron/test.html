@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<!--
+  The page the browser screenshot renders.
+
+  IT IS BUILT TO BE VERIFIABLE FROM A FRAMEBUFFER DUMP, not to look nice. A
+  screenshot proves nothing if a failed render and a successful one produce
+  similar pixel statistics, so every element here is chosen to be
+  distinguishable by counting rather than by looking:
+
+    A LARGE FLAT COLOUR FIELD of a value that appears nowhere else in the
+    desktop -- not the wallpaper gradient, not foot's (36,36,36), not the
+    bar's (26,26,27). If #1e6f50 is present in quantity, WPE painted.
+
+    WEB FONT TEXT AT A LARGE SIZE, which exercises fontconfig, freetype and
+    harfbuzz through WebKit rather than through labwc. Those are separately
+    asserted by the guest tests; this proves the browser's own text path.
+
+    A CSS GRADIENT AND A BORDER-RADIUS, which go through the compositing and
+    rasterisation path rather than a simple fill.
+
+  NO NETWORK, NO IMAGES, NO SCRIPT. The page must render identically with no
+  DNS, no route and no JIT, because the first run of this has none of them
+  guaranteed. Anything fetched would turn a render failure and a network
+  failure into the same black rectangle.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Veron</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: #1e6f50;
+    color: #ffffff;
+    font-family: sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  h1 { font-size: 64px; margin: 0 0 12px 0; letter-spacing: 2px; }
+  p  { font-size: 24px; margin: 0; opacity: 0.9; }
+  .bar {
+    margin-top: 28px;
+    width: 420px; height: 48px;
+    border-radius: 24px;
+    background: linear-gradient(90deg, #ffd166 0%, #ef476f 100%);
+  }
+</style>
+</head>
+<body>
+  <h1>VERON</h1>
+  <p>wpewebkit rendering a local page</p>
+  <div class="bar"></div>
+</body>
+</html>

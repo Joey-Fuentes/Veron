@@ -1177,6 +1177,32 @@ jobs:
             sleep 45
             printf '/usr/bin/foot &\n'
             sleep 20
+            # THE BROWSER, ON THE RUNNING DESKTOP, GUARDED SO THIS STEP STILL
+            # WORKS WHEN wpewebkit IS NOT BUILT.
+            #
+            # MiniBrowser IS A REAL WAYLAND CLIENT HERE, NOT HEADLESS.
+            # main.cpp:615 is
+            #   WPEDisplay* wpeDisplay = useHeadlessMode ? wpe_display_headless_new() : nullptr;
+            # and a null display makes WPEPlatform pick its default, which
+            # under a Wayland session is the Wayland backend. So it opens a
+            # toplevel on labwc and appears in the frame as a window -- which
+            # is the point. --headless renders into an offscreen buffer that
+            # screendump cannot see.
+            #
+            # WAYLAND_DISPLAY IS DETECTED, NOT ASSUMED. labwc calls
+            # wl_display_add_socket_auto (server.c:714): wayland-0 on a fresh
+            # boot, wayland-1 if something already holds it. Hardcoding the
+            # first would fail silently on the second.
+            #
+            # A BARE PATH IS ENOUGH -- main.cpp:696 runs the argument through
+            # g_file_new_for_commandline_arg, which makes it a file:// URL.
+            # With NO argument MiniBrowser loads https://wpewebkit.org, a
+            # network fetch this test must never make.
+            printf 'export XDG_RUNTIME_DIR=/run/user/0\n'
+            printf 'export WAYLAND_DISPLAY=$(ls /run/user/0 | grep -m1 wayland-)\n'
+            printf 'echo ---BROWSER--- display=$WAYLAND_DISPLAY\n'
+            printf '[ -x /usr/libexec/wpe-webkit-2.0/MiniBrowser ] && /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html 2>&1 | head -30 &\n'
+            sleep 45
             printf 'echo VERON-SHOT-READY\n'
             sleep 600 ) > "$O/console.in" &
           feeder=$!
