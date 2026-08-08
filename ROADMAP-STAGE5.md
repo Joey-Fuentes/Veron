@@ -180,6 +180,7 @@ wallpaper and a bar.
 | `swayidle` | idle timeouts via `ext-idle-notify`, which labwc supports |
 | `alsa-utils` | `alsamixer`/`amixer` — **alsa-lib is built and there is no volume control** |
 | `nano` | there is no editor but busybox `vi` |
+| **an XCursor theme** | **the guest draws no mouse pointer.** labwc says so — *"Could not create cursor theme for 'default'"* — and `wlroots/xcursor/xcursor.c:515` reads `XCURSOR_PATH`, then `XDG_DATA_HOME`, then a built-in directory, none of which contain a theme here. Data only, no dependency tail. Found by running the image by hand, not by CI, which never needed a pointer. |
 
 **Small, high-value tails:**
 

@@ -138,9 +138,15 @@ under qemu: `rootfs.img.tar.zst`, the kernel `Image`, `initramfs.cpio.gz`, and
 gh release download stage5/latest \
   --pattern 'rootfs.img.tar.zst' --pattern 'IMAGE-SHA256' \
   --pattern 'Image' --pattern 'initramfs.cpio.gz'
-sha256sum -c IMAGE-SHA256
 tar --zstd -xf rootfs.img.tar.zst
+sha256sum -c IMAGE-SHA256
 ```
+
+**Extract before verifying: `IMAGE-SHA256` digests the uncompressed
+`rootfs.img`**, not the tarball — the publish step runs
+`sha256sum rootfs.img | tee IMAGE-SHA256` before compressing. Checking it
+against `rootfs.img.tar.zst` would fail, and the failure would look like a
+corrupt download rather than a checked file being absent.
 
 You need `qemu-system-aarch64`. On an x86_64 host that is **full emulation**
 under TCG, not virtualisation, so everything below is slow — this proves the
@@ -151,15 +157,37 @@ qemu-system-aarch64 \
   -M virt -cpu cortex-a57 -smp 4 -m 4096 \
   -display gtk \
   -drive file=rootfs.img,format=raw,if=virtio \
-  -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci \
+  -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci \
   -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
   -kernel Image -initrd initramfs.cpio.gz \
   -append "console=ttyAMA0 rdinit=/init panic=1 loglevel=4 veron.boot=system"
 ```
 
-`-display gtk` gives a window where CI uses `-nographic`. `virtio-mouse-pci`
-is worth adding: CI never needed a pointer, so it is not in the boot lines
-elsewhere in this repo.
+`-display gtk` gives a window where CI uses `-nographic`. The pointer device is
+not in the boot lines elsewhere in this repo, because CI never needed one.
+
+**Use `virtio-tablet-pci`, not `virtio-mouse-pci`.** A mouse is a *relative*
+device: it reports deltas, so qemu must **grab** the host cursor to translate
+motion — and while grabbed your own cursor disappears, while the guest draws no
+cursor of its own (see below). The result is a pointer that appears frozen and
+invisible at once. A tablet is *absolute*: it reports coordinates, needs no
+grab, and the guest pointer tracks your host cursor exactly. If you do end up
+grabbed, **Ctrl-Alt-G** releases it.
+
+**The guest draws no cursor**, and will not until an XCursor theme is shipped.
+labwc reports it plainly:
+
+```
+Could not create cursor theme for 'default'
+Could not load cursor theme, disabling named cursors support
+```
+
+`wlroots/xcursor/xcursor.c:515` reads `XCURSOR_PATH`, then falls back to
+`XDG_DATA_HOME` and a built-in cursor directory; this image has no cursor theme
+in any of them. It is cosmetic — clicks land where the pointer actually is —
+and with an absolute tablet your own host cursor shows you where that is. A
+minimal XCursor theme is a data-only package with no dependency tail; it is on
+the list in `ROADMAP-STAGE5.md`.
 
 **Then, at the console, three things are started by hand.** None of them is an
 oversight; each is a decision recorded elsewhere in this file.
@@ -167,7 +195,36 @@ oversight; each is a decision recorded elsewhere in this file.
 ```sh
 dhcpcd eth0                                   # see below
 dinitctl start labwc                          # not in boot.d, deliberately
+/usr/bin/foot &                               # a terminal inside the session
 /usr/libexec/wpe-webkit-2.0/MiniBrowser https://example.com
+```
+
+**`dinitctl`, not `dinit`.** Typing the daemon instead of the control client
+gets you a second dinit that fails on the socket PID 1 already holds:
+
+```
+Could not determine cgroup root path
+Control socket is already active (another instance already running?)
+```
+
+The first line is benign on its own — dinit looks for a cgroup2 hierarchy and
+this system mounts none. To confirm a healthy boot: `cat /proc/1/comm` prints
+`dinit`, and `dinitctl list` shows `boot`, `console`, `early-filesystems`,
+`seatd` and `xdg-runtime`. `labwc` is absent from that list until started,
+which is the intent.
+
+**Give labwc 30–90 seconds.** CI allows a 45-second settle on native aarch64;
+under TCG emulation on an x86_64 host it is slower still, and `ninja`-style
+progress output does not exist — the window simply stays as the kernel
+framebuffer console (a blinking underscore) until the first frame paints. That
+blank screen is not a failure.
+
+If labwc exits instead, `dinitctl status labwc` gives the reason — but note
+that **dinit swallows service stderr**, so the way to see an actual error is to
+run the wrapper directly:
+
+```sh
+sh /etc/dinit.d/scripts/labwc-session
 ```
 
 **Networking works and is not automatic.** `-netdev user` is SLIRP: NAT through
