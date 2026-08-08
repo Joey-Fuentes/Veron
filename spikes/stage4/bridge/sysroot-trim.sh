@@ -101,6 +101,21 @@ UNSAFE=0
 # Runtime libraries are NOT scaffolding. If one resolves into the cross tree,
 # removing that tree kills every dynamically linked binary in the sysroot,
 # including the tools needed to work out why.
+# ABSENCE IS NOW A FINDING FOR THE THREE THAT MUST EXIST, AND IT DID NOT USED
+# TO BE. This loop asked whether what exists is SAFE and `continue`d on a
+# missing file -- so libatomic.so.1, which GCC had been configured NOT to
+# build, was named right here and never missed. wpewebkit found it instead,
+# 119 packages later, as
+#     CMake Error: Failed to detect support for atomic variables
+# libgomp stays advisory because --disable-libgomp is deliberate: OpenMP has
+# no consumer in this system. The other three are the runtime GCC emits calls
+# into, and a missing one is a build that will fail somewhere far from here.
+for lib in libgcc_s.so.1 libstdc++.so.6 libatomic.so.1; do
+    [ -e "$ROOT/usr/lib/$lib" ] || [ -L "$ROOT/usr/lib/$lib" ] || {
+        emit "    MISSING: usr/lib/$lib -- GCC did not build or install it"
+        UNSAFE=1
+    }
+done
 for lib in libgcc_s.so.1 libstdc++.so.6 libatomic.so.1 libgomp.so.1; do
     p="$ROOT/usr/lib/$lib"
     # -e follows symlinks, so a DANGLING link -- exactly the case worth

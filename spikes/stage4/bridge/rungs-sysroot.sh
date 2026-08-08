@@ -801,6 +801,39 @@ if [ "$B3" = ok ]; then
     # change: $VERON_TOOLCHAIN_TGT becomes aarch64-toolchain-linux-gnu, because a cross
     # compiler in /tools called aarch64-veron-linux-gnu-gcc reads as THE Veron
     # compiler and is precisely the one that is not.
+    # --enable-libatomic BECAUSE A BROWSER NEEDS IT AND NOTHING ELSE DID.
+    #
+    # This line read --disable-libatomic, alongside libgomp, libquadmath,
+    # libsanitizer, libssp and libvtv. For 119 stage-5 packages that was
+    # invisible: every one of them uses word-sized atomics, which aarch64
+    # does lock-free inline with no library at all.
+    #
+    # wpewebkit is the first thing to need SIXTEEN-BYTE atomics.
+    # Source/bmalloc/libpas/src/libpas/pas_utils.h declares
+    # `typedef __uint128_t pas_pair` and compare-and-swaps it, and on ARMv8.0
+    # without LSE those lower to __atomic_*_16 calls that exist ONLY in
+    # libatomic. Its configure said so outright:
+    #
+    #     Performing Test ATOMICS_ARE_BUILTIN - Failed
+    #     Performing Test ATOMICS_REQUIRE_LIBATOMIC - Failed
+    #     CMake Error: Failed to detect support for atomic variables
+    #
+    # The SECOND failure is the one that matters: the first is normal on
+    # aarch64, which is why upstream wrote a -latomic fallback. The fallback
+    # failed because there was no such library. libgcc_s.so.1 and
+    # libstdc++.so.6 were both here; the third of GCC's runtime libraries
+    # was not.
+    #
+    # RAISING -march WOULD NOT HAVE BEEN A FIX. LSE (ARMv8.1) and LSE2
+    # (ARMv8.4) change libatomic's INTERNAL implementation, chosen by ifunc
+    # at runtime -- GCC still emits the library call, so that one process has
+    # one ABI. And the test machine is -cpu cortex-a57, ARMv8.0: a binary
+    # built for 8.1 would take an illegal instruction in our own VM.
+    #
+    # NOTHING WAS WATCHING FOR THIS. sysroot-trim.sh:104 already names
+    # libatomic.so.1 among the runtime libraries it checks, but it
+    # `continue`s when the file is absent -- it asks whether what exists is
+    # safe, not whether what should exist does.
     elif "$_d/configure" --prefix=/usr LD=ld \
            --build=aarch64-veron-linux-gnu \
            --host=aarch64-veron-linux-gnu \
@@ -808,7 +841,7 @@ if [ "$B3" = ok ]; then
            --disable-multilib --disable-bootstrap \
          --disable-fixincludes --enable-default-pie \
          --enable-default-ssp --disable-nls --enable-languages=c,c++ \
-         --disable-libatomic --disable-libgomp --disable-libquadmath \
+         --enable-libatomic --disable-libgomp --disable-libquadmath \
          --disable-libsanitizer --disable-libssp --disable-libvtv \
          > c.log 2>&1 \
        && timeout 14400 make -j"$NP" > b.log 2>&1 \
@@ -898,7 +931,7 @@ if [ "$B3" = ok ]; then
         if "$_d/configure" --prefix=/usr LD=ld --disable-multilib --disable-bootstrap \
              --disable-fixincludes --enable-default-pie \
              --enable-default-ssp --disable-nls --enable-languages=c,c++ \
-             --disable-libatomic --disable-libgomp --disable-libquadmath \
+             --enable-libatomic --disable-libgomp --disable-libquadmath \
              --disable-libsanitizer --disable-libssp --disable-libvtv \
              > c2.log 2>&1 \
            && timeout 14400 make -j"$NP" > b2.log 2>&1; then
@@ -1144,6 +1177,25 @@ if [ "$B5" = ok ]; then
     # Without OVERLAY_FS the only alternative is a read-write root, which
     # gives up that property.
     set_cfg OVERLAY_FS y
+    # USER_NS AND SECCOMP ARE FOR THE BROWSER SANDBOX, NOT FOR THE KERNEL'S
+    # OWN SAKE. wpewebkit is built with ENABLE_BUBBLEWRAP_SANDBOX=ON, which
+    # puts WPEWebProcess and WPENetworkProcess inside a bwrap container:
+    # bwrap needs an unprivileged USER NAMESPACE to drop privileges without
+    # being root, and libseccomp needs SECCOMP to install the syscall filter
+    # that is the confinement itself.
+    #
+    # arm64 defconfig may already supply both -- this asks for them rather
+    # than assuming, which costs nothing and removes the question. stage 5's
+    # guest/init prints VERON-USERNS-OK / VERON-SECCOMP-OK on every boot so
+    # the answer is visible rather than inferred.
+    #
+    # A SANDBOX THAT SILENTLY DOES NOT ENGAGE IS WORSE THAN NO SANDBOX: the
+    # browser still runs, every page still loads, and nothing says the
+    # confinement a compromised renderer would have to escape is absent.
+    set_cfg MULTIUSER y
+    set_cfg NAMESPACES y
+    set_cfg USER_NS y
+    set_cfg SECCOMP y
     # EFI, SO THE IMAGE CAN BOOT ITSELF. Today qemu is handed -kernel and
     # -initrd, which means the image is not bootable on its own and never
     # will be on real hardware. CONFIG_EFI brings the arm64 stub, and
@@ -1194,9 +1246,16 @@ if [ "$B5" = ok ]; then
     # Fatal, unlike the 9p symbols below: a missing 9p costs one skipped
     # in-guest test, a missing DRM costs a compositor that builds green and
     # opens nothing.
+    #
+    # USER_NS AND SECCOMP ARE IN THIS LIST FOR THE SAME REASON AS THE REST,
+    # AND ONE MORE: USER_NS sits under `menuconfig NAMESPACES` and depends on
+    # MULTIUSER, so olddefconfig will DROP a requested CONFIG_USER_NS=y
+    # outright if either is off -- leaving no error and no symbol. Asserting
+    # =y afterwards is the only thing that tells a granted request from a
+    # silently discarded one.
     for _sym in DRM DRM_VIRTIO_GPU DRM_FBDEV_EMULATION INPUT_EVDEV \
                 VIRTIO_INPUT OVERLAY_FS EFI EFI_STUB EFI_PARTITION \
-                EFIVAR_FS VIRTIO_NET PACKET; do
+                EFIVAR_FS VIRTIO_NET PACKET USER_NS SECCOMP; do
       grep -q "^CONFIG_$_sym=y" .config || {
         say "    CONFIG_$_sym is not built in (=y)"; _bad=1; }
     done
