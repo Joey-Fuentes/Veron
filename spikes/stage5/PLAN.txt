@@ -132,7 +132,11 @@ between this file and the recipes fails the run.
   110. pango
   111. swaybg
   112. yambar
-  113. labwc
+  113. gst-plugins-base
+  114. labwc
+  115. gst-libav
+  116. gst-plugins-bad
+  117. gst-plugins-good
 
 ======================================================================
 package bzip2 1.0.8
@@ -3947,6 +3951,40 @@ package yambar 1.11.0
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package gst-plugins-base 1.28.1
+  group        media
+  license      LGPL-2.1-or-later
+  recipe-sha   2a5b21f53a93361cd669d8435e46a37320f844af4bad9ed31f240a74dd137e78
+
+  source
+    url        https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.28.1.tar.xz
+    sha256     1446a4c2a92ff5d78d88e85a599f0038441d53333236f0c72d72f21a9c132497
+    signature  none -- gstreamer.freedesktop.org publishes no detached signature
+    correspond none
+
+  deps
+    build        alsa-lib, cairo, glib, gstreamer, libogg, libvorbis, meson, ninja, opus, orc, pango, pkgconf
+    link         alsa-lib, glib, gstreamer, libogg, libvorbis, opus, orc
+    runtime      alsa-lib, glib, gstreamer, libogg, libvorbis, opus, orc
+    optional_off cdparanoia, doc, examples, gl, introspection, iso-codes, libvisual, nls, pango, tests, theora, tremor, x11, xi, xshm, xvideo
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gst-plugins-base-1.28.1
+         argv ["tar", "-xf", "dl/gst-plugins-base-1.28.1.tar.xz", "-C", "build/gst-plugins-base-1.28.1"]
+    [02] setup
+         cwd  build/gst-plugins-base-1.28.1/gst-plugins-base-1.28.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dauto_features=disabled", "-Dorc=enabled", "-Dapp=enabled", "-Daudioconvert=enabled", "-Daudioresample=enabled", "-Dplayback=enabled", "-Dtypefind=enabled", "-Dvideoconvertscale=enabled", "-Dvolume=enabled", "-Dogg=enabled", "-Dopus=enabled", "-Dvorbis=enabled", "-Dalsa=enabled", "-Dx11=disabled", "-Dgl=disabled", "-Dpango=disabled", "-Dintrospection=disabled", "-Dnls=disabled", "-Dexamples=disabled", "-Dtests=disabled", "-Ddoc=disabled"]
+    [03] build
+         cwd  build/gst-plugins-base-1.28.1/gst-plugins-base-1.28.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/gst-plugins-base-1.28.1/gst-plugins-base-1.28.1
+         env  DESTDIR=dest/gst-plugins-base
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package labwc 0.9.1
   group        desktop
   license      GPL-2.0-only
@@ -3978,5 +4016,107 @@ package labwc 0.9.1
     [04] install
          cwd  build/labwc-0.9.1/labwc-0.9.1
          env  DESTDIR=dest/labwc
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package gst-libav 1.28.1
+  group        media
+  license      LGPL-2.1-or-later
+  recipe-sha   695764c3ceec76377e717f1ff3fdf0e3521c89f4cfc05d77fbe68a0ceb4d490e
+
+  source
+    url        https://gstreamer.freedesktop.org/src/gst-libav/gst-libav-1.28.1.tar.xz
+    sha256     bfa91aaca38d0fd8addcdd559e35b7541e3f32a5f410194ec4ba18040defee9b
+    signature  none -- gstreamer.freedesktop.org publishes no detached signature
+    correspond none
+
+  deps
+    build        ffmpeg, glib, gst-plugins-base, gstreamer, meson, ninja, pkgconf
+    link         ffmpeg, glib, gst-plugins-base, gstreamer
+    runtime      ffmpeg, glib, gst-plugins-base, gstreamer
+    optional_off doc, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gst-libav-1.28.1
+         argv ["tar", "-xf", "dl/gst-libav-1.28.1.tar.xz", "-C", "build/gst-libav-1.28.1"]
+    [02] setup
+         cwd  build/gst-libav-1.28.1/gst-libav-1.28.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dtests=disabled", "-Ddoc=disabled"]
+    [03] build
+         cwd  build/gst-libav-1.28.1/gst-libav-1.28.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/gst-libav-1.28.1/gst-libav-1.28.1
+         env  DESTDIR=dest/gst-libav
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package gst-plugins-bad 1.28.1
+  group        media
+  license      LGPL-2.1-or-later
+  recipe-sha   df23c08eb2027ec38cb5fbec038edff8d74052b1e5e5b249fdf6952c458dae5b
+
+  source
+    url        https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.1.tar.xz
+    sha256     56c1593787f8b5550893d59e4ff29e6bcccf34973316fa55e34ce493e04313a2
+    signature  none -- gstreamer.freedesktop.org publishes no detached signature
+    correspond none
+
+  deps
+    build        glib, gst-plugins-base, gstreamer, meson, ninja, orc, pkgconf
+    link         glib, gst-plugins-base, gstreamer, orc
+    runtime      glib, gst-plugins-base, gstreamer, orc
+    optional_off doc, examples, gpl, introspection, nls, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gst-plugins-bad-1.28.1
+         argv ["tar", "-xf", "dl/gst-plugins-bad-1.28.1.tar.xz", "-C", "build/gst-plugins-bad-1.28.1"]
+    [02] setup
+         cwd  build/gst-plugins-bad-1.28.1/gst-plugins-bad-1.28.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dauto_features=disabled", "-Dvideoparsers=enabled", "-Dintrospection=disabled", "-Dnls=disabled", "-Dexamples=disabled", "-Dtests=disabled", "-Ddoc=disabled", "-Dgpl=disabled"]
+    [03] build
+         cwd  build/gst-plugins-bad-1.28.1/gst-plugins-bad-1.28.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/gst-plugins-bad-1.28.1/gst-plugins-bad-1.28.1
+         env  DESTDIR=dest/gst-plugins-bad
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package gst-plugins-good 1.28.1
+  group        media
+  license      LGPL-2.1-or-later
+  recipe-sha   78cd938deb0556e5f94d37f21df137a374f5cfaf84b10d41c4be3733bee76e96
+
+  source
+    url        https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.1.tar.xz
+    sha256     738e26aee41b7a62050e40b81adc017a110a7f32d1ec49fa6a0300846c44368d
+    signature  none -- gstreamer.freedesktop.org publishes no detached signature
+    correspond none
+
+  deps
+    build        glib, gst-plugins-base, gstreamer, libvpx, meson, ninja, orc, pkgconf
+    link         glib, gst-plugins-base, gstreamer, libvpx, orc
+    runtime      glib, gst-plugins-base, gstreamer, libvpx, orc
+    optional_off doc, examples, gtk3, jack, nls, pulse, qt5, soup, tests, v4l2, ximagesrc
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gst-plugins-good-1.28.1
+         argv ["tar", "-xf", "dl/gst-plugins-good-1.28.1.tar.xz", "-C", "build/gst-plugins-good-1.28.1"]
+    [02] setup
+         cwd  build/gst-plugins-good-1.28.1/gst-plugins-good-1.28.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dauto_features=disabled", "-Disomp4=enabled", "-Dmatroska=enabled", "-Daudioparsers=enabled", "-Dautodetect=enabled", "-Dvideofilter=enabled", "-Dwavparse=enabled", "-Ddeinterlace=enabled", "-Dvpx=enabled", "-Dsoup=disabled", "-Dnls=disabled", "-Dexamples=disabled", "-Dtests=disabled", "-Ddoc=disabled"]
+    [03] build
+         cwd  build/gst-plugins-good-1.28.1/gst-plugins-good-1.28.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/gst-plugins-good-1.28.1/gst-plugins-good-1.28.1
+         env  DESTDIR=dest/gst-plugins-good
          argv ["ninja", "-C", "_b", "install"]
 
