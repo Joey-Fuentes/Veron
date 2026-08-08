@@ -205,10 +205,42 @@ if [ "$NETROLE" = client ] && [ -n "$NIC" ]; then
     # -1 exits after one lease, -t bounds the wait, and the marker is emitted
     # from the ADDRESS THAT ARRIVED rather than from dhcpcd's exit status --
     # "it exited 0" and "the interface has an address" are different claims.
-    if [ -x /usr/sbin/dhcpcd ]; then
-        /usr/sbin/dhcpcd -1 -t 30 "$NIC" 2>&1 | sed 's/^/    dhcpcd: /'
+    #
+    # AND IT LIVES IN THE IMAGE, NOT IN THE INITRAMFS, WHICH IS WHERE THIS
+    # LOOKED FOR EVERY RUN SO FAR. This branch executes before switch_root, so
+    # a bare `/usr/sbin/dhcpcd` resolves against the initramfs -- and
+    # mkinitramfs.py packs exactly two things, busybox and this script. The
+    # test reported
+    #
+    #     VERON-NET-FAIL  no /usr/sbin/dhcpcd in the image
+    #
+    # which was true of the initramfs and false of the image, and read as a
+    # missing package. dhcpcd has been built and pinned throughout;
+    # packages/dhcpcd/installs.txt lists usr/sbin/dhcpcd.
+    #
+    # chroot "$ROOT" IS HOW THIS FILE ALREADY RUNS IMAGE BINARIES. $ROOT is
+    # mounted at line 37, long before here, and veron-stage5-test is invoked
+    # the same way at the bottom. Running "$ROOT/usr/sbin/dhcpcd" directly
+    # would not work: it is dynamically linked and would look for its loader
+    # and libraries in the initramfs.
+    #
+    # THE INTERFACE IS THE KERNEL'S, NOT THE ROOT'S. chroot changes the
+    # filesystem view and nothing else, so dhcpcd configures the same eth0
+    # this script sees and the `ip` check below still observes the result.
+    if [ -x "$ROOT/usr/sbin/dhcpcd" ]; then
+        # dhcpcd NEEDS THESE MOUNTS INSIDE THE ROOT. /proc and /sys for
+        # interface state, /run for its control socket and pid file, /dev for
+        # the raw packet socket. The harness mounts the same set further down
+        # for the same reason.
+        mkdir -p "$ROOT/var/db/dhcpcd" 2>/dev/null
+        mount -t proc  none "$ROOT/proc" 2>/dev/null
+        mount -t sysfs none "$ROOT/sys"  2>/dev/null
+        mount -t tmpfs none "$ROOT/run"  2>/dev/null
+        mount --bind /dev "$ROOT/dev"    2>/dev/null
+        chroot "$ROOT" /usr/sbin/dhcpcd -1 -t 30 "$NIC" 2>&1 \
+            | sed 's/^/    dhcpcd: /'
     else
-        echo "VERON-NET-FAIL  no /usr/sbin/dhcpcd in the image"
+        echo "VERON-NET-FAIL  no /usr/sbin/dhcpcd under $ROOT (image not mounted?)"
     fi
     addr=$(ip -o -4 addr show dev "$NIC" 2>/dev/null | sed -n 's/.* inet \([0-9.]*\)\/.*/\1/p')
     case "$addr" in
