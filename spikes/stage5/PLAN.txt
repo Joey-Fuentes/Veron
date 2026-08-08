@@ -139,7 +139,6 @@ between this file and the recipes fails the run.
   117. gst-libav
   118. gst-plugins-bad
   119. gst-plugins-good
-  120. wpewebkit
 
 ======================================================================
 package bzip2 1.0.8
@@ -4186,38 +4185,5 @@ package gst-plugins-good 1.28.1
     [04] install
          cwd  build/gst-plugins-good-1.28.1/gst-plugins-good-1.28.1
          env  DESTDIR=dest/gst-plugins-good
-         argv ["ninja", "-C", "_b", "install"]
-
-======================================================================
-package wpewebkit 2.52.5
-  group        browser
-  license      LGPL-2.1-or-later AND BSD-2-Clause
-  recipe-sha   35345a0992643edd874ea0bbd5413e8f9de7f0a3a603fac3f54b9be4c2441294
-
-  source
-    url        https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz
-    sha256     bcfc6c91db7659dcf24f6ff79ad27ac1eae1bc61dca0dbfee154706926740b3b
-    signature  none -- wpewebkit.org publishes .asc signatures; not yet pinned here
-    correspond none
-
-  deps
-    build        bubblewrap, cairo, cmake, fontconfig, freetype, glib, gperf, gst-plugins-base, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libseccomp, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, ninja, pkgconf, python, ruby, sqlite, unifdef, wayland, wayland-protocols, zlib
-    link         cairo, fontconfig, freetype, glib, gst-plugins-base, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libseccomp, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, sqlite, wayland, zlib
-    runtime      bubblewrap, cairo, fontconfig, freetype, glib, glib-networking, gst-libav, gst-plugins-bad, gst-plugins-base, gst-plugins-good, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libseccomp, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, sqlite, wayland, zlib
-    optional_off atk, avif, documentation, encrypted-media, gamepad, gstreamer-gl, introspection, journald-log, jpegxl, libbacktrace, media-stream, pdfjs, speech-synthesis, sysprof-capture, webdriver, woff2
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/wpewebkit-2.52.5
-         argv ["tar", "-xf", "dl/wpewebkit-2.52.5.tar.xz", "-C", "build/wpewebkit-2.52.5"]
-    [02] configure
-         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DPORT=WPE", "-DENABLE_JOURNALD_LOG=OFF", "-DENABLE_INTROSPECTION=OFF", "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_GAMEPAD=OFF", "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_WEBDRIVER=OFF", "-DENABLE_MEDIA_STREAM=OFF", "-DENABLE_BUBBLEWRAP_SANDBOX=ON", "-DUSE_LIBHYPHEN=ON", "-DENABLE_PDFJS=OFF", "-DUSE_SYSTEM_MALLOC=ON", "-DENABLE_XSLT=OFF", "-DENABLE_WPE_PLATFORM=ON", "-DENABLE_WPE_LEGACY_API=OFF", "-DENABLE_WPE_PLATFORM_DRM=ON", "-DENABLE_WPE_PLATFORM_WAYLAND=ON", "-DENABLE_WPE_PLATFORM_HEADLESS=ON", "-DUSE_WOFF2=OFF", "-DUSE_LIBBACKTRACE=OFF", "-DUSE_SYSPROF_CAPTURE=OFF", "-DENABLE_MINIBROWSER=ON", "-DCMAKE_SKIP_INSTALL_RPATH=ON", "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy", "-DUSE_ATK=OFF", "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF", "-DUSE_GSTREAMER_GL=OFF"]
-    [03] build
-         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         argv ["ninja", "-C", "_b"]
-    [04] install
-         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         env  DESTDIR=dest/wpewebkit
          argv ["ninja", "-C", "_b", "install"]
 
