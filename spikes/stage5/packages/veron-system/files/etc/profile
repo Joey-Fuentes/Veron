@@ -43,3 +43,15 @@ export XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}
 # adjust per-category; LANG is the default that LC_* variables refine, which
 # is what a system-wide setting should be.
 export LANG=C.UTF-8
+
+# NO GPU, SO SKIA PAINTS ON THE CPU. SkiaPaintingEngine.cpp:55: "If
+# WEBKIT_SKIA_ENABLE_CPU_RENDERING is unset, we will allocate a GPU-ONLY
+# worker pool". mesa here is llvmpipe, so that pool reaches the same CPU by a
+# longer route.
+#
+# IT IS SET IN TWO PLACES ON PURPOSE. labwc-session sets it for everything the
+# compositor autostarts; this sets it for anything launched from a LOGIN
+# SHELL, which is how the screenshot test starts MiniBrowser and how a user
+# would start it by hand. dinit does not source /etc/profile, so neither
+# location covers the other.
+export WEBKIT_SKIA_ENABLE_CPU_RENDERING=1
