@@ -425,6 +425,36 @@ mount -t devtmpfs none "$ROOT/dev" 2>/dev/null \
 # The point is to know the answer BEFORE six recipes are written against it --
 # the same mistake as -Dbackends=auto, one layer down: a compositor that builds
 # green and finds no device.
+echo "=== VERON-SANDBOX-PROBE: what this kernel gives a browser sandbox ==="
+# WHAT wpewebkit's BUBBLEWRAP SANDBOX NEEDS FROM THE KERNEL, ASKED RATHER THAN
+# ASSUMED. ENABLE_BUBBLEWRAP_SANDBOX=ON puts WPEWebProcess and
+# WPENetworkProcess inside a bwrap container: a user namespace to drop
+# privileges without being root, and seccomp to install the syscall filter
+# libseccomp builds. Neither is set by stage 4's kernel config -- it sets
+# DEVTMPFS, DRM, VIRTIO_GPU, EVDEV, 9P and OVERLAY_FS and nothing about
+# namespaces -- so whether arm64 defconfig happens to supply them is unknown.
+#
+# A SANDBOX THAT SILENTLY DOES NOT ENGAGE IS WORSE THAN NO SANDBOX, because
+# the browser still runs and nothing says the confinement is absent. This
+# prints the answer on every boot.
+if [ -e /proc/self/uid_map ]; then
+    echo "  VERON-USERNS-OK     /proc/self/uid_map present"
+    _m=$(cat /proc/sys/user/max_user_namespaces 2>/dev/null)
+    echo "                      max_user_namespaces=${_m:-unset}"
+else
+    echo "  VERON-USERNS-ABSENT no /proc/self/uid_map -- CONFIG_USER_NS is off."
+    echo "                      bwrap cannot create a container, so wpewebkit's"
+    echo "                      sandbox will fail to start its web process."
+    echo "                      Fix is set_cfg USER_NS y in stage 4."
+fi
+if grep -qa "^Seccomp:" /proc/self/status 2>/dev/null; then
+    echo "  VERON-SECCOMP-OK    /proc/self/status reports Seccomp"
+else
+    echo "  VERON-SECCOMP-ABSENT  no Seccomp field -- CONFIG_SECCOMP is off, so"
+    echo "                      the libseccomp filter has nothing to install."
+    echo "                      Fix is set_cfg SECCOMP y in stage 4."
+fi
+
 echo "=== VERON-GRAPHICS-PROBE: what this kernel gives a compositor ==="
 if [ -e /dev/dri/card0 ]; then
     echo "  VERON-DRM-OK        /dev/dri/card0 present"

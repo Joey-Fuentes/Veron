@@ -33,7 +33,7 @@ runtime      = ["glib", "harfbuzz", "icu", "libjpeg-turbo", "libepoxy",
                 "wayland", "mesa", "bubblewrap", "glib-networking", "libseccomp"]
 # FOUR OF THESE ARE ON BY DEFAULT AND EACH IS A FATAL_ERROR WITHOUT A LIBRARY
 # THIS SET DOES NOT HAVE. See the deferral.
-optional_off = ["woff2", "libbacktrace", "sysprof-capture", "journald-log", "introspection", "documentation", "gamepad",
+optional_off = ["atk", "avif", "jpegxl", "gstreamer-gl", "woff2", "libbacktrace", "sysprof-capture", "journald-log", "introspection", "documentation", "gamepad",
                 "speech-synthesis", "webdriver", "media-stream",
                 "encrypted-media", "pdfjs"]
 
@@ -55,7 +55,11 @@ configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", 
                    "-DUSE_SYSPROF_CAPTURE=OFF",
                    "-DENABLE_MINIBROWSER=ON",
                    "-DCMAKE_SKIP_INSTALL_RPATH=ON",
-                   "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy"]
+                   "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy",
+                   "-DUSE_ATK=OFF",
+                   "-DUSE_AVIF=OFF",
+                   "-DUSE_JPEGXL=OFF",
+                   "-DUSE_GSTREAMER_GL=OFF"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["wpewebkit"]
 deferral        = """
@@ -261,7 +265,11 @@ run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
                    "-DUSE_SYSPROF_CAPTURE=OFF",
                    "-DENABLE_MINIBROWSER=ON",
                    "-DCMAKE_SKIP_INSTALL_RPATH=ON",
-                   "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy"]]
+                   "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy",
+                   "-DUSE_ATK=OFF",
+                   "-DUSE_AVIF=OFF",
+                   "-DUSE_JPEGXL=OFF",
+                   "-DUSE_GSTREAMER_GL=OFF"]]
 
 [[steps]]
 name = "build"
