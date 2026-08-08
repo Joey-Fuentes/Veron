@@ -237,6 +237,11 @@ STAGE5.md and neither is changed by this recipe."""
 "pkg:LibSpiel" = "OptionsWPE.cmake:229 -- required by ENABLE_SPEECH_SYNTHESIS, which defaults ON. Not in this set."
 "pkg:Manette" = "OptionsWPE.cmake:336 -- required by ENABLE_GAMEPAD, which defaults ON. Not in this set."
 
+[installs]
+prefixes = ["usr/include/wpe-webkit-2.0", "usr/lib", "usr/lib/pkgconfig", "usr/lib/wpe-webkit-2.0", "usr/libexec/wpe-webkit-2.0", "usr/share/wpe-webkit-2.0"]
+files    = 153
+digest   = "d3791ab4e3e63a79fa28aefd5ba948cfcf86a009b118e58c6ba13626c9ea2202"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"
@@ -352,6 +357,16 @@ env  = { DESTDIR = "$D" }
 # still links, the .pc still resolves, and the first page load fails at
 # runtime with nothing to attribute it to.
 #
+# `|| true` BECAUSE grep -c EXITS 1 WHEN THE COUNT IS ZERO. The first run of
+# this test reported
+#
+#     FAIL  wpewebkit: ldd ... | grep -c 'not found' did not run
+#
+# on a build where the answer was CORRECT: grep printed 0, and exited 1
+# because it matched nothing. The harness reads the exit status, so a passing
+# condition was reported as a failure. The expectation "0" was right and the
+# pipeline's status was the wrong thing to gate on.
+#
 # ldd IS USED RATHER THAN --version BECAUSE THESE BINARIES TAKE NO ARGUMENTS
 # WORTH RUNNING. A helper process launched by hand does nothing useful and may
 # block; `ldd` answers the question that matters -- does the loader resolve
@@ -364,7 +379,7 @@ test   = [["/usr/bin/pkgconf", "--modversion", "wpe-webkit-2.0"],
           ["/bin/sh", "-c",
            "test -x /usr/libexec/wpe-webkit-2.0/WPENetworkProcess && echo networkprocess-present"],
           ["/bin/sh", "-c",
-           "ldd /usr/libexec/wpe-webkit-2.0/WPEWebProcess 2>&1 | grep -c 'not found'"],
+           "ldd /usr/libexec/wpe-webkit-2.0/WPEWebProcess 2>&1 | grep -c 'not found' || true"],
           ["/bin/sh", "-c",
            "test -x /usr/libexec/wpe-webkit-2.0/MiniBrowser && echo minibrowser-present"]]
 expect = ["2.52.5", "testpage-present", "webprocess-present", "networkprocess-present", "0",
