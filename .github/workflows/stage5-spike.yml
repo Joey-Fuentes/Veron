@@ -270,6 +270,30 @@ jobs:
                --dir . 2>/dev/null; then
             tar --zstd -xf dest.tar.zst && rm -f dest.tar.zst
             python3 -c 'import json;m=json.load(open("dest/.veron-checkpoint"));print("  downloaded a checkpoint holding",len(m["keys"]),"package(s)")'
+            # A CHECKPOINT FROM A DIFFERENT SYSROOT IS DISCARDED HERE RATHER
+            # THAN REFUSED LATER. veron build --resume die()s when the marker's
+            # base does not match --base, which is correct as a guard and
+            # wrong as an outcome: a new sysroot means every package is stale,
+            # and the useful answer is to rebuild them, not to stop.
+            #
+            # THIS COST A FULL RUN. stage 4 republished the sysroot with
+            # libatomic, stage 5 downloaded the checkpoint built against the
+            # OLD one, and the build refused before compiling anything:
+            #
+            #     veron: checkpoint was built against a different sysroot.
+            #       marker  fa1c677e...   this run  813ff8a8...
+            #     Refusing to build on top of it.
+            #
+            # The guard stays where it is -- it is the last line of defence
+            # against reusing artifacts compiled against another libc. This
+            # simply stops handing it something it must reject.
+            _want='${{ steps.sysroot.outputs.sysroot_sha }}'
+            _m=$(python3 -c 'import json;print(json.load(open("dest/.veron-checkpoint")).get("base",""))' 2>/dev/null || echo "")
+            if [ "$_m" != "$_want" ]; then
+              echo "  checkpoint base $(echo "$_m" | cut -c1-12) != sysroot $(echo "$_want" | cut -c1-12)"
+              echo "  discarding it: every package is stale on a new sysroot"
+              rm -rf dest && mkdir -p dest
+            fi
           else
             echo "  no checkpoint published yet -- building everything"
           fi
