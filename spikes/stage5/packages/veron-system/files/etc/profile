@@ -55,3 +55,14 @@ export LANG=C.UTF-8
 # would start it by hand. dinit does not source /etc/profile, so neither
 # location covers the other.
 export WEBKIT_SKIA_ENABLE_CPU_RENDERING=1
+# AND THE VARIABLE THAT ACTUALLY REMOVES THE GPU BUFFER PATH.
+# WPEDisplay.cpp:632 reads LIBGL_ALWAYS_SOFTWARE and makes
+# wpe_display_get_drm_device() return nullptr, which makes
+# WebProcessPoolGLib.cpp:200 skip RendererBufferTransportMode::Hardware and
+# leaves only SharedMemory -- so the web process presents through wl_shm and
+# never asks Mesa for a GBM buffer it cannot allocate.
+#
+# Set here as well as in labwc-session because dinit does not source this
+# file: labwc-session covers what the compositor autostarts, this covers a
+# login shell, and neither covers the other.
+export LIBGL_ALWAYS_SOFTWARE=1

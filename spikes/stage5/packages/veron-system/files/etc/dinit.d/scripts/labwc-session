@@ -64,6 +64,40 @@ export WLR_RENDERER=pixman
 # machine with no GPU, and because leaving the browser to discover that at
 # runtime is the same class of omission as letting ninja pick its own -j.
 export WEBKIT_SKIA_ENABLE_CPU_RENDERING=1
+# LIBGL_ALWAYS_SOFTWARE=1 IS THE ONE THAT ACTUALLY STOPS THE GBM ALLOCATION,
+# AND IT IS WPE'S OWN SWITCH RATHER THAN A MESA SIDE EFFECT.
+#
+# WPEDisplay.cpp:632 defines isSotfwareRast() -- upstream's typo -- which reads
+# LIBGL_ALWAYS_SOFTWARE and accepts 1/y/yes/t/true. wpe_display_get_drm_device
+# opens with:
+#
+#     if (isSotfwareRast())
+#         return nullptr;
+#
+# and that nullptr is the whole mechanism. WebProcessPoolGLib.cpp:200 is
+#
+#     if (!parameters.drmDevice.isNull())
+#         parameters.rendererBufferTransportMode.add(...Hardware);
+#     ...
+#     parameters.rendererBufferTransportMode.add(...SharedMemory);
+#
+# so a null device means Hardware is never added, SharedMemory is added
+# unconditionally, and WebProcessGLib.cpp:153 never builds a GBM display.
+#
+# WHY THE EARLIER GUESS WAS WRONG. Hardware is NOT chosen because the
+# compositor advertises zwp_linux_dmabuf_v1 -- it is chosen because
+# drmMainDevice() returned something. DRMMainDevice.cpp:195 takes an EARLY
+# RETURN under WPEPlatform, straight from wpe_display_get_drm_device(), so
+# WEBKIT_WEB_RENDER_DEVICE_FILE below it is unreachable here too. Setting
+# WLR_RENDERER=pixman changed labwc's renderer -- visible as new
+# "libEGL: failed to create dri2 screen" lines -- and did not change the web
+# process's device at all, which is why the CREATE_DUMB errors survived it.
+#
+# THE COMMENT IN DRMMainDevice.cpp:214 SAYS THIS IS EXPECTED: "If we can get
+# the render node from EGL we should use that even if it's nullptr (WHICH IS
+# THE CASE WITH SOFTWARE RASTERIZATION)". Software rasterisation having no DRM
+# device is the designed state; this variable is how you declare it.
+export LIBGL_ALWAYS_SOFTWARE=1
 # LANG IS SET HERE TOO BECAUSE dinit DOES NOT SOURCE /etc/profile. A service
 # started at boot gets PID 1's environment, so the export in /etc/profile
 # reaches a login shell and nothing else -- and everything labwc autostarts
