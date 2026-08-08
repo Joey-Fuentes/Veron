@@ -295,20 +295,39 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
-
-      # COMMIT THE TABLE. IT IS THE POINT OF THE JOB.
+      # THE TABLE IS COMMITTED FROM A CLEAN INDEX AND PUSHED WITHOUT A REBASE.
       #
-      # Until now this wrote sources/MIRRORS.tsv into the runner's workspace,
-      # uploaded it as an artifact, and threw the workspace away -- so the
-      # asset existed on Releases and NOTHING POINTED AT IT. Closing the loop
-      # meant a human downloading a zip, finding the file inside it, copying
-      # it over, and committing. That is not a workflow, it is a chore with a
-      # workflow attached, and it has already been forgotten once: freetype
-      # had four verified routes sitting in an artifact while the next run
-      # died fetching it.
+      # THIS STEP FAILED EVERY TIME IT MATTERED AND NOBODY READ IT. Two
+      # consecutive runs uploaded assets correctly and then died here:
       #
-      # sources/HOSTS.toml calls this file "Generated and committed", which
-      # implies a generator that can write. This is that generator.
+      #     error: cannot pull with rebase: You have unstaged changes.
+      #     error: Please commit or stash them.
+      #       push race, retrying (1) (2) (3)
+      #       could not push the table after three attempts
+      #
+      # So the release assets went up and the ROUTING TABLE THAT NAMES THEM
+      # never landed. The retry loop cannot help: it is not a race, it is a
+      # dirty tree, and the same dirt is there on attempt three.
+      #
+      # A REBASE WAS NEVER NEEDED ON THE NORMAL PATH, AND THAT IS THE REAL
+      # FIX. This job checks out github.ref_name, adds ONE commit, and pushes.
+      # Its parent IS origin/<branch> unless somebody pushed during the run --
+      # so `git push` fast-forwards. The old code rebased FIRST and pushed
+      # second, which meant the happy path ran the operation that could fail
+      # before the operation that would have succeeded.
+      #
+      # AND THE CHECKOUT IS SHALLOW. actions/checkout defaults to
+      # fetch-depth: 1, so there is one commit of history here. Rebasing onto a
+      # fetched head in a depth-1 clone is exactly the kind of thing that works
+      # until it does not. Push first; only if the remote has genuinely moved
+      # do we deepen and rebase, and that path is rare enough to be allowed to
+      # be slow.
+      #
+      # THE DIRTY TREE IS STILL DISCARDED, because a mirror run produces
+      # exactly one committable artifact and anything else is scratch. It is
+      # PRINTED before being discarded: the previous failures never said what
+      # was dirty, and `git stash` would have carried it silently into the next
+      # attempt.
       - name: 'Commit the routes'
         if: inputs.dry_run != true
         run: |
@@ -323,19 +342,54 @@ jobs:
             | head -20 | sed 's/^/    /'
           git config user.name  "veron-mirror[bot]"
           git config user.email "veron-mirror@users.noreply.github.com"
+
           git add sources/MIRRORS.tsv
+          if ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+            echo "  --- scratch this job left behind, discarded ---"
+            git --no-pager diff --stat | sed 's/^/    /'
+            git ls-files --others --exclude-standard | sed 's/^/    ?? /'
+            git checkout -- . 2>/dev/null || true
+            git clean -fdq -e sources/MIRRORS.tsv 2>/dev/null || true
+          fi
+
           n=$(git diff --cached --numstat -- sources/MIRRORS.tsv | awk '{print $1}')
           git commit -m "mirrors: +${n:-0} routes (stage5-mirror-upload)"
-          # PUSH WITH A REBASE, NOT --force. Two mirror jobs racing, or a
-          # human commit landing mid-run, must not lose work -- and the table
-          # is sorted and deduped on write, so a rebase merges cleanly.
-          for i in 1 2 3; do
-            git pull --rebase --quiet origin "${GITHUB_REF_NAME}" && \
-              git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
-            echo "  push race, retrying ($i)"
-            sleep $((i * 3))
-          done
-          echo "  could not push the table after three attempts"
+
+          # THE ONLY PATH: one commit on top of what we checked out, pushed
+          # fast-forward. NO REBASE, EVER.
+          #
+          # This job adds exactly one commit to a branch it checked out
+          # moments earlier, so its parent IS origin/<branch> unless somebody
+          # pushed during the run. A plain push fast-forwards.
+          #
+          # AN EARLIER VERSION FELL BACK TO fetch --unshallow + rebase WHEN THE
+          # PUSH WAS REJECTED, AND THAT IS THE WRONG THING FOR CI TO DO. A
+          # rebase rewrites history unattended, on a depth-1 clone
+          # (actions/checkout takes no fetch-depth here), against a branch a
+          # human is actively pushing to. If the remote has moved, the right
+          # answer is to stop and say so: the table is DERIVED -- probe.py
+          # regenerates it from the URL lists and the release namespace -- so
+          # re-running the job is cheap and loses nothing.
+          #
+          # The version before THAT used `git pull --rebase`, which failed
+          # every time because pull refuses over the untracked dl/ tree this
+          # job leaves behind:
+          #
+          #     error: cannot pull with rebase: You have unstaged changes.
+          #       push race, retrying (1) (2) (3)
+          #
+          # -- three retries against a condition that cannot change, while the
+          # release assets went up and the routing table naming them did not.
+          if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+            echo "VERON-MIRROR-TABLE-PUSHED  ${n:-0} route(s)"
+            exit 0
+          fi
+
+          echo "  the push was rejected: ${GITHUB_REF_NAME} moved during this run"
+          echo "  the assets are uploaded and the table is not. Re-run this"
+          echo "  workflow -- it regenerates the table from scratch and the"
+          echo "  second run will fast-forward."
+          echo "VERON-MIRROR-TABLE-UNPUSHED  assets are live, the table is not"
           exit 1
 
       - name: 'What the table says now'
