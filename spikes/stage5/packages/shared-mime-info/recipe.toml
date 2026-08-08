@@ -1,0 +1,142 @@
+name    = "shared-mime-info"
+version = "2.5.1"
+group   = "desktop"
+license = "GPL-2.0-or-later"
+srcdir  = "shared-mime-info-2.5.1"
+
+[source]
+url       = "https://gitlab.freedesktop.org/xdg/shared-mime-info/-/archive/2.5.1/shared-mime-info-2.5.1.tar.gz"
+sha256    = "ea248ea157b7fa0165f4fe282c84919fa84c3f175553642f229c8f1ab7539128"
+signature = "none -- freedesktop.org publishes no detached signature for this archive"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "glib", "libxml2"]
+link         = ["glib", "libxml2"]
+runtime      = []
+optional_off = ["build-tests", "build-spec", "build-translations", "update-mimedb"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--libdir=lib", "-Dbuild-tests=false",
+                   "-Dbuild-spec=false", "-Dbuild-translations=false",
+                   "-Dupdate-mimedb=false", "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["shared-mime-info"]
+deferral        = """
+Internals not reviewed. Read out of the pinned archive, whose sha256 was
+measured here.
+
+THE SYSTEM HAD NO ANSWER TO "WHAT IS THIS FILE", AND THE BROWSER FOUND OUT.
+wpewebkit rendered /usr/share/veron/test.html AS PLAIN TEXT -- window open,
+page painted, source on screen. The chain, traced rather than guessed:
+
+  NetworkDataTaskSoup.cpp:1452  file:// asks for the content type
+  MIMETypeRegistry::mimeTypeForPath -> mimeTypeForExtension
+  MIMETypeRegistryXdg.cpp:44    xdg_mime_get_mime_type_from_file_name()
+
+and xdgmime reads /usr/share/mime, which did not exist. Both the extension
+lookup and glib's content sniff came back empty, so WebKit fell back to
+text/plain.
+
+WEBKIT DOES HAVE A HARDCODED .html -> text/html TABLE and it is on a DIFFERENT
+CODE PATH: ResourceLoaderSoup.cpp:57 serves resource:// and inspector URLs.
+file:// never reaches it. That is why "surely .html is special-cased" was
+wrong.
+
+IT IS NOT A BROWSER PACKAGE. This is the file-type database for the whole
+system: any file manager, any xdg-open, any "open with", any thumbnailer. A
+distribution needs it; an appliance serving one known page might not.
+
+FOUR OPTIONS DEFAULT true AND EACH WANTS SOMETHING ABSENT:
+
+  build-tests      meson.build:70 does `subproject('xdgmime')` -- A NETWORK
+                   FETCH via subprojects/xdgmime.wrap, which cannot happen in
+                   this sandbox by construction. This is the one that would
+                   have failed the build rather than degraded it.
+  build-spec       needs xmlto and docbook-xsl to render the HTML
+                   specification, which is not installed even when built.
+  build-translations  po/meson.build calls i18n.gettext(), and there is no
+                   gettext anywhere in this system -- not a stage-5 package
+                   and not in the stage-4 sysroot. See the sixteen other
+                   recipes that disable NLS for the same reason.
+  update-mimedb    runs update-mime-database AFTER INSTALL. Its own option
+                   text says "It should not be enabled if DESTDIR is used",
+                   and every install here is into a DESTDIR.
+
+THE CACHE MUST STILL BE GENERATED, AND THAT IS WHAT THE mime-cache STEP DOES.
+Shipping only the XML source would leave xdgmime with nothing to read -- the
+package would install and change nothing, which is precisely the failure this
+package exists to fix. The step runs the update-mime-database we just built,
+against the DESTDIR, so mime.cache is a build product with a pinned digest
+rather than something generated on a user's machine at install time.
+
+xmllint IS PROBED AT meson.build:25 BUT ONLY WHEN build-tests IS SET, so its
+absence is not an error here."""
+
+[undeclarable]
+"program:update-mime-database" = "The tool this package itself builds, run against its own DESTDIR in the mime-cache step to generate /usr/share/mime/mime.cache. Not a dependency on another package: a two-phase build within this one."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/shared-mime-info-2.5.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--libdir=lib",
+         "-Dbuild-tests=false", "-Dbuild-spec=false",
+         "-Dbuild-translations=false", "-Dupdate-mimedb=false",
+         "--wrap-mode=nofallback"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+
+[[steps]]
+name = "mime-cache"
+cwd  = "$S"
+why  = """
+update-mimedb=false stops meson running update-mime-database at install time,
+which is correct -- its own option text says "It should not be enabled if
+DESTDIR is used" and every install here is into a DESTDIR. But something must
+still run it: xdgmime reads the COMPILED cache, not the XML, so a package that
+installed only data/*.xml would change nothing at all and the browser would
+still show HTML as text.
+
+Running it here makes mime.cache a BUILD PRODUCT with a pinned digest in
+[installs], rather than something generated on a user's machine at install
+time and never checked again.
+"""
+shell = """
+set -eu
+# GENERATE mime.cache INSIDE THE DESTDIR, USING THE TOOL WE JUST BUILT.
+#
+# update-mimedb=false stops the build system running this at install time --
+# correct, since its option text warns against it under DESTDIR. But something
+# must still do it: xdgmime reads the compiled cache, not the XML, so a
+# package that installs only data/*.xml would change nothing at all.
+#
+# Running it here makes the cache a BUILD PRODUCT with a pinned digest,
+# rather than something generated on the user's machine at install time.
+"$D/usr/bin/update-mime-database" "$D/usr/share/mime"
+test -s "$D/usr/share/mime/mime.cache"
+"""
+
+[guest]
+# THE SECOND TEST IS THE ONE THAT MATTERS. A cache file existing proves the
+# build ran; `text/html:*.html` being in globs proves the exact lookup that
+# failed -- xdg_mime_get_mime_type_from_file_name("a.html") -- now has an
+# answer. update-mime-database writes globs, globs2 and mime.cache; globs is
+# the plain-text one, so a shell can assert against it without a parser.
+test   = [["/bin/sh", "-c",
+           "test -s /usr/share/mime/mime.cache && echo cache-present"],
+          ["/bin/sh", "-c",
+           "grep -q 'text/html:\\*.html' /usr/share/mime/globs && echo html-known"]]
+expect = ["cache-present", "html-known"]

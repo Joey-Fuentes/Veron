@@ -224,3 +224,11 @@ https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.
 # requires "ruby 3.1 or later". cache.ruby-lang.org ships all of it
 # pre-generated. Same distinction that made libidn2's first pin unbuildable.
 https://cache.ruby-lang.org/pub/ruby/4.0/ruby-4.0.6.tar.gz
+
+# shared-mime-info: THE FILE-TYPE DATABASE, AND THE REASON THE BROWSER SHOWED
+# A PAGE AS PLAIN TEXT. file:// content types resolve through
+# MIMETypeRegistryXdg.cpp:44 -> xdg_mime_get_mime_type_from_file_name(), and
+# xdgmime reads /usr/share/mime, which this system did not have. WebKit's
+# hardcoded .html mapping is on a different code path (ResourceLoaderSoup.cpp,
+# for resource:// URLs) that file:// never takes.
+https://gitlab.freedesktop.org/xdg/shared-mime-info/-/archive/2.5.1/shared-mime-info-2.5.1.tar.gz

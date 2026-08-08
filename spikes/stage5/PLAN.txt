@@ -117,29 +117,30 @@ between this file and the recipes fails the run.
   95. libinput
   96. libjpeg-turbo
   97. llvm
-  98. utf8proc
-  99. glib-networking
-  100. harfbuzz
-  101. libwebp
-  102. mesa
-  103. freetype
-  104. libepoxy
-  105. libsoup
-  106. wlroots
-  107. fontconfig
-  108. cairo
-  109. fcft
-  110. foot
-  111. fuzzel
-  112. pango
-  113. swaybg
-  114. yambar
-  115. gst-plugins-base
-  116. labwc
-  117. gst-libav
-  118. gst-plugins-bad
-  119. gst-plugins-good
-  120. wpewebkit
+  98. shared-mime-info
+  99. utf8proc
+  100. glib-networking
+  101. harfbuzz
+  102. libwebp
+  103. mesa
+  104. freetype
+  105. libepoxy
+  106. libsoup
+  107. wlroots
+  108. fontconfig
+  109. cairo
+  110. fcft
+  111. foot
+  112. fuzzel
+  113. pango
+  114. swaybg
+  115. yambar
+  116. gst-plugins-base
+  117. labwc
+  118. gst-libav
+  119. gst-plugins-bad
+  120. gst-plugins-good
+  121. wpewebkit
 
 ======================================================================
 package bzip2 1.0.8
@@ -3436,6 +3437,64 @@ package llvm 22.1.8
          cwd  build/llvm-22.1.8/llvm-project-22.1.8.src
          env  DESTDIR=dest/llvm
          argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package shared-mime-info 2.5.1
+  group        desktop
+  license      GPL-2.0-or-later
+  recipe-sha   1dc9ab028e383277aa6f9bae973f62332358c230d7873ef387b2bd1810ff4951
+
+  source
+    url        https://gitlab.freedesktop.org/xdg/shared-mime-info/-/archive/2.5.1/shared-mime-info-2.5.1.tar.gz
+    sha256     ea248ea157b7fa0165f4fe282c84919fa84c3f175553642f229c8f1ab7539128
+    signature  none -- freedesktop.org publishes no detached signature for this archive
+    correspond none
+
+  deps
+    build        glib, libxml2, meson, ninja, pkgconf
+    link         glib, libxml2
+    runtime      -
+    optional_off build-spec, build-tests, build-translations, update-mimedb
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/shared-mime-info-2.5.1
+         argv ["tar", "-xf", "dl/shared-mime-info-2.5.1.tar.gz", "-C", "build/shared-mime-info-2.5.1"]
+    [02] configure
+         cwd  build/shared-mime-info-2.5.1/shared-mime-info-2.5.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--libdir=lib", "-Dbuild-tests=false", "-Dbuild-spec=false", "-Dbuild-translations=false", "-Dupdate-mimedb=false", "--wrap-mode=nofallback"]
+    [03] build
+         cwd  build/shared-mime-info-2.5.1/shared-mime-info-2.5.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/shared-mime-info-2.5.1/shared-mime-info-2.5.1
+         argv ["ninja", "-C", "_b", "install"]
+    [05] mime-cache
+         cwd  build/shared-mime-info-2.5.1/shared-mime-info-2.5.1
+         SHELL (declared) why=update-mimedb=false stops meson running update-mime-database at install time,
+which is correct -- its own option text says "It should not be enabled if
+DESTDIR is used" and every install here is into a DESTDIR. But something must
+still run it: xdgmime reads the COMPILED cache, not the XML, so a package that
+installed only data/*.xml would change nothing at all and the browser would
+still show HTML as text.
+
+Running it here makes mime.cache a BUILD PRODUCT with a pinned digest in
+[installs], rather than something generated on a user's machine at install
+time and never checked again.
+
+         | set -eu
+         | # GENERATE mime.cache INSIDE THE DESTDIR, USING THE TOOL WE JUST BUILT.
+         | #
+         | # update-mimedb=false stops the build system running this at install time --
+         | # correct, since its option text warns against it under DESTDIR. But something
+         | # must still do it: xdgmime reads the compiled cache, not the XML, so a
+         | # package that installs only data/*.xml would change nothing at all.
+         | #
+         | # Running it here makes the cache a BUILD PRODUCT with a pinned digest,
+         | # rather than something generated on the user's machine at install time.
+         | "dest/shared-mime-info/usr/bin/update-mime-database" "dest/shared-mime-info/usr/share/mime"
+         | test -s "dest/shared-mime-info/usr/share/mime/mime.cache"
 
 ======================================================================
 package utf8proc 2.11.3
