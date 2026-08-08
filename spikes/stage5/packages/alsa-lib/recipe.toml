@@ -14,11 +14,11 @@ crosschecked_against = []
 build        = ["pkgconf"]
 link         = []
 runtime      = []
-optional_off = ["python", "rawmidi", "topology", "ucm", "hwdep"]
+optional_off = ["python", "topology", "ucm", "hwdep"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--disable-python", "--disable-rawmidi",
-                   "--disable-topology", "--disable-ucm"]
+configure_flags = ["--prefix=/usr", "--disable-python", "--disable-topology",
+                   "--disable-ucm"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["alsa-lib"]
 deferral        = """
@@ -67,11 +67,11 @@ configure script rather than assumed: the else branch of the \
 default and BLFS builds it. python is in this set, so the probe would succeed \
 here too. Disabled.
 
-THREE COMPONENTS ARE DISABLED AND NONE OF THEM IS PLAYBACK. rawmidi, ucm \
-(use-case manager) and topology (DSP topology) are each --disable-able and \
-none is on the path from a decoded audio buffer to a sound card. mixer, pcm \
-and hwdep stay: pcm IS the playback path, mixer is volume, and hwdep is what \
-several drivers need to initialise.
+TWO COMPONENTS ARE DISABLED AND NEITHER IS PLAYBACK. ucm (use-case manager) \
+and topology (DSP topology) are each --disable-able and neither is on the path \
+from a decoded audio buffer to a sound card. mixer, pcm and hwdep stay: pcm IS \
+the playback path, mixer is volume, and hwdep is what several drivers need to \
+initialise.
 
 seq WAS IN THAT LIST AND HAD TO COME OUT, BECAUSE A CONSUMER DOES NOT SHARE \
 THIS PACKAGE'S VIEW OF WHAT IS NEEDED. The reasoning above is still correct -- \
@@ -92,9 +92,18 @@ order. Both symbols exist and are correctly typed in alsa-lib's own \
 include/seq.h at lines 491 and 497; --disable-seq simply stops it being \
 installed.
 
-rawmidi STAYS DISABLED. seq.h does not reference rawmidi -- checked, zero \
-occurrences -- so they are independent and only the one that is actually \
-needed is turned back on.
+rawmidi HAD TO COME BACK TOO, AND THE CHECK THAT SAID OTHERWISE WAS THE WRONG \
+ONE. Keeping it off was justified by grepping include/seq.h for "rawmidi" and \
+finding zero occurrences -- true, and irrelevant, because the constraint is in \
+the build system rather than the headers:
+
+    configure:14996  if test "$build_rawmidi" != "yes"; then
+    configure:14997    if test "$build_seq" = "yes"; then
+    configure:14998      as_fn_error $? "Cannot enable sequencer without rawmidi"
+
+A header that does not include another header says nothing about whether the \
+library can be built without it. The ALSA sequencer is layered on the raw MIDI \
+device interface, which is obvious in retrospect and was not checked.
 
 THE ALTERNATIVE WAS -Dalsa=disabled IN gst-plugins-base, AND IT IS WORSE. \
 alsasink is the only reason alsa-lib is in this set at all; turning it off \
@@ -109,7 +118,7 @@ run  = [["tar", "-xf", "$DL/alsa-lib-1.2.14.tar.bz2", "-C", "$B"]]
 name = "configure"
 cwd  = "$S"
 run  = [["./configure", "--prefix=/usr", "--disable-python",
-         "--disable-rawmidi", "--disable-topology",
+         "--disable-topology",
          "--disable-ucm"]]
 
 [[steps]]

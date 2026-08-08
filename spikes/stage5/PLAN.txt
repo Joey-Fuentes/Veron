@@ -848,7 +848,7 @@ package zlib 1.3.2
 package alsa-lib 1.2.14
   group        media
   license      LGPL-2.1-or-later
-  recipe-sha   cd42fe590d91939bdcd681e57a6de801633a93d6bce4470761d12a009bc32442
+  recipe-sha   a2053de2a942e3558f2ca4d3ba5843cd607dce8719200aa795a5f080823d12f6
 
   source
     url        https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.14.tar.bz2
@@ -860,7 +860,7 @@ package alsa-lib 1.2.14
     build        pkgconf
     link         -
     runtime      -
-    optional_off hwdep, python, rawmidi, topology, ucm
+    optional_off hwdep, python, topology, ucm
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -868,7 +868,7 @@ package alsa-lib 1.2.14
          argv ["tar", "-xf", "dl/alsa-lib-1.2.14.tar.bz2", "-C", "build/alsa-lib-1.2.14"]
     [02] configure
          cwd  build/alsa-lib-1.2.14/alsa-lib-1.2.14
-         argv ["./configure", "--prefix=/usr", "--disable-python", "--disable-rawmidi", "--disable-topology", "--disable-ucm"]
+         argv ["./configure", "--prefix=/usr", "--disable-python", "--disable-topology", "--disable-ucm"]
     [03] build
          cwd  build/alsa-lib-1.2.14/alsa-lib-1.2.14
          argv ["make", "-j1"]

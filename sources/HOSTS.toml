@@ -23,14 +23,45 @@
 # makes "add any host you like" an availability decision rather than a
 # security one.
 
+# OUR MIRROR IS TRIED FIRST. UPSTREAM IS PROVENANCE AND A FALLBACK.
+#
+# THIS WAS THE OTHER WAY ROUND AND THE REASONING DID NOT SURVIVE CONTACT.
+# upstream was priority 0 with the note "tried first so normal fetches never
+# touch our mirror" -- an argument about bandwidth and about noticing upstream
+# rot. Both parts are wrong here:
+#
+#   THE BANDWIDTH IS NOT ANYONE ELSE'S. The mirror is our own GitHub Releases,
+#   fetched by GitHub's own runners. There is no third party to be polite to.
+#   BLFS asks users not to hammer its mirror because that mirror is a charity's
+#   donated bandwidth serving thousands of strangers -- a real argument, and
+#   not this one. The impolite thing HERE is fetching from x.org, ftp.gnu.org
+#   and dotat.at 122 times per run for bytes we already host.
+#
+#   "WE NOTICE UPSTREAM GOING DARK" IS ONLY TRUE IF SOMEBODY READS A `miss`
+#   LINE IN A 122-PACKAGE LOG. Nobody did. Three failures were found by their
+#   symptoms instead: ftp.gnu.org timed out on libidn2, timed out again on
+#   nettle and left a ZERO-BYTE file that GitHub rejected with Bad
+#   Content-Length, and x.org served a re-rolled xkeyboard-config-2.48.tar.xz
+#   whose sha256 no longer matched the pin. Every one of those was invisible
+#   work that upstream-first created.
+#
+# DETECTING UPSTREAM ROT IS A REAL GOAL AND BELONGS IN ITS OWN JOB, where slow
+# is the point and a dead host is the finding rather than a delay. That is
+# Yocto's split exactly: PREMIRRORS first for speed, MIRRORS after for
+# longevity.
+#
+# NOTHING ABOUT TRUST CHANGES. Every fetch verifies sha256 before the bytes are
+# used, so order decides only which host is asked first.
 [host.upstream]
 kind     = "provenance"
-priority = 0
-note     = "where the bytes came from originally. Tried first so normal fetches never touch our mirror; recorded even when unreachable, because it is provenance rather than a route."
+priority = 100
+note     = "where the bytes came from originally. Recorded even when unreachable, because it is provenance rather than a route. Tried AFTER our mirror: see the block above."
 
 [host.github]
 kind     = "derivable"
-priority = 10
+# PRIORITY 1, AHEAD OF upstream's 100. locators() sorts ascending, so this is
+# the first route tried for every artifact that has an asset.
+priority = 1
 repo     = "Joey-Fuentes/Veron"
 # One release per package keeps the asset list navigable and makes deletion
 # granular. `src/` prefixes the tag so mirror tags are visibly a different
