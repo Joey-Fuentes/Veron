@@ -72,6 +72,11 @@ alsa IS ENABLED and is the only reason alsa-lib is in the media batch -- this \
 is the sink that turns decoded audio into sound. Untestable in CI; there is no \
 audio device in the boot test."""
 
+[installs]
+prefixes = ["usr/include/gstreamer-1.0", "usr/lib", "usr/lib/gstreamer-1.0", "usr/lib/pkgconfig", "usr/share/gst-plugins-base"]
+files    = 195
+digest   = "bd6d85d43f88396a29c7f950e395f301b28cadc903e3a27e75c3d1dd5a90cdf3"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"
@@ -103,9 +108,28 @@ run  = [["ninja", "-C", "_b", "install"]]
 env  = { DESTDIR = "$D" }
 
 [guest]
+# gst-inspect --exists CHECKS AN ELEMENT, NOT A PLUGIN, AND CANNOT CHECK A
+# PLUGIN AT ALL. These tests named plugins -- playback, isomp4, matroska,
+# videoparsersbad, libav -- and every one failed:
+#
+#     FAIL  gst-inspect-1.0 --exists --atleast-version=1.28.1 isomp4 did not run
+#
+# tools/gst-inspect.c:2387 is gst_registry_lookup_feature(registry, argv[1]),
+# which resolves FEATURES. The plugin branch three lines further down is
+# unimplemented and says so outright:
+#
+#     /* FIXME: support checking for plugins too */
+#     g_printerr ("Checking for plugins is not supported yet\n");
+#     exit_code = -1;
+#
+# So --exists with a plugin name is not merely wrong, it is a mode the tool
+# does not have. The element names below were read out of each package's
+# own sources rather than guessed: an element is what a pipeline actually
+# instantiates, so asserting one proves the plugin loaded AND registered.
+
 # gst-inspect PROVES A PLUGIN LOADED, which a .pc version does not. If orc or a
 # codec failed to resolve, the plugin is absent from the registry and this says
 # so -- the difference between "the file installed" and "GStreamer can use it".
 test   = [["/usr/bin/pkgconf", "--modversion", "gstreamer-plugins-base-1.0"],
-          ["/usr/bin/gst-inspect-1.0", "--exists", "--atleast-version=1.28.1", "playback"]]
+          ["/usr/bin/gst-inspect-1.0", "--exists", "--atleast-version=1.28.1", "playbin"]]
 expect = ["1.28.1", ""]

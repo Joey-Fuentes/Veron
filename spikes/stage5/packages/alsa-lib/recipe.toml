@@ -109,6 +109,11 @@ THE ALTERNATIVE WAS -Dalsa=disabled IN gst-plugins-base, AND IT IS WORSE. \
 alsasink is the only reason alsa-lib is in this set at all; turning it off \
 would leave the package built and unused."""
 
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/include/alsa", "usr/include/sys", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/alsa"]
+files    = 134
+digest   = "30abbc036845dcbdced8ac109f4add07f6050dd94c1134af8c2195a9297f9b34"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

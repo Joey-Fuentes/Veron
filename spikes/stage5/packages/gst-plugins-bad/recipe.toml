@@ -66,6 +66,11 @@ WebKit uses elements from bad for adaptive streaming (dash, hls) and for \
 several codec paths, and none of those is enabled here yet. Named so it is \
 found rather than discovered."""
 
+[installs]
+prefixes = ["usr/include/gstreamer-1.0", "usr/lib", "usr/lib/gstreamer-1.0", "usr/lib/pkgconfig", "usr/share/gstreamer-1.0"]
+files    = 195
+digest   = "e36d16367f0022bd01c2c61e239f820f5ec00c075c2e499d6a3642bf2f94b55a"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"
@@ -93,5 +98,24 @@ run  = [["ninja", "-C", "_b", "install"]]
 env  = { DESTDIR = "$D" }
 
 [guest]
-test   = [["/usr/bin/gst-inspect-1.0", "--exists", "--atleast-version=1.28.1", "videoparsersbad"]]
+# gst-inspect --exists CHECKS AN ELEMENT, NOT A PLUGIN, AND CANNOT CHECK A
+# PLUGIN AT ALL. These tests named plugins -- playback, isomp4, matroska,
+# videoparsersbad, libav -- and every one failed:
+#
+#     FAIL  gst-inspect-1.0 --exists --atleast-version=1.28.1 isomp4 did not run
+#
+# tools/gst-inspect.c:2387 is gst_registry_lookup_feature(registry, argv[1]),
+# which resolves FEATURES. The plugin branch three lines further down is
+# unimplemented and says so outright:
+#
+#     /* FIXME: support checking for plugins too */
+#     g_printerr ("Checking for plugins is not supported yet\n");
+#     exit_code = -1;
+#
+# So --exists with a plugin name is not merely wrong, it is a mode the tool
+# does not have. The element names below were read out of each package's
+# own sources rather than guessed: an element is what a pipeline actually
+# instantiates, so asserting one proves the plugin loaded AND registered.
+
+test   = [["/usr/bin/gst-inspect-1.0", "--exists", "--atleast-version=1.28.1", "h264parse"]]
 expect = [""]

@@ -65,6 +65,11 @@ v4l2, pulse, jack, gtk3, qt5 AND ximagesrc ARE ALL auto AND ALL ABSENT. Each \
 would have probed and quietly disabled itself. With auto_features=disabled none \
 is reached at all, which is the same outcome arrived at deliberately."""
 
+[installs]
+prefixes = ["usr/lib/gstreamer-1.0", "usr/share/gstreamer-1.0"]
+files    = 10
+digest   = "3edde69c0abeaf45b6536e4c2144e59ff9b9207ed841dd017ebd2a90d47d648e"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"
@@ -94,6 +99,25 @@ run  = [["ninja", "-C", "_b", "install"]]
 env  = { DESTDIR = "$D" }
 
 [guest]
-test   = [["/usr/bin/gst-inspect-1.0", "--exists", "--atleast-version=1.28.1", "isomp4"],
-          ["/usr/bin/gst-inspect-1.0", "--exists", "--atleast-version=1.28.1", "matroska"]]
+# gst-inspect --exists CHECKS AN ELEMENT, NOT A PLUGIN, AND CANNOT CHECK A
+# PLUGIN AT ALL. These tests named plugins -- playback, isomp4, matroska,
+# videoparsersbad, libav -- and every one failed:
+#
+#     FAIL  gst-inspect-1.0 --exists --atleast-version=1.28.1 isomp4 did not run
+#
+# tools/gst-inspect.c:2387 is gst_registry_lookup_feature(registry, argv[1]),
+# which resolves FEATURES. The plugin branch three lines further down is
+# unimplemented and says so outright:
+#
+#     /* FIXME: support checking for plugins too */
+#     g_printerr ("Checking for plugins is not supported yet\n");
+#     exit_code = -1;
+#
+# So --exists with a plugin name is not merely wrong, it is a mode the tool
+# does not have. The element names below were read out of each package's
+# own sources rather than guessed: an element is what a pipeline actually
+# instantiates, so asserting one proves the plugin loaded AND registered.
+
+test   = [["/usr/bin/gst-inspect-1.0", "--exists", "--atleast-version=1.28.1", "qtdemux"],
+          ["/usr/bin/gst-inspect-1.0", "--exists", "--atleast-version=1.28.1", "matroskademux"]]
 expect = ["", ""]

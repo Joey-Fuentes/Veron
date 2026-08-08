@@ -57,6 +57,11 @@ NO BLFS PAGE. gst-libav is absent from all 862 pages of BLFS 13.0, which \
 covers gstreamer, base, good and even gst-plugins-rs but not this one. It \
 rests entirely on reading the tarball."""
 
+[installs]
+prefixes = ["usr/lib/gstreamer-1.0"]
+files    = 1
+digest   = "130373895fca3581a37969dcc3f348eaf336a820b5be374cc5befe95707c8c82"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"
@@ -80,5 +85,24 @@ run  = [["ninja", "-C", "_b", "install"]]
 env  = { DESTDIR = "$D" }
 
 [guest]
-test   = [["/usr/bin/gst-inspect-1.0", "--exists", "--atleast-version=1.28.1", "libav"]]
+# gst-inspect --exists CHECKS AN ELEMENT, NOT A PLUGIN, AND CANNOT CHECK A
+# PLUGIN AT ALL. These tests named plugins -- playback, isomp4, matroska,
+# videoparsersbad, libav -- and every one failed:
+#
+#     FAIL  gst-inspect-1.0 --exists --atleast-version=1.28.1 isomp4 did not run
+#
+# tools/gst-inspect.c:2387 is gst_registry_lookup_feature(registry, argv[1]),
+# which resolves FEATURES. The plugin branch three lines further down is
+# unimplemented and says so outright:
+#
+#     /* FIXME: support checking for plugins too */
+#     g_printerr ("Checking for plugins is not supported yet\n");
+#     exit_code = -1;
+#
+# So --exists with a plugin name is not merely wrong, it is a mode the tool
+# does not have. The element names below were read out of each package's
+# own sources rather than guessed: an element is what a pipeline actually
+# instantiates, so asserting one proves the plugin loaded AND registered.
+
+test   = [["/usr/bin/gst-inspect-1.0", "--exists", "--atleast-version=1.28.1", "avdec_mjpeg"]]
 expect = [""]
