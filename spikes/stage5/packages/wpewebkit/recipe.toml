@@ -271,6 +271,29 @@ run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
 name = "build"
 cwd  = "$S"
 run  = [["ninja", "-C", "_b"]]
+# THE SECOND BUDGET, AND THE ONE THAT ACTUALLY STOPPED THIS BUILD.
+#
+# There are two independent timeouts and widening the workflow's did nothing
+# for this one. tools/veron has DEFAULT_STEP_TIMEOUT = 1800 -- thirty minutes
+# PER STEP, enforced by subprocess.run -- and the first wpewebkit compile that
+# ever configured died on it:
+#
+#     [25m] still running: ninja -C _b
+#     TIMED OUT after 30 min: ninja -C _b
+#     VERON-BUILD-FAIL  wpewebkit: step 'build' rc=124
+#
+# rc=124 is `timeout`'s exit code, not GitHub cancelling a job.
+#
+# 21600 IS SIX HOURS AND IS DELIBERATELY LOOSE. llvm carries 7200 with the
+# comment "the only step in this project that needs more than the default
+# hour" -- that is no longer true. wpewebkit is the largest thing here by a
+# wide margin and HAS NEVER COMPLETED A COMPILE, so there is no measurement to
+# size this from. It sits under the workflow's 270-minute step budget, which
+# is the limit that will actually bind: this one exists to stop a HUNG step,
+# not to bound a long one.
+#
+# NARROW IT ONCE THERE IS A NUMBER, the same as the workflow budget.
+timeout = 21600
 
 [[steps]]
 name = "install"
