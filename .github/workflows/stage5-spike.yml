@@ -104,7 +104,7 @@ jobs:
     # packages after glib include its own compile, harfbuzz, cairo and pango,
     # none of which has ever run here, at jobs=1. 90 was going to be tight
     # and silent about it.
-    timeout-minutes: 180
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v5
 
@@ -300,7 +300,32 @@ jobs:
 
       - name: 'VERON-SEAL + build both packages'
         id: build
-        timeout-minutes: 150      # < the job's 180. See the note above.
+        # 270, DELIBERATELY WIDE, AND NOT A MEASUREMENT.
+        #
+        # This read 150 -- the job's 180 minus the collector's 30 -- and 180
+        # was never derived from a build that had run. wpewebkit has NEVER
+        # COMPILED here: every attempt so far died in configure, on the python
+        # tooling group, on Ruby, on libatomic. The 136-minute figure quoted
+        # for it comes from a different toolchain and a different flag set --
+        # before USE_ATK, USE_AVIF, USE_JPEGXL and USE_GSTREAMER_GL were turned
+        # off, and before the compiler changed.
+        #
+        # THE COSTS ARE NOT SYMMETRIC. A budget set too high costs nothing when
+        # the build finishes early -- the step simply ends. A budget set too
+        # low kills a SUCCEEDING compile near the end and teaches nothing,
+        # which is the one outcome worth spending runner minutes to avoid.
+        #
+        # THE 30-MINUTE GAP IS THE POINT AND IS PRESERVED. Job 300, step 270.
+        # A job timeout is a CANCELLATION and `if: always()` steps do not run;
+        # a step timeout is an ordinary failure and they do. So the build's
+        # budget stays strictly under the job's, and the difference is the
+        # collector's.
+        #
+        # NARROW THIS ONCE THERE IS A NUMBER. The first wpewebkit build that
+        # completes gives a real figure; set the budget from that plus headroom
+        # and leave the gap alone.
+        timeout-minutes: 270      # < the job's 300, and the difference is the
+                                  # collector's. See the note above.
         run: |
           set -eu
           cd spikes/stage5
