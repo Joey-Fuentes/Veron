@@ -670,7 +670,18 @@ jobs:
           #    says the old name and dereferences a type that no longer exists
           #    under it. NOT a RISC-V problem: the same failure appeared on
           #    x86_64 in run 84974129558 with a stock 4.7.4 tarball.
-          grep -rl 'struct ucontext' gbot/gcc gbot/libgcc 2>/dev/null \
+          # --include='*.h', BECAUSE THE STRING APPEARS IN PROSE TOO.
+          #
+          # A bare `grep -rl` matched twelve files and two of them were not
+          # code: gcc/ChangeLog-2005, which describes this very rename in a
+          # 2005 entry, and a sparc testsuite case. Rewriting a ChangeLog put
+          # a hunk into the derived patch that then would not apply --
+          #     patching file gcc/ChangeLog-2005
+          #     Hunk 1 FAILED 35764/35764.
+          # (run 85007759818). The unwind headers this fix exists for are all
+          # .h under libgcc/config, so restricting to headers takes exactly
+          # them and leaves the prose alone.
+          grep -rl --include='*.h' 'struct ucontext' gbot/gcc gbot/libgcc 2>/dev/null \
             | xargs -r sed -i 's/struct ucontext/ucontext_t/g'
 
           # 2. Drop the LIB_SPEC override in the riscv linux.h, whose own
