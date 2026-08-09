@@ -460,6 +460,58 @@ jobs:
           print("  patched: LIB_SPEC override removed" if out != s
                 else "  NOTE: LIB_SPEC block not found -- fork may already carry the fix")
           PYEOF
+
+          # 3. DEFINE HOST_WIDE_INT_1 AND _1U, WHICH THE FORK USES AND NEVER
+          #    DEFINES. This one is ours, not upstream's, and it is the reason
+          #    nobody has hit it.
+          #
+          #    hwint.h's sext_hwi has two paths:
+          #        #if   <compiler behaves as expected>
+          #              ... no macro needed ...
+          #        #else
+          #              /* Fall back to the slower, well defined path.  */
+          #              HOST_WIDE_INT sign_mask = HOST_WIDE_INT_1 << (prec - 1);
+          #        #endif
+          #    A modern gcc satisfies the #if and never compiles the fallback.
+          #    tcc does not, takes the #else, and dies:
+          #        /work/gbot/gcc/hwint.h:291: error: 'HOST_WIDE_INT_1' undeclared
+          #        make[2]: *** [Makefile:3521: riscv.o] Error 1
+          #
+          #    MEASURED, NOT GUESSED (run 84975744820): the probe showed
+          #    riscv.c references it 0 times and it is defined NOWHERE in the
+          #    tree -- the fork carried a newer sext_hwi body back into 4.6.4
+          #    without the macros that body needs. Ekaitz builds on Debian with
+          #    build-essential, so the fallback is dead code for him.
+          #
+          #    The definitions are gcc's own, written without HOST_WIDE_INT_C
+          #    because 4.6.4 may not have it either. Guarded, so if a later tag
+          #    of the fork adds them this becomes a no-op rather than a clash.
+          python3 - <<'PYEOF'
+          p = "gbot/gcc/hwint.h"
+          s = open(p).read()
+          if "define HOST_WIDE_INT_1" in s:
+              print("  NOTE: hwint.h already defines HOST_WIDE_INT_1 -- nothing to do")
+          else:
+              add = ("\n#ifndef HOST_WIDE_INT_1\n"
+                     "#define HOST_WIDE_INT_1 ((HOST_WIDE_INT) 1)\n"
+                     "#endif\n"
+                     "#ifndef HOST_WIDE_INT_1U\n"
+                     "#define HOST_WIDE_INT_1U ((unsigned HOST_WIDE_INT) 1)\n"
+                     "#endif\n")
+              # AFTER THE HOST_WIDE_INT TYPEDEF AND BEFORE ANY USE. The first
+              # attempt appended before the closing include guard, which is
+              # after sext_hwi -- so the macro was defined and the function
+              # that needs it still failed. Tested locally: a #define must
+              # precede its use, and "somewhere in the file" is not a place.
+              import re as _re
+              m = _re.search(r"^#define\s+HOST_WIDE_INT\b.*$", s, _re.M) \
+                  or _re.search(r"^typedef .*\bHOST_WIDE_INT\s*;.*$", s, _re.M)
+              if not m:
+                  raise SystemExit("  hwint.h: no HOST_WIDE_INT definition found to anchor on")
+              k = s.index("\n", m.end()) + 1
+              open(p, "w").write(s[:k] + add + s[k:])
+              print("  patched: HOST_WIDE_INT_1 and HOST_WIDE_INT_1U defined in hwint.h")
+          PYEOF
           tar xf gcc-$GCC_TOP.tar.xz;     mv gcc-$GCC_TOP    gtop
           echo "  unpacked; the box has no network past this point"
 
