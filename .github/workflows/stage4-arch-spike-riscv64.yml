@@ -865,18 +865,51 @@ jobs:
             echo "  --- last 10 lines ---"
             tail -10 "$1" | sed 's/^/    /'
           }
+          # A THIRD PREFIX, FOR THE SAME REASON AS THE SECOND. Stage 2 showed
+          # that archives built by one compiler can fail another's link test;
+          # stage4-complete.yml:922 uses prefix3 here for exactly that. Each
+          # rung gets prereqs its own compiler built.
+          for q in gmp mpfr mpc; do
+            say "  --- $q, rebuilt by the stage-2 gcc ---"
+            rm -rf /work/$q-3 && cp -a /work/$q /work/$q-3 && cd /work/$q-3
+            make distclean > /dev/null 2>&1 || true
+            case $q in
+              gmp)  ./configure --disable-shared --disable-assembly \
+                      --prefix=/work/prefix3 > conf.log 2>&1 || { tail -20 conf.log; exit 1; } ;;
+              *)    ./configure --disable-shared --with-gmp=/work/prefix3 \
+                      --prefix=/work/prefix3 > conf.log 2>&1 || { tail -20 conf.log; exit 1; } ;;
+            esac
+            make -j"$NP" > build.log 2>&1 || { whyfail build.log; exit 1; }
+            make install > /dev/null 2>&1
+            say "    installed"
+          done
+
           # prefix2 AGAIN, NOT prefix. Stage 2 already showed that archives
           # built by one compiler can fail another's link test; the stage-2
           # gcc built these, so they are the ones it can use. Whether gcc 10
           # in turn needs its own is what this rung finds out.
+          # NOTE WHAT IS *NOT* BELOW: --disable-shared.
+          #
+          # Stages 1 and 2 pass it; this rung must not. libcc1 -- gcc's plugin
+          # for gdb -- is built as a SHARED library, and with --disable-shared
+          # the libstdc++.a it links against is compiled without -fPIC:
+          #
+          #   /usr/bin/ld: libstdc++.a(new_opv.o): relocation R_X86_64_32
+          #     against symbol `_ZTISt9bad_alloc' can not be used when making
+          #     a shared object; recompile with -fPIC
+          #   make[3]: *** [Makefile:560: libcc1.la] Error 1
+          #
+          # measured on x86_64 in run 84981633004, after stage 2 had passed.
+          # stage4-complete.yml:919 omits it here too, and lists
+          # --disable-libvtv instead, which is now matched below.
           mkdir -p /work/b3 && cd /work/b3
           /work/gtop/configure \
             --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
             --prefix=/work/out3 --enable-languages=c,c++ \
             --disable-multilib --disable-bootstrap --disable-werror \
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
-            --disable-libssp --disable-shared \
-            --with-gmp=/work/prefix2 --with-mpfr=/work/prefix2 --with-mpc=/work/prefix2 \
+            --disable-libssp --disable-libvtv \
+            --with-gmp=/work/prefix3 --with-mpfr=/work/prefix3 --with-mpc=/work/prefix3 \
             > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
           make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || whyfail build.log
           make install > /dev/null 2>&1
