@@ -32,9 +32,16 @@ name: stage4-arch-spike-riscv64
 # THREE THINGS THIS CAN FIND, IN INCREASING ORDER OF INTEREST:
 #
 #   1. tcc's riscv64 backend does not build, or miscompiles.
-#      tcc's riscv64 backend is its youngest. Ours carries an arm64 patch
-#      series for exactly this class of problem, so a riscv64 series may be
-#      needed too. Cheap to find, cheap to fix.
+#      ANSWERED, 2026-08-09: it builds with NO PATCH SERIES AT ALL, on a RISE
+#      runner, in 7m18s, and its output runs --
+#
+#          tcc version 0.9.28rc HEAD@5ec0e6f8 (riscv64 Linux)
+#          ELF 64-bit LSB executable, UCB RISC-V, double-float ABI
+#
+#      where arm64 needed a carried series of relocation fixes. So the tcc
+#      rung costs LESS here than on aarch64, and the axis this was written to
+#      probe is closed. Miscompilation is a separate question and belongs to
+#      rung 3.
 #
 #   2. Ekaitz's 4.6.x does not build under our tcc.
 #      His chain used his own tcc build. If ours cannot compile his gcc, the
@@ -151,14 +158,19 @@ jobs:
           # whether this is 4.6.4 or 4.6.5 -- the repository and Guix's patch
           # filename say 4.6.4, Guix's own blog text says 4.6.5. A version
           # number is therefore not an identifier here; the tag is.
-          git clone -q https://codeberg.org/ekaitz-zarraga/gcc.git work/g46 \
-            || { echo "  clone failed -- is codeberg reachable from this runner?"; exit 1; }
+          # SHALLOW, AND AT THE TAG. A full clone of a gcc fork is several
+          # gigabytes and hundreds of thousands of commits; the first run of
+          # this spike sat on it long enough to look hung on a four-core
+          # RISC-V node. Only one tree is wanted, so only one is fetched.
+          git clone -q --depth 1 --branch working-compiler-c++ \
+            https://codeberg.org/ekaitz-zarraga/gcc.git work/g46 \
+            || { echo "  clone of tag working-compiler-c++ failed."; \
+                 echo "  either codeberg is unreachable from this runner, or"; \
+                 echo "  the tag has moved -- check the fork before assuming"; \
+                 echo "  the network."; exit 1; }
           cd work/g46
-          echo "  --- tags containing 'working' ---"
-          git tag --list '*working*' | sed 's/^/    /'
-          git checkout -q working-compiler-c++ \
-            || { echo "  tag working-compiler-c++ not found; see the list above"; exit 1; }
-          echo "  HEAD: $(git rev-parse --short HEAD)"
+          echo "  HEAD:     $(git rev-parse --short HEAD)"
+          echo "  describes: $(git describe --tags --always 2>/dev/null || echo '(shallow)')"
           echo "  gcc version string: $(cat gcc/BASE-VER 2>/dev/null || echo unknown)"
           r=$(grep -ci riscv gcc/config.gcc || true)
           echo "  riscv mentions in config.gcc: $r"

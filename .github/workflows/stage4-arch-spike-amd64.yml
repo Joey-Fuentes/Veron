@@ -20,6 +20,20 @@ name: stage4-arch-spike-amd64
 # is the second, and riscv64 becomes "swap the backported gcc for Ekaitz
 # Zarraga's" rather than "rewrite stage 4".
 #
+# RUNGS 1 AND 2 RAN GREEN, 2026-08-09, AND THE NUMBERS ARE THE POINT:
+#
+#     tcc built for x86_64 with NO patch series, where arm64 needs one
+#
+#     aarch64 mentions in 4.7.4 config.gcc :  0   <- why aarch64 transplants
+#     x86_64  mentions in 4.7.4 config.gcc : 32   <- why this target does not
+#     riscv   mentions in 4.7.4 config.gcc :  0   <- why riscv64 needs a fork
+#
+# Three counts out of one file, stating the whole multi-arch problem. The
+# riscv64 spike then showed tcc needs no series there either. So the measured
+# differences between the three ladders are: runs-on, LFS_TGT, whether a tcc
+# patch series applies, which gcc sits at the bottom, and which upstream
+# version is the first rung above it. Four axes, three of them one-liners.
+#
 # THIS IS A SPIKE AND STOPS AT gcc 10.2.0. The full chain to 15.2.0 and a
 # kernel boot is what stage4-complete.yml is for; this answers one question
 # and is sized to answer it in one runner-hour rather than six.
