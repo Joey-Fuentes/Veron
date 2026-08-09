@@ -569,6 +569,35 @@ jobs:
             echo "  --- last 10 lines ---"
             tail -10 "$1" | sed 's/^/    /'
           }
+          # THE PREREQS ARE REBUILT INTO A SECOND PREFIX, BY THE NEW COMPILER.
+          #
+          # Reusing /work/prefix -- the gmp/mpfr/mpc that tcc built -- fails:
+          #     checking for the correct version of gmp.h... yes
+          #     checking for the correct version of the gmp/mpfr/mpc libraries... no
+          #     configure: error: Building GCC requires GMP 4.2+, MPFR 2.3.1+...
+          # Headers found, LIBRARIES rejected: the archives are tcc's output
+          # and the link test with the new gcc does not pass.
+          #
+          # stage4-complete.yml:751 says what this is, having hit it first:
+          #   "CONTROL: prefix2 links. If prefix did not, the archives were
+          #    the problem and rebuilding them is the fix."
+          # So each compiler gets prereqs it built itself. It costs three
+          # small builds and removes a whole class of confusion.
+          for q in gmp mpfr mpc; do
+            say "  --- $q, rebuilt by the stage-1 gcc ---"
+            rm -rf /work/$q-2 && cp -a /work/$q /work/$q-2 && cd /work/$q-2
+            make distclean > /dev/null 2>&1 || true
+            case $q in
+              gmp)  ./configure --disable-shared --disable-assembly \
+                      --prefix=/work/prefix2 > conf.log 2>&1 || { tail -20 conf.log; exit 1; } ;;
+              *)    ./configure --disable-shared --with-gmp=/work/prefix2 \
+                      --prefix=/work/prefix2 > conf.log 2>&1 || { tail -20 conf.log; exit 1; } ;;
+            esac
+            make -j"$NP" > build.log 2>&1 || { whyfail build.log; exit 1; }
+            make install > /dev/null 2>&1
+            say "    installed"
+          done
+
           mkdir -p /work/b2 && cd /work/b2
           /work/gbot/configure \
             --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
@@ -576,7 +605,7 @@ jobs:
             --disable-multilib --disable-bootstrap --disable-werror \
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
             --disable-libssp --disable-libatomic --disable-shared \
-            --with-gmp=/work/prefix --with-mpfr=/work/prefix --with-mpc=/work/prefix \
+            --with-gmp=/work/prefix2 --with-mpfr=/work/prefix2 --with-mpc=/work/prefix2 \
             > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
           make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || whyfail build.log
           make install > /dev/null 2>&1
@@ -626,6 +655,10 @@ jobs:
             echo "  --- last 10 lines ---"
             tail -10 "$1" | sed 's/^/    /'
           }
+          # prefix2 AGAIN, NOT prefix. Stage 2 already showed that archives
+          # built by one compiler can fail another's link test; the stage-2
+          # gcc built these, so they are the ones it can use. Whether gcc 10
+          # in turn needs its own is what this rung finds out.
           mkdir -p /work/b3 && cd /work/b3
           /work/gtop/configure \
             --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
@@ -633,7 +666,7 @@ jobs:
             --disable-multilib --disable-bootstrap --disable-werror \
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
             --disable-libssp --disable-shared \
-            --with-gmp=/work/prefix --with-mpfr=/work/prefix --with-mpc=/work/prefix \
+            --with-gmp=/work/prefix2 --with-mpfr=/work/prefix2 --with-mpc=/work/prefix2 \
             > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
           make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || whyfail build.log
           make install > /dev/null 2>&1
