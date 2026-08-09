@@ -2590,10 +2590,20 @@ if [ "$R45" = ok ]; then
   # 1.4.7 and 11.7 use 1.4.21. See the workflow's M4_BOOT_VER for why.
   ( cd /work/src/m4-t && untar "/in/m4-${M4_BOOT_VER}" ) \
     || { R47=FAIL; say "    m4-$M4_BOOT_VER did not extract"; }
+  # --build IS SPELLED OUT HERE, AND ONLY ON THIS TARGET.
+  #
+  # m4 1.4.7 is from 2006 and its bundled config.guess predates RISC-V by a
+  # decade, so it cannot recognise the machine it is running on:
+  #     configure: error: cannot guess build type; you must specify one
+  # (run 85004867294). Telling it the triple skips the guess entirely.
+  #
+  # The amd64 arm does not need this -- a 2006 config.guess knows x86_64
+  # perfectly well -- which is why the flag is here and not there.
   if [ "$R47" = ok ]; then
     _m4d=$(cd /work/src/m4-t && onedir "m4-$M4_BOOT_VER ./m4-$M4_BOOT_VER")
     ( cd "/work/src/m4-t/$_m4d" \
       && ./configure --prefix=/work/prefix --disable-nls \
+           --build=riscv64-unknown-linux-gnu \
            CC="/work/prefix/bin/cc-static" LDFLAGS="-static" > cfg.log 2>&1 \
       && timeout 2400 make -j"$NP" MAKEINFO=true > b.log 2>&1 \
       && make install MAKEINFO=true > /dev/null 2>&1 ) \
@@ -2996,8 +3006,19 @@ if [ "$R5" = ok ]; then
       # "configure: error:". So find that last line and print what precedes it.
       _ln=$(grep -n "^configure:[0-9]*: error:" "$_cl" 2>/dev/null | head -1 | cut -d: -f1)
       if [ -n "$_ln" ]; then
-        _from=$((_ln - 30)); [ "$_from" -lt 1 ] && _from=1
+        # 80, NOT 30. AC_COMPUTE_INT's conftest is about thirty lines of
+        # source on its own, so a 30-line window showed the program and
+        # the verdict and cut off the compile command and its output --
+        # the part that says WHY. Run 85006233115 printed exactly that:
+        # the conftest, then "configure: error: computing EOF failed",
+        # and nothing about the compiler invocation in between.
+        _from=$((_ln - 80)); [ "$_from" -lt 1 ] && _from=1
         sed -n "${_from},${_ln}p" "$_cl" 2>/dev/null | sed 's/^/          /'
+        # AND THE CONFTEST COMMANDS BY NAME, because in a window this
+        # size they are easy to lose among the source.
+        say "    --- conftest commands in $_d ---"
+        grep -nE "^configure:[0-9]+: .*(gcc|g\+\+|xgcc|xg\+\+|cc-static)" "$_cl" 2>/dev/null \
+          | tail -6 | sed 's/^/          /'
       else
         tail -25 "$_cl" 2>/dev/null | sed 's/^/          /'
       fi

@@ -3007,8 +3007,19 @@ if [ "$R5" = ok ]; then
       # "configure: error:". So find that last line and print what precedes it.
       _ln=$(grep -n "^configure:[0-9]*: error:" "$_cl" 2>/dev/null | head -1 | cut -d: -f1)
       if [ -n "$_ln" ]; then
-        _from=$((_ln - 30)); [ "$_from" -lt 1 ] && _from=1
+        # 80, NOT 30. AC_COMPUTE_INT's conftest is about thirty lines of
+        # source on its own, so a 30-line window showed the program and
+        # the verdict and cut off the compile command and its output --
+        # the part that says WHY. Run 85006233115 printed exactly that:
+        # the conftest, then "configure: error: computing EOF failed",
+        # and nothing about the compiler invocation in between.
+        _from=$((_ln - 80)); [ "$_from" -lt 1 ] && _from=1
         sed -n "${_from},${_ln}p" "$_cl" 2>/dev/null | sed 's/^/          /'
+        # AND THE CONFTEST COMMANDS BY NAME, because in a window this
+        # size they are easy to lose among the source.
+        say "    --- conftest commands in $_d ---"
+        grep -nE "^configure:[0-9]+: .*(gcc|g\+\+|xgcc|xg\+\+|cc-static)" "$_cl" 2>/dev/null \
+          | tail -6 | sed 's/^/          /'
       else
         tail -25 "$_cl" 2>/dev/null | sed 's/^/          /'
       fi
