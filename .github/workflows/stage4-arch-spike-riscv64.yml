@@ -142,6 +142,35 @@ jobs:
             libmpc-dev > /dev/null
           command -v bwrap >/dev/null || { echo "  bwrap missing"; exit 1; }
 
+      - name: Let bwrap create a user namespace
+        run: |
+          set -eu
+          # WITHOUT THIS THE BOX NEVER STARTS. Ubuntu 24.04 restricts
+          # unprivileged user namespaces via AppArmor, and the first run of
+          # this spike died at the first box invocation with
+          #     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+          # -- after fetching every source, so the failure cost the whole
+          # download and told us nothing about the ladder.
+          #
+          # stage4-complete.yml:146 carries this step for the same reason. It
+          # was omitted here when the box was copied and the box alone was
+          # copied; the box is not self-contained, and that is worth knowing
+          # for the refactor.
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+            sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
+          }
+          EOF
+            sudo systemctl reload apparmor || sudo service apparmor reload || true
+            echo "  apparmor profile installed for bwrap"
+          else
+            echo "  unprivileged userns already permitted"
+          fi
+
       - name: Confirm this is really riscv64
         run: |
           set -eu
@@ -370,6 +399,12 @@ jobs:
           tar xf gcc-$GCC_TOP.tar.xz;     mv gcc-$GCC_TOP    gtop
           echo "  unpacked; the box has no network past this point"
 
+      # MEASURED 2026-08-09, RUN 84923248968: tcc built gmp 6.2.1, mpfr 4.1.0
+      # and mpc 1.2.1 on riscv64 and gcc's top-level configure completed. The
+      # run then died inside make, in gcc/'s own configure, on
+      #     configure: error: C++ preprocessor "/lib/cpp" fails sanity check
+      # because CXX had been set to tcc -- which has no C++ compiler -- so
+      # configure fell through to /lib/cpp, which the box masks. CC only now.
       - name: 'STAGE 1 -- tcc builds gmp, mpfr, mpc, then the backported gcc 4.6.4'
         timeout-minutes: 120
         run: |
@@ -395,6 +430,14 @@ jobs:
             make install > /dev/null 2>&1
             say "    installed"
           done
+          # CC ONLY, NEVER CXX. tcc has no C++ compiler, and setting CXX to it
+          # makes gcc's own configure fall through to /lib/cpp for the C++
+          # preprocessor -- which the box masks, so it dies with
+          #     configure: error: C++ preprocessor "/lib/cpp" fails sanity check
+          # deep inside make, after the prereqs are already built.
+          # stage4-complete.yml:549 passes CC and nothing else, for this reason.
+          # --enable-languages=c,c++ still works: gcc bootstraps its own g++
+          # from the C compiler it just built.
           say "  === STAGE 1: configure gcc ==="
           mkdir -p /work/b1 && cd /work/b1
           /work/gbot/configure \
@@ -404,7 +447,7 @@ jobs:
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
             --disable-libssp --disable-libatomic --disable-shared \
             --with-gmp=/work/prefix --with-mpfr=/work/prefix --with-mpc=/work/prefix \
-            CC="$TCC -B$TCCDIR" CXX="$TCC -B$TCCDIR" > conf.log 2>&1 \
+            CC="$TCC -B$TCCDIR" > conf.log 2>&1 \
             || { tail -40 conf.log; exit 1; }
           say "  === STAGE 1: make ==="
           make -j"$NP" > build.log 2>&1 || { tail -60 build.log; exit 1; }
