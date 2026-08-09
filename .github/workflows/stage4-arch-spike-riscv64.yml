@@ -417,8 +417,24 @@ jobs:
           #    so the amd64 spike now carries the same sed. Upstream keeps it
           #    out of the fork on purpose; it belongs to whoever is building
           #    against a modern libc, which is everyone here.
-          sed -i 's/struct ucontext/ucontext_t/g' gbot/gcc/config/*/linux-unwind.h
-          echo "  patched: struct ucontext -> ucontext_t in linux-unwind.h"
+          # find, NOT A GLOB, AND IT REPORTS WHAT IT DID.
+          # The first attempt was `sed -i ... gbot/gcc/config/*/linux-unwind.h`
+          # and run 84975201310 died on
+          #     sed: can't read gbot/gcc/config/*/linux-unwind.h: No such file
+          # -- an unmatched glob passes the literal string through, so sed
+          # blames a filename that never existed and says nothing about why.
+          # find matches or it does not, and the count below says which.
+          n=$(find gbot/gcc/config -name linux-unwind.h 2>/dev/null | wc -l)
+          if [ "$n" = 0 ]; then
+            echo "  NO linux-unwind.h ANYWHERE under gbot/gcc/config --"
+            echo "  the tree is not shaped the way this step assumes:"
+            ls -d gbot 2>/dev/null || echo "    gbot does not exist"
+            ls gbot/gcc/config 2>/dev/null | head -10 | sed 's/^/    /'
+            exit 1
+          fi
+          find gbot/gcc/config -name linux-unwind.h -exec \
+            sed -i 's/struct ucontext/ucontext_t/g' {} +
+          echo "  patched: struct ucontext -> ucontext_t in $n linux-unwind.h file(s)"
 
           # 2. Drop the LIB_SPEC override in the riscv linux.h. Upstream's
           #    comment calls itself a FIXME: RISC-V has only word-sized

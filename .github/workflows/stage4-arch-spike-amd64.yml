@@ -399,8 +399,24 @@ jobs:
           # Upstream's own framing, from ekaitz.elenq.tech/bootstrapGcc10:
           # "This change only makes GCC compilable using a modern toolchain,
           # in other contexts you might want to keep the old name."
-          sed -i 's/struct ucontext/ucontext_t/g' gbot/gcc/config/*/linux-unwind.h
-          echo "  patched: struct ucontext -> ucontext_t in $(ls gbot/gcc/config/*/linux-unwind.h | wc -l) linux-unwind.h file(s)"
+          # find, NOT A GLOB, AND IT REPORTS WHAT IT DID.
+          # The first attempt was `sed -i ... gbot/gcc/config/*/linux-unwind.h`
+          # and run 84975201310 died on
+          #     sed: can't read gbot/gcc/config/*/linux-unwind.h: No such file
+          # -- an unmatched glob passes the literal string through, so sed
+          # blames a filename that never existed and says nothing about why.
+          # find matches or it does not, and the count below says which.
+          n=$(find gbot/gcc/config -name linux-unwind.h 2>/dev/null | wc -l)
+          if [ "$n" = 0 ]; then
+            echo "  NO linux-unwind.h ANYWHERE under gbot/gcc/config --"
+            echo "  the tree is not shaped the way this step assumes:"
+            ls -d gbot 2>/dev/null || echo "    gbot does not exist"
+            ls gbot/gcc/config 2>/dev/null | head -10 | sed 's/^/    /'
+            exit 1
+          fi
+          find gbot/gcc/config -name linux-unwind.h -exec \
+            sed -i 's/struct ucontext/ucontext_t/g' {} +
+          echo "  patched: struct ucontext -> ucontext_t in $n linux-unwind.h file(s)"
           tar xf gcc-$GCC_TOP.tar.xz;     mv gcc-$GCC_TOP    gtop
           echo "  unpacked; the box has no network past this point"
 
