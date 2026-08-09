@@ -436,7 +436,18 @@ if [ "$R0" != FAIL ]; then
       say "    soft float did NOT build -- tcc -run tcc.c will not link"
     fi
   fi
-  for f in lib-i386.c stdatomic.c atomic.c builtin.c va_list.c alloca.S \
+  # libtcc1.c IS THE ONE THAT MATTERS ON x86_64, AND IT WAS MISSING.
+  #
+  # The aarch64 arm lists lib-arm64.c; substituting lib-i386.c for it was
+  # wrong -- tcc's lib/Makefile builds x86_64 from libtcc1.o, and that is
+  # where the long-double helpers live. Without it run 84994515381 built musl
+  # completely and then could not link anything:
+  #     tcc: error: undefined symbol '__fixxfdi'
+  # (__fixxfdi converts an 80-bit x87 long double to a signed 64-bit int.)
+  #
+  # The loop skips any name that is not present, so listing both costs
+  # nothing and covers either layout.
+  for f in libtcc1.c lib-i386.c stdatomic.c atomic.c builtin.c va_list.c alloca.S \
            dsohandle.c \
            armeabi.c alloca-arm.S armflush.c; do
     [ -f "$f" ] || continue
@@ -584,6 +595,29 @@ if [ "$R1" = ok ]; then
 
   rm -f src/complex/*.c
   say "    src/complex dropped (_Complex unsupported), as declared"
+
+  # AND src/math/x86_64, WHICH IS x87 AND SSE INLINE ASM tcc DOES NOT PARSE.
+  #
+  # Run 84994515381 compiled 1331 of 1349 objects and every one of the 18
+  # failures was in this one directory:
+  #
+  #       8  error: unknown constraint 'x'        SSE registers
+  #       5  error: unknown constraint 't'        x87 stack top
+  #       2  error: invalid clobber register 'st' x87 stack
+  #       3  (expl.s and friends)                 x87 assembly
+  #
+  # THESE ARE OPTIMISATIONS, NOT FUNCTIONALITY. musl ships a generic C
+  # implementation of every one of them -- fabs, fmodl, lrint, llrint,
+  # remainderl, expl -- and picks the arch version only when the compiler can
+  # build it. Dropping the directory means the generic file is used instead,
+  # exactly as the arch-file selection below already does for anything absent.
+  #
+  # The aarch64 arm does not need this because its src/math/aarch64 uses
+  # plain C with __builtin calls that tcc handles.
+  _mdropped=$(ls src/math/x86_64/* 2>/dev/null | wc -l)
+  rm -f src/math/x86_64/*
+  say "    src/math/x86_64 dropped ($_mdropped files): x87/SSE constraints tcc"
+  say "    does not parse. musl's generic C versions are used instead."
 
   # THE TWO GENERATED HEADERS. musl's Makefile builds these with sed before
   # anything compiles. Nothing includes them until they exist and every later

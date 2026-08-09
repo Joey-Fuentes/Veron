@@ -436,7 +436,11 @@ if [ "$R0" != FAIL ]; then
       say "    soft float did NOT build -- tcc -run tcc.c will not link"
     fi
   fi
-  for f in lib-riscv64.c stdatomic.c atomic.c builtin.c va_list.c alloca.S \
+  # libtcc1.c FIRST, FOR THE REASON THE amd64 ARM DISCOVERED.
+  # tcc's lib/Makefile builds every non-arm target from libtcc1.o, which
+  # carries the compiler-support helpers a link will otherwise miss. The loop
+  # skips absent names, so listing both is free.
+  for f in libtcc1.c lib-riscv64.c stdatomic.c atomic.c builtin.c va_list.c alloca.S \
            dsohandle.c \
            armeabi.c alloca-arm.S armflush.c; do
     [ -f "$f" ] || continue
