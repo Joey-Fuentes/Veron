@@ -540,19 +540,39 @@ jobs:
                      "#ifndef HOST_WIDE_INT_1U\n"
                      "#define HOST_WIDE_INT_1U ((unsigned HOST_WIDE_INT) 1)\n"
                      "#endif\n")
-              # AFTER THE HOST_WIDE_INT TYPEDEF AND BEFORE ANY USE. The first
-              # attempt appended before the closing include guard, which is
-              # after sext_hwi -- so the macro was defined and the function
-              # that needs it still failed. Tested locally: a #define must
-              # precede its use, and "somewhere in the file" is not a place.
-              import re as _re
-              m = _re.search(r"^#define\s+HOST_WIDE_INT\b.*$", s, _re.M) \
-                  or _re.search(r"^typedef .*\bHOST_WIDE_INT\s*;.*$", s, _re.M)
-              if not m:
-                  raise SystemExit("  hwint.h: no HOST_WIDE_INT definition found to anchor on")
-              k = s.index("\n", m.end()) + 1
-              open(p, "w").write(s[:k] + add + s[k:])
+              # ANCHOR ON THE INCLUDE GUARD, NOT ON THE TYPE.
+              #
+              # Two earlier attempts searched for the HOST_WIDE_INT definition
+              # and both missed, because it is not a typedef and it is not
+              # spelled the way either regex assumed. The real file (read, not
+              # guessed, after run 84981659931 said "no HOST_WIDE_INT
+              # definition found to anchor on") defines it CONDITIONALLY:
+              #
+              #     #if HOST_BITS_PER_LONG >= 64 || !defined NEED_64BIT_HOST_WIDE_INT
+              #     # define HOST_WIDE_INT long
+              #
+              # -- inside an #if, and with a space after the #, which
+              # `^#define\s+HOST_WIDE_INT` cannot match.
+              #
+              # THE ANCHOR IS UNNECESSARY ANYWAY, which is the better fix.
+              # `#define HOST_WIDE_INT_1 ((HOST_WIDE_INT) 1)` is text
+              # substitution: HOST_WIDE_INT does not need to exist when this
+              # line is PARSED, only when HOST_WIDE_INT_1 is USED. So the
+              # definition can sit immediately after the include guard --
+              #
+              #     #ifndef GCC_HWINT_H
+              #     #define GCC_HWINT_H     <- here
+              #
+              # which is guaranteed to exist, guaranteed to come first, and
+              # guaranteed to precede every use in the file.
+              k = s.index("\n", s.index("#define GCC_HWINT_H")) + 1
               print("  patched: HOST_WIDE_INT_1 and HOST_WIDE_INT_1U defined in hwint.h")
+          # SHOW THE TOP OF THE FILE EITHER WAY. Three attempts at this patch
+          # failed against a header nobody here had read; printing it means
+          # the next surprise arrives with its evidence attached instead of
+          # costing another run to diagnose.
+          print("  --- hwint.h, first 14 lines after patching ---")
+          print("".join("    " + l for l in open(p).readlines()[:14]))
           PYEOF
           tar xf gcc-$GCC_TOP.tar.xz;     mv gcc-$GCC_TOP    gtop
           echo "  unpacked; the box has no network past this point"
