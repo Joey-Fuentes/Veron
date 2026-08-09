@@ -726,8 +726,22 @@ jobs:
           sed -i 's|^--- gbot.orig/|--- a/|; s|^+++ gbot/|+++ b/|' pins/riscv-bottom-gcc.patch
           echo "  patch: $(wc -l < pins/riscv-bottom-gcc.patch) lines, $(grep -c '^--- a/' pins/riscv-bottom-gcc.patch || true) files"
 
-          # AND THE TREE ITSELF, AT THE TAG, UNPATCHED.
-          rm -rf gbot.orig
+          # AND THE TREE ITSELF, AT THE TAG, UNPATCHED -- WHICH MEANS
+          # gbot.orig, NOT gbot.
+          #
+          # The first version deleted gbot.orig and tarred gbot: the tree the
+          # seds above had ALREADY modified. The box then got a patched tree
+          # and the patch, and applying it a second time failed on the first
+          # hunk of a file that was already correct --
+          #     patching file gcc/config/alpha/linux-unwind.h
+          #     Hunk 1 FAILED 50/50.
+          #     -	struct ucontext uc;
+          #     +	ucontext_t uc;
+          # (run 85012267747). The whole point of shipping a patch separately
+          # is that the tree beside it is pristine; shipping both patched
+          # makes the patch a liability rather than a review artifact.
+          rm -rf gbot
+          mv gbot.orig gbot
           ( cd gbot && rm -rf .git )
           tar -czf pins/riscv-bottom-gcc.tar.gz gbot
           echo "  tree:  $(wc -c < pins/riscv-bottom-gcc.tar.gz) bytes"
