@@ -2566,6 +2566,57 @@ if [ "$R4" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG 4.7 -- m4, because gmp's configure refuses to run without it"
+
+# MEASURED, NOT ANTICIPATED. Run 84999333959 cleared binutils and make and
+# then died here:
+#
+#     checking for suitable m4... configure: error: No usable m4 in $PATH
+#         or /usr/5bin (see config.log for reasons).
+#     gmp: configure FAILED rc=1
+#
+# with --disable-assembly already on the configure line. The aarch64 arm does
+# not hit this and builds m4 much later, at rung 11.7, for glibc's benefit --
+# so this rung exists only because gmp 6.3.0 asks for m4 on this target and
+# not on that one. Whether that is an x86_64 asm-path difference inside gmp's
+# configure is not established here; what is established is that gmp will not
+# configure without m4, and m4 is small and builds with what this box already
+# has.
+#
+# THE BUILD SHAPE IS LIFTED FROM RUNG 11.7 rather than invented: same
+# configure flags, same static link, same MAKEINFO=true.
+R47=skip
+if [ "$R45" = ok ]; then
+  R47=ok
+  cd /work/src
+  rm -rf /work/src/m4-t && mkdir -p /work/src/m4-t
+  ( cd /work/src/m4-t && untar /in/m4- ) || { R47=FAIL; say "    m4 did not extract"; }
+  if [ "$R47" = ok ]; then
+    _m4d=$(cd /work/src/m4-t && onedir 'm4-* ./m4-*')
+    ( cd "/work/src/m4-t/$_m4d" \
+      && ./configure --prefix=/work/prefix --disable-nls \
+           CC="/work/prefix/bin/cc-static" LDFLAGS="-static" > cfg.log 2>&1 \
+      && timeout 2400 make -j"$NP" MAKEINFO=true > b.log 2>&1 \
+      && make install MAKEINFO=true > /dev/null 2>&1 ) \
+      || { R47=FAIL
+           say "    m4 NOT INSTALLED"
+           tail -12 "/work/src/m4-t/$_m4d/cfg.log" 2>/dev/null | sed 's/^/      /'
+           tail -12 "/work/src/m4-t/$_m4d/b.log" 2>/dev/null | sed 's/^/      /'; }
+  fi
+  if [ "$R47" = ok ]; then
+    if [ -x /work/prefix/bin/m4 ]; then
+      say "    m4: $(/work/prefix/bin/m4 --version 2>&1 | head -1)"
+      PATH="/work/prefix/bin:$PATH"; export PATH
+      say "    /work/prefix/bin is on PATH for the rungs below"
+    else
+      say "    m4 installed but /work/prefix/bin/m4 is not there"; R47=FAIL
+    fi
+  fi
+else
+  say "    skipped: rung 4.5 did not finish"
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNG 5 -- gmp, mpfr, mpc.  gcc's arithmetic dependencies."
 # Same three, same versions, same configure shape as
 # spikes/stage4/chain/rung1.sh. If they build here and there, the overlap is
@@ -5390,6 +5441,7 @@ printf '    %-40s %s\n' "3   hosted program, real libc"      "$R3"
 printf '    %-40s %s\n' "3.5 GNU make"                       "$R35"
 printf '    %-40s %s\n' "4   binutils"                       "$R4"
 printf '    %-40s %s\n' "4.5 make rebuilt with real binutils" "$R45"
+printf '    %-40s %s\n' "4.7 m4 (gmp's configure needs it)"    "$R47"
 printf '    %-40s %s\n' "5   gmp / mpfr / mpc"               "$R5"
 printf '    %-40s %s\n' "6   gcc 4.7.4 by tcc -- stage 4 stage 1" "$R6"
 printf '    %-40s %s\n' "7   gmp/mpfr/mpc rebuilt by that gcc"   "$R7"
