@@ -2395,7 +2395,7 @@ package pyyaml 6.0.3
 package veron-cursors 1
   group        desktop
   license      MIT
-  recipe-sha   88ddcdb599e92401d449cc89880f7018b465ae1e9c8a9a364c38693f71e96384
+  recipe-sha   b079c79ba2a2ae04a6c5b8f4e232b3333a8a6eadfe07594e02e11bbb61e74d5f
 
   source
     url        this repository
@@ -2467,6 +2467,13 @@ time, where a failure stops the build.
          | # `default` IS THE NAME labwc ASKED FOR. Asserted by name rather than left to
          | # the alias table, because the alias table is the thing that would be wrong.
          | test -e "dest/veron-cursors/usr/share/icons/Veron/cursors/default"
+         | 
+         | # AND THE PATH wpewebkit WILL ACTUALLY LOOK UP, WHICH IS A DIFFERENT ONE.
+         | # WPECursorTheme.cpp:134 hardcodes create("default", 24) and searches XDG data
+         | # dirs for icons/<name>/cursors -- it reads neither XCURSOR_THEME nor
+         | # XCURSOR_PATH. So the browser needs a THEME called default, not merely a
+         | # cursor called default. Both are asserted because they are separate failures.
+         | test -s "dest/veron-cursors/usr/share/icons/default/cursors/default"
 
 ======================================================================
 package bubblewrap 0.11.0

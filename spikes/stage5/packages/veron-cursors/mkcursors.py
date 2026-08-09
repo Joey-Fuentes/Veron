@@ -285,6 +285,34 @@ def main(dest):
         if os.path.lexists(p):
             os.remove(p)
         os.symlink(target, p)
+    # A THEME NAMED `default`, BECAUSE ONE CONSUMER WILL NOT ASK FOR ANY OTHER.
+    #
+    # labwc can be told the theme name -- XCURSOR_THEME=Veron reaches it
+    # through labwc-session. wpewebkit cannot. WPECursorTheme.cpp:134 is
+    #
+    #     return create("default", 24);
+    #
+    # hardcoded, and create() then tries exactly three names -- the one passed,
+    # then "default", then "Adwaita" -- searching XDG data dirs for
+    # icons/<name>. It reads no XCURSOR_THEME and no XCURSOR_PATH, so a theme
+    # called Veron is invisible to it no matter what the environment says:
+    #
+    #     Could not create cursor theme for 'default'
+    #     Could not load cursor theme, disabling named cursors support
+    #
+    # THIS MATTERS BECAUSE THE CLIENT DRAWS ITS OWN POINTER. Under Wayland the
+    # compositor shows a default cursor, but a client calls
+    # wl_pointer.set_cursor to change it -- so the I-beam over a text field and
+    # the hand over a link come from the BROWSER's theme, not labwc's. Without
+    # this the pointer would exist everywhere except inside the page.
+    #
+    # A SYMLINK RATHER THAN A SECOND COPY: same 256 KB, one source of truth,
+    # and the install listing records it as a link.
+    dflt = os.path.join(dest, "usr/share/icons/default")
+    if os.path.lexists(dflt):
+        os.remove(dflt)
+    os.symlink("Veron", dflt)
+
     tdir = os.path.join(dest, "usr/share/icons/Veron")
     with open(os.path.join(tdir, "index.theme"), "w") as f:
         f.write("[Icon Theme]\nName=Veron\n"
