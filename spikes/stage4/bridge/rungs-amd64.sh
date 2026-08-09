@@ -474,17 +474,25 @@ head1 "RUNG 1 -- freestanding compile and link, no libc at all"
 # The shape every stage-3 measurement used. If this fails the compiler did not
 # survive the trip into the box and nothing above it means anything.
 cd /work
+# THE SAME TEST, IN THIS ARCHITECTURE'S REGISTERS AND SYSCALL NUMBERS.
+# The aarch64 arm uses x8/x0/x1/x2 and `svc #0`, with write=64 and exit=93.
+# x86_64 passes the number in rax and the arguments in rdi/rsi/rdx, traps
+# with `syscall`, and numbers write=1 and exit=60. Run 84993681437 failed
+# here with
+#     r1.c:3: error: unknown register %x8
+# because the aarch64 source was copied unchanged.
 cat > r1.c <<'EOF'
 static long sys3(long n, long a, long b, long c)
 {
-    register long x8 __asm__("x8") = n;
-    register long x0 __asm__("x0") = a;
-    register long x1 __asm__("x1") = b;
-    register long x2 __asm__("x2") = c;
-    __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
-    return x0;
+    register long rax __asm__("rax") = n;
+    register long rdi __asm__("rdi") = a;
+    register long rsi __asm__("rsi") = b;
+    register long rdx __asm__("rdx") = c;
+    __asm__ __volatile__("syscall" : "+r"(rax) : "r"(rdi), "r"(rsi), "r"(rdx)
+                         : "rcx", "r11", "memory");
+    return rax;
 }
-void _start(void) { sys3(64, 1, (long)"rung1 ok\n", 9); sys3(93, 0, 0, 0); }
+void _start(void) { sys3(1, 1, (long)"rung1 ok\n", 9); sys3(60, 0, 0, 0); }
 EOF
 if $CC -nostdlib -static -o r1.bin r1.c 2>r1.err && ./r1.bin >r1.out 2>&1; then
   say "    $(cat r1.out)"; R1=ok

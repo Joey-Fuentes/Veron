@@ -298,7 +298,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bubblewrap busybox-static musl-tools gcc make git curl xz-utils file \
-            cpio qemu-system-misc
+            cpio
+          # NO qemu HERE, DELIBERATELY. The reference arm installs
+          # qemu-system-arm for its final BOOT step; the riscv64 equivalent is
+          # qemu-system-misc, and on this runner it drags in
+          # liboss4-salsa-asound2, which Conflicts: libasound2 --
+          #     E: Error, pkgProblemResolver::Resolve generated breaks
+          # and apt exits 100 before anything is built (run 84993681428).
+          # This spike is about the toolchain, so the BOOT step is dropped
+          # below and nothing needs qemu.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
 
       - name: 'AIRLOCK: build the reference tcc, static against musl'
@@ -1546,134 +1554,3 @@ jobs:
           echo "  THIS ARM SAYS NOTHING ABOUT THE SEED. ref-tcc was built by the"
           echo "  host's compiler; it is here so that a failure in the bridge arm"
           echo "  can be attributed to micro-c rather than to this harness."
-
-      - name: 'BOOT: the kernel this chain built, under qemu, outside the box'
-        if: always()
-        run: |
-          set -u
-          # qemu IS A VERIFIER, NOT A BUILD TOOL, and it stays outside the box
-          # for the same reason stage 4 keeps it outside: nothing it does
-          # contributes a byte to any artifact. It reads what phase B's rung B8
-          # left in /out and reports whether that boots.
-          IMG=box/out/Image
-          IRD=box/out/initramfs.cpio.gz
-          if [ ! -s "$IMG" ] || [ ! -s "$IRD" ]; then
-            echo "  no Image or initramfs -- phase B did not reach B8"
-            # GREEN ONLY IF PHASE B WAS NEVER SUPPOSED TO RUN.
-            #
-            # This step used to `exit 0` unconditionally, so a phase B that
-            # died at B2 left the whole job green with no image -- the same
-            # shape stage4-complete records against itself: "a failed build
-            # inside the box went green and the damage showed up later
-            # somewhere else."
-            #
-            # The rungs deliberately never exit non-zero; the gates live out
-            # here. So: if phase A did not complete, a missing image is
-            # expected and this stays green, which preserves the "partial
-            # progress reports rather than fails" contract phase A has always
-            # had. If phase A DID complete, phase B was supposed to produce an
-            # image and did not, and that is a failure.
-            if [ -f "$BOX/work/lfs/.phase-a-complete" ]; then
-              echo "  phase A completed, so phase B was expected to produce one."
-              echo "  See the PHASE B step above for the first FAIL."
-              exit 1
-            fi
-            echo "  phase A did not complete either -- nothing to boot yet."
-            exit 0
-          fi
-          echo "  Image:     $(stat -c%s "$IMG") bytes"
-          echo "  initramfs: $(stat -c%s "$IRD") bytes"
-          echo "  booting on qemu-system-aarch64 -M virt ..."
-          # THE SYSROOT, OFFERED OVER 9p, READ-ONLY.
-          #
-          # This is what lets the guest chroot into the sysroot this chain
-          # built and run its gcc inside the kernel that same chain built --
-          # the strongest single line this job can print. stage4-complete has
-          # done it for several runs; the reference job enabled the three
-          # kernel options for it and never offered the device, so the guest
-          # reported "9p not available" every time and the gcc-in-guest half
-          # was dead code on both sides.
-          #
-          # security_model=none because there is no uid mapping worth
-          # preserving here and mapped-xattr needs a WRITABLE export, which
-          # this deliberately is not. readonly=on because the guest only
-          # reads; its compile output goes to a tmpfs it bind-mounts itself.
-          #
-          # NOTHING IS COPIED. Only what the guest opens crosses the boundary,
-          # which is why sharing a multi-gigabyte sysroot costs nothing here.
-          #
-          # -nic none STAYS. 9p rides virtio-pci, not ethernet, despite the
-          # CONFIG_NET_9P name -- so the guest gets the sysroot and still has
-          # no network, which is the property the box has held all along.
-          #
-          # 600s: gcc under TCG emulation is slow, and a timeout that fires
-          # reads exactly like a hang.
-          set +e
-          timeout 600 qemu-system-aarch64 \
-            -M virt -cpu cortex-a57 -smp 2 -m 2048 \
-            -nographic -no-reboot -nic none \
-            -fsdev local,id=vsysroot,path="$PWD/box/work/lfs",security_model=none,readonly=on \
-            -device virtio-9p-pci,fsdev=vsysroot,mount_tag=veronsysroot \
-            -kernel "$IMG" \
-            -initrd "$IRD" \
-            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7" \
-            > /tmp/boot.log 2>&1
-          echo "  qemu rc=$?"
-          set -e
-
-          # THE GUEST'S REPORT IN FULL, NOT A TAIL. `tail -25` was right when
-          # init printed three lines; it now cuts the test list in half and
-          # leaves the reader guessing which half. Everything from the first
-          # VERON marker on is the part a human wants.
-          if grep -q "VERON-BOOT-OK" /tmp/boot.log; then
-            echo "  --- the guest, reporting on itself ---"
-            sed -n '/VERON-BOOT-OK/,$p' /tmp/boot.log | sed 's/^/    /'
-          else
-            echo "  did not reach VERON-BOOT-OK -- console, last 30 lines:"
-            tail -30 /tmp/boot.log | sed 's/^/    /'
-            echo "  THE KERNEL THIS CHAIN BUILT DID NOT REACH USERSPACE."
-            exit 1
-          fi
-
-          echo
-          echo "  ================================================"
-          grep -h 'VERON-' /tmp/boot.log | sed 's/^/    /'
-          echo "  ================================================"
-
-          # REACHING USERSPACE IS NOT THE SAME AS BEING A GOOD BUILD, and this
-          # is where that distinction is enforced rather than described. The
-          # guest ran binaries the final compiler produced; if any failed, the
-          # kernel or that compiler is wrong, and printing it green would hide
-          # exactly the defect this job exists to find.
-          #
-          # AN ABSENT SUMMARY IS A FAILURE, NOT A BOOT WITH NO TESTS. That
-          # distinction has cost this repository a round before: "an absent
-          # probe reads exactly like a passing one."
-          tl=$(grep -o 'VERON-TESTS pass=[0-9]* fail=[0-9]*' /tmp/boot.log | tail -1)
-          case "$tl" in
-            "")      echo "  THE GUEST NEVER REPORTED A TEST SUMMARY."
-                     echo "  init did not reach the end -- treated as a failure."
-                     exit 1 ;;
-            *fail=0) echo "  in-guest tests: $tl" ;;
-            *)       echo "  IN-GUEST TESTS FAILED: $tl"
-                     grep -E '^\s+t_.* FAIL' /tmp/boot.log | sed 's/^/    /'
-                     exit 1 ;;
-          esac
-
-          if ! grep -q 'VERON-DONE' /tmp/boot.log; then
-            echo "  init did not run to completion (no VERON-DONE)"
-            exit 1
-          fi
-
-          # THE IN-GUEST COMPILER IS REPORTED, NOT GATED. It depends on the 9p
-          # share, and a 9p problem is not a toolchain problem -- failing the
-          # run on it would charge a qemu detail to the compiler.
-          if grep -q 'VERON-GCC-IN-GUEST ok' /tmp/boot.log; then
-            echo "  the compiler ran INSIDE the kernel it built."
-          else
-            grep -h 'VERON-GCC-IN-GUEST' /tmp/boot.log | sed 's/^/  /'
-          fi
-          echo
-          echo "  END TO END: a kernel and a userland built by a toolchain"
-          echo "  that was itself built in a box holding one busybox and one"
-          echo "  tcc, booted and ran their own tests."

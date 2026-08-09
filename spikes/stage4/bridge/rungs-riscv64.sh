@@ -474,15 +474,20 @@ head1 "RUNG 1 -- freestanding compile and link, no libc at all"
 # The shape every stage-3 measurement used. If this fails the compiler did not
 # survive the trip into the box and nothing above it means anything.
 cd /work
+# THE SAME TEST, IN THIS ARCHITECTURE'S REGISTERS AND SYSCALL NUMBERS.
+# The aarch64 arm uses x8/x0/x1/x2 and `svc #0`. RISC-V uses the same
+# register NAMES for the syscall ABI -- a7 for the number, a0-a2 for the
+# arguments -- and traps with `ecall`. The numbers are the same as aarch64's
+# because both use the generic asm-generic/unistd.h table: write=64, exit=93.
 cat > r1.c <<'EOF'
 static long sys3(long n, long a, long b, long c)
 {
-    register long x8 __asm__("x8") = n;
-    register long x0 __asm__("x0") = a;
-    register long x1 __asm__("x1") = b;
-    register long x2 __asm__("x2") = c;
-    __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
-    return x0;
+    register long a7 __asm__("a7") = n;
+    register long a0 __asm__("a0") = a;
+    register long a1 __asm__("a1") = b;
+    register long a2 __asm__("a2") = c;
+    __asm__ __volatile__("ecall" : "+r"(a0) : "r"(a7), "r"(a1), "r"(a2) : "memory");
+    return a0;
 }
 void _start(void) { sys3(64, 1, (long)"rung1 ok\n", 9); sys3(93, 0, 0, 0); }
 EOF
