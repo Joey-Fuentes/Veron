@@ -240,6 +240,13 @@ jobs:
           git -C work/tccsrc checkout -q "$C"
           echo "  --- arm64 series DELIBERATELY NOT APPLIED ---"
           cd work/tccsrc
+          # STATIC, because the box binds nothing from the host -- no
+          # /lib64/ld-linux-*.so, so a dynamic tcc is "not found" inside it
+          # even though the file is right there. Run 84991611661:
+          #     /bin/sh: /work/tcc: not found
+          # The reference does not hit this because its tcc is built by
+          # micro-c with -static already.
+          export LDFLAGS="-static"
           ./configure --prefix="$PWD/../tccinst" --cpu=x86_64 > ../tcc-conf.log 2>&1 \
             || { echo "  CONFIGURE FAILED"; tail -20 ../tcc-conf.log; exit 1; }
           make -j"$(nproc)" > ../tcc-build.log 2>&1 \
@@ -249,6 +256,11 @@ jobs:
           ./work/tccinst/bin/tcc -v
           printf 'int main(void){return 42;}\n' > work/t.c
           ./work/tccinst/bin/tcc -o work/t work/t.c
+          file "$(command -v ./work/tccinst/bin/tcc || echo work/tccinst/bin/tcc)" \
+            | grep -q "statically linked" \
+            || { echo "  TCC IS NOT STATIC -- it will be 'not found' inside the box"; \
+                 file work/tccinst/bin/tcc; exit 1; }
+          echo "  tcc is statically linked"
           file work/t | tee work/t.file
           grep -q "x86-64" work/t.file || { echo "  NOT an x86-64 binary"; exit 1; }
           set +e; ./work/t; rc=$?; set -e
@@ -345,7 +357,13 @@ jobs:
           make -j"$(nproc)" > b.log 2>&1 || { tail -20 b.log; exit 1; }
           cd ..
           cp bbsrc/busybox veron-busybox
-          echo "  busybox: $(wc -c < veron-busybox) bytes, $(./veron-busybox --list | wc -l) applets"
+          # NAME IT busybox BEFORE ASKING IT ANYTHING. busybox dispatches on
+          # argv[0], so `./veron-busybox --list` looks for an applet called
+          # veron-busybox and prints "applet not found" -- which is what run
+          # 84991611661 did, reporting 0 applets. The reference's load-bearing
+          # loop calls "$BOX/bin/busybox" --list, where the file IS named
+          # busybox; that is the invocation that works.
+          cp veron-busybox bb && echo "  busybox: $(wc -c < bb) bytes, $(./bb --list | wc -l) applets"
           echo "  static:  $(file -b veron-busybox | grep -o 'statically linked' || echo NO)"
 
       - name: 'ASSEMBLE THE BOX: our busybox, our tcc, and nothing else'
@@ -378,6 +396,17 @@ jobs:
             [ -f "$l" ] && cp -L "$l" "$BOX/lib/" && n=$((n+1))
           done < /tmp/needed
           echo "  shared objects the box needs: $n"
+          # AND IT MUST BE ZERO. The box binds nothing from the host, so there
+          # is no /lib64/ld-linux-*.so for a dynamic binary to start from --
+          # copying the .so files into $BOX/lib does not help, because the
+          # INTERPRETER path itself is absent and the kernel resolves that,
+          # not LD_LIBRARY_PATH. Run 84991611661 copied 3 objects, reported
+          # success, and then died with
+          #     /bin/sh: /work/tcc: not found
+          # on a file that was demonstrably present. A count above zero means
+          # something in here is dynamic and will fail that way.
+          [ "$n" = 0 ] || { echo "  A BINARY IN THE BOX IS DYNAMIC -- it will not start:"; \
+                            cat /tmp/needed | sed 's/^/    /'; exit 1; }
           cat > box.sh <<'EOS'
           set -eu
           BOX=${BOX:?box.sh: BOX not set}
