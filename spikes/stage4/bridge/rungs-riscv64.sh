@@ -586,6 +586,45 @@ if [ "$R1" = ok ]; then
   rm -f src/complex/*.c
   say "    src/complex dropped (_Complex unsupported), as declared"
 
+  # TWO RISC-V FIXES, BOTH TESTED AGAINST A LOCALLY BUILT tcc AT OUR PIN
+  # (spikes/toolbox/tcc-5ec0e6f8-arm64-configured.tar.gz, --cpu=riscv64).
+  #
+  # 1. tlsdesc.s USES add AND sll WITH IMMEDIATES, WHICH ARE addi AND slli.
+  #
+  #        src/ldso/riscv64/tlsdesc.s:13: error: 'add': Expected second
+  #            source operand that is a register or immediate
+  #        line 13:  add sp,sp,-16
+  #        line 22:  sll a0,a0,3
+  #
+  #    GNU as accepts `add rd,rs,imm` and quietly assembles it as addi; tcc
+  #    does not, and says so. The immediate forms are the real instructions
+  #    and mean exactly the same thing -- this is a spelling fix, not a
+  #    behaviour change. With both substituted the file assembles to 959
+  #    bytes; run 84995533778 had it REFUSED, which cost the whole rung.
+  if [ -f src/ldso/riscv64/tlsdesc.s ]; then
+    sed -i -e 's/^\tadd \(sp,sp,-\?[0-9]\)/\taddi \1/' \
+           -e 's/^\tsll \(a0,a0,[0-9]\)/\tslli \1/' src/ldso/riscv64/tlsdesc.s
+    say "    tlsdesc.s: add/sll with immediates rewritten as addi/slli"
+  fi
+
+  # 2. src/fenv/riscv64 IS CSR INSTRUCTIONS tcc DOES NOT IMPLEMENT.
+  #
+  #        src/fenv/riscv64/fenv.S:52: error: ',' expected (got '\n')
+  #        line 52:  fscsr t1
+  #    plus csrc, csrs and frflags earlier in the file.
+  #
+  #    DROPPED RATHER THAN REWRITTEN, because musl ships a generic
+  #    replacement and says what it is for: "Dummy functions for archs
+  #    lacking fenv implementation". src/fenv/fenv.c defines the SAME SEVEN
+  #    symbols this file does -- feclearexcept, feraiseexcept, fetestexcept,
+  #    fegetround, __fesetround, fegetenv, fesetenv -- checked, not assumed.
+  #    Floating-point exception flags stop being reported; nothing in this
+  #    chain reads them.
+  _fdropped=$(ls src/fenv/riscv64/* 2>/dev/null | wc -l)
+  rm -f src/fenv/riscv64/*
+  say "    src/fenv/riscv64 dropped ($_fdropped files): CSR instructions tcc"
+  say "    does not implement. musl's generic dummy fenv.c is used instead."
+
   # THE TWO GENERATED HEADERS. musl's Makefile builds these with sed before
   # anything compiles. Nothing includes them until they exist and every later
   # compile fails obscurely if they do not, so they are checked, not assumed.
@@ -829,8 +868,18 @@ FLOATH
         [ -f "$_bad" ] || continue
         _n=$(wc -l < "$_bad")
         if [ "$_n" -le 60 ]; then
-          say "    --- $_bad ($_n lines) ---"
-          sed 's/^/      /' "$_bad"
+          # THE RAW ERROR FIRST, WITH ITS LINE NUMBER. The summary above
+          # strips everything before "error:", which is right for counting
+          # distinct faults and wrong for fixing one: run 84997925140 printed
+          # sigsetjmp.s in full and "error: end of line expected", and the
+          # 24-line file has three constructs that could produce it --
+          # `call setjmp@PLT`, `.hidden __sigsetjmp_tail`, and `popq 64(%rdi)`.
+          # Choosing between them by reading is guessing; tcc already said
+          # which line, and the summary threw it away.
+          say "    --- what tcc said about $_bad ---"
+          grep -a -- "$_bad" /work/musl-cc.err 2>/dev/null | head -4 | sed 's/^/      /'
+          say "    --- $_bad ($_n lines, numbered) ---"
+          awk '{ printf "      %3d  %s\n", NR, $0 }' "$_bad"
         else
           say "    --- $_bad is $_n lines, not printed ---"
         fi

@@ -596,6 +596,35 @@ if [ "$R1" = ok ]; then
   rm -f src/complex/*.c
   say "    src/complex dropped (_Complex unsupported), as declared"
 
+  # @PLT STRIPPED FROM sigsetjmp.s. TESTED, NOT GUESSED.
+  #
+  # Run 84995533783 built 1348 of 1349 objects and rung 4 then died on
+  #     tcc: error: undefined symbol 'sigsetjmp'
+  # because this one file would not assemble. tcc built locally at our pin
+  # (spikes/toolbox/tcc-5ec0e6f8-arm64-configured.tar.gz, reconfigured
+  # --cpu=x86_64) names the line exactly:
+  #
+  #     src/signal/x86_64/sigsetjmp.s:14: error: end of line expected
+  #     line 14 is:  call setjmp@PLT
+  #
+  # NOT the forward label `jz 1f`, which was the obvious suspect and the one
+  # Guix's musl-boot0 note points at -- tcc handles that fine. It is the @PLT
+  # suffix, which its assembler does not parse.
+  #
+  # STRIPPING IT IS CORRECT HERE, NOT A WORKAROUND. @PLT asks the linker to go
+  # through the procedure linkage table, which only exists for dynamic
+  # linking; everything in this box is static, so a direct call is what is
+  # wanted anyway. With the suffix removed the file assembles to 1194 bytes.
+  #
+  # THIS FILE CANNOT BE DROPPED the way src/complex and src/math/x86_64 are:
+  # src/signal/sigsetjmp.c is a ZERO-BYTE placeholder, so there is no generic
+  # implementation to fall back to.
+  if [ -f src/signal/x86_64/sigsetjmp.s ]; then
+    _plt=$(grep -c '@PLT' src/signal/x86_64/sigsetjmp.s || true)
+    sed -i 's/@PLT//g' src/signal/x86_64/sigsetjmp.s
+    say "    sigsetjmp.s: $_plt @PLT suffixes stripped (static link needs no PLT)"
+  fi
+
   # AND src/math/x86_64, WHICH IS x87 AND SSE INLINE ASM tcc DOES NOT PARSE.
   #
   # Run 84994515381 compiled 1331 of 1349 objects and every one of the 18
@@ -862,8 +891,18 @@ FLOATH
         [ -f "$_bad" ] || continue
         _n=$(wc -l < "$_bad")
         if [ "$_n" -le 60 ]; then
-          say "    --- $_bad ($_n lines) ---"
-          sed 's/^/      /' "$_bad"
+          # THE RAW ERROR FIRST, WITH ITS LINE NUMBER. The summary above
+          # strips everything before "error:", which is right for counting
+          # distinct faults and wrong for fixing one: run 84997925140 printed
+          # sigsetjmp.s in full and "error: end of line expected", and the
+          # 24-line file has three constructs that could produce it --
+          # `call setjmp@PLT`, `.hidden __sigsetjmp_tail`, and `popq 64(%rdi)`.
+          # Choosing between them by reading is guessing; tcc already said
+          # which line, and the summary threw it away.
+          say "    --- what tcc said about $_bad ---"
+          grep -a -- "$_bad" /work/musl-cc.err 2>/dev/null | head -4 | sed 's/^/      /'
+          say "    --- $_bad ($_n lines, numbered) ---"
+          awk '{ printf "      %3d  %s\n", NR, $0 }' "$_bad"
         else
           say "    --- $_bad is $_n lines, not printed ---"
         fi
