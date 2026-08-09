@@ -45,11 +45,24 @@ desktop — in a 1024x746 window, with the CSS gradient bar and 5,661 pixels of
 large white text. That is wpewebkit 2.52.5 on a system built from source,
 painting through `wl_shm` with no GPU.
 
-**And 31 of the 48 build from their declared dependencies alone** — measured
-by `stage5-isolate`, which composes each package's root from the stage-4
-sysroot plus only what its recipe declares. The remaining 17 are being closed;
-the first sweep's failures were a fault in the composition rule rather than in
-the recipes, described in `spikes/stage5/ROADMAP.md`.
+**And it browses the real web.** Booted by hand under qemu on a laptop, the
+image reaches `example.com` over HTTPS, follows links with the mouse, and
+**renders YouTube's player** — thumbnail, title, controls and scrubber. What
+does not work is output rather than the browser: there is no GStreamer video
+sink and no audio device (see
+[`ROADMAP-STAGE5.md`](./ROADMAP-STAGE5.md)), and TCG emulation of a cortex-a57
+makes it slow enough that only the shape of the thing is worth judging.
+
+**31 of 48 built from their declared dependencies alone** when
+`stage5-isolate` was last run — it composes each package's root from the
+stage-4 sysroot plus only what its recipe declares, so an undeclared
+dependency becomes a build failure that names itself. The first sweep's
+failures were a fault in the composition rule rather than in the recipes,
+described in `spikes/stage5/ROADMAP.md`.
+
+**That measurement is stale: it predates 74 of the packages now in the set.**
+It is quoted as the last number actually taken rather than updated by
+guesswork, and re-running the job is the only way to replace it.
 
 Counts below that are not in that table are still from reading dependency
 graphs rather than building them. Treat those as planning numbers.

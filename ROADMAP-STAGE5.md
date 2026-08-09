@@ -119,6 +119,79 @@ personally build.
 
 ---
 
+## The GStreamer plugin set has codecs but no sinks
+
+**Found by running the image by hand, not by CI.** The browser plays YouTube
+and `gst-launch-1.0 playbin` decodes a 30-second H.264/MP4 end to end — and
+neither can put a pixel on screen or a sample in a speaker:
+
+```
+GstAutoVideoSink: Failed to find a usable video sink
+GstAutoAudioSink: Playback open error on device 'default'
+GStreamer element scaletempo not found. Please install it
+GStreamer element fakevideosink not found. Please install it
+WebKit wasn't able to find a WebVTT encoder ... unless gst-plugins-bad is installed
+```
+
+**Twenty plugins are installed and every one of them is a codec or a
+converter:**
+
+```
+alsa app audioconvert audioparsers audioresample autodetect deinterlace
+isomp4 matroska ogg opus playback typefindfunctions videoconvertscale
+videofilter videoparsersbad volume vorbis vpx wavparse
+```
+
+**No sink of any kind.** `waylandsink`, `glimagesink`, `kmssink` and
+`fbdevsink` are all absent, so `autovideosink` has nothing to select and
+`playbin` decodes into nowhere. Confirmed directly: `video-sink=fbdevsink`
+fails with *"could not set property"* because the element does not exist.
+
+**And four processing elements WebKit expects are missing too** —
+`scaletempo` (audio, from `libgstaudiofx.so`), `fakevideosink` (from
+`libgstdebug.so`), the WebVTT encoder (`libgstsubenc.so`), and the sinks
+above. **Every one lives in a package this set already builds** —
+gst-plugins-base, -good or -bad — so nothing new needs pinning; the elements
+exist upstream and are simply not in our install sets.
+
+That is four separate symptoms with one cause, which makes it a selection
+decision rather than an oversight. **Understand how the plugin set was chosen
+before adding to it** — the recipes disable nothing by these names, so the
+omission is somewhere else, and guessing at it is how the last several rounds
+of this went.
+
+**`scaletempo` is the one that blocks audio.** WebKit inserts it into the
+playback-rate path; without it the audio chain will not link, independently of
+whether the guest has a sound device — which today it does not, since the qemu
+line carries no audio hardware at all.
+
+**What is already proven:** demux and decode work. 30 seconds of H.264/MP4
+through qtdemux -> h264parse -> decoder at real time, ending in a clean EOS.
+The gap is output.
+
+---
+
+## The CA bundle is not where OpenSSL looks
+
+`curl https://...` fails with *"unable to get local issuer certificate"* until
+`SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt` is exported by hand -- and
+then it works. **The bundle is in the right place and OpenSSL is not finding
+it by default.**
+
+Worth chasing rather than papering over, because there are two trust paths
+here and only one is broken: **the browser's HTTPS works**, which means
+libsoup/gnutls resolves the bundle correctly while OpenSSL consumers do not.
+A system where `curl` and the browser disagree about which certificates are
+trusted is worse than either failing outright.
+
+Candidates, in the order worth checking: what `openssldir` stage 4 actually
+configured openssl 3.6.1 with; whether OpenSSL wants a hashed `certs/`
+directory rather than a single bundle file; and what layout `make-ca`
+produces. The workaround -- exporting `SSL_CERT_FILE` from `/etc/profile` --
+is one line, but it hides the mismatch rather than resolving it.
+
+---
+
 ## Internationalisation — four independent gaps
 
 An appliance can ship English-only. A distribution cannot, so this moved from
@@ -164,6 +237,53 @@ methods → message translation.
 
 ---
 
+## Pointer input: done, with one half outstanding
+
+**Kept because the chain took most of a session to find and the shape of it
+generalises.** Three separate faults presented as one symptom -- "no cursor" --
+and each was in a different layer.
+
+**1. The cursor was invisible even when the theme loaded.** wlroots puts the
+cursor on a KMS hardware plane by default; on virtualised DRM that plane needs
+a hotspot the older ioctls do not carry, so the compositor tracks the pointer
+perfectly and draws nothing. `WLR_NO_HARDWARE_CURSORS=1` in `labwc-session`
+fixes it. **It is not implied by `WLR_RENDERER=pixman`** -- the renderer
+decides scene compositing, the cursor plane is a separate decision -- and
+assuming otherwise cost several rounds.
+
+**2. There was no theme to load.** `veron-cursors` now generates one:
+7 shapes, 4 sizes, 32 aliases, 256 KB, written from the format documented in
+wlroots' own parser. See its deferral for why not a pinned upstream theme --
+Bibata's build chain wants Node.js, a headless browser to rasterise SVG, and a
+pip install.
+
+**3. libinput never saw the pointer at all**, which is the interesting one.
+libudev-zero's `set_properties_from_evdev` tested `EV_ABS` as the `else` of
+`EV_REL`, so the QEMU tablet -- which has `REL_WHEEL` for its scroll wheel and
+`ABS_X|ABS_Y` for its axes -- entered the REL branch, failed the REL_X/REL_Y
+test, and never reached the ABS block. It ended with `ID_INPUT=1` and no type,
+and libinput's contract is to ignore such a device **silently**. No rejection
+message, no clue. `patches/0001` makes the two tests independent, which is
+what real udev's `input_id` builtin does.
+
+**STILL OUTSTANDING: the tablet is enumerated and its events are rejected.**
+
+```
+[ERROR] [libinput] libinput bug: Event for missing capability CAP_POINTER
+                    on device "QEMU Virtio Tablet"
+```
+
+The classifier tags it `ID_INPUT_MOUSE` -- a *relative* pointer -- while the
+device sends absolute coordinates. `virtio-mouse-pci` works today and is what
+`STAGE5.md` recommends, at the cost of QEMU grabbing the host cursor to
+synthesise deltas. Fixing the tag would remove the grab.
+
+**Worth reporting upstream.** Any absolute pointer with a scroll wheel is
+invisible to libinput on a system using libudev-zero instead of the udev
+daemon, and nothing says so.
+
+---
+
 ## Desktop applications
 
 `nnn` in `foot` is the current file manager, and the menu's "Files" entry opens
@@ -180,7 +300,6 @@ wallpaper and a bar.
 | `swayidle` | idle timeouts via `ext-idle-notify`, which labwc supports |
 | `alsa-utils` | `alsamixer`/`amixer` — **alsa-lib is built and there is no volume control** |
 | `nano` | there is no editor but busybox `vi` |
-| **an XCursor theme** | **the guest draws no mouse pointer.** labwc says so — *"Could not create cursor theme for 'default'"* — and `wlroots/xcursor/xcursor.c:515` reads `XCURSOR_PATH`, then `XDG_DATA_HOME`, then a built-in directory, none of which contain a theme here. Data only, no dependency tail. Found by running the image by hand, not by CI, which never needed a pointer. |
 
 **Small, high-value tails:**
 
