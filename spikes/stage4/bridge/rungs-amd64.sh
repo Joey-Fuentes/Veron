@@ -2782,6 +2782,19 @@ if [ "$R5" = ok ]; then
   # then every later target configure inherited GCC_NO_EXECUTABLES and refused
   # to run link tests at all, which is what stopped libstdc++.
   #
+  # CXXFLAGS_FOR_TARGET IS HERE FOR THE SAME REASON AND WAS MISSING.
+  # The comment above names libstdc++ as what this fixed, but only the C flags
+  # were set -- and libstdc++'s configure compiles its tests as C++. Run
+  # 85004867327 cleared every earlier rung and stopped on
+  #
+  #     checking for the value of EOF... configure: error: computing EOF failed
+  #
+  # which is AC_COMPUTE_INT's RUN test: it builds a program that writes EOF to
+  # conftest.val and executes it. Rung 3 already measured why that cannot work
+  # unless linked statically -- "dynamic: does NOT run (expected: libc.a only,
+  # no loader in the box)". A C++ conftest built without -static is a dynamic
+  # binary in a box that has no loader.
+  #
   # gcc emits --eh-frame-hdr for a DYNAMIC link and not for a static one, so
   # the section that is being rejected is only built on the path this box
   # cannot use anyway: there is no loader here, so a dynamic conftest could not
@@ -2855,7 +2868,7 @@ if [ "$R5" = ok ]; then
   # 4's recipe.
   "/work/src/$g47/configure" \
     CC="$CCAUTO" LDFLAGS="$LDF" \
-    CFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
+    CFLAGS_FOR_TARGET="-static" CXXFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
     --build=x86_64-unknown-linux-gnu \
     --host=x86_64-unknown-linux-gnu \
     --target=x86_64-unknown-linux-gnu \
@@ -3222,7 +3235,7 @@ if [ "$R7" = ok ]; then
     --disable-multilib --disable-bootstrap --disable-werror \
     --disable-libsanitizer --disable-libgomp --disable-libquadmath \
     --disable-libssp --disable-libatomic --disable-shared \
-    CFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
+    CFLAGS_FOR_TARGET="-static" CXXFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
     --with-gmp=/work/prereq2 --with-mpfr=/work/prereq2 --with-mpc=/work/prereq2 \
     > cfg.log 2>&1
   _c8=$?
@@ -3355,7 +3368,7 @@ if [ "$R8" = ok ]; then
           --disable-multilib --disable-bootstrap --disable-werror \
           --disable-libsanitizer --disable-libvtv --disable-libgomp \
           --disable-libquadmath --disable-nls --disable-shared \
-          CFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
+          CFLAGS_FOR_TARGET="-static" CXXFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
           --with-gmp=/work/prereq3 \
           --with-mpfr=/work/prereq3 \
           --with-mpc=/work/prereq3 \
