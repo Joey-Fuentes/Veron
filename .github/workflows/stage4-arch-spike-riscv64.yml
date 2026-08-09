@@ -450,7 +450,19 @@ jobs:
             CC="$TCC -B$TCCDIR" > conf.log 2>&1 \
             || { tail -40 conf.log; exit 1; }
           say "  === STAGE 1: make ==="
-          make -j"$NP" > build.log 2>&1 || { tail -60 build.log; exit 1; }
+          # MAKEINFO=true, -k AND -Otarget, ALL THREE COPIED FROM stage4:580.
+          #
+          # MAKEINFO=true because 2026's makeinfo rejects 2012's texinfo. The
+          # first run of this spike built every generator gcc has -- genmodes,
+          # gengenrtl, gengtype, all linked -- and then died on
+          #     makeinfo ... doc/gccint.info
+          #     make[2]: *** [Makefile:4343: doc/gccint.info] Error 1
+          # which is documentation, not a compiler. `true` stands in for it.
+          #
+          # -k so one such failure does not stop the rest, and -Otarget so
+          # parallel output stays attributable to the target that produced it.
+          make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 \
+            || { tail -60 build.log; echo "  (see above; -k means later targets still ran)"; }
           make install > /dev/null 2>&1
           ls -l /work/out/bin/ | sed 's/^/    /'
           EOS
@@ -480,13 +492,17 @@ jobs:
             --disable-libssp --disable-libatomic --disable-shared \
             --with-gmp=/work/prefix --with-mpfr=/work/prefix --with-mpc=/work/prefix \
             > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
-          make -j"$NP" > build.log 2>&1 || { tail -60 build.log; exit 1; }
+          make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || { tail -60 build.log; }
           make install > /dev/null 2>&1
           echo "  cc1 built by tcc      : $(stat -c%s /work/b1/gcc/cc1) bytes"
           echo "  cc1 built by that gcc : $(stat -c%s /work/b2/gcc/cc1) bytes"
           EOS
           W="$PWD/work" REPO="$PWD" ./box.sh \
             /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage2.sh'
+          # -k MEANS make CAN RETURN 0 WITH A GCC MISSING, so the artifact is
+          # what gets checked, not the exit code. Same reason stage 1 tests for
+          # work/out/bin/gcc rather than trusting rc.
+          test -x work/out2/bin/gcc || { echo "  stage 2 produced no gcc"; exit 1; }
           echo "VERON-SPIKE-STAGE2-OK  the tcc-built gcc rebuilt itself"
 
       - name: 'STAGE 3 -- the 4.6 g++ builds gcc ${{ env.GCC_TOP }}  <- THE RUNG TO WATCH'
@@ -511,7 +527,7 @@ jobs:
             --disable-libssp --disable-shared \
             --with-gmp=/work/prefix --with-mpfr=/work/prefix --with-mpc=/work/prefix \
             > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
-          make -j"$NP" > build.log 2>&1 || { tail -80 build.log; exit 1; }
+          make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || { tail -80 build.log; }
           make install > /dev/null 2>&1
           /work/out3/bin/gcc --version | head -1
           EOS
