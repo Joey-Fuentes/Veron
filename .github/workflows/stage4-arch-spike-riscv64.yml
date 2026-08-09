@@ -681,6 +681,13 @@ jobs:
           cat > work/stage2.sh <<'EOS'
           set -eu
           NP=$(nproc); export PATH=/work/out/bin:$PATH
+          # say() TRAVELS WITH whyfail() NOW. Each of these box scripts is a
+          # separate /bin/sh, so a helper defined in stage1.sh does not exist
+          # in stage2.sh -- run 84978334756 exited 127 with
+          #     stage2.sh: 40: say: not found
+          # after stage 1 had already passed, which is an expensive way to
+          # learn that shell functions are not inherited across scripts.
+          say() { echo "$@"; }
           whyfail() {
             # THREE PASSES, BECAUSE THE FIRST TWO ATTEMPTS EACH MISSED IT.
             #
@@ -767,6 +774,13 @@ jobs:
           cat > work/stage3.sh <<'EOS'
           set -eu
           NP=$(nproc); export PATH=/work/out2/bin:$PATH
+          # say() TRAVELS WITH whyfail() NOW. Each of these box scripts is a
+          # separate /bin/sh, so a helper defined in stage1.sh does not exist
+          # in stage2.sh -- run 84978334756 exited 127 with
+          #     stage2.sh: 40: say: not found
+          # after stage 1 had already passed, which is an expensive way to
+          # learn that shell functions are not inherited across scripts.
+          say() { echo "$@"; }
           whyfail() {
             # THREE PASSES, BECAUSE THE FIRST TWO ATTEMPTS EACH MISSED IT.
             #
