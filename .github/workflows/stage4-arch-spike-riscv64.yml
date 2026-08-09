@@ -399,6 +399,14 @@ jobs:
           tar xf gcc-$GCC_TOP.tar.xz;     mv gcc-$GCC_TOP    gtop
           echo "  unpacked; the box has no network past this point"
 
+      # RUN 84972415988 REACHED THE BACKEND AND FAILED IN IT:
+      #     /work/gbot/gcc/hwint.h:291: error: 'HOST_WIDE_INT_1' undeclared
+      #     make[2]: *** [Makefile:3521: riscv.o] Error 1
+      # tcc built gmp, mpfr, mpc, ran gcc's configure, compiled rtl-error.c and
+      # cp/error.c -- and then could not compile riscv.o, the one file that
+      # exists only because of the fork. The step after this one asks whether
+      # that is the fork's gap or tcc's.
+      #
       # MEASURED 2026-08-09, RUN 84923248968: tcc built gmp 6.2.1, mpfr 4.1.0
       # and mpc 1.2.1 on riscv64 and gcc's top-level configure completed. The
       # run then died inside make, in gcc/'s own configure, on
@@ -496,6 +504,41 @@ jobs:
             /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage1.sh'
           test -x work/out/bin/gcc || { echo "  no gcc produced"; exit 1; }
           echo "VERON-SPIKE-STAGE1-OK  tcc built the backported gcc for $GNU_TGT"
+
+      - name: 'WHOSE BUG IS HOST_WIDE_INT_1 -- the fork, or tcc?'
+        if: ${{ always() }}
+        run: |
+          set -eu
+          # RUN 84972415988 FAILED HERE AND NAMED THE FILE:
+          #     /work/gbot/gcc/hwint.h:291: error: 'HOST_WIDE_INT_1' undeclared
+          #     make[2]: *** [Makefile:3521: riscv.o] Error 1
+          #
+          # riscv.o IS THE BACKEND ITSELF -- the one file that exists only
+          # because of the fork. amd64 never sees this: it builds gcc, links
+          # cc1plus, and gets as far as libgcc. So the fault is in the fork or
+          # in tcc, and those want different fixes:
+          #
+          #   the fork  -> HOST_WIDE_INT_1 arrived in gcc after 4.6, and the
+          #                backported riscv backend uses it without the
+          #                definition being carried back. That is a patch we
+          #                would write, and a small one.
+          #   tcc       -> the macro IS defined but behind a conditional tcc's
+          #                preprocessor evaluates differently, so it never
+          #                gets defined. That is a tcc bug and a much larger
+          #                problem, because it would not be confined to riscv.
+          #
+          # THE DISCRIMINATOR IS ONE COMPILE. Build the same file with the
+          # HOST gcc, outside the box, where no tcc is involved:
+          #   compiles -> the fork is fine, tcc is at fault
+          #   fails    -> the fork is at fault, and tcc is innocent
+          [ -d work/gbot ] || { echo "  no source tree -- run STAGE 1 first"; exit 0; }
+          echo "  --- what the fork's hwint.h says at 291 ---"
+          sed -n '280,300p' work/gbot/gcc/hwint.h | sed 's/^/    /'
+          echo "  --- is HOST_WIDE_INT_1 defined anywhere in the tree? ---"
+          grep -rn "define HOST_WIDE_INT_1" work/gbot/gcc/ | head -5 | sed 's/^/    /' \
+            || echo "    NOT DEFINED ANYWHERE -- the fork never carried it back"
+          echo "  --- does riscv.c reference it? ---"
+          grep -c "HOST_WIDE_INT_1" work/gbot/gcc/config/riscv/riscv.c 2>/dev/null | sed 's/^/    riscv.c uses it /' || true
 
       - name: 'STAGE 2 -- that gcc rebuilds itself, and the two cc1s are compared'
         timeout-minutes: 120
