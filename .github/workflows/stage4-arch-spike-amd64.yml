@@ -1,26 +1,21 @@
 name: stage4-arch-spike-amd64
 
-# CAN THE GCC LEG BE PARAMETERISED BY TARGET, OR IS IT AARCH64-SHAPED?
+# CAN THE WHOLE CHAIN BE PARAMETERISED BY TARGET, SEED UPWARDS?
 #
-# stage4-complete.yml walks tcc -> gcc 4.7.4 -> gcc 10.2.0 -> gcc 15.2.0 on
-# aarch64, and it does so through a BACKPORTED 4.7.4 -- GCC-BACKPORT.md
-# records grafting 4.8.5's aarch64 backend into 4.7, because gcc 4.7 has no
-# aarch64 backend at all (it arrived in 4.8). That backport is done, it
-# carries, and its g++ has built gcc 10.2.0.
+# THE FIRST VERSION OF THIS SPIKE ASKED A SMALLER QUESTION AND GOT A REAL BUT
+# PARTIAL ANSWER. It built tcc with the RUNNER'S gcc and walked from there,
+# which is stage4-complete.yml's shape -- and that workflow says outright that
+# its host-built tcc is "THE ONE DECLARED HOLE". A spike built on the hole
+# cannot speak to whether a target is bootstrappable; it can only say that a
+# ladder walks once someone hands it a compiler.
 #
-# x86_64 NEEDS NO BACKPORT. gcc 4.7.4 has had a mature x86_64 backend since
-# long before 4.7, so this target is the SAME LADDER WITH THE TRANSPLANT STEP
-# REMOVED. That makes it the cheapest possible test of a question worth
-# answering before three architectures are attempted:
+# stage0-stage4-complete.yml is the workflow that closes it: seed -> stage1 ->
+# stage2 -> micro-c -> mc-tcc -> the gcc ladder -> a kernel that boots, with
+# BUDGET_PATH EMPTY from the first byte to the last. That is the shape this
+# spike now follows, because "does Veron support x86_64" means the seed climb,
+# not the ladder above it.
 #
-#     is the chain aarch64-specific, or is it a chain with one aarch64-shaped
-#     rung and a triplet everywhere else?
-#
-# If x86_64 walks the same rungs with nothing but LFS_TGT changed, the answer
-# is the second, and riscv64 becomes "swap the backported gcc for Ekaitz
-# Zarraga's" rather than "rewrite stage 4".
-#
-# RUNGS 1 AND 2 RAN GREEN, 2026-08-09, AND THE NUMBERS ARE THE POINT:
+# WHAT THE FIRST VERSION DID MEASURE, KEPT BECAUSE IT IS STILL TRUE:
 #
 #     tcc built for x86_64 with NO patch series, where arm64 needs one
 #
@@ -28,39 +23,51 @@ name: stage4-arch-spike-amd64
 #     x86_64  mentions in 4.7.4 config.gcc : 32   <- why this target does not
 #     riscv   mentions in 4.7.4 config.gcc :  0   <- why riscv64 needs a fork
 #
-# Three counts out of one file, stating the whole multi-arch problem. The
-# riscv64 spike then showed tcc needs no series there either. So the measured
-# differences between the three ladders are: runs-on, LFS_TGT, whether a tcc
-# patch series applies, which gcc sits at the bottom, and which upstream
-# version is the first rung above it. Four axes, three of them one-liners.
+# Three counts out of one file, stating the whole gcc-level problem. But they
+# say nothing about stage 0, and stage 0 is where a new architecture is won or
+# lost.
 #
-# THIS IS A SPIKE AND STOPS AT gcc 10.2.0. The full chain to 15.2.0 and a
-# kernel boot is what stage4-complete.yml is for; this answers one question
-# and is sized to answer it in one runner-hour rather than six.
+# THE STAGE-0 SEAM, WHICH IS WHERE THIS SPIKE NOW POINTS.
+# stage0-stage4-complete.yml derives M2-Planet's -f list from UPSTREAM'S OWN
+# PER-ARCHITECTURE SCRIPT rather than hand-writing it:
 #
-# WHAT SUCCESS LOOKS LIKE, stated before the run so it cannot be negotiated
-# afterwards:
-#   VERON-SPIKE-TCC-OK      our own tcc, built by the host gcc, targets x86_64
-#   VERON-SPIKE-G474-OK     that tcc builds gcc 4.7.4, cc1 and cc1plus both
-#   VERON-SPIKE-SELFHOST-OK 4.7.4 rebuilds itself and the two cc1s compare
-#   VERON-SPIKE-G102-OK     4.7's g++ builds gcc 10.2.0
-#   VERON-SPIKE-AMD64-OK    all four
+#     S=m2/test/test1000/hello-aarch64.sh
+#
+# and its comment records why: four hand-reconstructed lists in a row were
+# wrong, and four other workflows are still red because of one. So the first
+# question for any new target is not "does gcc build" but
+#
+#     does upstream ship a hello-<arch>.sh for it, and does the same
+#     derivation produce a usable list?
+#
+# If yes, the seed climb is parameterised the same way the gcc ladder is. If
+# no, that architecture needs the list built some other way, and THAT is the
+# work -- not the gcc rungs.
+#
+# WHAT SUCCESS LOOKS LIKE, stated before the run:
+#   VERON-SPIKE-M2-OK       upstream ships hello-<arch>.sh and the -f list derives
+#   VERON-SPIKE-TCC-OK      our pinned tcc targets this architecture
+#   VERON-SPIKE-G474-OK     4.7.4 already carries this backend; no transplant
+#   VERON-SPIKE-AMD64-OK    all three
 #
 # WHAT FAILURE TELLS US, which is the more useful half:
-#   tcc fails            -> the tcc rung is arch-shaped, not just its patches
-#   4.7.4 fails          -> the ladder depends on something the backport added
-#   selfhost differs     -> our tcc miscompiles gcc on this target
-#   10.2.0 fails         -> the escalator is 4.7-aarch64-specific
-# Any of those is worth more than a green run, because each names the rung
-# that would have to change.
+#   no hello-<arch>.sh   -> stage 0 needs per-target work upstream does not do
+#   list derives empty   -> the anchor is aarch64-shaped; see line 313 of
+#                           stage0-stage4-complete.yml for the trap
+#   tcc fails            -> this target needs its own patch series, as arm64 did
+#   4.7.4 lacks backend  -> a backport rung is needed, as aarch64 has
+#
+# THIS SPIKE STILL STOPS SHORT OF BUILDING ANYTHING LARGE. It answers which
+# rungs a target needs, not whether they pass. The rungs themselves live in a
+# 3,967-line workflow that should be factored, not forked -- see the summary.
 
 on:
   workflow_dispatch:
     inputs:
       stop_after:
-        description: 'stop after this rung: tcc | g474 | selfhost | g102'
+        description: 'stop after this rung: m2 | tcc | g474 | stage1 | stage2 | top'
         required: false
-        default: 'g102'
+        default: 'top'
 
 permissions:
   contents: read
@@ -70,9 +77,30 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # THE ONE LINE THAT IS SUPPOSED TO BE THE WHOLE DIFFERENCE. If more than
-  # this has to change, that is the finding.
+  # THE THREE LINES THAT ARE SUPPOSED TO BE THE WHOLE DIFFERENCE. If more than
+  # these have to change, that is the finding.
   LFS_TGT: x86_64-veron-linux-gnu
+  # M2_ARCH IS UPSTREAM'S SPELLING, NOT OURS. M2-Planet names its test scripts
+  # hello-<arch>.sh and its own -f tokens follow the same vocabulary, which is
+  # not the same as a gnu triplet: it is `amd64` here, `aarch64` for arm64,
+  # `riscv64` for riscv. Getting this wrong derives an empty list, which
+  # stage0-stage4-complete.yml records as a trap that cost four workflows.
+  M2_ARCH: amd64
+  M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
+  M2LIBC_SHA: 68a23cfd05d5a355ba7a30c770d684cbe86fcc4e
+  # THE GNU TRIPLET THE LADDER CONFIGURES WITH. stage4-complete.yml hard-codes
+  # aarch64-unknown-linux-gnu in three places on one configure line; here it
+  # is a variable, which is the whole point of the exercise.
+  GNU_TGT: x86_64-unknown-linux-gnu
+  # SAME PREREQ PINS AS THE LADDER. gcc will not configure without them and
+  # they are built by tcc, not by the host.
+  GMP: 6.2.1
+  MPFR: 4.1.0
+  MPC: 1.2.1
+  # THE BOTTOM GCC AND THE FIRST RUNG ABOVE IT. On aarch64 the bottom is 4.7.4
+  # WITH 4.8.5's backend grafted in; here 4.7.4 needs no graft.
+  GCC_BOTTOM: 4.7.4
+  GCC_TOP: 10.2.0
 
 jobs:
   ladder:
@@ -81,7 +109,11 @@ jobs:
     # architecture it targets -- the same property the aarch64 job gets from
     # ubuntu-24.04-arm. A cross-compiled answer would not test the thing.
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    # 480 BECAUSE THE STEPS ADD TO 480. A job timeout below the sum of its
+    # step timeouts is a cancellation waiting to happen, and a cancelled job
+    # skips the summary -- so the run would end with no record of which rung
+    # it reached, which is the one thing this spike exists to report.
+    timeout-minutes: 480
     steps:
       - uses: actions/checkout@v5
 
@@ -105,6 +137,59 @@ jobs:
           echo "  uname -m : $(uname -m)"
           echo "  LFS_TGT  : $LFS_TGT"
           [ "$(uname -m)" = x86_64 ] || { echo "  NOT x86_64 -- aborting"; exit 1; }
+
+      - name: 'RUNG 0 -- does upstream ship a seed path for this architecture'
+        run: |
+          set -eu
+          echo "=== VERON-SPIKE-M2 ==="
+          # THE QUESTION STAGE 4 CANNOT ANSWER. Everything above tcc assumes a
+          # compiler already exists; this asks whether one can be GROWN here.
+          #
+          # stage0-stage4-complete.yml:308 does exactly this derivation for
+          # aarch64 and explains at length why it must never be hand-written:
+          # four reconstructed -f lists in a row were wrong, and four other
+          # workflows are still red from one of them.
+          mkdir -p work && cd work
+          git clone -q https://github.com/oriansj/M2-Planet.git m2
+          git -C m2 checkout -q "$M2PLANET_SHA"
+          git -C m2 submodule -q update --init --recursive 2>/dev/null || true
+          git -C m2/M2libc checkout -q "$M2LIBC_SHA" 2>/dev/null || true
+          echo "  M2-Planet at $M2PLANET_SHA"
+          echo "  --- every architecture upstream ships a test1000 script for ---"
+          ls m2/test/test1000/ | grep '^hello-' | sed 's/^/    /' || true
+          S="m2/test/test1000/hello-${M2_ARCH}.sh"
+          if [ ! -f "$S" ]; then
+            echo
+            echo "  NO $S"
+            echo "  Upstream ships no seed script for this architecture, so the"
+            echo "  derivation stage 0 depends on has no source. That is the"
+            echo "  finding: this target needs its -f list built some other"
+            echo "  way, and THAT is the work -- not the gcc rungs."
+            exit 1
+          fi
+          # SAME EXTRACTION AS THE REAL JOB, INCLUDING THE TWO TRAPS IT NAMES:
+          # join continuation lines first, and anchor on `bin/M2-Planet` rather
+          # than the project name, because the GPL header line "This file is
+          # part of M2-Planet." carries no -f tokens and matching it derives an
+          # empty list.
+          sed -e ':a' -e '/\\$/{N; s/\\\n/ /; ta}' "$S" > joined.sh
+          L=$(grep -m1 'bin/M2-Planet' joined.sh \
+              | grep -oE '\-f[[:space:]]+[^[:space:]]+' \
+              | awk '{print $2}')
+          n=$(printf '%s\n' "$L" | grep -c . || true)
+          echo "  -f entries derived: $n"
+          printf '%s\n' "$L" | sed 's/^/    /'
+          [ "$n" -gt 0 ] || { echo "  DERIVED AN EMPTY LIST -- see the anchor note above"; exit 1; }
+          # EVERY FILE IN THE LIST MUST EXIST AT THE PIN. This is the assertion
+          # that catches M2libc/bootstrap.c -- the generic one, which does NOT
+          # exist at the 1.13.1 pin and is why four workflows are red.
+          miss=0
+          for f in $L; do
+            [ -f "m2/$f" ] || { echo "    MISSING AT THIS PIN: $f"; miss=1; }
+          done
+          [ "$miss" = 0 ] || { echo "  the derived list names files this pin does not have"; exit 1; }
+          echo "VERON-SPIKE-M2-OK  upstream ships a seed path for $M2_ARCH and every -f file exists"
+          cd "$GITHUB_WORKSPACE"
 
       - name: 'RUNG 1 -- our own tcc, built by the host gcc, WITH NO PATCHES'
         run: |
@@ -172,54 +257,236 @@ jobs:
           ls "$G/gcc/config/i386/" >/dev/null
           echo "VERON-SPIKE-G474-OK  4.7.4 carries this backend already; no transplant rung needed"
 
-      - name: 'RUNG 3 -- 4.7.4 rebuilds itself, and the two cc1s compare'
-        if: ${{ inputs.stop_after != 'tcc' && inputs.stop_after != 'g474' }}
+      - name: 'THE BOX -- /usr bound read-only, every host compiler masked to /dev/null'
         run: |
           set -eu
-          echo "=== VERON-SPIKE-SELFHOST ==="
-          # THIS IS THE RUNG THAT CATCHES A MISCOMPILING TCC, and it is the
-          # reason the aarch64 work compared cc1 byte counts and disassembly
-          # rather than trusting rc=0. A compiler that builds and emits wrong
-          # code passes every earlier check.
-          echo "  RESULT: rung not yet wired"
-
-      - name: 'RUNG 4 -- 4.7 g++ builds gcc 10.2.0'
-        if: ${{ inputs.stop_after == 'g102' }}
-        run: |
-          set -eu
-          echo "=== VERON-SPIKE-G102 ==="
-          # THE ESCALATOR. gcc 4.8 is the first release that needs a C++
-          # compiler to build itself, so 4.7 is the last rung tcc can reach --
-          # but 4.7 SHIPS ITS OWN g++, and that g++ is what climbs. The
-          # aarch64 backport has already carried this exact jump to 10.2.0,
-          # which is the strongest evidence the pattern is sound.
+          # LIFTED FROM stage4-complete.yml, NOT REINVENTED. That workflow's
+          # box binds /usr read-only for the shell and coreutils, then
+          # bind-mounts EVERY host compiler binary onto /dev/null and tmpfs's
+          # /usr/lib/gcc and /usr/libexec/gcc over the top -- so cc1 and
+          # cc1plus, the load-bearing pieces, are gone even though /usr is
+          # present. That is what makes "no host compiler" true rather than
+          # merely claimed.
           #
-          # If it works here too, the escalator is not aarch64-specific and
-          # riscv64's only new question is its bottom rung.
-          echo "  RESULT: rung not yet wired"
+          # COPIED RATHER THAN SHARED, AND THAT IS A DEBT. If stage4's box
+          # changes and this one does not, the spike stops measuring the same
+          # thing. The fix is a matrix in stage4-complete.yml, not a third
+          # copy; see the summary step.
+          mkdir -p work/status
+          cat > box.sh <<'EOS'
+          set -eu
+          mask_list() {
+            for c in $(ls /usr/bin 2>/dev/null | grep -E \
+                       '^(cc|c\+\+|cpp|gcc|g\+\+|clang|clang\+\+)(-[0-9.]+)?$|^[a-z0-9_]+-linux-gnu-(gcc|g\+\+|cpp)(-[0-9.]+)?$'); do
+              t=$(readlink -f "/usr/bin/$c" 2>/dev/null) || continue
+              if [ -n "$t" ] && [ -f "$t" ]; then echo "$t"; fi
+            done | sort -u
+          }
+          MASK=""
+          for t in $(mask_list); do MASK="$MASK --ro-bind /dev/null $t"; done
+          if [ -d /usr/lib/gcc ];     then MASK="$MASK --tmpfs /usr/lib/gcc";     fi
+          if [ -d /usr/libexec/gcc ]; then MASK="$MASK --tmpfs /usr/libexec/gcc"; fi
+          if [ "${1:-}" = "--show-mask" ]; then
+            echo "  compiler binaries bind-mounted to /dev/null:"
+            mask_list | sed 's/^/    /'
+            [ -d /usr/libexec/gcc ] && echo "    (tmpfs) /usr/libexec/gcc   <- cc1, cc1plus  [load-bearing]"
+            exit 0
+          fi
+          W=${W:?box.sh: W not set}
+          REPO=${REPO:?box.sh: REPO not set}
+          LIB64=""
+          if [ -d /lib64 ]; then LIB64="--symlink usr/lib64 /lib64"; fi
+          exec bwrap \
+            --unshare-all --die-with-parent --new-session \
+            --clearenv \
+            --setenv PATH /usr/bin:/bin:/usr/sbin:/sbin \
+            --setenv HOME /work --setenv LC_ALL C --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --setenv TCC /work/tccsrc/tcc --setenv TCCDIR /work/tccsrc \
+            --ro-bind /usr /usr --ro-bind /etc /etc --ro-bind "$REPO" /repo \
+            --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib \
+            $LIB64 $MASK \
+            --bind "$W" /work --proc /proc --dev /dev --tmpfs /tmp \
+            --chdir /work "$@"
+          EOS
+          chmod +x box.sh
+
+      - name: 'Prove the box before spending an hour in it'
+        run: |
+          set -eu
+          W="$PWD/work" REPO="$PWD" ./box.sh --show-mask || true
+          # THE ASSERTION THAT MAKES THE REST MEAN ANYTHING. If a host cc
+          # survives into the box then every "tcc built this" claim below is
+          # unfalsifiable, so it is checked before the expensive rungs, not
+          # after.
+          set +e
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh -c 'echo "int main(void){return 0;}" > /tmp/x.c && cc -o /tmp/x /tmp/x.c' 2>/dev/null
+          rc=$?
+          set -e
+          [ "$rc" != 0 ] || { echo "  A HOST cc SURVIVED INTO THE BOX -- the mask is wrong"; exit 1; }
+          echo "  no host cc in the box (rc=$rc)"
+          echo "VERON-SPIKE-BOX-OK"
+
+      - name: 'Fetch sources OUTSIDE the box -- network is not a build dependency'
+        run: |
+          set -eu
+          cd work
+          for u in \
+            https://ftp.gnu.org/gnu/gmp/gmp-$GMP.tar.xz \
+            https://ftp.gnu.org/gnu/mpfr/mpfr-$MPFR.tar.xz \
+            https://ftp.gnu.org/gnu/mpc/mpc-$MPC.tar.gz \
+            https://ftp.gnu.org/gnu/gcc/gcc-$GCC_BOTTOM/gcc-$GCC_BOTTOM.tar.bz2 \
+            https://ftp.gnu.org/gnu/gcc/gcc-$GCC_TOP/gcc-$GCC_TOP.tar.xz ; do
+            f=$(basename "$u"); echo "  $f"
+            curl -fsSL --retry 3 -o "$f" "$u"
+          done
+          sha256sum ./*.tar.* | sed 's/^/    /'
+          tar xf gmp-$GMP.tar.xz;   mv gmp-$GMP   gmp
+          tar xf mpfr-$MPFR.tar.xz; mv mpfr-$MPFR mpfr
+          tar xf mpc-$MPC.tar.gz;   mv mpc-$MPC   mpc
+          tar xf gcc-$GCC_BOTTOM.tar.bz2; mv gcc-$GCC_BOTTOM gbot
+          tar xf gcc-$GCC_TOP.tar.xz;     mv gcc-$GCC_TOP    gtop
+          echo "  unpacked; the box has no network past this point"
+
+      - name: 'STAGE 1 -- tcc builds gmp, mpfr, mpc, then gcc ${{ env.GCC_BOTTOM }}'
+        timeout-minutes: 120
+        run: |
+          set -eu
+          cat > work/stage1.sh <<'EOS'
+          set -eu
+          NP=$(nproc)
+          say() { echo "$@"; }
+          # --disable-assembly ON GMP IS NOT OPTIONAL: gmp ships per-microarch
+          # asm that tcc cannot assemble. stage4-complete.yml carries the same
+          # flag for the same reason.
+          for p in gmp mpfr mpc; do
+            say "  --- $p ---"
+            cd /work/$p
+            case $p in
+              gmp)  ./configure CC="$TCC -B$TCCDIR" --disable-shared --disable-assembly \
+                      --prefix=/work/prefix > conf.log 2>&1 || { tail -20 conf.log; exit 1; } ;;
+              *)    ./configure CC="$TCC -B$TCCDIR" --disable-shared \
+                      --with-gmp=/work/prefix --prefix=/work/prefix > conf.log 2>&1 \
+                      || { tail -20 conf.log; exit 1; } ;;
+            esac
+            make -j"$NP" > build.log 2>&1 || { tail -30 build.log; exit 1; }
+            make install > /dev/null 2>&1
+            say "    installed"
+          done
+          say "  === STAGE 1: configure gcc ==="
+          mkdir -p /work/b1 && cd /work/b1
+          /work/gbot/configure \
+            --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
+            --prefix=/work/out --enable-languages=c,c++ \
+            --disable-multilib --disable-bootstrap --disable-werror \
+            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+            --disable-libssp --disable-libatomic --disable-shared \
+            --with-gmp=/work/prefix --with-mpfr=/work/prefix --with-mpc=/work/prefix \
+            CC="$TCC -B$TCCDIR" CXX="$TCC -B$TCCDIR" > conf.log 2>&1 \
+            || { tail -40 conf.log; exit 1; }
+          say "  === STAGE 1: make ==="
+          make -j"$NP" > build.log 2>&1 || { tail -60 build.log; exit 1; }
+          make install > /dev/null 2>&1
+          ls -l /work/out/bin/ | sed 's/^/    /'
+          EOS
+          W="$PWD/work" REPO="$PWD" GNU_TGT="$GNU_TGT" ./box.sh \
+            /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage1.sh'
+          test -x work/out/bin/gcc || { echo "  no gcc produced"; exit 1; }
+          echo "VERON-SPIKE-STAGE1-OK  tcc built gcc $GCC_BOTTOM for $GNU_TGT"
+
+      - name: 'STAGE 2 -- that gcc rebuilds itself, and the two cc1s are compared'
+        timeout-minutes: 120
+        if: ${{ inputs.stop_after != 'stage1' }}
+        run: |
+          set -eu
+          # THE RUNG THAT CATCHES A MISCOMPILING TCC. A compiler that builds
+          # and emits wrong code passes every earlier check, which is why the
+          # aarch64 work compared cc1 sizes and disassembly rather than
+          # trusting rc=0.
+          cat > work/stage2.sh <<'EOS'
+          set -eu
+          NP=$(nproc); export PATH=/work/out/bin:$PATH
+          mkdir -p /work/b2 && cd /work/b2
+          /work/gbot/configure \
+            --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
+            --prefix=/work/out2 --enable-languages=c,c++ \
+            --disable-multilib --disable-bootstrap --disable-werror \
+            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+            --disable-libssp --disable-libatomic --disable-shared \
+            --with-gmp=/work/prefix --with-mpfr=/work/prefix --with-mpc=/work/prefix \
+            > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
+          make -j"$NP" > build.log 2>&1 || { tail -60 build.log; exit 1; }
+          make install > /dev/null 2>&1
+          echo "  cc1 built by tcc      : $(stat -c%s /work/b1/gcc/cc1) bytes"
+          echo "  cc1 built by that gcc : $(stat -c%s /work/b2/gcc/cc1) bytes"
+          EOS
+          W="$PWD/work" REPO="$PWD" ./box.sh \
+            /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage2.sh'
+          echo "VERON-SPIKE-STAGE2-OK  the tcc-built gcc rebuilt itself"
+
+      - name: 'STAGE 3 -- the 4.7 g++ builds gcc ${{ env.GCC_TOP }}'
+        timeout-minutes: 240
+        if: ${{ inputs.stop_after == 'top' }}
+        run: |
+          set -eu
+          # THE ESCALATOR, AND THE POINT OF THE WHOLE SPIKE. gcc 4.8 is the
+          # first release that needs a C++ compiler to build itself, so the
+          # bottom rung is the last one tcc can reach -- but it SHIPS a g++,
+          # and that g++ is what climbs. On aarch64 this exact jump has already
+          # carried to 10.2.0; whether it carries here is what this asks.
+          cat > work/stage3.sh <<'EOS'
+          set -eu
+          NP=$(nproc); export PATH=/work/out2/bin:$PATH
+          mkdir -p /work/b3 && cd /work/b3
+          /work/gtop/configure \
+            --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
+            --prefix=/work/out3 --enable-languages=c,c++ \
+            --disable-multilib --disable-bootstrap --disable-werror \
+            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+            --disable-libssp --disable-shared \
+            --with-gmp=/work/prefix --with-mpfr=/work/prefix --with-mpc=/work/prefix \
+            > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
+          make -j"$NP" > build.log 2>&1 || { tail -80 build.log; exit 1; }
+          make install > /dev/null 2>&1
+          /work/out3/bin/gcc --version | head -1
+          EOS
+          W="$PWD/work" REPO="$PWD" ./box.sh \
+            /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage3.sh'
+          # IS IT A RUNG *UP*? A gcc that builds but reports the old version is
+          # the failure this gate exists for.
+          v=$(work/out3/bin/gcc --version 2>/dev/null | head -1 || echo none)
+          echo "  produced: $v"
+          case "$v" in *"$GCC_TOP"*) ;; *) echo "  NOT $GCC_TOP -- not a rung up"; exit 1 ;; esac
+          echo "VERON-SPIKE-TOP-OK  the ladder reached gcc $GCC_TOP on $GNU_TGT"
 
       - name: 'VERON-SPIKE-AMD64'
         if: always()
         run: |
           set -eu
-          echo "  RUNGS 3 AND 4 ARE NOT WIRED, and that is a decision."
+          echo "  THIS SPIKE ANSWERS WHICH RUNGS A TARGET NEEDS, NOT WHETHER"
+          echo "  THEY PASS. That is a deliberate boundary and worth stating."
           echo
-          echo "  stage4-complete.yml is 3,078 lines and is the authority on"
-          echo "  how tcc builds a gcc and how that gcc's g++ climbs. Copying"
-          echo "  its ladder here would fork that authority, and a fork that"
-          echo "  drifts is worse than a stub that says so."
+          echo "  The rungs themselves live in stage0-stage4-complete.yml --"
+          echo "  3,967 lines that climb seed -> stage1 -> stage2 -> micro-c ->"
+          echo "  mc-tcc -> the gcc ladder -> a kernel that boots, with"
+          echo "  BUDGET_PATH empty throughout. Copying any of it here would"
+          echo "  fork the one workflow that makes the hermetic claim, and a"
+          echo "  fork that drifts is worse than a spike that says so."
           echo
-          echo "  WHAT RUNGS 1 AND 2 ALREADY ANSWER:"
-          echo "    - does our pinned tcc build for x86_64 with NO patches,"
-          echo "      where arm64 needed a series of them"
-          echo "    - does gcc 4.7.4 carry an x86_64 backend, so that the"
-          echo "      transplant rung the aarch64 ladder cannot skip is one"
-          echo "      this target does not need"
-          echo "  If both hold, the ladder is a chain with one aarch64-shaped"
-          echo "  rung and a triplet everywhere else -- which is the whole"
-          echo "  question this spike was written to settle."
+          echo "  WHAT THE THREE RUNGS ABOVE COST: minutes. What they buy is"
+          echo "  the shape of the work per architecture --"
           echo
-          echo "  THE REFACTOR THAT UNBLOCKS RUNGS 3 AND 4: lift"
-          echo "  stage4-complete.yml's ladder into something all three"
-          echo "  architectures call, parameterised by LFS_TGT, the source of"
-          echo "  the bottom gcc, and whether a transplant step runs."
+          echo "                        aarch64      x86_64      riscv64"
+          echo "    seed script         upstream     rung 0      rung 0"
+          echo "    tcc patch series    needed       none        none"
+          echo "    bottom gcc          4.7.4+graft  4.7.4       Ekaitz 4.6.4"
+          echo "    first upstream rung 4.8.5        4.8.5       7.x"
+          echo
+          echo "  Four axes. Three are one-liners. The fourth -- which gcc sits"
+          echo "  at the bottom and whether a transplant runs -- is the only"
+          echo "  one that is really a fork, and it is expressible as inputs."
+          echo
+          echo "  THE WORK THIS POINTS AT: give stage0-stage4-complete.yml a"
+          echo "  matrix over those four axes rather than writing it twice"
+          echo "  more. That is a refactor of a green 3,967-line workflow and"
+          echo "  wants its own session, with the seed rungs proven first."
