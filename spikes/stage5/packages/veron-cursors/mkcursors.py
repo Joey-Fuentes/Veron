@@ -285,33 +285,49 @@ def main(dest):
         if os.path.lexists(p):
             os.remove(p)
         os.symlink(target, p)
-    # A THEME NAMED `default`, BECAUSE ONE CONSUMER WILL NOT ASK FOR ANY OTHER.
+    # A SECOND THEME NAMED `default`, BECAUSE ONE CONSUMER WILL NOT ASK FOR
+    # ANY OTHER -- AND MADE OF FILE SYMLINKS, BECAUSE A SYMLINKED DIRECTORY
+    # DOES NOT SURVIVE STAGING.
     #
-    # labwc can be told the theme name -- XCURSOR_THEME=Veron reaches it
-    # through labwc-session. wpewebkit cannot. WPECursorTheme.cpp:134 is
+    # labwc can be told the theme name; XCURSOR_THEME=Veron reaches it through
+    # labwc-session. wpewebkit cannot. WPECursorTheme.cpp:134 is
     #
     #     return create("default", 24);
     #
     # hardcoded, and create() then tries exactly three names -- the one passed,
     # then "default", then "Adwaita" -- searching XDG data dirs for
-    # icons/<name>. It reads no XCURSOR_THEME and no XCURSOR_PATH, so a theme
-    # called Veron is invisible to it no matter what the environment says:
+    # icons/<name>/cursors. It reads no XCURSOR_THEME and no XCURSOR_PATH, so
+    # a theme called Veron is invisible to it whatever the environment says:
     #
     #     Could not create cursor theme for 'default'
     #     Could not load cursor theme, disabling named cursors support
     #
-    # THIS MATTERS BECAUSE THE CLIENT DRAWS ITS OWN POINTER. Under Wayland the
-    # compositor shows a default cursor, but a client calls
-    # wl_pointer.set_cursor to change it -- so the I-beam over a text field and
+    # THE CLIENT DRAWS ITS OWN POINTER, which is why this is not cosmetic.
+    # Under Wayland the compositor shows a default cursor, but a client calls
+    # wl_pointer.set_cursor to change it -- the I-beam over a text field and
     # the hand over a link come from the BROWSER's theme, not labwc's. Without
-    # this the pointer would exist everywhere except inside the page.
+    # this there is a pointer everywhere except inside the page.
     #
-    # A SYMLINK RATHER THAN A SECOND COPY: same 256 KB, one source of truth,
-    # and the install listing records it as a link.
-    dflt = os.path.join(dest, "usr/share/icons/default")
-    if os.path.lexists(dflt):
-        os.remove(dflt)
-    os.symlink("Veron", dflt)
+    # THE FIRST ATTEMPT WAS `icons/default -> Veron`, ONE SYMLINK, AND IT WAS
+    # SILENTLY LOST. The build step asserted it and passed; the guest test
+    # failed. os.walk puts a symlink-to-a-directory in `dirs`, never in
+    # `files`, so stage_into's `for fn in files` never sees it and the
+    # os.makedirs above creates a real EMPTY directory in its place. A
+    # symlinked directory cannot survive staging as written.
+    #
+    # FILE symlinks do survive -- stage_into checks os.path.islink(src) inside
+    # the files loop and recreates them with os.symlink -- so `default` is a
+    # real directory of links pointing back at Veron's files. Same bytes, one
+    # source of truth, and it stages correctly.
+    ddir = os.path.join(dest, "usr/share/icons/default/cursors")
+    os.makedirs(ddir, exist_ok=True)
+    for name in list(SHAPES) + list(ALIASES):
+        p = os.path.join(ddir, name)
+        if os.path.lexists(p):
+            os.remove(p)
+        os.symlink(os.path.join("../../Veron/cursors", name), p)
+    with open(os.path.join(dest, "usr/share/icons/default/index.theme"), "w") as f:
+        f.write("[Icon Theme]\nName=default\nInherits=Veron\n")
 
     tdir = os.path.join(dest, "usr/share/icons/Veron")
     with open(os.path.join(tdir, "index.theme"), "w") as f:

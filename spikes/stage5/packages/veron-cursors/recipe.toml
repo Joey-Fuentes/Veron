@@ -141,6 +141,14 @@ CHECK
 test -e "$D/usr/share/icons/Veron/cursors/default"
 
 # AND THE PATH wpewebkit WILL ACTUALLY LOOK UP, WHICH IS A DIFFERENT ONE.
+# This assertion passed while the guest test failed, which is the interesting
+# part: `icons/default` was a symlink to `Veron` in the DESTDIR and correct
+# there, and was GONE from the image. stage_into walks with os.walk and acts
+# only on `files`; os.walk puts a symlink-to-a-DIRECTORY in `dirs`, so the
+# link was never copied and os.makedirs created a real empty directory over
+# it. A symlinked directory cannot survive staging as tools/veron is written
+# -- worth knowing for any future package that wants one. File symlinks are
+# fine: stage_into checks os.path.islink inside the files loop.
 # WPECursorTheme.cpp:134 hardcodes create("default", 24) and searches XDG data
 # dirs for icons/<name>/cursors -- it reads neither XCURSOR_THEME nor
 # XCURSOR_PATH. So the browser needs a THEME called default, not merely a
