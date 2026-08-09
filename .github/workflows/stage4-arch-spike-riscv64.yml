@@ -331,80 +331,161 @@ jobs:
           ls gcc/config/riscv/ | head -8 | sed 's/^/    /'
           echo "VERON-SPIKE-G46-OK  the fork carries a riscv backend at this tag"
 
-      - name: 'THE BOX -- /usr bound read-only, every host compiler masked to /dev/null'
+      - name: 'AIRLOCK: our own busybox, built by the host gcc, OUTSIDE the box'
         run: |
           set -eu
-          # LIFTED FROM stage4-complete.yml, NOT REINVENTED. That workflow's
-          # box binds /usr read-only for the shell and coreutils, then
-          # bind-mounts EVERY host compiler binary onto /dev/null and tmpfs's
-          # /usr/lib/gcc and /usr/libexec/gcc over the top -- so cc1 and
-          # cc1plus, the load-bearing pieces, are gone even though /usr is
-          # present. That is what makes "no host compiler" true rather than
-          # merely claimed.
+          # THIS SPIKE USED TO BIND /usr READ-ONLY AND MASK THE COMPILERS, AND
+          # THAT WAS NOT HERMETIC -- IT WAS THEATRE.
           #
-          # COPIED RATHER THAN SHARED, AND THAT IS A DEBT. If stage4's box
-          # changes and this one does not, the spike stops measuring the same
-          # thing. The fix is a matrix in stage4-complete.yml, not a third
-          # copy; see the summary step.
-          mkdir -p work/status
+          # Masking cc/gcc/g++ while binding all of /usr leaves make, sed, awk,
+          # grep, bash, tar, m4, perl and python3 in the box, every one of them
+          # Ubuntu's. gcc's build reaches for dozens of those, so "no host
+          # compiler" was true and beside the point: the artifact was still
+          # shaped by the host's userland.
+          #
+          # stage0-stage4-complete.yml does not do that. It CONSTRUCTS a box --
+          # $BOX/bin, $BOX/lib, nothing else -- binds it as /, binds NOTHING
+          # from the host, and enforces the contents with a SEAL step that
+          # fails if any executable is not on a declared budget. That is the
+          # model this now follows.
+          #
+          # BUILDING BUSYBOX WITH THE HOST gcc IS THE DECLARED HOLE, and it is
+          # the same one stage 0 declares: something must compile the first
+          # thing. What matters is that the RESULT is ours -- pinned source,
+          # our config -- and that nothing else crosses.
+          BB=busybox-1.36.1
+          curl -fsSL -o $BB.tar.bz2 https://busybox.net/downloads/$BB.tar.bz2
+          echo "  sha256: $(sha256sum $BB.tar.bz2 | cut -d' ' -f1)"
+          echo "  pinned: b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314"
+          sha256sum $BB.tar.bz2 | grep -q b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314 \
+            || { echo "  BUSYBOX SOURCE DOES NOT MATCH THE PIN"; exit 1; }
+          tar xf $BB.tar.bz2 && mv $BB bbsrc && cd bbsrc
+          make defconfig > /dev/null 2>&1
+          # STATIC, because the box has no host /lib to resolve against.
+          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          # THE APPLETS defconfig LEAVES OUT. Every one of these is reached for
+          # by some configure script or Makefile in a gcc build; the list is
+          # lifted from stage0-stage4-complete.yml:2859, which learned it the
+          # expensive way.
+          for sym in SPLIT COMM JOIN PASTE EXPAND UNEXPAND FOLD NL TSORT \
+                     CMP DIFF PATCH AWK SED GREP SORT UNIQ TR CUT; do
+            sed -i "s/^# CONFIG_$sym is not set/CONFIG_$sym=y/" .config
+            grep -q "^CONFIG_$sym=y" .config || echo "CONFIG_$sym=y" >> .config
+          done
+          for sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
+            sed -i "s/^CONFIG_$sym=y/# CONFIG_$sym is not set/" .config
+          done
+          yes '' | make oldconfig > /dev/null 2>&1 || true
+          # VERIFY AFTER oldconfig: it re-derives symbols and has undone
+          # exactly this edit before, in this repository.
+          _bad=0
+          for sym in STATIC SPLIT COMM; do
+            grep -q "^CONFIG_$sym=y" .config || { echo "  CONFIG_$sym did not survive oldconfig"; _bad=1; }
+          done
+          [ "$_bad" = 0 ] || exit 1
+          make -j"$(nproc)" > b.log 2>&1 || { tail -20 b.log; exit 1; }
+          cd ..
+          cp bbsrc/busybox veron-busybox
+          echo "  busybox: $(wc -c < veron-busybox) bytes, $(./veron-busybox --list | wc -l) applets"
+          echo "  static:  $(file -b veron-busybox | grep -o 'statically linked' || echo NO)"
+
+      - name: 'ASSEMBLE THE BOX: our busybox, our tcc, and nothing else'
+        run: |
+          set -eu
+          BOX="$PWD/box"; echo "BOX=$BOX" >> "$GITHUB_ENV"
+          mkdir -p "$BOX"/bin "$BOX"/lib "$BOX"/work "$BOX"/out \
+                   "$BOX"/src "$BOX"/tmp "$BOX"/proc "$BOX"/dev "$BOX"/usr
+          ln -sf ../bin "$BOX/usr/bin"
+          # TIER 2 ONLY: busybox is a driver -- it runs the build but decides
+          # no artifact byte. TIER 1 (the tools whose output IS the artifact)
+          # is tcc alone, and it lives in /work, not /bin.
+          cp -L "$PWD/veron-busybox" "$BOX/bin/busybox"
+          for a in $("$BOX/bin/busybox" --list); do
+            [ "$a" = busybox ] && continue
+            ln -sf busybox "$BOX/bin/$a"
+          done
+          # tcc's -B directory is its own source tree: that is where it finds
+          # libtcc1.a and its include/.
+          cp -a work/tccsrc "$BOX/work/tccsrc"
+          cp -L work/tccinst/bin/tcc "$BOX/work/tcc"
+          chmod 0755 "$BOX/work/tcc"
+          # Only what the copied binaries need to EXECUTE. Both should be
+          # static, so this should find nothing -- printed, not assumed.
+          for b in "$BOX/bin/busybox" "$BOX/work/tcc"; do
+            ldd "$b" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}'
+          done | sort -u > /tmp/needed
+          n=0
+          while read -r l; do
+            [ -f "$l" ] && cp -L "$l" "$BOX/lib/" && n=$((n+1))
+          done < /tmp/needed
+          echo "  shared objects the box needs: $n"
           cat > box.sh <<'EOS'
           set -eu
-          mask_list() {
-            for c in $(ls /usr/bin 2>/dev/null | grep -E \
-                       '^(cc|c\+\+|cpp|gcc|g\+\+|clang|clang\+\+)(-[0-9.]+)?$|^[a-z0-9_]+-linux-gnu-(gcc|g\+\+|cpp)(-[0-9.]+)?$'); do
-              t=$(readlink -f "/usr/bin/$c" 2>/dev/null) || continue
-              if [ -n "$t" ] && [ -f "$t" ]; then echo "$t"; fi
-            done | sort -u
-          }
-          MASK=""
-          for t in $(mask_list); do MASK="$MASK --ro-bind /dev/null $t"; done
-          if [ -d /usr/lib/gcc ];     then MASK="$MASK --tmpfs /usr/lib/gcc";     fi
-          if [ -d /usr/libexec/gcc ]; then MASK="$MASK --tmpfs /usr/libexec/gcc"; fi
-          if [ "${1:-}" = "--show-mask" ]; then
-            echo "  compiler binaries bind-mounted to /dev/null:"
-            mask_list | sed 's/^/    /'
-            [ -d /usr/libexec/gcc ] && echo "    (tmpfs) /usr/libexec/gcc   <- cc1, cc1plus  [load-bearing]"
-            exit 0
-          fi
-          W=${W:?box.sh: W not set}
-          REPO=${REPO:?box.sh: REPO not set}
-          LIB64=""
-          if [ -d /lib64 ]; then LIB64="--symlink usr/lib64 /lib64"; fi
+          BOX=${BOX:?box.sh: BOX not set}
           exec bwrap \
-            --unshare-all --die-with-parent --new-session \
-            --clearenv \
-            --setenv PATH /usr/bin:/bin:/usr/sbin:/sbin \
-            --setenv HOME /work --setenv LC_ALL C --setenv TERM dumb \
-            --setenv SOURCE_DATE_EPOCH 0 \
-            --setenv TCC /work/tccsrc/tcc --setenv TCCDIR /work/tccsrc \
-            --ro-bind /usr /usr --ro-bind /etc /etc --ro-bind "$REPO" /repo \
-            --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib \
-            $LIB64 $MASK \
-            --bind "$W" /work --proc /proc --dev /dev --tmpfs /tmp \
+            --unshare-all --die-with-parent --new-session --clearenv \
+            --setenv PATH /bin \
+            --setenv HOME /work --setenv LC_ALL POSIX --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 --setenv LD_LIBRARY_PATH /lib \
+            --setenv TCC /work/tcc --setenv TCCDIR /work/tccsrc \
+            --bind "$BOX" / \
+            --proc /proc --dev /dev --tmpfs /tmp \
             --chdir /work "$@"
           EOS
           chmod +x box.sh
 
-      - name: 'Prove the box before spending an hour in it'
+      - name: 'SEAL: every executable in the box, enumerated and enforced'
         run: |
           set -eu
-          W="$PWD/work" REPO="$PWD" ./box.sh --show-mask || true
-          # THE ASSERTION THAT MAKES THE REST MEAN ANYTHING. If a host cc
-          # survives into the box then every "tcc built this" claim below is
-          # unfalsifiable, so it is checked before the expensive rungs, not
-          # after.
-          set +e
-          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh -c 'echo "int main(void){return 0;}" > /tmp/x.c && cc -o /tmp/x /tmp/x.c' 2>/dev/null
-          rc=$?
-          set -e
-          [ "$rc" != 0 ] || { echo "  A HOST cc SURVIVED INTO THE BOX -- the mask is wrong"; exit 1; }
-          echo "  no host cc in the box (rc=$rc)"
-          echo "VERON-SPIKE-BOX-OK"
+          echo "  === TIER 1: DECIDES ARTIFACT BYTES ==="
+          printf '    %-12s %10s  %s\n' tcc "$(wc -c < "$BOX/work/tcc")" \
+            "$(sha256sum "$BOX/work/tcc" | cut -c1-16)"
+          echo "  === TIER 2: DRIVER (touches no artifact byte) ==="
+          printf '    %-12s %10s  %s\n' busybox "$(wc -c < "$BOX/bin/busybox")" \
+            "$(sha256sum "$BOX/bin/busybox" | cut -c1-16)"
+          echo "  === shared objects carried in ==="
+          ls -1 "$BOX/lib" | sed 's/^/    /'
+          # THE ENFORCEMENT. Every REAL file under $BOX/bin must be busybox.
+          # If a cp of gcc appears, or anything else lands here, this fails --
+          # which is the entire value of writing the budget down.
+          find "$BOX/bin" -maxdepth 1 -type f -printf '%f\n' | sort > /tmp/actual
+          echo busybox > /tmp/declared
+          if ! cmp -s /tmp/actual /tmp/declared; then
+            echo "FAIL: the box contains executables outside the declared budget."
+            comm -3 /tmp/declared /tmp/actual | sed 's/^/    /'
+            exit 1
+          fi
+          echo "  budget holds: bin contains busybox and its applet links, nothing else"
+
+      - name: 'Prove the box: no host anything'
+        run: |
+          set -eu
+          # THE ASSERTIONS THAT MAKE THE REST MEAN ANYTHING, and the old
+          # version only made the first one.
+          for probe in \
+            'cc -o /tmp/x /tmp/x.c' \
+            'gcc --version' \
+            'ls /usr/include' \
+            'ls /usr/lib' \
+            'perl -e 1' \
+            'python3 -c 1' ; do
+            set +e
+            ./box.sh /bin/sh -c "$probe" >/dev/null 2>&1
+            rc=$?
+            set -e
+            [ "$rc" != 0 ] || { echo "  HOST LEAK: '$probe' SUCCEEDED inside the box"; exit 1; }
+            printf '    absent: %-24s (rc=%s)\n' "${probe%% *}" "$rc"
+          done
+          # And the two that must be present.
+          ./box.sh /bin/sh -c 'sed --version >/dev/null 2>&1 || busybox sed --help >/dev/null 2>&1'
+          ./box.sh /bin/sh -c '/work/tcc -v'
+          echo "VERON-SPIKE-BOX-OK  our busybox and our tcc, nothing from the host"
 
       - name: 'Fetch sources OUTSIDE the box -- network is not a build dependency'
         run: |
           set -eu
-          cd work
+          # INTO THE BOX'S OWN /work, not a host directory bound in later.
+          cd "$BOX/work"
           for u in \
             https://ftp.gnu.org/gnu/gmp/gmp-$GMP.tar.xz \
             https://ftp.gnu.org/gnu/mpfr/mpfr-$MPFR.tar.xz \
@@ -616,7 +697,7 @@ jobs:
         timeout-minutes: 120
         run: |
           set -eu
-          cat > work/stage1.sh <<'EOS'
+          cat > "$BOX/work/stage1.sh" <<'EOS'
           set -eu
           NP=$(nproc)
           say() { echo "$@"; }
@@ -737,9 +818,8 @@ jobs:
           make install > /dev/null 2>&1
           ls -l /work/out/bin/ | sed 's/^/    /'
           EOS
-          W="$PWD/work" REPO="$PWD" GNU_TGT="$GNU_TGT" ./box.sh \
-            /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage1.sh'
-          test -x work/out/bin/gcc || { echo "  no gcc produced"; exit 1; }
+          ./box.sh /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage1.sh'
+          test -x "$BOX/work/out/bin/gcc" || { echo "  no gcc produced"; exit 1; }
           echo "VERON-SPIKE-STAGE1-OK  tcc built the backported gcc for $GNU_TGT"
 
       - name: 'WHOSE BUG IS HOST_WIDE_INT_1 -- the fork, or tcc?'
@@ -768,14 +848,14 @@ jobs:
           # HOST gcc, outside the box, where no tcc is involved:
           #   compiles -> the fork is fine, tcc is at fault
           #   fails    -> the fork is at fault, and tcc is innocent
-          [ -d work/gbot ] || { echo "  no source tree -- run STAGE 1 first"; exit 0; }
+          [ -d "$BOX/work/gbot" ] || { echo "  no source tree -- run STAGE 1 first"; exit 0; }
           echo "  --- what the fork's hwint.h says at 291 ---"
-          sed -n '280,300p' work/gbot/gcc/hwint.h | sed 's/^/    /'
+          sed -n '280,300p' "$BOX/work/gbot/gcc/hwint.h" | sed 's/^/    /'
           echo "  --- is HOST_WIDE_INT_1 defined anywhere in the tree? ---"
-          grep -rn "define HOST_WIDE_INT_1" work/gbot/gcc/ | head -5 | sed 's/^/    /' \
+          grep -rn "define HOST_WIDE_INT_1" "$BOX/work/gbot/gcc/" | head -5 | sed 's/^/    /' \
             || echo "    NOT DEFINED ANYWHERE -- the fork never carried it back"
           echo "  --- does riscv.c reference it? ---"
-          grep -c "HOST_WIDE_INT_1" work/gbot/gcc/config/riscv/riscv.c 2>/dev/null | sed 's/^/    riscv.c uses it /' || true
+          grep -c "HOST_WIDE_INT_1" "$BOX/work/gbot/gcc/config/riscv/riscv.c" 2>/dev/null | sed 's/^/    riscv.c uses it /' || true
 
       - name: 'STAGE 2 -- that gcc rebuilds itself, and the two cc1s are compared'
         timeout-minutes: 120
@@ -786,7 +866,7 @@ jobs:
           # and emits wrong code passes every earlier check, which is why the
           # aarch64 work compared cc1 sizes and disassembly rather than
           # trusting rc=0.
-          cat > work/stage2.sh <<'EOS'
+          cat > "$BOX/work/stage2.sh" <<'EOS'
           set -eu
           NP=$(nproc); export PATH=/work/out/bin:$PATH
           # say() TRAVELS WITH whyfail() NOW. Each of these box scripts is a
@@ -908,12 +988,11 @@ jobs:
           echo "  cc1 built by tcc      : $(stat -c%s /work/b1/gcc/cc1) bytes"
           echo "  cc1 built by that gcc : $(stat -c%s /work/b2/gcc/cc1) bytes"
           EOS
-          W="$PWD/work" REPO="$PWD" ./box.sh \
-            /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage2.sh'
+          ./box.sh /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage2.sh'
           # -k MEANS make CAN RETURN 0 WITH A GCC MISSING, so the artifact is
           # what gets checked, not the exit code. Same reason stage 1 tests for
           # work/out/bin/gcc rather than trusting rc.
-          test -x work/out2/bin/gcc || { echo "  stage 2 produced no gcc"; exit 1; }
+          test -x "$BOX/work/out2/bin/gcc" || { echo "  stage 2 produced no gcc"; exit 1; }
           echo "VERON-SPIKE-STAGE2-OK  the tcc-built gcc rebuilt itself"
 
       - name: 'STAGE 3 -- the 4.6 g++ builds gcc ${{ env.GCC_TOP }}  <- THE RUNG TO WATCH'
@@ -926,7 +1005,7 @@ jobs:
           # bottom rung is the last one tcc can reach -- but it SHIPS a g++,
           # and that g++ is what climbs. On aarch64 this exact jump has already
           # carried to 10.2.0; whether it carries here is what this asks.
-          cat > work/stage3.sh <<'EOS'
+          cat > "$BOX/work/stage3.sh" <<'EOS'
           set -eu
           NP=$(nproc); export PATH=/work/out2/bin:$PATH
           # say() TRAVELS WITH whyfail() NOW. Each of these box scripts is a
@@ -1038,11 +1117,10 @@ jobs:
           make install > /dev/null 2>&1
           /work/out3/bin/gcc --version | head -1
           EOS
-          W="$PWD/work" REPO="$PWD" ./box.sh \
-            /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage3.sh'
+          ./box.sh /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage3.sh'
           # IS IT A RUNG *UP*? A gcc that builds but reports the old version is
           # the failure this gate exists for.
-          v=$(work/out3/bin/gcc --version 2>/dev/null | head -1 || echo none)
+          v=$("$BOX/work/out3/bin/gcc" --version 2>/dev/null | head -1 || echo none)
           echo "  produced: $v"
           case "$v" in *"$GCC_TOP"*) ;; *) echo "  NOT $GCC_TOP -- not a rung up"; exit 1 ;; esac
           echo "VERON-SPIKE-TOP-OK  the ladder reached gcc $GCC_TOP on $GNU_TGT"
