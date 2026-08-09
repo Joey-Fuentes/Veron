@@ -2916,6 +2916,14 @@ if [ "$R5" = ok ]; then
   # produce exactly this message. Going static sidesteps the section rather
   # than fixing it; if anything later needs a dynamic link, this comes back.
   #
+  # AND AT RUNG 8 TOO, WHICH THE FIRST VERSION MISSED.
+  #
+  # Rung 8 builds the same gcc 4.7.4 again with the gcc tcc produced, so it
+  # configures libgcc the same way and hits the same libbid. Adding the flag
+  # only at rung 6 got run 85013789443 through rungs 6 and 7 and then straight
+  # back into the ten FE_* errors at rung 8. Any flag that exists because of
+  # what 4.7.4 assumes about its libc belongs on every 4.7.4 configure.
+  #
   # --disable-libitm, BECAUSE ITS HEADERS ASSUME glibc.
   #
   # libitm is the transactional-memory runtime and was the only target
@@ -3417,6 +3425,7 @@ if [ "$R7" = ok ]; then
     --disable-multilib --disable-bootstrap --disable-werror \
     --disable-libsanitizer --disable-libgomp --disable-libquadmath \
     --disable-libssp --disable-libatomic --disable-libitm --disable-shared \
+    --disable-decimal-float \
     CFLAGS_FOR_TARGET="-static" CXXFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
     --with-gmp=/work/prereq2 --with-mpfr=/work/prereq2 --with-mpc=/work/prereq2 \
     > cfg.log 2>&1
