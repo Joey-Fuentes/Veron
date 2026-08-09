@@ -846,6 +846,29 @@ FLOATH
     say "    --- distinct errors, by count ---"
     grep -a "error:" /work/musl-cc.err 2>/dev/null \
       | sed 's/^.*error:/error:/' | sort | uniq -c | sort -rn | head -10 | sed 's/^/      /'
+
+    # AND PRINT THE SHORT ONES, BECAUSE A FILENAME IS NOT EVIDENCE.
+    #
+    # Run 84995533783 compiled 1348 of 1349 objects and rung 4 then died on
+    # `undefined symbol 'sigsetjmp'` -- traced back to the single failure
+    # here, src/signal/x86_64/sigsetjmp.s, "error: end of line expected".
+    # Deciding what to do about that needs the file, and guessing at its
+    # contents from the filename is how three attempts at an unrelated patch
+    # went wrong earlier in this project. Assembly stubs are a few dozen
+    # lines; printing them costs nothing and means the next round starts
+    # with the source in hand rather than a name.
+    if [ "${nf:-0}" -le 4 ]; then
+      while IFS="$(printf '\t')" read -r _bad _rest; do
+        [ -f "$_bad" ] || continue
+        _n=$(wc -l < "$_bad")
+        if [ "$_n" -le 60 ]; then
+          say "    --- $_bad ($_n lines) ---"
+          sed 's/^/      /' "$_bad"
+        else
+          say "    --- $_bad is $_n lines, not printed ---"
+        fi
+      done < /work/musl-why.txt
+    fi
   fi
 
   # NO ar IN THIS BOX -- binutils is rung 4. tcc has its own archiver, which is
