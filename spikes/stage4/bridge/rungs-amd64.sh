@@ -2573,6 +2573,87 @@ if [ "$R4" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG 4.6 -- give libc.a the compiler-support symbols gcc will not have"
+
+# WHY THIS RUNG EXISTS, MEASURED AT RUNG 6 AND TRACED BACK TO HERE.
+#
+# musl's libc.a is compiled by tcc. tcc emits CALLS to compiler-support
+# helpers where gcc emits instructions -- on x86_64 the 80-bit x87 long
+# double conversions especially. Those helpers live in libtcc1.a, which every
+# tcc link picks up automatically, so rungs 3 through 5 never noticed.
+#
+# Rung 6 hands that same libc.a to xgcc, and gcc's libgcc does NOT define
+# them, because on x86_64 gcc converts long double inline (fistpll) and never
+# needs a helper. Run 85011262228:
+#
+#     configure:19256: xgcc ... -o conftest -static conftest.c
+#     /lib/x86_64-linux-gnu/libc.a(vfprintf.o): In function `fmt_fp':
+#     src/stdio/vfprintf.c: undefined reference to `__fixxfdi'
+#     collect2: error: ld returned 1 exit status
+#     configure:19256: $? = 1
+#
+# -- which surfaced as "configure: error: computing EOF failed", a message
+# about a stdio constant that had nothing to do with stdio constants.
+#
+# THE aarch64 ARM CANNOT HIT THIS. Its long double is binary128, which no
+# hardware implements, so gcc's own libgcc ships the soft-float helpers and
+# the symbol resolves. This is specific to x87.
+#
+# WHAT THIS DOES: computes which symbols libc.a needs and libtcc1.a defines --
+# no fixed list, because a list would go stale the moment musl or tcc changed
+# -- and adds only those objects to libc.a. After this, libc.a is
+# self-contained for any linker, which is what an archive of a C library
+# ought to be.
+#
+# IT RUNS AFTER RUNG 4 because it needs binutils' nm and ar. tcc has an
+# archiver but no nm, and the whole point here is to measure rather than list.
+R46=skip
+if [ "$R4" = ok ]; then
+  R46=ok
+  _need=/work/lt-need.txt
+  _have=/work/lt-have.txt
+  _add=/work/lt-add.txt
+  : > "$_add"
+  # UNDEFINED IN libc.a ...
+  "$PFX/bin/nm" -u "$SYS/lib/libc.a" 2>/dev/null | awk '/^ *U /{print $2}' | sort -u > "$_need" || true
+  # ... AND DEFINED IN libtcc1.a
+  "$PFX/bin/nm" -g --defined-only "$TCCDIR/libtcc1.a" 2>/dev/null \
+    | awk '$2 ~ /^[TtDdBbRrWw]$/ {print $3}' | sort -u > "$_have" || true
+  comm -12 "$_need" "$_have" > "$_add" || true
+  _n=$(grep -c . "$_add" || true)
+  say "    libc.a needs $(grep -c . "$_need" || true) symbols it does not define"
+  say "    libtcc1.a can supply $_n of them:"
+  sed 's/^/      /' "$_add"
+  if [ "${_n:-0}" -gt 0 ]; then
+    # ADD WHOLE OBJECTS, not symbols: an archive member is the unit a linker
+    # pulls, and libtcc1.a is small enough that adding its members whole costs
+    # nothing. The linker still takes only what it needs.
+    rm -rf /work/ltx && mkdir -p /work/ltx && cd /work/ltx
+    "$AR" x "$TCCDIR/libtcc1.a" 2>/dev/null || true
+    _objs=$(ls ./*.o 2>/dev/null | tr '\n' ' ')
+    if [ -n "$_objs" ]; then
+      "$AR" r "$SYS/lib/libc.a" $_objs > /dev/null 2>&1 \
+        && say "    added $(echo $_objs | wc -w) libtcc1 objects to libc.a" \
+        || { say "    ar could not update libc.a"; R46=FAIL; }
+      # AND THE COPIES: rung 2 put libc.a beside every crt directory it found.
+      for _d in $crtdirs; do
+        [ -f "$_d/libc.a" ] && cp "$SYS/lib/libc.a" "$_d/libc.a" 2>/dev/null || true
+      done
+      _still=$("$PFX/bin/nm" -u "$SYS/lib/libc.a" 2>/dev/null | awk '/^ *U /{print $2}' | sort -u \
+               | comm -12 - "$_have" | grep -c . || true)
+      say "    still unresolved from libtcc1 after the update: $_still (expect 0)"
+    else
+      say "    libtcc1.a produced no objects"; R46=FAIL
+    fi
+    cd /work
+  else
+    say "    nothing to add -- libc.a needs no libtcc1 symbol"
+  fi
+else
+  say "    skipped: binutils did not finish"
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNG 4.7 -- m4, because gmp's configure refuses to run without it"
 
 # MEASURED, NOT ANTICIPATED. Run 84999333959 cleared binutils and make and
@@ -5572,6 +5653,7 @@ printf '    %-40s %s\n' "3   hosted program, real libc"      "$R3"
 printf '    %-40s %s\n' "3.5 GNU make"                       "$R35"
 printf '    %-40s %s\n' "4   binutils"                       "$R4"
 printf '    %-40s %s\n' "4.5 make rebuilt with real binutils" "$R45"
+printf '    %-40s %s\n' "4.6 libc.a gets libtcc1's helpers"   "$R46"
 printf '    %-40s %s\n' "4.7 m4 (gmp's configure needs it)"    "$R47"
 printf '    %-40s %s\n' "5   gmp / mpfr / mpc"               "$R5"
 printf '    %-40s %s\n' "6   gcc 4.7.4 by tcc -- stage 4 stage 1" "$R6"
