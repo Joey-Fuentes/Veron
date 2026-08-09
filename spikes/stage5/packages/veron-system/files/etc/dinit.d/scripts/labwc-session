@@ -111,6 +111,24 @@ export LIBGL_ALWAYS_SOFTWARE=1
 #
 # veron-cursors ships `default` as a symlink to left_ptr, so both the theme
 # name and the cursor name now resolve.
+# WLR_NO_HARDWARE_CURSORS=1, AND THIS IS THE ONE THAT MADE A CURSOR APPEAR.
+#
+# wlroots puts the cursor on a KMS HARDWARE CURSOR PLANE by default. On
+# virtualised DRM drivers that plane needs a hotspot the old ioctls did not
+# carry, so the kernel hides it from clients that have not opted in with
+# DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT -- and the result is a compositor that
+# tracks the pointer perfectly and draws nothing. Measured here: the theme
+# loaded ("Loaded cursor theme 'Veron'"), the pointer moved, and the screen was
+# bare until this was set.
+#
+# IT IS NOT IMPLIED BY WLR_RENDERER=pixman. The renderer decides how the SCENE
+# is composited; the cursor can still be routed to a separate plane
+# independently. Two different decisions, and both have to be made.
+#
+# WITH IT, wlroots COMPOSITES THE CURSOR INTO THE FRAMEBUFFER it is already
+# drawing -- the path this system uses for everything else, and the one it is
+# known to do correctly here.
+export WLR_NO_HARDWARE_CURSORS=1
 export XCURSOR_PATH=/usr/share/icons
 export XCURSOR_THEME=Veron
 export XCURSOR_SIZE=24

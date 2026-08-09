@@ -40,12 +40,29 @@ Written down here rather than discovered then.
 
 install DEPENDS ON install-static AS WELL AS install-shared, so libudev.a \
 ships whether or not anything links it. There is no --disable-static to pass; \
-the Makefile has no options at all."""
+the Makefile has no options at all.
+
+THE PATCH: EV_ABS WAS THE `else` OF EV_REL, AND THAT COST US EVERY POINTER.
+patches/0001 makes the two capability tests independent. Without it,
+set_properties_from_evdev at udev_device.c:457 enters the EV_REL branch for any
+device with a scroll wheel, fails the REL_X/REL_Y test inside it, and never
+reaches the EV_ABS block -- so an absolute pointer with a wheel gets ID_INPUT=1
+and NO TYPE, and libinput ignores it without saying so.
+
+That is exactly the QEMU virtio-tablet: REL=100 is REL_WHEEL alone, ABS=3 is
+ABS_X|ABS_Y, and KEY includes BTN_LEFT. The symptom was a desktop with a
+working keyboard, a visible cursor, and no way to move it -- and a libinput log
+naming only the keyboard and gpio-keys, with NO rejection line for the tablet
+at all, because it was never considered.
+
+REAL udev DOES NOT HAVE THIS BUG: its input_id builtin tests the capability
+bits independently. So the failure is unique to systems that use this library
+INSTEAD OF the udev daemon -- which is to say, systems shaped like this one."""
 
 [installs]
 prefixes = ["usr/include", "usr/lib", "usr/lib/pkgconfig"]
 files    = 5
-digest   = "b06fec0125bea489722b6e03130ab6c44dd39f4dc8a708f17bbdddd2f8504609"
+digest   = "a65a78aa71e8bc87168caecf32ab36b34a33d409e6fa6774f9e81edb2d964470"
 
 [[steps]]
 name = "unpack"

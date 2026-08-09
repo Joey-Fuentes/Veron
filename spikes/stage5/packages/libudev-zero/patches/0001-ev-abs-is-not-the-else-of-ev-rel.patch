@@ -1,0 +1,95 @@
+EV_ABS must be tested independently of EV_REL, not as its else.
+
+WITHOUT THIS THE SYSTEM HAS NO POINTER. labwc ran, the desktop drew, the
+keyboard worked -- and libinput enumerated exactly two devices:
+
+    [backend/libinput/events.c:69] Adding QEMU Virtio Keyboard [1575:1]
+    [backend/libinput/events.c:69] Adding gpio-keys [1:1]
+    [backend/libinput/backend.c:125] libinput successfully initialized
+
+No third line, and NO REJECTION MESSAGE EITHER -- which is what makes this hard
+to find. libinput does not decline the tablet; it never considers it.
+
+THE DEVICE IS FINE AND SO IS QEMU. `cat /dev/input/event1 | od -c` shows the
+kernel emitting events as the pointer moves, and the QEMU monitor reports
+
+    * Mouse #2: QEMU Virtio Tablet (absolute)
+
+so the host is offering an active absolute pointer and the guest kernel is
+delivering it. Everything between them was working.
+
+WHAT set_properties_from_evdev DOES, AND WHY THE TABLET FALLS THROUGH.
+udev_device.c:457 is
+
+    if (test_bit(ev_bits, EV_REL)) {
+        if (REL_X && REL_Y && BTN_MOUSE) -> ID_INPUT_MOUSE
+    }
+    else if (test_bit(ev_bits, EV_ABS)) {
+        ... ID_INPUT_TABLET / TOUCHSCREEN / TOUCHPAD / MOUSE ...
+    }
+
+The QEMU virtio-tablet reports, from /proc/bus/input/devices:
+
+    B: EV=f        SYN | KEY | REL | ABS
+    B: REL=100     bit 8 == REL_WHEEL ONLY.  No REL_X, no REL_Y.
+    B: ABS=3       ABS_X | ABS_Y
+    B: KEY=30400 1f0000 ...   includes BTN_LEFT (0x110 == BTN_MOUSE)
+
+So EV_REL is set -- the device has a scroll wheel -- and the first branch is
+entered. Inside it the REL_X/REL_Y test fails, because a wheel is not an axis
+pair. Nothing is assigned. AND BECAUSE THE SECOND BRANCH IS AN `else if`, THE
+ABS BLOCK IS NEVER REACHED, so the ABS_X/ABS_Y + BTN_MOUSE case that describes
+this device exactly is never evaluated.
+
+The device ends with ID_INPUT=1 and NO TYPE PROPERTY. libinput's contract is
+explicit about what happens then -- from its own documentation: "libinput
+requires the ID_INPUT property to be set on a device, otherwise the device will
+be ignored. In addition, one of ID_INPUT_KEYBOARD, ID_INPUT_KEY,
+ID_INPUT_MOUSE, ID_INPUT_TOUCHPAD, ID_INPUT_TOUCHSCREEN, ID_INPUT_TABLET,
+ID_INPUT_JOYSTICK, ID_INPUT_ACCELEROMETER must be set on the device to
+determine the device type." One property without the other means silently
+ignored.
+
+REL AND ABS ARE NOT MUTUALLY EXCLUSIVE, WHICH IS THE ACTUAL BUG. A device may
+have both, and many do: any absolute pointer with a scroll wheel, which is
+every QEMU tablet and a good deal of real hardware. Upstream udev's input_id
+builtin tests the capability bits INDEPENDENTLY rather than as an either/or,
+which is why this system is the one that trips over it -- a machine running the
+real udev daemon would never see the failure.
+
+WHAT CHANGES AND WHAT DOES NOT. Only the ABS block becomes reachable when
+EV_REL is also present; the REL block is untouched, and every assignment inside
+the ABS block keeps its existing guards and order. Checked against the device
+classes this system actually has:
+
+    QEMU Virtio Keyboard   KEYBOARD  -> KEYBOARD    unchanged
+    gpio-keys              KEY       -> KEY         unchanged
+    ordinary USB mouse     MOUSE     -> MOUSE       unchanged
+    touchpad               TOUCHPAD  -> TOUCHPAD    unchanged
+    QEMU Virtio Tablet     (none)    -> MOUSE       FIXED
+
+A device that legitimately matched both branches would now get two properties
+rather than one. That is what real udev does, and libinput accepts it: the
+properties describe capabilities, not an exclusive category.
+
+WHY NOT JUST USE virtio-mouse-pci INSTEAD. A pure relative mouse takes the
+first branch correctly and works -- but a relative pointer requires the
+HYPERVISOR TO GRAB AND WARP THE HOST CURSOR to synthesise deltas, which it does
+by yanking the user's real pointer back to the centre of the window. The tablet
+exists precisely to avoid that. Choosing the broken-but-classified device over
+the correct one would trade a fixable bug for a permanent annoyance.
+
+Generated with `diff -u`, not written by hand.
+
+--- a/udev_device.c
++++ b/udev_device.c
+@@ -462,7 +462,8 @@
+             udev_list_entry_add(&udev_device->properties, "ID_INPUT_MOUSE", "1", 0);
+         }
+     }
+-    else if (test_bit(ev_bits, EV_ABS)) {
++
++    if (test_bit(ev_bits, EV_ABS)) {
+         if (test_bit(key_bits, BTN_SELECT) || test_bit(key_bits, BTN_TR) ||
+             test_bit(key_bits, BTN_START) || test_bit(key_bits, BTN_TL)) {
+             if (test_bit(key_bits, BTN_TOUCH)) {
