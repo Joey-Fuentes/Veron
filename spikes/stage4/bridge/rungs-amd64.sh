@@ -2866,6 +2866,59 @@ if [ "$R5" = ok ]; then
   # the same configure would stop at "cannot run C compiled programs" exactly
   # as make's did. The difference is forced by the box, not a drift from stage
   # 4's recipe.
+  # A config.site FOR THE TARGET LIBRARY CONFIGURES, AND WHY IT IS NOT A HACK.
+  #
+  # libstdc++-v3's configure calls GLIBCXX_COMPUTE_STDIO_INTEGER_CONSTANTS
+  # (libstdc++-v3/acinclude.m4, added by Paolo Carlini in July 2010). It sets
+  # three cache variables with AC_COMPUTE_INT:
+  #
+  #     glibcxx_cv_stdio_eof        -> _GLIBCXX_STDIO_EOF
+  #     glibcxx_cv_stdio_seek_cur   -> _GLIBCXX_STDIO_SEEK_CUR
+  #     glibcxx_cv_stdio_seek_end   -> _GLIBCXX_STDIO_SEEK_END
+  #
+  # AC_COMPUTE_INT RUNS A PROGRAM when --build == --host, which this is. Run
+  # 85007759919 got as far as
+  #
+  #     configure:19256: xgcc ... -o conftest -static  -static conftest.cpp
+  #     configure:19259: error: computing EOF failed
+  #
+  # -- the link line is static, so CXXFLAGS_FOR_TARGET reached it, and the
+  # failure is at the run or immediately after.
+  #
+  # --disable-hosted-libstdcxx WOULD NOT HELP: the `if test "$is_hosted" =
+  # yes` guard around this whole block was added in GCC 12 (r12-6409,
+  # "libstdc++: Fix and simplify freestanding configuration [PR103866]"). In
+  # 4.7 the test runs unconditionally.
+  #
+  # THE VALUES ARE FIXED BY THE C STANDARD AND IDENTICAL IN musl FOR EVERY
+  # ARCHITECTURE -- EOF is -1, SEEK_CUR is 1, SEEK_END is 2 -- so supplying
+  # them is stating a known constant, not guessing at a measurement.
+  # Autoconf's cache-variable mechanism exists for exactly this: GLib's own
+  # cross-compiling documentation describes it as the way to give configure
+  # what it cannot compute in a constrained environment.
+  #
+  # CONFIG_SITE RATHER THAN THE ENVIRONMENT, because the top-level Makefile
+  # invokes each target library's configure itself and does not pass this
+  # shell's variables through. Every configure autoconf runs reads $CONFIG_SITE.
+  #
+  # AND A CAVEAT WORTH KEEPING: if conftest genuinely cannot RUN, this only
+  # moves the failure to the next libstdc++ test that runs a program, and
+  # there are several. The `$? =` lines printed on failure say which case
+  # this is -- 0 after the link and non-zero after ./conftest means runs are
+  # broken and these three are a plaster.
+  mkdir -p /work/site
+    # THE HEREDOC BODY SITS AT COLUMN 0 AND MUST. An indented terminator
+    # does not close a <<'X' heredoc, and every value inside would carry
+    # its leading spaces into the cache variable.
+  cat > /work/site/config.site <<'SITEEOF'
+glibcxx_cv_stdio_eof=-1
+glibcxx_cv_stdio_seek_cur=1
+glibcxx_cv_stdio_seek_end=2
+SITEEOF
+  CONFIG_SITE=/work/site/config.site
+  export CONFIG_SITE
+  say "    CONFIG_SITE: EOF=-1 SEEK_CUR=1 SEEK_END=2 preseeded for target configures"
+
   "/work/src/$g47/configure" \
     CC="$CCAUTO" LDFLAGS="$LDF" \
     CFLAGS_FOR_TARGET="-static" CXXFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
@@ -3007,16 +3060,17 @@ if [ "$R5" = ok ]; then
       # "configure: error:". So find that last line and print what precedes it.
       _ln=$(grep -n "^configure:[0-9]*: error:" "$_cl" 2>/dev/null | head -1 | cut -d: -f1)
       if [ -n "$_ln" ]; then
-        # 80, NOT 30. AC_COMPUTE_INT's conftest is about thirty lines of
-        # source on its own, so a 30-line window showed the program and
-        # the verdict and cut off the compile command and its output --
-        # the part that says WHY. Run 85006233115 printed exactly that:
-        # the conftest, then "configure: error: computing EOF failed",
-        # and nothing about the compiler invocation in between.
-        _from=$((_ln - 80)); [ "$_from" -lt 1 ] && _from=1
+        _from=$((_ln - 30)); [ "$_from" -lt 1 ] && _from=1
         sed -n "${_from},${_ln}p" "$_cl" 2>/dev/null | sed 's/^/          /'
         # AND THE CONFTEST COMMANDS BY NAME, because in a window this
         # size they are easy to lose among the source.
+        # THE TWO LINES THAT SAY WHETHER IT LINKED OR WHETHER IT RAN.
+        # config.log writes `$? = N` after every command, and for a RUN test
+        # (AC_COMPUTE_INT computes EOF by executing a program) those two
+        # statuses are the whole answer. They sit hundreds of lines above the
+        # error, past the echo of confdefs.h, so no readable window reaches
+        # them -- three attempts at widening one proved that.
+        grep -nE "\\$\\? = |program exited" "$_cl" 2>/dev/null | tail -6 | sed 's/^/          /'
         say "    --- conftest commands in $_d ---"
         grep -nE "^configure:[0-9]+: .*(gcc|g\+\+|xgcc|xg\+\+|cc-static)" "$_cl" 2>/dev/null \
           | tail -6 | sed 's/^/          /'
