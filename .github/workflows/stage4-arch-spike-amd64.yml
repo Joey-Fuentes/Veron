@@ -378,6 +378,29 @@ jobs:
           tar xf mpfr-$MPFR.tar.xz; mv mpfr-$MPFR mpfr
           tar xf mpc-$MPC.tar.gz;   mv mpc-$MPC   mpc
           tar xf gcc-$GCC_BOTTOM.tar.bz2; mv gcc-$GCC_BOTTOM gbot
+
+          # struct ucontext -> ucontext_t, AND IT IS NOT A RISC-V PROBLEM.
+          #
+          # This was found on the riscv64 side, in Ekaitz Zarraga's notes on
+          # his gcc 4.6.4 fork, and looked architecture-specific. It is not.
+          # Run 84974129558 hit it on x86_64 with a stock gcc 4.7.4 tarball
+          # and no fork in sight:
+          #
+          #     ./md-unwind-support.h:60:47: error: dereferencing pointer to
+          #                                  incomplete type
+          #     make[2]: *** [static-object.mk:17: unwind-dw2.o] Error 1
+          #
+          # md-unwind-support.h is generated from gcc/config/<arch>/linux-
+          # unwind.h -- the same file the RISC-V patch edits. glibc renamed
+          # `struct ucontext` to `ucontext_t`, so 2012's gcc dereferences a
+          # type that no longer exists under that name. Every architecture's
+          # linux-unwind.h has it, so the glob covers all of them.
+          #
+          # Upstream's own framing, from ekaitz.elenq.tech/bootstrapGcc10:
+          # "This change only makes GCC compilable using a modern toolchain,
+          # in other contexts you might want to keep the old name."
+          sed -i 's/struct ucontext/ucontext_t/g' gbot/gcc/config/*/linux-unwind.h
+          echo "  patched: struct ucontext -> ucontext_t in $(ls gbot/gcc/config/*/linux-unwind.h | wc -l) linux-unwind.h file(s)"
           tar xf gcc-$GCC_TOP.tar.xz;     mv gcc-$GCC_TOP    gtop
           echo "  unpacked; the box has no network past this point"
 

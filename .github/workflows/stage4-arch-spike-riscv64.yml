@@ -410,6 +410,13 @@ jobs:
 
           # 1. struct ucontext -> ucontext_t. glibc renamed it; 2012 gcc still
           #    says the old name and will not compile against a modern libc.
+          #    NOT A RISC-V PROBLEM: run 84974129558 hit exactly this on
+          #    x86_64, with a stock 4.7.4 tarball and no fork involved --
+          #      ./md-unwind-support.h:60:47: error: dereferencing pointer to
+          #                                   incomplete type
+          #    so the amd64 spike now carries the same sed. Upstream keeps it
+          #    out of the fork on purpose; it belongs to whoever is building
+          #    against a modern libc, which is everyone here.
           sed -i 's/struct ucontext/ucontext_t/g' gbot/gcc/config/*/linux-unwind.h
           echo "  patched: struct ucontext -> ucontext_t in linux-unwind.h"
 
