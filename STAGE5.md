@@ -155,39 +155,57 @@ system works, it is not a pleasant desktop.
 ```sh
 qemu-system-aarch64 \
   -M virt -cpu cortex-a57 -smp 4 -m 4096 \
-  -display gtk \
+  -display gtk -serial mon:stdio \
   -drive file=rootfs.img,format=raw,if=virtio \
-  -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci \
+  -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci \
   -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
   -kernel Image -initrd initramfs.cpio.gz \
   -append "console=ttyAMA0 rdinit=/init panic=1 loglevel=4 veron.boot=system"
 ```
 
-`-display gtk` gives a window where CI uses `-nographic`. The pointer device is
-not in the boot lines elsewhere in this repo, because CI never needed one.
+`-display gtk` gives a window where CI uses `-nographic`, and **`-serial
+mon:stdio` puts the guest console in the terminal you launched from** rather
+than inside the QEMU window. That matters more than it sounds: without it the
+console and the desktop share one window and you have to flip between them
+through the `View` menu, which makes reading a log while watching the screen
+almost impossible. With it, `Ctrl-A` then `C` switches to the QEMU monitor
+(`info mice` and friends) and `Ctrl-A` then `X` quits.
 
-**Use `virtio-tablet-pci`, not `virtio-mouse-pci`.** A mouse is a *relative*
-device: it reports deltas, so qemu must **grab** the host cursor to translate
-motion — and while grabbed your own cursor disappears, while the guest draws no
-cursor of its own (see below). The result is a pointer that appears frozen and
-invisible at once. A tablet is *absolute*: it reports coordinates, needs no
-grab, and the guest pointer tracks your host cursor exactly. If you do end up
-grabbed, **Ctrl-Alt-G** releases it.
+**Use `virtio-mouse-pci`, not `virtio-tablet-pci`** — which is the opposite of
+the usual advice for QEMU guests, for a reason specific to this system.
 
-**The guest draws no cursor**, and will not until an XCursor theme is shipped.
-labwc reports it plainly:
+A tablet is an *absolute* device: it reports coordinates, needs no pointer
+grab, and the guest cursor tracks the host cursor exactly. That is what you
+want, and QEMU offers it correctly — `info mice` reports
+`* Mouse #2: QEMU Virtio Tablet (absolute)`.
+
+**But libinput will not use it here.** The tablet advertises `EV_REL` for its
+scroll wheel *and* `EV_ABS` for its axes, and libudev-zero's classifier treated
+those as mutually exclusive — see `packages/libudev-zero/patches/0001`, which
+fixes the enumeration. With that patch libinput now *sees* the tablet and then
+rejects its events:
 
 ```
-Could not create cursor theme for 'default'
-Could not load cursor theme, disabling named cursors support
+[ERROR] [libinput] libinput bug: Event for missing capability CAP_POINTER
+                    on device "QEMU Virtio Tablet"
 ```
 
-`wlroots/xcursor/xcursor.c:515` reads `XCURSOR_PATH`, then falls back to
-`XDG_DATA_HOME` and a built-in cursor directory; this image has no cursor theme
-in any of them. It is cosmetic — clicks land where the pointer actually is —
-and with an absolute tablet your own host cursor shows you where that is. A
-minimal XCursor theme is a data-only package with no dependency tail; it is on
-the list in `ROADMAP-STAGE5.md`.
+because the classifier tags it `ID_INPUT_MOUSE` — a *relative* pointer — while
+the device sends absolute coordinates. Fixing that second half is outstanding.
+
+A plain `virtio-mouse-pci` has `REL_X`, `REL_Y` and `BTN_LEFT`, takes the
+relative branch cleanly, and works. The cost is that QEMU must **grab** the
+host cursor to synthesise deltas; `Ctrl-Alt-G` releases the grab if it gets in
+the way.
+
+**The cursor is drawn in software, and that is a deliberate setting.**
+`labwc-session` exports `WLR_NO_HARDWARE_CURSORS=1`. wlroots otherwise puts the
+cursor on a KMS hardware plane, which on virtualised DRM needs a hotspot the
+older ioctls do not carry — so the compositor tracks the pointer perfectly and
+draws nothing. This is *not* implied by `WLR_RENDERER=pixman`: the renderer
+decides how the scene is composited, the cursor plane is a separate decision,
+and both have to be made. Measured here: the theme loaded, the pointer moved,
+and the screen stayed bare until this was set.
 
 **Then, at the console, three things are started by hand.** None of them is an
 oversight; each is a decision recorded elsewhere in this file.
