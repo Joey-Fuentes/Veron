@@ -396,9 +396,53 @@ jobs:
           git clone -q --depth 1 --branch "$GCC_BOTTOM_TAG" \
             https://codeberg.org/ekaitz-zarraga/gcc.git gbot
           echo "  bottom gcc: $(cat gbot/gcc/BASE-VER) at $(git -C gbot rev-parse --short HEAD)"
+
+          # THE FORK SHIPS WITHOUT ITS PATCHES, DELIBERATELY. Ekaitz Zarraga's
+          # own write-up (ekaitz.elenq.tech/bootstrapGcc10.html) says so
+          # outright: "We need to patch a couple of things, that we'll set up
+          # in the Guix recipe. I decided to keep them out of the codebase
+          # because I want to keep the code consistent with the past."
+          #
+          # So a clean checkout of the tag is NOT a buildable tree, and the
+          # first run of this spike was missing both patches. They are applied
+          # here rather than carried as .patch files because they are two
+          # lines and upstream publishes them as commands.
+
+          # 1. struct ucontext -> ucontext_t. glibc renamed it; 2012 gcc still
+          #    says the old name and will not compile against a modern libc.
+          sed -i 's/struct ucontext/ucontext_t/g' gbot/gcc/config/*/linux-unwind.h
+          echo "  patched: struct ucontext -> ucontext_t in linux-unwind.h"
+
+          # 2. Drop the LIB_SPEC override in the riscv linux.h. Upstream's
+          #    comment calls itself a FIXME: RISC-V has only word-sized
+          #    atomics so it links libatomic by default, and that reference
+          #    breaks the build before libatomic exists.
+          python3 - <<'PYEOF'
+          import re
+          p = "gbot/gcc/config/riscv/linux.h"
+          s = open(p).read()
+          out = re.sub(r"/\* FIXME \*/\n/\* Because RISC-V only has word-sized atomics.*?#undef LIB_SPEC\n",
+                       "", s, flags=re.S)
+          open(p, "w").write(out)
+          print("  patched: LIB_SPEC override removed" if out != s
+                else "  NOTE: LIB_SPEC block not found -- fork may already carry the fix")
+          PYEOF
           tar xf gcc-$GCC_TOP.tar.xz;     mv gcc-$GCC_TOP    gtop
           echo "  unpacked; the box has no network past this point"
 
+      # AND ONE THING WORTH KNOWING BEFORE BLAMING EITHER: NOBODY UPSTREAM
+      # BUILDS THIS FORK WITH tcc. Ekaitz's own write-up builds it on Debian
+      # with `apt install build-essential` -- a modern gcc -- and live-boot
+      # strap does not go tcc -> 4.6.4 either; its ladder climbs through gcc
+      # 4.0.4 first. So HOST_WIDE_INT_1 may be a failure nobody has hit,
+      # because nobody has stood where we are standing.
+      #
+      # THAT SUGGESTS A THIRD POSSIBILITY the probe below cannot see: neither
+      # the fork nor tcc is "wrong", and the rung is simply too big -- 4.6.4
+      # may need an intermediate gcc under it, the way live-bootstrap uses
+      # 4.0.4. If the probe shows the fork defines HOST_WIDE_INT_1 correctly
+      # and the host gcc compiles riscv.o fine, that is the answer.
+      #
       # RUN 84972415988 REACHED THE BACKEND AND FAILED IN IT:
       #     /work/gbot/gcc/hwint.h:291: error: 'HOST_WIDE_INT_1' undeclared
       #     make[2]: *** [Makefile:3521: riscv.o] Error 1
