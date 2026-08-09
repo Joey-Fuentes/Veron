@@ -289,12 +289,39 @@ jobs:
           # SHALLOW, AND AT THE TAG. A full clone of a gcc fork is gigabytes
           # and hundreds of thousands of commits; the first run of this spike
           # sat on one long enough to look hung on a four-core RISC-V node.
-          git clone -q --depth 1 --branch working-compiler-c++ \
-            https://codeberg.org/ekaitz-zarraga/gcc.git work/g46 \
-            || { echo "  clone of tag working-compiler-c++ failed."; \
-                 echo "  either codeberg is unreachable from this runner, or"; \
-                 echo "  the tag has moved -- check the fork before assuming"; \
-                 echo "  the network."; exit 1; }
+          # TWO HOSTS AND THREE TRIES, BECAUSE THIS RUNG DEPENDS ON SOMEONE
+          # ELSE'S SERVER AND RUN 84979503915 DIED ON IT:
+          #     fatal: unable to access 'https://codeberg.org/...gcc.git/':
+          #            The requested URL returned error: 504
+          # Nothing was wrong with the tree or the tag -- codeberg was simply
+          # down. Everything else in this chain comes from a pinned tarball on
+          # ftp.gnu.org; this is the one rung that reaches into a live git
+          # host, which is a fragility worth naming rather than hiding.
+          #
+          # The github remote is the fork's own former home -- its README says
+          # "[MOVED TO CODEBERG]" -- so it is a mirror of the same history, not
+          # a different project. Codeberg is tried first because it is the one
+          # upstream points at now.
+          got=""
+          for remote in \
+              https://codeberg.org/ekaitz-zarraga/gcc.git \
+              https://github.com/ekaitz-zarraga/gcc.git ; do
+            for attempt in 1 2 3; do
+              echo "  trying $remote (attempt $attempt)"
+              if git clone -q --depth 1 --branch "$GCC_BOTTOM_TAG" "$remote" work/g46 2>/dev/null; then
+                got="$remote"; break
+              fi
+              rm -rf work/g46; sleep 10
+            done
+            [ -n "$got" ] && break
+          done
+          if [ -z "$got" ]; then
+            echo "  COULD NOT CLONE $GCC_BOTTOM_TAG FROM EITHER HOST."
+            echo "  If both are up, the tag has moved and the pin is stale --"
+            echo "  check the fork before assuming the network."
+            exit 1
+          fi
+          echo "  cloned from $got"
           cd work/g46
           echo "  HEAD:      $(git rev-parse --short HEAD)"
           echo "  BASE-VER:  $(cat gcc/BASE-VER 2>/dev/null || echo unknown)"
@@ -393,8 +420,23 @@ jobs:
           # THE BOTTOM COMES FROM git, SHALLOW AND AT THE TAG. A full clone of
           # a gcc fork is gigabytes; the first run of this spike sat on one
           # long enough to look hung on a four-core RISC-V node.
-          git clone -q --depth 1 --branch "$GCC_BOTTOM_TAG" \
-            https://codeberg.org/ekaitz-zarraga/gcc.git gbot
+          # SAME TWO HOSTS AND THREE TRIES AS RUNG 2. Run 84979503915 died
+          # here on a codeberg 504 -- the tree and the tag were fine, the
+          # host was not.
+          got=""
+          for remote in \
+              https://codeberg.org/ekaitz-zarraga/gcc.git \
+              https://github.com/ekaitz-zarraga/gcc.git ; do
+            for attempt in 1 2 3; do
+              if git clone -q --depth 1 --branch "$GCC_BOTTOM_TAG" "$remote" gbot 2>/dev/null; then
+                got="$remote"; break
+              fi
+              rm -rf gbot; sleep 10
+            done
+            [ -n "$got" ] && break
+          done
+          [ -n "$got" ] || { echo "  could not clone $GCC_BOTTOM_TAG from either host"; exit 1; }
+          echo "  cloned from $got"
           echo "  bottom gcc: $(cat gbot/gcc/BASE-VER) at $(git -C gbot rev-parse --short HEAD)"
 
           # THE FORK SHIPS WITHOUT ITS PATCHES, DELIBERATELY. Ekaitz Zarraga's
