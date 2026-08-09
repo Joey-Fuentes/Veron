@@ -809,13 +809,30 @@ jobs:
             say "    installed"
           done
 
+          # NOT --disable-shared HERE, AND THIS IS WHERE IT MATTERED.
+          #
+          # stage4-complete.yml:791 says it in one sentence: "Stage 1 uses it
+          # because nothing links against that compiler; stage 2 must produce
+          # a libstdc++ a program can actually use."
+          #
+          # Runs 84981633004 and 84983862803 both died in gcc 10's libcc1 --
+          #   ld: /work/out2/lib/../lib64/libstdc++.a(new_opv.o): relocation
+          #     R_X86_64_32 against `_ZTISt9bad_alloc' can not be used when
+          #     making a shared object; recompile with -fPIC
+          # -- and note the path: out2. It was STAGE 2's libstdc++ all along,
+          # built without PIC because of this flag. Dropping --disable-shared
+          # from gcc 10 alone did nothing, because gcc 10 was never the one
+          # that built the offending archive.
+          #
+          # The gmp/mpfr/mpc builds above keep the flag: nothing links a
+          # shared object against those.
           mkdir -p /work/b2 && cd /work/b2
           /work/gbot/configure \
             --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
             --prefix=/work/out2 --enable-languages=c,c++ \
             --disable-multilib --disable-bootstrap --disable-werror \
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
-            --disable-libssp --disable-libatomic --disable-shared \
+            --disable-libssp --disable-libatomic \
             --with-gmp=/work/prefix2 --with-mpfr=/work/prefix2 --with-mpc=/work/prefix2 \
             > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
           make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || whyfail build.log
