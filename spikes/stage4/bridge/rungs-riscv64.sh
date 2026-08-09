@@ -3069,7 +3069,18 @@ SITEEOF
         # statuses are the whole answer. They sit hundreds of lines above the
         # error, past the echo of confdefs.h, so no readable window reaches
         # them -- three attempts at widening one proved that.
-        grep -nE "\\$\\? = |program exited" "$_cl" 2>/dev/null | tail -6 | sed 's/^/          /'
+        # SIX LINES BEFORE EACH *FAILING* COMMAND, NOT THE STATUS ALONE.
+        #
+        # The status by itself answered one question and raised the next. Run
+        # 85010387663 gave
+        #     configure:19256: $? = 1
+        #     configure: program exited with status 1
+        # and 19256 is the LINK line -- so the program never ran, the link
+        # failed. But the linker's own output sits BETWEEN the command and its
+        # status, and printing the status alone threw it away. -B6 catches the
+        # command, the error and the verdict together.
+        grep -n -B6 -E "^configure:[0-9]+: \\$\\? = [1-9]" "$_cl" 2>/dev/null \
+          | tail -24 | sed 's/^/          /'
         say "    --- conftest commands in $_d ---"
         grep -nE "^configure:[0-9]+: .*(gcc|g\+\+|xgcc|xg\+\+|cc-static)" "$_cl" 2>/dev/null \
           | tail -6 | sed 's/^/          /'
