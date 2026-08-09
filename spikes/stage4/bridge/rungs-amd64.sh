@@ -447,6 +447,13 @@ if [ "$R0" != FAIL ]; then
   #
   # The loop skips any name that is not present, so listing both costs
   # nothing and covers either layout.
+  # THE LIST IS tcc's OWN, READ FROM ITS Makefile RATHER THAN GUESSED --
+  # WITH ONE DELIBERATE OMISSION.
+  #     lib/Makefile:39  X86_64_O = libtcc1.o $(COMMON_O)
+  #     lib/Makefile:43  COMMON_O = stdatomic.o atomic.o builtin.o alloca.o alloca-bt.o
+  # alloca-bt.S is in COMMON_O and stays OUT, for the reason the comment
+  # above states and measured: it pulls __bound_new_region out of bcheck.o,
+  # which this build does not make, and adding it broke every link.
   for f in libtcc1.c lib-i386.c stdatomic.c atomic.c builtin.c va_list.c alloca.S \
            dsohandle.c \
            armeabi.c alloca-arm.S armflush.c; do

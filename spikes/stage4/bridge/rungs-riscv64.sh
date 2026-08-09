@@ -440,7 +440,25 @@ if [ "$R0" != FAIL ]; then
   # tcc's lib/Makefile builds every non-arm target from libtcc1.o, which
   # carries the compiler-support helpers a link will otherwise miss. The loop
   # skips absent names, so listing both is free.
-  for f in libtcc1.c lib-riscv64.c stdatomic.c atomic.c builtin.c va_list.c alloca.S \
+  # lib-arm64.c ON riscv64 IS NOT A TYPO -- IT IS WHAT tcc ITSELF DOES.
+  #
+  # tcc's lib/Makefile:42 reads
+  #     RISCV64_O = lib-arm64.o $(COMMON_O)
+  # so the file named for arm64 is the runtime for riscv64 as well. It is
+  # portable C: 18 functions, two mentions of arm64 in the whole file, one of
+  # them the header comment.
+  #
+  # RENAMING IT lib-riscv64.c WAS MY SUBSTITUTION AND IT COST RUNG 3. The
+  # loop below skips names that are not present, so the file was silently
+  # never compiled, and run 85000965675 built musl completely and then could
+  # not link a hosted program:
+  #     tcc: error: undefined symbol '__addtf3'
+  #     ... __extenddftf2 __multf3 __netf2 __subtf3 __fixtfsi __floatsitf
+  # Those are the soft-float binary128 helpers -- RISC-V's long double is
+  # 128-bit -- and lib-arm64.c defines every one of them.
+  #     lib/Makefile:42  RISCV64_O = lib-arm64.o $(COMMON_O)
+  # alloca-bt.S is in COMMON_O and stays OUT for the measured reason above.
+  for f in libtcc1.c lib-arm64.c stdatomic.c atomic.c builtin.c va_list.c alloca.S \
            dsohandle.c \
            armeabi.c alloca-arm.S armflush.c; do
     [ -f "$f" ] || continue
