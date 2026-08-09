@@ -671,6 +671,44 @@ jobs:
           # stage4-complete.yml:549 passes CC and nothing else, for this reason.
           # --enable-languages=c,c++ still works: gcc bootstraps its own g++
           # from the C compiler it just built.
+          # THE HEADER PATH, WHICH IS THE THIRD THING EKAITZ'S NOTES LIST AND
+          # THE THIRD WE HAD NOT DONE.
+          #
+          # With the HOST_WIDE_INT_1 patch in, riscv.o compiles and gcc 4.6.4
+          # gets all the way to libgcc -- then run 84985401256 died on
+          #     /usr/include/stdio.h:28:36: fatal error:
+          #         bits/libc-header-start.h: No such file or directory
+          #     make[2]: *** [Makefile:832: crtbegin.o] Error 1
+          #
+          # ekaitz.elenq.tech/bootstrapGcc10 says why: "In Debian the
+          # riscv64-linux-gnu standard library is installed in a weird
+          # location, so we need to make the compilation process find it." His
+          # three exports are C_INCLUDE_PATH, CPLUS_INCLUDE_PATH and
+          # LIBRARY_PATH.
+          #
+          # SET ONLY WHAT EXISTS. This runner is native riscv64, not a Debian
+          # cross host, so the multiarch directory may or may not be there --
+          # exporting a path that does not exist would hide the real problem
+          # behind a different one.
+          for d in /usr/include/riscv64-linux-gnu /usr/riscv64-linux-gnu/include; do
+            if [ -d "$d" ]; then
+              export C_INCLUDE_PATH="${C_INCLUDE_PATH:+$C_INCLUDE_PATH:}$d"
+              export CPLUS_INCLUDE_PATH="${CPLUS_INCLUDE_PATH:+$CPLUS_INCLUDE_PATH:}$d"
+              say "  include path += $d"
+            fi
+          done
+          for d in /usr/lib/riscv64-linux-gnu /usr/riscv64-linux-gnu/lib; do
+            if [ -d "$d" ]; then
+              export LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$d"
+              say "  library path += $d"
+            fi
+          done
+          # AND SAY WHERE THE MISSING HEADER ACTUALLY IS, so the next run does
+          # not need another round trip to find out.
+          say "  bits/libc-header-start.h found at:"
+          find /usr/include -name libc-header-start.h 2>/dev/null | head -5 | sed 's/^/    /'
+          say "  (nothing above means it is genuinely absent, not misplaced)"
+
           say "  === STAGE 1: configure gcc ==="
           mkdir -p /work/b1 && cd /work/b1
           /work/gbot/configure \
