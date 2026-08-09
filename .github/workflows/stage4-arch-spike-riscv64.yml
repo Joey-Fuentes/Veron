@@ -540,6 +540,13 @@ jobs:
                      "#ifndef HOST_WIDE_INT_1U\n"
                      "#define HOST_WIDE_INT_1U ((unsigned HOST_WIDE_INT) 1)\n"
                      "#endif\n")
+              # AND THE LINE BELOW THIS COMMENT IS THE ONE THAT WRITES.
+              # Run 84983887087 printed "patched:" and changed nothing: an
+              # edit had sliced out the open(p,"w").write() while leaving the
+              # message. The header printout is what caught it -- the file it
+              # showed had no macros in it -- which is the whole reason that
+              # printout exists.
+              #
               # ANCHOR ON THE INCLUDE GUARD, NOT ON THE TYPE.
               #
               # Two earlier attempts searched for the HOST_WIDE_INT definition
@@ -566,6 +573,7 @@ jobs:
               # which is guaranteed to exist, guaranteed to come first, and
               # guaranteed to precede every use in the file.
               k = s.index("\n", s.index("#define GCC_HWINT_H")) + 1
+              open(p, "w").write(s[:k] + add + s[k:])
               print("  patched: HOST_WIDE_INT_1 and HOST_WIDE_INT_1U defined in hwint.h")
           # SHOW THE TOP OF THE FILE EITHER WAY. Three attempts at this patch
           # failed against a header nobody here had read; printing it means
