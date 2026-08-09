@@ -2629,9 +2629,17 @@ if [ "$R4" = ok ]; then
       for _d in $crtdirs; do
         [ -f "$_d/libc.a" ] && cp "$SYS/lib/libc.a" "$_d/libc.a" 2>/dev/null || true
       done
-      _still=$("$PFX/bin/nm" -u "$SYS/lib/libc.a" 2>/dev/null | awk '/^ *U /{print $2}' | sort -u \
-               | comm -12 - "$_have" | grep -c . || true)
-      say "    still unresolved from libtcc1 after the update: $_still (expect 0)"
+      # ASK WHETHER THEY ARE DEFINED NOW, NOT WHETHER ANYTHING STILL
+      # REFERENCES THEM. The first version re-ran `nm -u` and reported "2
+      # still unresolved" after a successful update -- which is exactly what
+      # `nm -u` on an ARCHIVE means: it lists undefined symbols PER MEMBER,
+      # and vfprintf.o goes on referencing __fixxfdi whatever else the
+      # archive holds. The linker resolves across members; nm -u does not
+      # pretend to.
+      _def=$("$PFX/bin/nm" -g --defined-only "$SYS/lib/libc.a" 2>/dev/null \
+             | awk '$2 ~ /^[TtDdBbRrWw]$/ {print $3}' | sort -u \
+             | comm -12 "$_add" - | grep -c . || true)
+      say "    of the $_n symbols added, $_def are now defined in libc.a (expect $_n)"
     else
       say "    libtcc1.a produced no objects"; R46=FAIL
     fi
@@ -2908,6 +2916,22 @@ if [ "$R5" = ok ]; then
   # produce exactly this message. Going static sidesteps the section rather
   # than fixing it; if anything later needs a dynamic link, this comes back.
   #
+  # --disable-libitm, BECAUSE ITS HEADERS ASSUME glibc.
+  #
+  # libitm is the transactional-memory runtime and was the only target
+  # library not on this disable list. Run 85012267756:
+  #
+  #     libitm/config/linux/x86/tls.h:28:46: error: missing binary operator
+  #         before token "("
+  #
+  # -- the signature of a function-like macro used in an #if and never
+  # defined, which here is __GLIBC_PREREQ. musl does not have it.
+  #
+  # THE aarch64 ARM NEVER SEES IT: gcc 4.7's libitm ships configs for x86 and
+  # a few others and none for aarch64, so it disables itself for an
+  # unsupported target. Naming the flag makes both arms agree on purpose
+  # rather than by accident.
+  #
   # --disable-libmudflap, FORCED BY THE BOX AND COSTING NOTHING.
   #
   #     libmudflap/mf-runtime.c:2357:1: error: conflicting types for
@@ -3012,7 +3036,7 @@ SITEEOF
     --disable-nls --disable-libmudflap \
     --disable-multilib --disable-bootstrap --disable-werror \
     --disable-libsanitizer --disable-libgomp --disable-libquadmath \
-    --disable-libssp --disable-libatomic --disable-shared \
+    --disable-libssp --disable-libatomic --disable-libitm --disable-shared \
     --with-gmp=/work/prereq --with-mpfr=/work/prereq --with-mpc=/work/prereq \
     > cfg.log 2>&1
   say "    configure rc=$?"
@@ -3392,7 +3416,7 @@ if [ "$R7" = ok ]; then
     --disable-nls --disable-libmudflap \
     --disable-multilib --disable-bootstrap --disable-werror \
     --disable-libsanitizer --disable-libgomp --disable-libquadmath \
-    --disable-libssp --disable-libatomic --disable-shared \
+    --disable-libssp --disable-libatomic --disable-libitm --disable-shared \
     CFLAGS_FOR_TARGET="-static" CXXFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
     --with-gmp=/work/prereq2 --with-mpfr=/work/prereq2 --with-mpc=/work/prereq2 \
     > cfg.log 2>&1
