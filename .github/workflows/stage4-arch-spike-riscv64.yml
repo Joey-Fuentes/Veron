@@ -413,6 +413,17 @@ jobs:
           set -eu
           NP=$(nproc)
           say() { echo "$@"; }
+          # WHY NOT `tail`. The first libgcc failure was invisible: 60 lines of
+          # a -j parallel build is 60 xgcc command lines, and the compiler
+          # error that caused it was thousands of lines earlier. tail is the
+          # wrong tool for a log this shape.
+          whyfail() {
+            echo "  --- lines matching an error, from $1 ---"
+            grep -inE "\\berror\\b|fatal error|undefined reference|No such file" "$1" \
+              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -25 | sed 's/^/    /'
+            echo "  --- last 15 lines ---"
+            tail -15 "$1" | sed 's/^/    /'
+          }
           # --disable-assembly ON GMP IS NOT OPTIONAL: gmp ships per-microarch
           # asm that tcc cannot assemble. stage4-complete.yml carries the same
           # flag for the same reason.
@@ -426,7 +437,7 @@ jobs:
                       --with-gmp=/work/prefix --prefix=/work/prefix > conf.log 2>&1 \
                       || { tail -20 conf.log; exit 1; } ;;
             esac
-            make -j"$NP" > build.log 2>&1 || { tail -30 build.log; exit 1; }
+            make -j"$NP" > build.log 2>&1 || { whyfail build.log; exit 1; }
             make install > /dev/null 2>&1
             say "    installed"
           done
@@ -462,7 +473,7 @@ jobs:
           # -k so one such failure does not stop the rest, and -Otarget so
           # parallel output stays attributable to the target that produced it.
           make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 \
-            || { tail -60 build.log; echo "  (see above; -k means later targets still ran)"; }
+            || { whyfail build.log; echo "  (-k means later targets still ran)"; }
           make install > /dev/null 2>&1
           ls -l /work/out/bin/ | sed 's/^/    /'
           EOS
@@ -483,6 +494,13 @@ jobs:
           cat > work/stage2.sh <<'EOS'
           set -eu
           NP=$(nproc); export PATH=/work/out/bin:$PATH
+          whyfail() {
+            echo "  --- lines matching an error, from $1 ---"
+            grep -inE "\\berror\\b|fatal error|undefined reference|No such file" "$1" \
+              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -25 | sed 's/^/    /'
+            echo "  --- last 15 lines ---"
+            tail -15 "$1" | sed 's/^/    /'
+          }
           mkdir -p /work/b2 && cd /work/b2
           /work/gbot/configure \
             --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
@@ -492,7 +510,7 @@ jobs:
             --disable-libssp --disable-libatomic --disable-shared \
             --with-gmp=/work/prefix --with-mpfr=/work/prefix --with-mpc=/work/prefix \
             > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
-          make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || { tail -60 build.log; }
+          make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || whyfail build.log
           make install > /dev/null 2>&1
           echo "  cc1 built by tcc      : $(stat -c%s /work/b1/gcc/cc1) bytes"
           echo "  cc1 built by that gcc : $(stat -c%s /work/b2/gcc/cc1) bytes"
@@ -518,6 +536,13 @@ jobs:
           cat > work/stage3.sh <<'EOS'
           set -eu
           NP=$(nproc); export PATH=/work/out2/bin:$PATH
+          whyfail() {
+            echo "  --- lines matching an error, from $1 ---"
+            grep -inE "\\berror\\b|fatal error|undefined reference|No such file" "$1" \
+              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -25 | sed 's/^/    /'
+            echo "  --- last 15 lines ---"
+            tail -15 "$1" | sed 's/^/    /'
+          }
           mkdir -p /work/b3 && cd /work/b3
           /work/gtop/configure \
             --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
@@ -527,7 +552,7 @@ jobs:
             --disable-libssp --disable-shared \
             --with-gmp=/work/prefix --with-mpfr=/work/prefix --with-mpc=/work/prefix \
             > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
-          make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || { tail -80 build.log; }
+          make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || whyfail build.log
           make install > /dev/null 2>&1
           /work/out3/bin/gcc --version | head -1
           EOS
