@@ -1,0 +1,151 @@
+name    = "veron-cursors"
+version = "1"
+group   = "desktop"
+license = "MIT"
+
+[source]
+kind      = "local"
+path      = "packages/veron-cursors/mkcursors.py"
+url       = "this repository"
+sha256    = "n/a -- see [installs].digest, which pins every generated file"
+signature = "n/a -- the provenance is the commit that carries the generator"
+crosschecked_against = []
+# GENERATED, NOT FETCHED, and the same shape veron-system uses: there is no
+# tarball because mkcursors.py writes the cursor files from scratch. What a
+# sha256 would assert for a download, [installs].digest asserts here -- over
+# the OUTPUT, which is the thing that actually ships.
+
+[deps]
+build        = ["python"]
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "the generator asserts every file it wrote parses under the same rules wlroots uses"
+packaged_as     = ["veron-cursors"]
+deferral        = """
+THE COMPOSITOR SAID THIS WAS MISSING ON EVERY BOOT, AND NOTHING WAS LISTENING:
+
+    Could not create cursor theme for 'default'
+    Could not load cursor theme, disabling named cursors support
+
+wlroots/xcursor/xcursor.c:515 reads XCURSOR_PATH, then XDG_DATA_HOME, then a
+built-in directory. This system had a cursor theme in none of them, so labwc
+drew NO POINTER AT ALL. It went unnoticed for the whole spike because CI never
+needs one -- it was found by running the image by hand, where a browser you
+cannot point at is not a browser.
+
+WHY NOT PIN AN UPSTREAM THEME. Bibata was the candidate and its build chain is:
+
+    svg/*.svg  (596 files)
+      -> cbmp     an npm package, WHICH RASTERISES SVG THROUGH A HEADLESS
+                  BROWSER -- so Node.js, and a browser, to draw a mouse cursor
+      -> bitmaps/
+      -> ctgen    from clickgen, INSTALLED WITH pip -- and this sandbox has no
+                  network by construction
+      -> themes/
+
+xcursorgen from X.org is the other route and links libX11, libXcursor and
+libpng: the X11 tail declined everywhere else in this set. Shipping Bibata's
+PREBUILT tarball was the third option and is defensible -- it is data, like a
+font -- but it is 27 MB of bytes nobody here produced, and the cheaper honest
+answer turned out to be to write the format.
+
+THE FORMAT IS SMALL AND IS READ OUT OF THE PARSER THAT CONSUMES IT.
+wlroots-0.19.1/xcursor/xcursor.c documents it above xcursor_file_load_images:
+a 16-byte header (magic 0x72756358 "Xcur", header length 16, version 1<<16,
+ntoc), then ntoc 12-byte table-of-contents entries, then image chunks of
+header 36 / type 0xfffd0002 / subtype = nominal size / version 1 / width /
+height / xhot / yhot / delay, followed by width*height little-endian ARGB32
+pixels. mkcursors.py writes exactly that and nothing else.
+
+SEVEN SHAPES, FOUR SIZES, THIRTY-TWO ALIASES. The shapes are arithmetic --
+polygons on a 32-unit grid, scaled, with a one-pixel outline pass so white
+cursors read on white pages. The aliases matter more than they look: Wayland
+clients ask by the CSS and xdg names (`default`, `text`, `pointer`, `grab`,
+`ew-resize`), and every one resolving to something is the difference between a
+pointer that changes over a text field and a compositor that gives up.
+`default` is the exact name labwc asked for and could not find.
+
+THE FIRST ARROW WAS DRAWN WITH PER-ROW WIDTHS AND WAS WRONG. Its tail came out
+three pixels long at 24px and correct at 64px -- the shape changed with the
+size, which is the one thing a cursor must not do. Filling a scaled polygon by
+the same rule at every size cannot drift, and that is why poly_fill exists.
+
+WHAT THIS IS NOT. It is not a designed cursor set and will not flatter anyone
+next to Bibata. It is a pointer where there was none, it costs one build-time
+dependency this system already has, and every byte of it comes from source in
+this directory."""
+
+[[steps]]
+name = "generate"
+cwd  = "$B"
+why  = """
+There is no tarball to unpack and no build system to run: the package IS the
+generator's output. The generator is read from /packages/veron-cursors --
+the path the recipe directory is bound to INSIDE the sandbox -- because $P
+expands to wherever the repo happens to sit on the machine running the build,
+and the plan gate rejects that. A plan carrying an absolute path from the
+builder's home directory is a plan that does not mean the same thing twice. A shell step because the deliverable is files written into
+DESTDIR, not an argv that a configure/make pair would produce.
+
+The assertions are the verification. A cursor file that parses under the same
+rules wlroots applies is one wlroots will load; one that does not would
+otherwise fail silently at runtime as `Could not load cursor theme` -- exactly
+the message this package exists to remove -- so it is checked here, at build
+time, where a failure stops the build.
+"""
+shell = """
+set -eu
+python3 /packages/veron-cursors/mkcursors.py "$D"
+
+# EVERY FILE RE-READ WITH wlroots' OWN RULES BEFORE THE BUILD IS ALLOWED TO
+# PASS. xcursor.c checks magic, header length, version and toc type, then
+# trusts width/height/position; a bad offset there is a runtime failure with
+# no message. Asserting it here turns that into a build failure with one.
+python3 - "$D/usr/share/icons/Veron/cursors" <<'CHECK'
+import os, struct, sys
+base = sys.argv[1]
+real = [f for f in sorted(os.listdir(base))
+        if not os.path.islink(os.path.join(base, f))]
+assert real, "no cursor files were written"
+for name in real:
+    d = open(os.path.join(base, name), "rb").read()
+    magic, hdr, ver, ntoc = struct.unpack("<IIII", d[:16])
+    assert magic == 0x72756358, f"{name}: magic {magic:#x}"
+    assert hdr == 16 and ver == (1 << 16), f"{name}: header {hdr} version {ver:#x}"
+    assert ntoc == 4, f"{name}: {ntoc} sizes, expected 4"
+    for i in range(ntoc):
+        t, st, pos = struct.unpack("<III", d[16 + i*12 : 28 + i*12])
+        assert t == 0xfffd0002, f"{name}: toc type {t:#x}"
+        ch, ct, cst, cv, w, h, xh, yh, _ = struct.unpack("<IIIIIIIII", d[pos:pos+36])
+        assert ch == 36 and ct == t and cst == st and cv == 1, f"{name}: chunk header"
+        assert 0 < w <= 0x7fff and w == h == st, f"{name}: {w}x{h} for size {st}"
+        assert xh <= w and yh <= h, f"{name}: hotspot {xh},{yh} outside {w}x{h}"
+        assert pos + 36 + w*h*4 <= len(d), f"{name}: pixel data truncated"
+    # A CURSOR OF ENTIRELY TRANSPARENT PIXELS PARSES PERFECTLY AND DRAWS
+    # NOTHING, which is the failure this package exists to fix wearing a
+    # different hat. So the pixels are counted too.
+    t, st, pos = struct.unpack("<III", d[16:28])
+    _, _, _, _, w, h, _, _, _ = struct.unpack("<IIIIIIIII", d[pos:pos+36])
+    off = pos + 36
+    opaque = sum(1 for k in range(w*h) if d[off + k*4 + 3])
+    assert opaque > (w*h) // 20, f"{name}: only {opaque} of {w*h} pixels drawn"
+print(f"  {len(real)} cursor files parse under wlroots' rules")
+CHECK
+
+# `default` IS THE NAME labwc ASKED FOR. Asserted by name rather than left to
+# the alias table, because the alias table is the thing that would be wrong.
+test -e "$D/usr/share/icons/Veron/cursors/default"
+"""
+
+[guest]
+# THE TEST IS `default` RESOLVING, NOT MERELY A DIRECTORY EXISTING. That is
+# the exact lookup wlroots performs and the exact one that failed.
+test   = [["/bin/sh", "-c",
+           "test -s /usr/share/icons/Veron/cursors/default && echo default-resolves"],
+          ["/bin/sh", "-c",
+           "head -c4 /usr/share/icons/Veron/cursors/left_ptr | grep -q Xcur && echo xcursor-magic"]]
+expect = ["default-resolves", "xcursor-magic"]

@@ -98,6 +98,22 @@ export WEBKIT_SKIA_ENABLE_CPU_RENDERING=1
 # THE CASE WITH SOFTWARE RASTERIZATION)". Software rasterisation having no DRM
 # device is the designed state; this variable is how you declare it.
 export LIBGL_ALWAYS_SOFTWARE=1
+# THE CURSOR THEME, NAMED RATHER THAN GUESSED AT.
+#
+# wlroots/xcursor/xcursor.c:515 reads XCURSOR_PATH first, then falls back to
+# XDG_DATA_HOME and a built-in directory. Naming the path means the lookup
+# does not depend on XDG_DATA_HOME being set the way a desktop would set it,
+# and naming the theme means we are not relying on a fallback to a theme
+# called `default` -- which is precisely the lookup that failed:
+#
+#     Could not create cursor theme for 'default'
+#     Could not load cursor theme, disabling named cursors support
+#
+# veron-cursors ships `default` as a symlink to left_ptr, so both the theme
+# name and the cursor name now resolve.
+export XCURSOR_PATH=/usr/share/icons
+export XCURSOR_THEME=Veron
+export XCURSOR_SIZE=24
 # LANG IS SET HERE TOO BECAUSE dinit DOES NOT SOURCE /etc/profile. A service
 # started at boot gets PID 1's environment, so the export in /etc/profile
 # reaches a login shell and nothing else -- and everything labwc autostarts
