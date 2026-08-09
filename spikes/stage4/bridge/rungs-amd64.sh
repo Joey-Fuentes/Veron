@@ -2786,6 +2786,25 @@ if [ "$R5" = ok ]; then
   # produce exactly this message. Going static sidesteps the section rather
   # than fixing it; if anything later needs a dynamic link, this comes back.
   #
+  # --disable-decimal-float, AND THE aarch64 ARM DOES NOT NEED IT.
+  #
+  # gcc 4.7 turns decimal float ON BY DEFAULT for x86_64 and builds
+  # libgcc/config/libbid for it. That code includes <fenv.h> and uses the
+  # exception macros, and run 85000965729 produced ten of these:
+  #
+  #     libgcc/config/libbid/bid_decimal_globals.c:59:21:
+  #         error: 'FE_INEXACT' undeclared (first use in this function)
+  #     ... and FE_UNDERFLOW, FE_OVERFLOW, FE_DIVBYZERO, FE_INVALID
+  #
+  # musl HAS them -- include/fenv.h pulls bits/fenv.h and arch/x86_64 defines
+  # FE_INEXACT as 32, both checked -- so this is a corner of gcc this early
+  # sysroot does not satisfy rather than a missing header. Decimal float is an
+  # optional language extension (_Decimal32/64/128); nothing above this rung
+  # asks for it.
+  #
+  # THE aarch64 ARM NEVER SEES THIS: 4.7 has no aarch64 target until the
+  # backport, and the backported one does not default decimal float on.
+  #
   # --disable-libmudflap, FORCED BY THE BOX AND COSTING NOTHING.
   #
   #     libmudflap/mf-runtime.c:2357:1: error: conflicting types for
@@ -2838,6 +2857,7 @@ if [ "$R5" = ok ]; then
     --disable-multilib --disable-bootstrap --disable-werror \
     --disable-libsanitizer --disable-libgomp --disable-libquadmath \
     --disable-libssp --disable-libatomic --disable-shared \
+      --disable-decimal-float \
     --with-gmp=/work/prereq --with-mpfr=/work/prereq --with-mpc=/work/prereq \
     > cfg.log 2>&1
   say "    configure rc=$?"
