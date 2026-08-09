@@ -381,6 +381,14 @@ jobs:
           tar xf gcc-$GCC_TOP.tar.xz;     mv gcc-$GCC_TOP    gtop
           echo "  unpacked; the box has no network past this point"
 
+      # RUN 84972385416 GOT FURTHER STILL, AND IS WORTH READING BEFORE THE
+      # NEXT ATTEMPT: the log shows `build/genchecksum ... cc1plus-checksum.o`
+      # and the cc1plus link line, so THE C++ COMPILER WAS BUILT. libbackend.a
+      # linked. What failed was all-target-libgcc, gcc's runtime library --
+      # after the compiler itself existed. That is a much later rung than it
+      # first appeared, and it is why -k is worth keeping: the run reached
+      # something real before stopping.
+      #
       # MEASURED 2026-08-09, RUN 84925865628: with MAKEINFO=true the build got
       # past the docs and all the way into libgcc -- xgcc, the tcc-built gcc,
       # compiling crtbeginS.o, crtprec32.o and libgcov.a. It then failed
@@ -399,11 +407,26 @@ jobs:
           # error that caused it was thousands of lines earlier. tail is the
           # wrong tool for a log this shape.
           whyfail() {
-            echo "  --- lines matching an error, from $1 ---"
-            grep -inE "\\berror\\b|fatal error|undefined reference|No such file" "$1" \
-              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -25 | sed 's/^/    /'
-            echo "  --- last 15 lines ---"
-            tail -15 "$1" | sed 's/^/    /'
+            # THREE PASSES, BECAUSE THE FIRST TWO ATTEMPTS EACH MISSED IT.
+            #
+            # `tail -60` showed sixty xgcc command lines and no error, because
+            # a -j build interleaves. Grepping for the word "error" then found
+            #     configure: error: in `/work/b1/gcc':
+            # and stopped -- the REASON is on the following line, which does
+            # not contain the word. So: context, not matches.
+            #
+            # And make's own failures do not say "error" in a form that grep
+            # catches at all; they say `*** [Makefile:NNNN: target] Error 2`.
+            # That marker is the reliable one, so it gets its own pass.
+            echo "  --- make's own failure markers, with context ---"
+            grep -n -B4 -A2 -F "*** [" "$1" | tail -40 | sed 's/^/    /'
+            echo "  --- configure failures, with context ---"
+            grep -n -A6 "configure: error" "$1" | tail -20 | sed 's/^/    /'
+            echo "  --- compiler diagnostics ---"
+            grep -inE "fatal error|undefined reference|: error:|No such file or directory" "$1" \
+              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -15 | sed 's/^/    /'
+            echo "  --- last 10 lines ---"
+            tail -10 "$1" | sed 's/^/    /'
           }
           # --disable-assembly ON GMP IS NOT OPTIONAL: gmp ships per-microarch
           # asm that tcc cannot assemble. stage4-complete.yml carries the same
@@ -476,11 +499,26 @@ jobs:
           set -eu
           NP=$(nproc); export PATH=/work/out/bin:$PATH
           whyfail() {
-            echo "  --- lines matching an error, from $1 ---"
-            grep -inE "\\berror\\b|fatal error|undefined reference|No such file" "$1" \
-              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -25 | sed 's/^/    /'
-            echo "  --- last 15 lines ---"
-            tail -15 "$1" | sed 's/^/    /'
+            # THREE PASSES, BECAUSE THE FIRST TWO ATTEMPTS EACH MISSED IT.
+            #
+            # `tail -60` showed sixty xgcc command lines and no error, because
+            # a -j build interleaves. Grepping for the word "error" then found
+            #     configure: error: in `/work/b1/gcc':
+            # and stopped -- the REASON is on the following line, which does
+            # not contain the word. So: context, not matches.
+            #
+            # And make's own failures do not say "error" in a form that grep
+            # catches at all; they say `*** [Makefile:NNNN: target] Error 2`.
+            # That marker is the reliable one, so it gets its own pass.
+            echo "  --- make's own failure markers, with context ---"
+            grep -n -B4 -A2 -F "*** [" "$1" | tail -40 | sed 's/^/    /'
+            echo "  --- configure failures, with context ---"
+            grep -n -A6 "configure: error" "$1" | tail -20 | sed 's/^/    /'
+            echo "  --- compiler diagnostics ---"
+            grep -inE "fatal error|undefined reference|: error:|No such file or directory" "$1" \
+              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -15 | sed 's/^/    /'
+            echo "  --- last 10 lines ---"
+            tail -10 "$1" | sed 's/^/    /'
           }
           mkdir -p /work/b2 && cd /work/b2
           /work/gbot/configure \
@@ -518,11 +556,26 @@ jobs:
           set -eu
           NP=$(nproc); export PATH=/work/out2/bin:$PATH
           whyfail() {
-            echo "  --- lines matching an error, from $1 ---"
-            grep -inE "\\berror\\b|fatal error|undefined reference|No such file" "$1" \
-              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -25 | sed 's/^/    /'
-            echo "  --- last 15 lines ---"
-            tail -15 "$1" | sed 's/^/    /'
+            # THREE PASSES, BECAUSE THE FIRST TWO ATTEMPTS EACH MISSED IT.
+            #
+            # `tail -60` showed sixty xgcc command lines and no error, because
+            # a -j build interleaves. Grepping for the word "error" then found
+            #     configure: error: in `/work/b1/gcc':
+            # and stopped -- the REASON is on the following line, which does
+            # not contain the word. So: context, not matches.
+            #
+            # And make's own failures do not say "error" in a form that grep
+            # catches at all; they say `*** [Makefile:NNNN: target] Error 2`.
+            # That marker is the reliable one, so it gets its own pass.
+            echo "  --- make's own failure markers, with context ---"
+            grep -n -B4 -A2 -F "*** [" "$1" | tail -40 | sed 's/^/    /'
+            echo "  --- configure failures, with context ---"
+            grep -n -A6 "configure: error" "$1" | tail -20 | sed 's/^/    /'
+            echo "  --- compiler diagnostics ---"
+            grep -inE "fatal error|undefined reference|: error:|No such file or directory" "$1" \
+              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -15 | sed 's/^/    /'
+            echo "  --- last 10 lines ---"
+            tail -10 "$1" | sed 's/^/    /'
           }
           mkdir -p /work/b3 && cd /work/b3
           /work/gtop/configure \
