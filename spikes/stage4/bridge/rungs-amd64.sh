@@ -2970,9 +2970,20 @@ if [ "$R5" = ok ]; then
     # cannot compile", build.log carries only that sentence -- the failing
     # command and its error are in that subdirectory's own config.log, which
     # nothing has been printing.
+    say "    --- every config.log under /work/bld, newest first ---"
+    find /work/bld -name config.log -newer /work/bld/Makefile 2>/dev/null \
+      | sed 's|/work/bld/||; s|/config.log||' | sed 's/^/      /'
     for _cl in $(find /work/bld -name config.log -newer /work/bld/Makefile 2>/dev/null); do
       _d=$(dirname "$_cl")
-      grep -q "error:" "$_cl" 2>/dev/null || continue
+      # THE FILTER SKIPPED THE ONE LOG THAT MATTERED. autoconf writes its
+      # own fatal line as "configure: error: ..." and grep -q "error:" does
+      # match that -- but libstdc++-v3's config.log records the failure as
+      # "configure: error: computing EOF failed" only in the terminal output,
+      # not necessarily in a line this pattern reaches first. Run 85003591221
+      # printed six config.logs and libstdc++-v3's was not among them, so the
+      # test that actually failed was never shown. Widened, and the failing
+      # subdirectory is named unconditionally below.
+      grep -qE "error|failed|cannot" "$_cl" 2>/dev/null || continue
       say "    --- $_d/config.log ---"
       # PRINT THE LINES AROUND THE FAILURE, NOT EVERY ERROR IN THE FILE.
       #
