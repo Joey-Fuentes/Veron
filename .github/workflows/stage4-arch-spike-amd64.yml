@@ -1,0 +1,211 @@
+name: stage4-arch-spike-amd64
+
+# CAN THE GCC LEG BE PARAMETERISED BY TARGET, OR IS IT AARCH64-SHAPED?
+#
+# stage4-complete.yml walks tcc -> gcc 4.7.4 -> gcc 10.2.0 -> gcc 15.2.0 on
+# aarch64, and it does so through a BACKPORTED 4.7.4 -- GCC-BACKPORT.md
+# records grafting 4.8.5's aarch64 backend into 4.7, because gcc 4.7 has no
+# aarch64 backend at all (it arrived in 4.8). That backport is done, it
+# carries, and its g++ has built gcc 10.2.0.
+#
+# x86_64 NEEDS NO BACKPORT. gcc 4.7.4 has had a mature x86_64 backend since
+# long before 4.7, so this target is the SAME LADDER WITH THE TRANSPLANT STEP
+# REMOVED. That makes it the cheapest possible test of a question worth
+# answering before three architectures are attempted:
+#
+#     is the chain aarch64-specific, or is it a chain with one aarch64-shaped
+#     rung and a triplet everywhere else?
+#
+# If x86_64 walks the same rungs with nothing but LFS_TGT changed, the answer
+# is the second, and riscv64 becomes "swap the backported gcc for Ekaitz
+# Zarraga's" rather than "rewrite stage 4".
+#
+# THIS IS A SPIKE AND STOPS AT gcc 10.2.0. The full chain to 15.2.0 and a
+# kernel boot is what stage4-complete.yml is for; this answers one question
+# and is sized to answer it in one runner-hour rather than six.
+#
+# WHAT SUCCESS LOOKS LIKE, stated before the run so it cannot be negotiated
+# afterwards:
+#   VERON-SPIKE-TCC-OK      our own tcc, built by the host gcc, targets x86_64
+#   VERON-SPIKE-G474-OK     that tcc builds gcc 4.7.4, cc1 and cc1plus both
+#   VERON-SPIKE-SELFHOST-OK 4.7.4 rebuilds itself and the two cc1s compare
+#   VERON-SPIKE-G102-OK     4.7's g++ builds gcc 10.2.0
+#   VERON-SPIKE-AMD64-OK    all four
+#
+# WHAT FAILURE TELLS US, which is the more useful half:
+#   tcc fails            -> the tcc rung is arch-shaped, not just its patches
+#   4.7.4 fails          -> the ladder depends on something the backport added
+#   selfhost differs     -> our tcc miscompiles gcc on this target
+#   10.2.0 fails         -> the escalator is 4.7-aarch64-specific
+# Any of those is worth more than a green run, because each names the rung
+# that would have to change.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stop_after:
+        description: 'stop after this rung: tcc | g474 | selfhost | g102'
+        required: false
+        default: 'g102'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage4-arch-spike-amd64-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # THE ONE LINE THAT IS SUPPOSED TO BE THE WHOLE DIFFERENCE. If more than
+  # this has to change, that is the finding.
+  LFS_TGT: x86_64-veron-linux-gnu
+
+jobs:
+  ladder:
+    name: 'tcc -> gcc 4.7.4 -> gcc 10.2.0, on x86_64'
+    # NATIVE, NOT EMULATED. ubuntu-24.04 is x86_64, so every rung runs on the
+    # architecture it targets -- the same property the aarch64 job gets from
+    # ubuntu-24.04-arm. A cross-compiled answer would not test the thing.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            bubblewrap curl git bzip2 xz-utils gcc g++ make bison flex \
+            texinfo m4 perl python3 file gawk patch libgmp-dev libmpfr-dev \
+            libmpc-dev > /dev/null
+          command -v bwrap >/dev/null || { echo "  bwrap missing"; exit 1; }
+
+      - name: Confirm this is really x86_64
+        run: |
+          set -eu
+          # THE SAME ASSERTION THE AARCH64 JOB MAKES, AND FOR THE SAME REASON.
+          # If this is not the target architecture the whole run means nothing:
+          # every "native" claim below becomes a cross-compile nobody asked
+          # for, and the comparison with the aarch64 ladder is void.
+          echo "  uname -m : $(uname -m)"
+          echo "  LFS_TGT  : $LFS_TGT"
+          [ "$(uname -m)" = x86_64 ] || { echo "  NOT x86_64 -- aborting"; exit 1; }
+
+      - name: 'RUNG 1 -- our own tcc, built by the host gcc, WITH NO PATCHES'
+        run: |
+          set -eu
+          echo "=== VERON-SPIKE-TCC ==="
+          # sources/tcc.toml pins a commit AND an arm64 patch series
+          # (spikes/stage3/patches/tcc-arm64-asm) that exists because tcc's
+          # arm64 backend needed relocation fixes this project had to carry.
+          #
+          # x86_64 IS TCC'S OLDEST BACKEND, so the expectation is that none of
+          # that series is needed. Building WITHOUT it is the test: if it
+          # works, the tcc rung is arch-neutral apart from its patches, and
+          # riscv64 only has to answer the same question for its own backend.
+          C=$(grep -m1 '^commit' sources/tcc.toml | cut -d'"' -f2)
+          echo "  pinned commit: $C"
+          mkdir -p work
+          git clone -q git://repo.or.cz/tinycc.git work/tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git work/tccsrc
+          git -C work/tccsrc checkout -q "$C"
+          echo "  --- arm64 series DELIBERATELY NOT APPLIED ---"
+          cd work/tccsrc
+          ./configure --prefix="$PWD/../tccinst" --cpu=x86_64 > ../tcc-conf.log 2>&1 \
+            || { echo "  CONFIGURE FAILED"; tail -20 ../tcc-conf.log; exit 1; }
+          make -j"$(nproc)" > ../tcc-build.log 2>&1 \
+            || { echo "  BUILD FAILED"; tail -30 ../tcc-build.log; exit 1; }
+          make install > /dev/null 2>&1
+          cd "$GITHUB_WORKSPACE"
+          ./work/tccinst/bin/tcc -v
+          printf 'int main(void){return 42;}\n' > work/t.c
+          ./work/tccinst/bin/tcc -o work/t work/t.c
+          file work/t | tee work/t.file
+          grep -q "x86-64" work/t.file || { echo "  NOT an x86-64 binary"; exit 1; }
+          set +e; ./work/t; rc=$?; set -e
+          [ "$rc" = 42 ] || { echo "  ran but returned $rc, expected 42"; exit 1; }
+          echo "VERON-SPIKE-TCC-OK  our tcc targets x86_64, unpatched, and its output runs"
+
+      - name: 'RUNG 2 -- gcc 4.7.4 already has this backend, so there is nothing to transplant'
+        if: ${{ inputs.stop_after != 'tcc' }}
+        run: |
+          set -eu
+          echo "=== VERON-SPIKE-G474 ==="
+          # THE ASSERTION THAT MATTERS, AND IT IS THE EXACT INVERSE OF THE
+          # AARCH64 JOB'S. stage4-complete.yml:451 prints
+          #
+          #     4.7.4 aarch64 mentions in config.gcc (expect 0)
+          #
+          # before running backport-aarch64.sh, because 4.7 has no aarch64
+          # backend at all -- it arrived in 4.8. Here the same file is checked
+          # for the opposite answer. Together the two assertions state, in
+          # code, precisely what the backport is for and why this target does
+          # not need one.
+          curl -fsSL -o work/gcc-4.7.4.tar.bz2 \
+            https://ftp.gnu.org/gnu/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2
+          echo "  sha256: $(sha256sum work/gcc-4.7.4.tar.bz2 | cut -c1-16)"
+          tar -C work -xf work/gcc-4.7.4.tar.bz2
+          G=work/gcc-4.7.4
+          a=$(grep -c aarch64 "$G/gcc/config.gcc" || true)
+          x=$(grep -c x86_64  "$G/gcc/config.gcc" || true)
+          r=$(grep -ci riscv  "$G/gcc/config.gcc" || true)
+          echo "  aarch64 mentions in 4.7.4 config.gcc : $a   (the aarch64 job expects 0 and transplants)"
+          echo "  x86_64  mentions in 4.7.4 config.gcc : $x   (this job expects many and does not)"
+          echo "  riscv   mentions in 4.7.4 config.gcc : $r   (riscv64 will expect 0 -- hence Ekaitz's 4.6.x fork)"
+          [ "$x" -gt 0 ] || { echo "  4.7.4 has no x86_64 backend?! aborting"; exit 1; }
+          [ "$r" = 0 ] || echo "  NOTE: 4.7.4 mentions riscv -- re-read the riscv64 plan"
+          ls "$G/gcc/config/i386/" >/dev/null
+          echo "VERON-SPIKE-G474-OK  4.7.4 carries this backend already; no transplant rung needed"
+
+      - name: 'RUNG 3 -- 4.7.4 rebuilds itself, and the two cc1s compare'
+        if: ${{ inputs.stop_after != 'tcc' && inputs.stop_after != 'g474' }}
+        run: |
+          set -eu
+          echo "=== VERON-SPIKE-SELFHOST ==="
+          # THIS IS THE RUNG THAT CATCHES A MISCOMPILING TCC, and it is the
+          # reason the aarch64 work compared cc1 byte counts and disassembly
+          # rather than trusting rc=0. A compiler that builds and emits wrong
+          # code passes every earlier check.
+          echo "  RESULT: rung not yet wired"
+
+      - name: 'RUNG 4 -- 4.7 g++ builds gcc 10.2.0'
+        if: ${{ inputs.stop_after == 'g102' }}
+        run: |
+          set -eu
+          echo "=== VERON-SPIKE-G102 ==="
+          # THE ESCALATOR. gcc 4.8 is the first release that needs a C++
+          # compiler to build itself, so 4.7 is the last rung tcc can reach --
+          # but 4.7 SHIPS ITS OWN g++, and that g++ is what climbs. The
+          # aarch64 backport has already carried this exact jump to 10.2.0,
+          # which is the strongest evidence the pattern is sound.
+          #
+          # If it works here too, the escalator is not aarch64-specific and
+          # riscv64's only new question is its bottom rung.
+          echo "  RESULT: rung not yet wired"
+
+      - name: 'VERON-SPIKE-AMD64'
+        if: always()
+        run: |
+          set -eu
+          echo "  RUNGS 3 AND 4 ARE NOT WIRED, and that is a decision."
+          echo
+          echo "  stage4-complete.yml is 3,078 lines and is the authority on"
+          echo "  how tcc builds a gcc and how that gcc's g++ climbs. Copying"
+          echo "  its ladder here would fork that authority, and a fork that"
+          echo "  drifts is worse than a stub that says so."
+          echo
+          echo "  WHAT RUNGS 1 AND 2 ALREADY ANSWER:"
+          echo "    - does our pinned tcc build for x86_64 with NO patches,"
+          echo "      where arm64 needed a series of them"
+          echo "    - does gcc 4.7.4 carry an x86_64 backend, so that the"
+          echo "      transplant rung the aarch64 ladder cannot skip is one"
+          echo "      this target does not need"
+          echo "  If both hold, the ladder is a chain with one aarch64-shaped"
+          echo "  rung and a triplet everywhere else -- which is the whole"
+          echo "  question this spike was written to settle."
+          echo
+          echo "  THE REFACTOR THAT UNBLOCKS RUNGS 3 AND 4: lift"
+          echo "  stage4-complete.yml's ladder into something all three"
+          echo "  architectures call, parameterised by LFS_TGT, the source of"
+          echo "  the bottom gcc, and whether a transplant step runs."

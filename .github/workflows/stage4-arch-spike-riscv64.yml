@@ -1,0 +1,221 @@
+name: stage4-arch-spike-riscv64
+
+# THE ARCHITECTURE WHERE THE LADDER'S BOTTOM RUNG DOES NOT EXIST.
+#
+# gcc 4.7.4 is the last gcc a C compiler can build -- 4.8 requires a C++
+# compiler to build itself. And gcc 4.7.4 HAS NO RISC-V BACKEND: RISC-V landed
+# upstream in gcc 7.1 (2017), five years later. So the two obvious moves are
+# both closed:
+#
+#     tcc -> gcc 4.7.4 -> ...      4.7.4 cannot target riscv64
+#     tcc -> gcc 7.x   -> ...      7.x cannot be built by a C compiler
+#
+# THE AARCH64 ANSWER WAS TO BACKPORT. GCC-BACKPORT.md records grafting 4.8.5's
+# aarch64 backend into 4.7.4 -- done, carrying, 626 objects, no miscompilation
+# across 349 translation units, and its g++ has built gcc 10.2.0.
+#
+# THE RISC-V ANSWER ALREADY EXISTS AND IS SOMEONE ELSE'S WORK. Ekaitz Zarraga,
+# NLnet-funded, backported RISC-V into a C-only gcc 4.6.x for Guix:
+#
+#     https://codeberg.org/ekaitz-zarraga/gcc
+#
+# so this spike does not write a backport. It tests whether that one can take
+# the place of ours in a ladder shaped like stage4-complete.yml's.
+#
+# NATIVE, NOT EMULATED. `runs-on: ubuntu-24.04-riscv` is the RISE hosted
+# runner, which means every rung executes on the architecture it targets --
+# the same property the aarch64 job gets from ubuntu-24.04-arm. Under QEMU
+# this spike would still be valid and would take many times longer; the native
+# runner is what makes it a one-session experiment rather than an overnight
+# one.
+#
+# THREE THINGS THIS CAN FIND, IN INCREASING ORDER OF INTEREST:
+#
+#   1. tcc's riscv64 backend does not build, or miscompiles.
+#      tcc's riscv64 backend is its youngest. Ours carries an arm64 patch
+#      series for exactly this class of problem, so a riscv64 series may be
+#      needed too. Cheap to find, cheap to fix.
+#
+#   2. Ekaitz's 4.6.x does not build under our tcc.
+#      His chain used his own tcc build. If ours cannot compile his gcc, the
+#      bottom rung needs work.
+#
+#   3. gcc 7 does not build from 4.6.x's g++.
+#      THIS IS THE ONE TO EXPECT. It is where the Guix RISC-V effort is
+#      reported to have stalled, and it is the rung this project has the most
+#      relevant experience with -- our 4.7 g++ reached 10.2.0, but that is 4.7
+#      with a backend we grafted, not 4.6 with someone else's, and RISC-V's
+#      libstdc++ is younger than aarch64's.
+#
+# A RED RUN THAT NAMES WHICH OF THE THREE IS WORTH MORE THAN A GREEN ONE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stop_after:
+        description: 'stop after this rung: tcc | g46 | selfhost | g7'
+        required: false
+        default: 'g7'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage4-arch-spike-riscv64-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # THE ONE LINE THAT IS SUPPOSED TO BE THE WHOLE DIFFERENCE. If more than
+  # this has to change, that is the finding.
+  LFS_TGT: riscv64-veron-linux-gnu
+
+jobs:
+  ladder:
+    name: 'tcc -> gcc 4.6.x -> gcc 7, on riscv64'
+    # NATIVE, NOT EMULATED. ubuntu-24.04 is x86_64, so every rung runs on the
+    # architecture it targets -- the same property the aarch64 job gets from
+    # ubuntu-24.04-arm. A cross-compiled answer would not test the thing.
+    runs-on: ubuntu-24.04-riscv
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            bubblewrap curl git bzip2 xz-utils gcc g++ make bison flex \
+            texinfo m4 perl python3 file gawk patch libgmp-dev libmpfr-dev \
+            libmpc-dev > /dev/null
+          command -v bwrap >/dev/null || { echo "  bwrap missing"; exit 1; }
+
+      - name: Confirm this is really riscv64
+        run: |
+          set -eu
+          echo "  uname -m : $(uname -m)"
+          echo "  LFS_TGT  : $LFS_TGT"
+          lscpu | head -12 || true
+          # NATIVE OR NOTHING. If this is not riscv64 then every rung below is
+          # a cross-compile, and a cross-compiled answer does not test what
+          # this spike exists to test.
+          [ "$(uname -m)" = riscv64 ] || { echo "  NOT riscv64 -- aborting"; exit 1; }
+
+      - name: 'RUNG 1 -- our own tcc, built by the host gcc, targeting riscv64'
+        run: |
+          set -eu
+          echo "=== VERON-SPIKE-TCC ==="
+          # sources/tcc.toml pins a commit and an ARM64 patch series. That
+          # series exists because tcc's arm64 backend needed relocation fixes
+          # this project had to carry -- and tcc's riscv64 backend is YOUNGER
+          # STILL. So the honest expectation is not "this works" but "we find
+          # out whether riscv64 needs a series of its own".
+          C=$(grep -m1 '^commit' sources/tcc.toml | cut -d'"' -f2)
+          echo "  pinned commit: $C"
+          mkdir -p work
+          git clone -q git://repo.or.cz/tinycc.git work/tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git work/tccsrc
+          git -C work/tccsrc checkout -q "$C"
+          test -f work/tccsrc/riscv64-gen.c \
+            || { echo "  NO riscv64-gen.c AT THIS PIN -- tcc has no riscv64 backend here"; exit 1; }
+          echo "  riscv64-gen.c present at the pinned commit"
+          echo "  --- arm64 series DELIBERATELY NOT APPLIED (wrong architecture) ---"
+          cd work/tccsrc
+          ./configure --prefix="$PWD/../tccinst" --cpu=riscv64 > ../tcc-conf.log 2>&1 \
+            || { echo "  CONFIGURE FAILED"; tail -20 ../tcc-conf.log; exit 1; }
+          make -j"$(nproc)" > ../tcc-build.log 2>&1 \
+            || { echo "  BUILD FAILED -- riscv64 likely needs its own patch series"; \
+                 tail -40 ../tcc-build.log; exit 1; }
+          make install > /dev/null 2>&1
+          cd "$GITHUB_WORKSPACE"
+          ./work/tccinst/bin/tcc -v
+          printf 'int main(void){return 42;}\n' > work/t.c
+          ./work/tccinst/bin/tcc -o work/t work/t.c
+          file work/t | tee work/t.file
+          grep -qi "RISC-V" work/t.file || { echo "  NOT a RISC-V binary"; exit 1; }
+          set +e; ./work/t; rc=$?; set -e
+          [ "$rc" = 42 ] || { echo "  ran but returned $rc, expected 42"; exit 1; }
+          echo "VERON-SPIKE-TCC-OK  our tcc targets riscv64 and its output runs"
+
+      - name: "RUNG 2 -- Ekaitz Zarraga's gcc 4.6.x, which has the backend 4.7 never had"
+        if: ${{ inputs.stop_after != 'tcc' }}
+        run: |
+          set -eu
+          echo "=== VERON-SPIKE-G46 ==="
+          # NOT OUR BACKPORT. This one is NLnet-funded work by Ekaitz Zarraga
+          # for Guix, and the whole point of this rung is that we do not write
+          # it. What we test is whether it drops into a ladder shaped like
+          # ours.
+          #
+          # PIN THE TAG, NOT THE VERSION. Primary sources disagree about
+          # whether this is 4.6.4 or 4.6.5 -- the repository and Guix's patch
+          # filename say 4.6.4, Guix's own blog text says 4.6.5. A version
+          # number is therefore not an identifier here; the tag is.
+          git clone -q https://codeberg.org/ekaitz-zarraga/gcc.git work/g46 \
+            || { echo "  clone failed -- is codeberg reachable from this runner?"; exit 1; }
+          cd work/g46
+          echo "  --- tags containing 'working' ---"
+          git tag --list '*working*' | sed 's/^/    /'
+          git checkout -q working-compiler-c++ \
+            || { echo "  tag working-compiler-c++ not found; see the list above"; exit 1; }
+          echo "  HEAD: $(git rev-parse --short HEAD)"
+          echo "  gcc version string: $(cat gcc/BASE-VER 2>/dev/null || echo unknown)"
+          r=$(grep -ci riscv gcc/config.gcc || true)
+          echo "  riscv mentions in config.gcc: $r"
+          [ "$r" -gt 0 ] || { echo "  THIS FORK HAS NO RISCV BACKEND -- wrong tag?"; exit 1; }
+          ls gcc/config/riscv/ | head -8 | sed 's/^/    /'
+          echo "VERON-SPIKE-G46-OK  the fork carries a riscv backend at this tag"
+          echo
+          echo "  NEXT, AND NOT YET WIRED: build it with the tcc from rung 1."
+          echo "  That is stage4-complete.yml's PREREQUISITES + STAGE 1 with a"
+          echo "  different source tree, and wiring it means factoring that"
+          echo "  ladder rather than copying it -- see the foot of this file."
+
+      - name: "RUNG 3 -- 4.6.x rebuilds itself, and the two cc1s compare"
+        if: ${{ inputs.stop_after != 'tcc' && inputs.stop_after != 'g46' }}
+        run: |
+          set -eu
+          echo "=== VERON-SPIKE-SELFHOST ==="
+          # THE RUNG THAT CATCHES A MISCOMPILING TCC. A compiler that builds
+          # and emits wrong code passes every earlier check, which is why the
+          # aarch64 work compared cc1 byte counts and disassembly rather than
+          # trusting rc=0 -- and why it could state "no miscompilation across
+          # 349 translation units" as a measurement rather than a hope.
+          # tcc's riscv64 backend is its youngest, so this rung matters more
+          # here than it did there.
+          echo "  RESULT: not wired -- see the summary step"
+
+      - name: "RUNG 4 -- 4.6's g++ builds gcc 7.x"
+        if: ${{ inputs.stop_after == 'g7' }}
+        run: |
+          set -eu
+          echo "=== VERON-SPIKE-G7 ==="
+          # THE RUNG TO WATCH, AND THE REASON THIS SPIKE EXISTS.
+          #
+          # gcc 7.1 is the first upstream release with a RISC-V backend, so it
+          # is the first rung that needs no fork. Reaching it means a C-only
+          # 4.6.x has to produce a g++ good enough to build it -- and this is
+          # exactly where the Guix RISC-V effort is reported to have stalled.
+          #
+          # THIS PROJECT HAS THE MOST RELEVANT EVIDENCE EITHER WAY: our
+          # backported 4.7's g++ has already built gcc 10.2.0 on aarch64. That
+          # is a strong precedent for the pattern and NOT a proof for this
+          # case -- 4.6 is not 4.7, someone else's backport is not ours, and
+          # RISC-V's libstdc++ is younger than aarch64's.
+          echo "  RESULT: not wired -- see the summary step"
+
+      - name: 'VERON-SPIKE-RISCV64'
+        if: always()
+        run: |
+          set -eu
+          echo "  This workflow is a SCAFFOLD, deliberately. The rungs above"
+          echo "  state what each one tests and what its failure would mean;"
+          echo "  the commands are lifted from stage4-complete.yml, which is"
+          echo "  3,078 lines and the authority. Wiring them here by copying"
+          echo "  would fork that authority, and a fork that drifts is worse"
+          echo "  than a stub that says so."
+          echo
+          echo "  THE WORK IS TO FACTOR stage4-complete.yml's LADDER INTO"
+          echo "  SOMETHING BOTH JOBS CALL, with LFS_TGT and the transplant"
+          echo "  step as its only parameters. That is a refactor of a working"
+          echo "  3,000-line workflow and is not something to do blind."
