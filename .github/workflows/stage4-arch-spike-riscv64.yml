@@ -818,6 +818,36 @@ jobs:
             echo "  --- last 10 lines ---"
             tail -10 "$1" | sed 's/^/    /'
           }
+          # THE MULTIARCH INCLUDE PATH, IN EVERY SCRIPT, BECAUSE gcc 4.6.4
+          # PREDATES MULTIARCH AND NEVER LOOKS THERE ITSELF.
+          #
+          # Ekaitz's notes give three exports and say why: "In Debian the
+          # riscv64-linux-gnu standard library is installed in a weird
+          # location, so we need to make the compilation process find it."
+          # Setting them in stage1.sh fixed that rung and nothing else,
+          # because each box script is a separate /bin/sh. Run 84986965816
+          # then failed in stage 2 with
+          #     checking compiler gcc -O2 -pedantic ... no
+          #     configure: error: could not find a working compiler
+          # which is the same missing header wearing a configure test's face.
+          #
+          # THIS IS A PROPERTY OF THE COMPILER, NOT A BUILD-TIME FIXUP.
+          # gcc 4.6.4 predates Debian multiarch, so the search path it was
+          # configured with does not contain /usr/include/riscv64-linux-gnu.
+          # EVERY use of that compiler needs this, not just its own build.
+          for d in /usr/include/riscv64-linux-gnu /usr/riscv64-linux-gnu/include; do
+            if [ -d "$d" ]; then
+              export C_INCLUDE_PATH="${C_INCLUDE_PATH:+$C_INCLUDE_PATH:}$d"
+              export CPLUS_INCLUDE_PATH="${CPLUS_INCLUDE_PATH:+$CPLUS_INCLUDE_PATH:}$d"
+              say "  include path += $d"
+            fi
+          done
+          for d in /usr/lib/riscv64-linux-gnu /usr/riscv64-linux-gnu/lib; do
+            if [ -d "$d" ]; then
+              export LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$d"
+              say "  library path += $d"
+            fi
+          done
           # THE PREREQS ARE REBUILT INTO A SECOND PREFIX, BY THE NEW COMPILER.
           #
           # Reusing /work/prefix -- the gmp/mpfr/mpc that tcc built -- fails:
@@ -928,6 +958,36 @@ jobs:
             echo "  --- last 10 lines ---"
             tail -10 "$1" | sed 's/^/    /'
           }
+          # THE MULTIARCH INCLUDE PATH, IN EVERY SCRIPT, BECAUSE gcc 4.6.4
+          # PREDATES MULTIARCH AND NEVER LOOKS THERE ITSELF.
+          #
+          # Ekaitz's notes give three exports and say why: "In Debian the
+          # riscv64-linux-gnu standard library is installed in a weird
+          # location, so we need to make the compilation process find it."
+          # Setting them in stage1.sh fixed that rung and nothing else,
+          # because each box script is a separate /bin/sh. Run 84986965816
+          # then failed in stage 2 with
+          #     checking compiler gcc -O2 -pedantic ... no
+          #     configure: error: could not find a working compiler
+          # which is the same missing header wearing a configure test's face.
+          #
+          # THIS IS A PROPERTY OF THE COMPILER, NOT A BUILD-TIME FIXUP.
+          # gcc 4.6.4 predates Debian multiarch, so the search path it was
+          # configured with does not contain /usr/include/riscv64-linux-gnu.
+          # EVERY use of that compiler needs this, not just its own build.
+          for d in /usr/include/riscv64-linux-gnu /usr/riscv64-linux-gnu/include; do
+            if [ -d "$d" ]; then
+              export C_INCLUDE_PATH="${C_INCLUDE_PATH:+$C_INCLUDE_PATH:}$d"
+              export CPLUS_INCLUDE_PATH="${CPLUS_INCLUDE_PATH:+$CPLUS_INCLUDE_PATH:}$d"
+              say "  include path += $d"
+            fi
+          done
+          for d in /usr/lib/riscv64-linux-gnu /usr/riscv64-linux-gnu/lib; do
+            if [ -d "$d" ]; then
+              export LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$d"
+              say "  library path += $d"
+            fi
+          done
           # A THIRD PREFIX, FOR THE SAME REASON AS THE SECOND. Stage 2 showed
           # that archives built by one compiler can fail another's link test;
           # stage4-complete.yml:922 uses prefix3 here for exactly that. Each
