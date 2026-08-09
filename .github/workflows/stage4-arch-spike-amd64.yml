@@ -253,6 +253,19 @@ env:
   # exactly this reason and we had none.
   OPENSSL_VER: '3.5.4'
   M4_VER: '1.4.21'
+  # A SECOND, OLDER m4 FOR THE EARLY RUNG.
+  #
+  # 1.4.21 is what rung 11.7 uses and it is fine there -- that rung runs AFTER
+  # rung 12 has installed the linux API headers. Rung 4.7 runs long before
+  # them, and 1.4.21's bundled gnulib will not build without one:
+  #     stackvma.c:327: error: include file 'linux/fs.h' not found
+  #     make[3]: *** [libm4_a-stackvma.o] Error 1
+  # (run 85000211567, after configure had succeeded).
+  #
+  # 1.4.7 is live-bootstrap's early m4 and predates gnulib's stackvma.c by
+  # more than a decade, so it wants no kernel headers at all. It exists only
+  # to satisfy gmp's configure at rung 4.7; 11.7 still builds 1.4.21.
+  M4_BOOT_VER: '1.4.7'
   BC_VER: '7.0.3'
   BISON_VER: '3.8.2'
   FLEX_VER: '2.6.4'
@@ -360,7 +373,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: dl
-          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-${{ env.PERL_VER }}-${{ env.KERNEL }}-${{ env.PYTHON_VER }}-${{ env.GAWK_VER }}-${{ env.OPENSSL_VER }}-v7
+          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-${{ env.PERL_VER }}-${{ env.KERNEL }}-${{ env.PYTHON_VER }}-${{ env.GAWK_VER }}-${{ env.OPENSSL_VER }}-${{ env.M4_BOOT_VER }}-spike-v1
 
       - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
         run: |
@@ -427,6 +440,7 @@ jobs:
           fetch "$GNU_MIRRORS"  "glibc/glibc-$GLIBC.tar.xz"
           fetch "$GNU_MIRRORS"  "gawk/gawk-$GAWK_VER.tar.xz"
           fetch "$GNU_MIRRORS"  "m4/m4-$M4_VER.tar.xz"
+          fetch "$GNU_MIRRORS"  "m4/m4-$M4_BOOT_VER.tar.gz"
           fetch "$GNU_MIRRORS"  "bison/bison-$BISON_VER.tar.xz"
 
           # The kernel and the two glibc patches are not on a GNU mirror.
@@ -1099,6 +1113,7 @@ jobs:
             --setenv GAWK_VER "$GAWK_VER" \
             --setenv OPENSSL_VER "$OPENSSL_VER" \
             --setenv M4_VER "$M4_VER" \
+            --setenv M4_BOOT_VER "$M4_BOOT_VER" \
             --setenv BC_VER "$BC_VER" \
             --setenv BISON_VER "$BISON_VER" \
             --setenv FLEX_VER "$FLEX_VER" \
@@ -1186,6 +1201,7 @@ jobs:
             --setenv GAWK_VER "$GAWK_VER" \
             --setenv OPENSSL_VER "$OPENSSL_VER" \
             --setenv M4_VER "$M4_VER" \
+            --setenv M4_BOOT_VER "$M4_BOOT_VER" \
             --setenv BC_VER "$BC_VER" \
             --setenv BISON_VER "$BISON_VER" \
             --setenv FLEX_VER "$FLEX_VER" \

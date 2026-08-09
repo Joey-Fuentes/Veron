@@ -2590,9 +2590,13 @@ if [ "$R45" = ok ]; then
   R47=ok
   cd /work/src
   rm -rf /work/src/m4-t && mkdir -p /work/src/m4-t
-  ( cd /work/src/m4-t && untar /in/m4- ) || { R47=FAIL; say "    m4 did not extract"; }
+  # THE OLD m4, NOT THE ONE RUNG 11.7 USES. `untar /in/m4-` would match
+  # whichever sorts first; naming the version is what makes this rung use
+  # 1.4.7 and 11.7 use 1.4.21. See the workflow's M4_BOOT_VER for why.
+  ( cd /work/src/m4-t && untar "/in/m4-${M4_BOOT_VER}" ) \
+    || { R47=FAIL; say "    m4-$M4_BOOT_VER did not extract"; }
   if [ "$R47" = ok ]; then
-    _m4d=$(cd /work/src/m4-t && onedir 'm4-* ./m4-*')
+    _m4d=$(cd /work/src/m4-t && onedir "m4-$M4_BOOT_VER ./m4-$M4_BOOT_VER")
     ( cd "/work/src/m4-t/$_m4d" \
       && ./configure --prefix=/work/prefix --disable-nls \
            CC="/work/prefix/bin/cc-static" LDFLAGS="-static" > cfg.log 2>&1 \
