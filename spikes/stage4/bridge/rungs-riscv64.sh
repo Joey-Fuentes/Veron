@@ -2530,12 +2530,22 @@ if [ "$R5" = ok ]; then
   # and gcc. Asking busybox patch to create 37 files from /dev/null instead
   # would lean on it far harder, for no benefit; the patch it does get is a
   # handful of files and is readable as a review artifact.
-  if ! untar /in/gcc-4.7.4; then
-    say "    gcc 4.7.4 did not extract"; R6=FAIL
+  # THE BOTTOM GCC HERE IS NOT 4.7.4 AND IS NOT A GNU TARBALL.
+  #
+  # gcc 4.7.4 has no RISC-V port; it reached gcc upstream in 7.1, five years
+  # later, and 4.8 is already past what a C compiler can build. The tree
+  # staged into /in by the workflow is Ekaitz Zarraga's backport of RISC-V
+  # into a C-only gcc 4.6.4, at tag working-compiler-c++, UNPATCHED -- the
+  # deltas arrive separately as riscv-bottom-gcc.patch and are applied below,
+  # so they stay reviewable rather than hiding inside the tree.
+  if ! untar /in/riscv-bottom-gcc; then
+    say "    the riscv bottom gcc did not extract"; R6=FAIL
   fi
-  g47=$(onedir 'gcc-4.7.4 ./gcc-4.7.4')
+  g47=$(onedir 'gbot ./gbot')
   if [ -z "$g47" ]; then
-    say "    no gcc-4.7.4 directory after extraction"; R6=FAIL
+    say "    no gbot directory after extraction"; R6=FAIL
+  else
+    say "    bottom gcc: $(cat "$g47/gcc/BASE-VER" 2>/dev/null || echo unknown)"
   fi
 
   if [ "$R6" != FAIL ]; then
@@ -2593,12 +2603,16 @@ if [ "$R5" = ok ]; then
       say "    THIS TREE HAS NO RISCV BACKEND -- wrong source staged into /in"
       R6=FAIL
     fi
-    for _p in /in/riscv-*.patch; do
-      [ -f "$_p" ] || continue
-      say "    applying $(basename "$_p")"
-      ( cd "$g47" && patch -p1 -i "$_p" ) > /tmp/bp.out 2>&1 \
-        || { say "      FAILED:"; sed 's/^/        /' /tmp/bp.out | head -6; R6=FAIL; }
-    done
+    if [ -f /in/riscv-bottom-gcc.patch ]; then
+      say "    applying riscv-bottom-gcc.patch ($(wc -l < /in/riscv-bottom-gcc.patch) lines)"
+      ( cd "$g47" && patch -p1 -i /in/riscv-bottom-gcc.patch ) > /tmp/bp.out 2>&1 \
+        || { say "      PATCH FAILED:"; sed 's/^/        /' /tmp/bp.out | head -8; R6=FAIL; }
+      _hw=$(grep -c 'define HOST_WIDE_INT_1' "$g47/gcc/hwint.h" 2>/dev/null || true)
+      say "    HOST_WIDE_INT_1 definitions in hwint.h after patch: $_hw (expect 2)"
+      [ "${_hw:-0}" -ge 2 ] || { say "    THE PATCH DID NOT LAND"; R6=FAIL; }
+    else
+      say "    /in/riscv-bottom-gcc.patch is missing"; R6=FAIL
+    fi
   fi
 
   mkdir -p /work/bld && cd /work/bld

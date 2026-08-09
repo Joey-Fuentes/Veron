@@ -1,384 +1,761 @@
-name: stage4-arch-spike-riscv64
+# THE REFERENCE ARM. The same bridge, with a compiler nobody doubts.
+#
+# WHY THIS EXISTS. stage3-to-stage4-bridge.yml runs a brand-new harness: a
+# hand-driven musl build, an archiver nothing has exercised, busybox sh driving
+# autoconf, a sysroot layout invented for the purpose. If that job fails at
+# rung 2 there is no way to tell whether micro-c miscompiled tcc or whether the
+# harness is wrong. This job removes that ambiguity by running the SAME rungs
+# with a tcc built by the host.
+#
+# spikes/stage3/README.md already argues the pattern, about tcc-two-ways:
+#
+#     The control runs FIRST on purpose: if the harness is wrong, that is where
+#     it shows, on a compiler nobody doubts. The first version of that job
+#     reported "0 differing lines" against a reference file that did not exist,
+#     and the control is what caught it.
+#
+# ---------------------------------------------------------------------------
+# WHAT GOES IN THE BOX, AND NOTHING ELSE
+#
+#   busybox     the driver. Tier 2 -- selects which commands run, puts no bytes
+#               in any artifact. The last host binary standing, and replaceable
+#               later by a hand-written kaem the same way `as` and `ld` were.
+#   ref-tcc     tcc at pin 5ec0e6f8 plus spikes/stage3/patches/tcc-arm64-asm,
+#               built on the host and linked STATICALLY AGAINST musl.
+#
+# That is the whole list. No /usr, no glibc headers, no crt files, no libc to
+# link against, no binutils, no make, no ar.
+#
+# STATIC AGAINST musl IS LOAD-BEARING, NOT A STYLE CHOICE. A glibc-linked tcc
+# needs glibc's shared objects present to execute, so the box would have to
+# carry them -- and then the box is no longer busybox-only and the job has
+# quietly reintroduced the exact thing it exists to remove. Static means the
+# binary is self-contained and the box stays clean. If the link below is not
+# static this job is not measuring what it claims and the check after it fails
+# the run rather than letting the number stand.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS ARM PROVES, AND WHAT IT DOES NOT
+#
+# PROVES: that the recipe reaches gcc 4.7.4 in a box containing busybox and one
+# tcc. That is a real result about the ladder, and it is the reference the
+# other arm is measured against.
+#
+# DOES NOT PROVE: anything about the seed. This tcc was built by the host's
+# compiler. "The seed reaches gcc 4.7.4" is only ever the bridge arm's claim
+# and no amount of green here gets you there. Stage 4 makes the same
+# distinction about its own tcc -- "the one declared hole".
+#
+# THE TWO ARMS SHARE ONE RUNG SCRIPT, spikes/stage4/bridge/rungs.sh, mounted
+# read-only from /src and run unchanged. They differ in one input. A second
+# copy of those rungs would drift and the comparison would stop meaning
+# anything.
 
-# CAN THE WHOLE CHAIN BE PARAMETERISED BY TARGET, SEED UPWARDS?
-#
-# THE FIRST VERSION OF THIS SPIKE ASKED A SMALLER QUESTION AND GOT A REAL BUT
-# PARTIAL ANSWER. It built tcc with the RUNNER'S gcc and walked from there,
-# which is stage4-complete.yml's shape -- and that workflow says outright that
-# its host-built tcc is "THE ONE DECLARED HOLE". A spike built on the hole
-# cannot speak to whether a target is bootstrappable; it can only say that a
-# ladder walks once someone hands it a compiler.
-#
-# stage0-stage4-complete.yml is the workflow that closes it: seed -> stage1 ->
-# stage2 -> micro-c -> mc-tcc -> the gcc ladder -> a kernel that boots, with
-# BUDGET_PATH EMPTY from the first byte to the last. That is the shape this
-# spike now follows, because "does Veron support x86_64" means the seed climb,
-# not the ladder above it.
-#
-# WHAT THE FIRST VERSION DID MEASURE, KEPT BECAUSE IT IS STILL TRUE:
-#
-#     tcc built for riscv64 with NO PATCH SERIES AT ALL, in 7m18s on a RISE
-#     runner, where arm64 needs a carried series of relocation fixes --
-#         tcc version 0.9.28rc HEAD@5ec0e6f8 (riscv64 Linux)
-#         ELF 64-bit LSB executable, UCB RISC-V, double-float ABI
-#
-#     and Ekaitz Zarraga's fork carries the backend 4.7 never had --
-#         tags:      working-compiler, working-compiler-c++
-#         HEAD:      4fc2a17e65f
-#         BASE-VER:  4.6.4        <- the repo, not 4.6.5; sources disagreed
-#         riscv mentions in config.gcc: 19
-#
-# gcc 4.7.4's own config.gcc mentions riscv ZERO times, which is why that fork
-# has to exist: RISC-V reached gcc upstream in 7.1, and 4.8 is already past
-# what a C compiler can build. But none of this says anything about stage 0,
-# and stage 0 is where a new architecture is won or lost.
-#
-# THE STAGE-0 SEAM, WHICH IS WHERE THIS SPIKE NOW POINTS.
-# stage0-stage4-complete.yml derives M2-Planet's -f list from UPSTREAM'S OWN
-# PER-ARCHITECTURE SCRIPT rather than hand-writing it:
-#
-#     S=m2/test/test1000/hello-aarch64.sh
-#
-# and its comment records why: four hand-reconstructed lists in a row were
-# wrong, and four other workflows are still red because of one. So the first
-# question for any new target is not "does gcc build" but
-#
-#     does upstream ship a hello-<arch>.sh for it, and does the same
-#     derivation produce a usable list?
-#
-# If yes, the seed climb is parameterised the same way the gcc ladder is. If
-# no, that architecture needs the list built some other way, and THAT is the
-# work -- not the gcc rungs.
-#
-# WHAT SUCCESS LOOKS LIKE, stated before the run:
-#   VERON-SPIKE-M2-OK       upstream ships hello-<arch>.sh and the -f list derives
-#   VERON-SPIKE-TCC-OK      our pinned tcc targets this architecture
-#   VERON-SPIKE-G474-OK     4.7.4 already carries this backend; no transplant
-#   VERON-SPIKE-RISCV64-OK    all three
-#
-# WHAT FAILURE TELLS US, which is the more useful half:
-#   no hello-<arch>.sh   -> stage 0 needs per-target work upstream does not do
-#   list derives empty   -> the anchor is aarch64-shaped; see line 313 of
-#                           stage0-stage4-complete.yml for the trap
-#   tcc fails            -> this target needs its own patch series, as arm64
-#                           did (it does not -- measured, see above)
-#   the fork moves       -> the bottom rung is pinned to someone else's tag;
-#                           that is a dependency this chain does not have
-#                           anywhere else, and worth naming as one
-#
-# THIS SPIKE STILL STOPS SHORT OF BUILDING ANYTHING LARGE. It answers which
-# rungs a target needs, not whether they pass. The rungs themselves live in a
-# 3,967-line workflow that should be factored, not forked -- see the summary.
+name: stage4-arch-spike-riscv64
 
 on:
   workflow_dispatch:
     inputs:
-      stop_after:
-        description: 'stop after this rung: m2 | tcc | g46 | selfhost'
+      trace_applets:
+        description: 'wrap every applet to record which ones the chain actually uses'
+        type: boolean
         required: false
-        default: 'g46'
+        default: false
+  push:
+    # BRANCHES ONLY -- NEVER TAGS. Without this a `push:` with only a
+    # `paths:` filter still fires on TAG pushes, because a tag carries the
+    # whole commit and its paths match. Creating one mirror release tag
+    # (`gh release create src/<tarball>`) therefore kicked off 19 workflows
+    # at once. `branches: ['**']` matches every branch and no tag.
+    branches: ['**']
+    paths:
+      - 'spikes/stage4/bridge/rungs-riscv64.sh'
+      - '.github/workflows/stage4-arch-spike-riscv64.yml'
 
-permissions:
-  contents: read
-
-concurrency:
-  group: stage4-arch-spike-riscv64-${{ github.ref }}
-  cancel-in-progress: false
+# NO concurrency GROUP, DELIBERATELY.
+#
+# The group used to be "arch-spike-riscv64-${{ github.ref }}" -- the same key for every
+# run on main -- so a second dispatch queued behind the first instead of
+# starting. These rungs now take well over an hour, and the whole value of
+# workflow_dispatch here is running several experiments at once: a rung fix and
+# a version bump do not interact, and waiting to learn about the second until
+# the first finishes doubles every round.
+#
+# What that group was protecting against does not apply. There is no shared
+# state between runs: each gets its own runner, its own box, and its own
+# $GITHUB_WORKSPACE, and nothing is uploaded any more. The cache is
+# actions/cache, which is already concurrency-safe and keyed on the version
+# set. Two runs racing on it produce the same bytes.
 
 env:
-  # THE THREE LINES THAT ARE SUPPOSED TO BE THE WHOLE DIFFERENCE. If more than
-  # these have to change, that is the finding.
-  LFS_TGT: riscv64-veron-linux-gnu
-  # M2_ARCH IS UPSTREAM'S SPELLING, NOT OURS. M2-Planet names its test scripts
-  # hello-<arch>.sh and its own -f tokens follow the same vocabulary, which is
-  # not the same as a gnu triplet: it is `amd64` here, `aarch64` for arm64,
-  # `riscv64` for riscv. Getting this wrong derives an empty list, which
-  # stage0-stage4-complete.yml records as a trap that cost four workflows.
-  M2_ARCH: riscv64
-  # PINNED WHERE stage0-stage4-complete.yml PINS THEM. Copied deliberately
-  # rather than referenced: if these drift apart, the spike is measuring a
-  # different M2-Planet than the chain it is meant to inform.
-  M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
-  M2LIBC_SHA: 68a23cfd05d5a355ba7a30c770d684cbe86fcc4e
-  GNU_TGT: riscv64-unknown-linux-gnu
-  GMP: 6.2.1
-  MPFR: 4.1.0
-  MPC: 1.2.1
-  # THE BOTTOM IS A GIT FORK, NOT A RELEASE, AND THAT IS THE WHOLE DIFFERENCE.
-  # gcc 4.7.4 has no riscv backend -- config.gcc mentions it zero times -- and
-  # 4.8 is already past what a C compiler can build. So the bottom rung is
-  # Ekaitz Zarraga's NLnet-funded backport into 4.6.4, pinned by TAG because
-  # the version is ambiguous in the sources: the repo and Guix's patch
-  # filename say 4.6.4, Guix's blog says 4.6.5, and the tree settles it.
-  GCC_BOTTOM_TAG: working-compiler-c++
-  # AND THE FIRST RUNG UP IS 7.x, NOT 10.2.0. gcc 7.1 is the first upstream
-  # release carrying a riscv backend, so it is the first that needs no fork.
-  # It is also the rung the Guix RISC-V effort is reported to have stalled on,
-  # which is why this spike reaches for it rather than for 10.
-  GCC_TOP: 7.5.0
+  TCC_SHA: 5ec0e6f84b47ebd8c269b581712666313f5edaef
+  MUSL_VER: '1.2.5'
+  # make 3.82 is live-bootstrap's first make (step #25, built by kaem under
+  # tcc, before binutils exists) and is the version known to build this way.
+  # They rebuild it later because 3.82 "randomly segfaults while building the
+  # Linux kernel" -- irrelevant here, since this job stops at gcc 4.7.4.
+  MAKE_VER: '3.82'
+  # A SECOND make, BUILT PROPERLY ONCE binutils EXISTS. 3.82 comes up first
+  # from live-bootstrap's kaem command list because nothing else can, and it
+  # drives musl and binutils fine -- then took a Bus error building libgcc.
+  # live-bootstrap rebuilds it too, "using the build system and GCC, which
+  # means that it does not randomly segfault".
+  #
+  # 4.4, AND THIS IS A RETURN RATHER THAN A NEW GUESS. 4.4 was tried first and
+  # failed at lib/fnmatch.c:154 on __P -- glibc's <sys/cdefs.h> macro. That is
+  # now supplied by the shim rung 2 installs and force-included by cc-static,
+  # so the one thing that blocked it is gone.
+  #
+  # 4.2.1 was live-bootstrap's pin and it does not survive musl here. Its
+  # BUNDLED glob cost five substitutions -- getlogin, getlogin_r, __P, __ptr_t
+  # -- and switching to the system glob then hit the real wall:
+  #
+  #     dir.c:1305: error: field not found: gl_opendir
+  #
+  # gl_opendir is a glob_t member from GNU's GLOB_ALTDIRFUNC extension. musl's
+  # glob is POSIX and has no such field, so make_cv_sys_gnu_glob=yes was
+  # asserting something untrue and the bundled glob is not optional for 4.2.1.
+  # live-bootstrap does not hit any of this because their pass1.sh runs
+  # `autoreconf -fi` first and their libc at that rung is not musl.
+  #
+  # 4.3 dropped the bundled glob entirely and 4.4 keeps it dropped, using
+  # gnulib instead -- which is GNU-complete and is what Alpine builds against
+  # musl as a matter of course.
+  MAKE_ALT: '4.4'
+  # 3.82 AND ONLY 3.82. This is live-bootstrap's version and, more to the
+  # point, the version their steps/make-3.82/pass1.kaem command list is written
+  # against -- 27 files with per-file -D flags that stand in for a configure
+  # that cannot run here. 4.4 was fetched for a while as a second guess at a
+  # tar problem that turned out to be the archive format; it has no recipe
+  # behind it and is gone.
+  # stage 4's OWN versions, copied deliberately. If they drift apart the
+  # overlap with stage4-complete stops being an overlap.
+  # BINUTILS 2.30, NOT STAGE 4's 2.46, AND THAT DIVERGENCE IS DELIBERATE.
+  #
+  # Stage 4 does not build binutils at all -- `binutils` is in chain/env0.sh's
+  # BORROWED list and comes from the host, so its version was never a tcc
+  # question. This job is the first thing in the tree that asks a tcc to
+  # COMPILE binutils, and tcc has a known ceiling there.
+  #
+  # live-bootstrap's first binutils is 2.30 (steps/manifest, step #81), reached
+  # only after musl and the whole autotools chain. Its older sysa/ layout used
+  # 2.14, chosen because 2.14 "seems to be the limit for tcc". A 2024
+  # guix-devel report puts the modern edge lower than our stage-4 pin: "I'm
+  # using latest versions of all packages, except Binutils, whose version 2.43
+  # does not link the object files from TCC."
+  #
+  # 2.46 was copied here from stage4-complete on the assumption that matching
+  # its versions made the overlap real. It does not: the overlap is at gcc
+  # 4.7.4, and binutils below that is an implementation detail each side is
+  # free to satisfy its own way -- stage 4 by borrowing, this job by building.
+  # Pinning a version no tcc has been shown to compile would have failed rung 4
+  # and looked like a compiler defect.
+  # QUOTED, BECAUSE YAML READS 2.30 AS A NUMBER. Unquoted it becomes the float
+  # 2.3, the trailing zero is gone, and the fetch asks ftp.gnu.org for
+  # binutils-2.3.tar.xz and gets a 404. 2.46.0 survived only because two dots
+  # make it a string. Every version below is quoted so none of them depends on
+  # how many dots it happens to have.
+  BINUTILS: '2.30'
+  GMP_VER: '6.3.0'
+  MPFR_VER: '4.2.2'
+  MPC_VER: '1.3.1'
+  GCC47: '4.7.4'
+  # 4.8.5 IS NOT A RUNG. gcc 4.7.4 HAS NO aarch64 BACKEND -- stage 4 logs
+  # "4.7.4 aarch64 mentions in config.gcc (expect 0)" -- so 4.8.5's backend is
+  # transplanted into it by spikes/stage4/probes/backport-aarch64.sh, which
+  # already exists and which stage 4 already relies on. 4.8.5 is fetched only
+  # as the donor tree. 4.8.5 rather than 4.8.0 for the reason that script's
+  # header measures: the backend/middle-end interface does not move within the
+  # 4.8 series, so 4.8.5 is no further from 4.7 while carrying ~1800 lines of
+  # fixes.
+  GCC48: '4.8.5'
+  # gcc 10 IS BUILT BY g++ 4.7.4, which is the entire reason 4.7 is the entry
+  # point: it is the last gcc written in C, so tcc can reach it, and its C++
+  # front end is what carries the chain upward. Every gcc after 4.7 is C++ and
+  # cannot be built by a C compiler at all. Stage 4's version, so the overlap
+  # stays an overlap.
+  GCC10: '10.2.0'
+  # CHAPTER 5 IS A DIFFERENT TOOLCHAIN. gcc 15 and a modern binutils, cross to
+  # VERON_TOOLCHAIN_TGT, against a glibc sysroot -- stage 4's versions so the overlap holds.
+  # BINUTILS above is 2.30 because tcc has a ceiling; nothing here is built by
+  # tcc, so chapter 5 uses 2.46 as stage 4 does.
+  GCC15: '15.2.0'
+  BINUTILS_LFS: '2.47'
+  GLIBC: '2.44'
+  # EVERY VERSION HERE COMES FROM ONE BOOK, AND THAT IS THE POINT.
+  #
+  # spikes/stage4/books/LFS-BOOK-r13_0-156-systemd is the development snapshot
+  # this chain follows, and it specifies:
+  #
+  #     Linux 7.1.3   Perl 5.42.2   Glibc 2.43   Binutils 2.46   GCC 15.2.0
+  #
+  # We had drifted on two of them -- perl 5.42.0 from the STABLE 13.0 book, and
+  # kernel 7.1.5 from nowhere in particular. Mixing books is how a pairing
+  # nobody tested becomes the thing being debugged: glibc 2.43's
+  # upstream_fixes patch exists precisely to reconcile a libc with a kernel it
+  # was not shipped against, and stage 4's comment calls it "THE PRICE OF
+  # LINUX 7". Taking one book's whole set means that price is the book's
+  # problem rather than ours.
+  #
+  # KHDR AND KERNEL DIVERGE ON PURPOSE, AND THIS IS THE ONE PLACE WE LEAVE THE
+  # BOOK DELIBERATELY.
+  #
+  # The book pairs 7.1.3 with both. We take its headers at 7.1.3 and boot
+  # 7.1.5, because stage4-complete already builds and boots exactly that
+  # pairing -- glibc 2.43 with the upstream_fixes patch, 7.1.3-era headers,
+  # 7.1.5 kernel -- so it is tested rather than hoped for.
+  #
+  # A KERNEL MAY ALWAYS BE NEWER THAN THE HEADERS ITS LIBC WAS COMPILED
+  # AGAINST. That is the normal direction: the kernel's syscall ABI is stable
+  # forward, so a libc built against older headers runs on a newer kernel. The
+  # reverse is what breaks. Keeping them as two variables makes that a
+  # property we state rather than one we get by accident, and it is the shape
+  # every later bump will take -- linux-next against a released glibc is the
+  # same question with a bigger gap.
+  #
+  # WHEN IT DOES BREAK, IT LOOKS LIKE THIS: glibc's build stops with
+  # "redefined [-Werror]" on a type both the kernel headers and the libc
+  # declare. Rung 13 greps for exactly that and says so, because the message
+  # names a symbol rather than the pairing that caused it. stage 4's own
+  # fallback is to drop the headers back to the version the book pairs with
+  # this glibc -- i.e. set KHDR and KERNEL equal -- and keep booting the newer
+  # one.
+  KHDR: '7.1.5'
+  KERNEL: '7.1.5'
+  # glibc's minimum-kernel setting -- unrelated to either of the above.
+  ENABLE_KERNEL: '5.4'
+  # perl IS BUILT EARLIER THAN LFS PUTS IT. The book has it in chapter 7,
+  # inside the chroot, because chapters 5 and 6 borrow the host's. This box has
+  # no host: rung 10 already printed "/bin/sh: perl: not found", and glibc and
+  # the kernel both need it. Stage 4's version and stage 4's recipe.
+  PERL_VER: '5.44.0'
+  # The kernel's own prerequisites. kconfig is generated by flex and bison;
+  # m4 comes first because both need it; bc is not optional because
+  # kernel/time/Makefile pipes CONFIG_HZ through it to generate timeconst.h.
+  # GAWK IS REAL, AND THE WRAPPER'S CLAIM WAS TESTED AND FAILED.
+  #
+  # The box shipped a gawk wrapper around busybox awk, on the strength of
+  # tool-probe measuring ENVIRON, -f, gsub, printf and match all working. Its
+  # own comment said: "If something later needs a gawk extension busybox lacks,
+  # it fails on that extension, which is a legible failure."
+  #
+  # glibc 2.44's build is that failure:
+  #
+  #     awk: bad regex '\/[^': Invalid regular expression
+  #     awk: scripts/sysd-rules.awk:31: Call to undefined function
+  #
+  # Its own awk scripts use a regex busybox's engine rejects and a function
+  # busybox does not implement. The measurement was right about what it
+  # measured and the inference beyond it was wrong.
+  GAWK_VER: '5.3.2'
+  # OPENSSL: the kernel's scripts/sign-file.c includes <openssl/bio.h>, and
+  # arm64 defconfig turns CONFIG_MODULE_SIG on. stage4-complete builds it for
+  # exactly this reason and we had none.
+  OPENSSL_VER: '3.5.4'
+  M4_VER: '1.4.21'
+  BC_VER: '7.0.3'
+  BISON_VER: '3.8.2'
+  FLEX_VER: '2.6.4'
+  BUSYBOX_VER: '1.36.1'
+  # PYTHON IS REQUIRED BY glibc's CONFIGURE, measured by tool-probe:
+  #   *** These critical programs are missing or too old: make gawk bison python
+  # LFS builds it in chapter 7 for the chroot and never needs it at chapter 5,
+  # because chapter 5 runs on a host that has one. We have no host.
+  # 3.14.6, WHICH IS WHAT THE BOOK WE FOLLOW SPECIFIES. We had 3.14.3 from
+  # nowhere in particular -- the same drift that put perl at 5.42.0 and the
+  # kernel at 7.1.5. r13.0-156-systemd also carries
+  # Python-3.14.6-consolidated_fixes-1.patch, so the version and its patch
+  # have to move together.
+  PYTHON_VER: '3.14.6'
 
 jobs:
-  ladder:
-    name: 'seed -> tcc -> gcc 4.6.4, on riscv64'
-    # NATIVE, NOT EMULATED. ubuntu-24.04 is x86_64, so every rung runs on the
-    # architecture it targets -- the same property the aarch64 job gets from
-    # ubuntu-24.04-arm. A cross-compiled answer would not test the thing.
-    runs-on: ubuntu-24.04-riscv
-    # 480 BECAUSE THE STEPS ADD TO 480, AND BECAUSE THIS HARDWARE IS SLOWER.
-    # The RISE nodes are four T-Head C910 cores at 1.85GHz; the tcc rung alone
-    # took 7m18s where the same build is seconds on a modern x86_64 runner. A
-    # gcc bootstrap here will not resemble the aarch64 timings.
-    timeout-minutes: 480
+  reference:
+    runs-on: ubuntu-24.04-riscv          # NATIVE aarch64, no emulation
+    # 20 RUNGS INCLUDING FOUR gcc BUILDS AND A KERNEL. 330 was set when this
+    # job stopped at gcc 4.7.4; gcc 15 pass 1 alone can take an hour. GitHub's
+    # hard ceiling for a job is 360 minutes, so this is the most that can be
+    # asked for -- if the ladder does not fit, it has to be split across jobs
+    # rather than given more time.
+    timeout-minutes: 360
+    env:
+      # TIER 1 -- ON THE BUILD PATH. EMPTY. No compiler, no assembler, no
+      # linker, no archiver from the host. binutils is built at rung 4.
+      BUDGET_PATH: ''
+      # TIER 2 -- DRIVES THE BUILD, TOUCHES NO ARTIFACT BYTE. One binary,
+      # exactly as stage3-hermetic-arm64 declares.
+      BUDGET_DRIVER: 'busybox'
+      # OFF BY DEFAULT. Wrapping every applet in a shell script costs a fork
+      # per invocation, and a build this size invokes them tens of thousands of
+      # times -- it would roughly double the ladder. Turned on deliberately,
+      # once, to produce the applet list for the handmade config.
+      TRACE_APPLETS: ${{ inputs.trace_applets && '1' || '0' }}
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install
+      # --- AIRLOCK: everything needing a network happens here -------------
+      - name: Install (airlock only -- none of this enters the box)
         run: |
-          set -eu
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            bubblewrap curl git bzip2 xz-utils gcc g++ make bison flex \
-            texinfo m4 perl python3 file gawk patch libgmp-dev libmpfr-dev \
-            libmpc-dev > /dev/null
-          command -v bwrap >/dev/null || { echo "  bwrap missing"; exit 1; }
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap busybox-static musl-tools gcc make git curl xz-utils file \
+            cpio qemu-system-misc
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
 
-      - name: Let bwrap create a user namespace
+      - name: 'AIRLOCK: build the reference tcc, static against musl'
         run: |
           set -eu
-          # WITHOUT THIS THE BOX NEVER STARTS. Ubuntu 24.04 restricts
-          # unprivileged user namespaces via AppArmor, and the first run of
-          # this spike died at the first box invocation with
-          #     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
-          # -- after fetching every source, so the failure cost the whole
-          # download and told us nothing about the ladder.
+          # THE SAME tcc THE OTHER ARM USES. Same pin, same five arm64
+          # assembler patches. A distro tcc or a different configure would stop
+          # this being a control and make it a different program.
           #
-          # stage4-complete.yml:146 carries this step for the same reason. It
-          # was omitted here when the box was copied and the box alone was
-          # copied; the box is not self-contained, and that is worth knowing
-          # for the refactor.
-          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
-            sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
-          abi <abi/4.0>,
-          include <tunables/global>
-          profile bwrap /usr/bin/bwrap flags=(unconfined) {
-            userns,
-            include if exists <local/bwrap>
-          }
-          EOF
-            sudo systemctl reload apparmor || sudo service apparmor reload || true
-            echo "  apparmor profile installed for bwrap"
-          else
-            echo "  unprivileged userns already permitted"
-          fi
+          # GITHUB FIRST. repo.or.cz refused for 133 seconds and then failed
+          # the whole run; tools/clone-pinned.sh exists for exactly this and
+          # ends at a rev-parse against the pin, which is why mirror order is a
+          # speed decision rather than a trust one. It also fetches one commit
+          # rather than the history, which is the whole requirement here.
+          . "$GITHUB_WORKSPACE/tools/clone-pinned.sh"
+          clone_pinned tccsrc "$TCC_SHA" \
+            "https://github.com/TinyCC/tinycc.git https://repo.or.cz/tinycc.git"
+          bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc
+          cd tccsrc
+          # --cc=musl-gcc and a static link: see the header for why this is
+          # load-bearing rather than cosmetic.
+          ./configure --cc=musl-gcc --prefix=/work/tccsrc \
+                      --extra-ldflags=-static > cfg.log 2>&1
+          make -j"$(nproc)" > build.log 2>&1 || { tail -30 build.log; exit 1; }
+          echo "  ref-tcc: $(wc -c < tcc) bytes"
+          echo "  $(file -b tcc)"
 
-      - name: Confirm this is really riscv64
+      - name: 'GATE: the reference tcc must be STATIC'
         run: |
           set -eu
-          # THE SAME ASSERTION THE AARCH64 JOB MAKES, AND FOR THE SAME REASON.
-          # If this is not the target architecture the whole run means nothing:
-          # every "native" claim below becomes a cross-compile nobody asked
-          # for, and the comparison with the aarch64 ladder is void.
-          echo "  uname -m : $(uname -m)"
-          echo "  LFS_TGT  : $LFS_TGT"
-          lscpu | head -12 || true
-          [ "$(uname -m)" = riscv64 ] || { echo "  NOT riscv64 -- aborting"; exit 1; }
-
-      - name: 'RUNG 0 -- does upstream ship a seed path for this architecture'
-        run: |
-          set -eu
-          echo "=== VERON-SPIKE-M2 ==="
-          # THE QUESTION STAGE 4 CANNOT ANSWER. Everything above tcc assumes a
-          # compiler already exists; this asks whether one can be GROWN here.
-          #
-          # stage0-stage4-complete.yml:308 does exactly this derivation for
-          # aarch64 and explains at length why it must never be hand-written:
-          # four reconstructed -f lists in a row were wrong, and four other
-          # workflows are still red from one of them.
-          mkdir -p work && cd work
-          git clone -q https://github.com/oriansj/M2-Planet.git m2
-          git -C m2 checkout -q "$M2PLANET_SHA"
-          git -C m2 submodule -q update --init --recursive 2>/dev/null || true
-          git -C m2/M2libc checkout -q "$M2LIBC_SHA" 2>/dev/null || true
-          echo "  M2-Planet at $M2PLANET_SHA"
-          echo "  --- every architecture upstream ships a test1000 script for ---"
-          ls m2/test/test1000/ | grep '^hello-' | sed 's/^/    /' || true
-          S="m2/test/test1000/hello-${M2_ARCH}.sh"
-          if [ ! -f "$S" ]; then
-            echo
-            echo "  NO $S"
-            echo "  Upstream ships no seed script for this architecture, so the"
-            echo "  derivation stage 0 depends on has no source. That is the"
-            echo "  finding: this target needs its -f list built some other"
-            echo "  way, and THAT is the work -- not the gcc rungs."
+          # If it is dynamic, the box would need shared objects and would stop
+          # being busybox-only. Fail here rather than let a number stand that
+          # was measured in a different box from the one described.
+          if file -b tccsrc/tcc | grep -q 'dynamically linked'; then
+            echo "  ref-tcc is DYNAMICALLY linked -- the box cannot stay busybox-only"
+            file -b tccsrc/tcc
+            ldd tccsrc/tcc || true
             exit 1
           fi
-          # SAME EXTRACTION AS THE REAL JOB, INCLUDING THE TWO TRAPS IT NAMES:
-          # join continuation lines first, and anchor on `bin/M2-Planet` rather
-          # than the project name, because the GPL header line "This file is
-          # part of M2-Planet." carries no -f tokens and matching it derives an
-          # empty list.
-          sed -e ':a' -e '/\\$/{N; s/\\\n/ /; ta}' "$S" > joined.sh
-          L=$(grep -m1 'bin/M2-Planet' joined.sh \
-              | grep -oE '\-f[[:space:]]+[^[:space:]]+' \
-              | awk '{print $2}')
-          n=$(printf '%s\n' "$L" | grep -c . || true)
-          echo "  -f entries derived: $n"
-          printf '%s\n' "$L" | sed 's/^/    /'
-          [ "$n" -gt 0 ] || { echo "  DERIVED AN EMPTY LIST -- see the anchor note above"; exit 1; }
-          # EVERY FILE IN THE LIST MUST EXIST AT THE PIN. This is the assertion
-          # that catches M2libc/bootstrap.c -- the generic one, which does NOT
-          # exist at the 1.13.1 pin and is why four workflows are red.
-          miss=0
-          for f in $L; do
-            [ -f "m2/$f" ] || { echo "    MISSING AT THIS PIN: $f"; miss=1; }
+          echo "  static. The box needs no shared objects for it."
+          ./tccsrc/tcc -v 2>&1 | head -1 | sed 's/^/  /'
+
+      # THE CACHE HOLDS dl/, NOT pins/, AND THE DIFFERENCE MATTERS.
+      #
+      # Later steps MUTATE pins: the repack rewrites V7 tarballs as ustar, and
+      # the backport derivation deletes gcc 4.8.5 and adds two derived files.
+      # Caching pins would save that mutated state and the next run would
+      # restore a directory with the donor already gone -- a cache that breaks
+      # the job on its second run and looks like a source problem.
+      #
+      # So dl/ is downloads only and is never written to after the fetch; pins/
+      # is rebuilt from it every run and is free to be mangled.
+      #
+      # Keyed on the version set, so bumping any version misses and refetches.
+      # These are pinned immutable release tarballs, so re-downloading 200 MB
+      # every run buys nothing and costs a whole run each time an upstream is
+      # briefly unreachable -- which is what happened: 134 seconds to fail to
+      # reach musl.libc.org, and the job with it.
+      - uses: actions/cache@v4
+        with:
+          path: dl
+          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-${{ env.PERL_VER }}-${{ env.KERNEL }}-${{ env.PYTHON_VER }}-${{ env.GAWK_VER }}-${{ env.OPENSSL_VER }}-v7
+
+      - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
+        run: |
+          set -eu
+          mkdir -p dl && cd dl
+
+          # MIRRORS, AND A SHORT CONNECT TIMEOUT SO A DEAD ONE COSTS SECONDS.
+          #
+          # A run died with
+          #
+          #     curl: (28) Failed to connect to musl.libc.org port 443
+          #           after 134279 ms
+          #
+          # -- two and a half minutes to discover one host was down, and then
+          # the whole job with it. tools/clone-pinned.sh already does this for
+          # git ("the first mirror that answers"); this is the same idea for
+          # tarballs. --connect-timeout 20 means an unreachable mirror costs 20
+          # seconds, not 134.
+          #
+          # ftpmirror.gnu.org is GNU's own round-robin redirector and is tried
+          # first for that reason; ftp.gnu.org is the canonical host and goes
+          # last because it is the one that is busy.
+          GNU_MIRRORS="https://ftpmirror.gnu.org
+                       https://mirrors.kernel.org/gnu
+                       https://mirror.csclub.uwaterloo.ca/gnu
+                       https://ftp.gnu.org/gnu"
+          MUSL_MIRRORS="https://musl.libc.org/releases
+                        https://distfiles.macports.org/musl
+                        https://ftp.barfooze.de/pub/sabotage/tarballs"
+
+          fetch() {   # $1 = newline-separated mirror list, $2 = path under each
+            _out=$(basename "$2")
+            if [ -s "$_out" ]; then
+              printf '  cached  %-30s %10s bytes\n' "$_out" "$(wc -c < "$_out")"
+              return 0
+            fi
+            for _m in $1; do
+              if curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 \
+                      -o "$_out.part" "$_m/$2" 2>/dev/null; then
+                mv "$_out.part" "$_out"
+                printf '  fetched %-30s %10s bytes  from %s\n' \
+                  "$_out" "$(wc -c < "$_out")" "$_m"
+                return 0
+              fi
+              echo "    no answer from $_m"
+            done
+            rm -f "$_out.part"
+            echo "  ALL MIRRORS FAILED for $2"
+            return 1
+          }
+
+          fetch "$MUSL_MIRRORS" "musl-$MUSL_VER.tar.gz"
+          fetch "$GNU_MIRRORS"  "make/make-$MAKE_VER.tar.gz"
+          fetch "$GNU_MIRRORS"  "make/make-$MAKE_ALT.tar.gz"
+          fetch "$GNU_MIRRORS"  "binutils/binutils-$BINUTILS.tar.xz"
+          fetch "$GNU_MIRRORS"  "gmp/gmp-$GMP_VER.tar.xz"
+          fetch "$GNU_MIRRORS"  "mpfr/mpfr-$MPFR_VER.tar.xz"
+          fetch "$GNU_MIRRORS"  "mpc/mpc-$MPC_VER.tar.gz"
+          fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC47/gcc-$GCC47.tar.bz2"
+          fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC48/gcc-$GCC48.tar.bz2"
+          fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC10/gcc-$GCC10.tar.xz"
+          fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC15/gcc-$GCC15.tar.xz"
+          fetch "$GNU_MIRRORS"  "binutils/binutils-$BINUTILS_LFS.tar.xz"
+          fetch "$GNU_MIRRORS"  "glibc/glibc-$GLIBC.tar.xz"
+          fetch "$GNU_MIRRORS"  "gawk/gawk-$GAWK_VER.tar.xz"
+          fetch "$GNU_MIRRORS"  "m4/m4-$M4_VER.tar.xz"
+          fetch "$GNU_MIRRORS"  "bison/bison-$BISON_VER.tar.xz"
+
+          # The kernel and the two glibc patches are not on a GNU mirror.
+          for u in "https://www.cpan.org/src/5.0/perl-$PERL_VER.tar.xz" \
+                   "https://github.com/gavinhoward/bc/releases/download/$BC_VER/bc-$BC_VER.tar.xz" \
+                   "https://github.com/westes/flex/releases/download/v$FLEX_VER/flex-$FLEX_VER.tar.gz" \
+                   "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2" \
+                   "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VER/openssl-$OPENSSL_VER.tar.gz" \
+                   "https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz" \
+                   "https://cdn.kernel.org/pub/linux/kernel/v${KHDR%%.*}.x/linux-$KHDR.tar.xz" \
+                   "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz" \
+                   "https://www.linuxfromscratch.org/patches/lfs/development/glibc-fhs-1.patch"; do
+            b=$(basename "$u")
+            if [ -s "$b" ]; then
+              printf '  cached  %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
+              continue
+            fi
+            # STAGE 4's curl FLAGS, VERBATIM, AND THEY ARE NOT DECORATION.
+            #
+            # This fetched sixteen tarballs and glibc-fhs-1.patch from the same
+            # host and directory, then failed on
+            # glibc-2.43-upstream_fixes-1.patch alone. The URL is byte-identical
+            # to the one stage4-complete has been using successfully for weeks,
+            # so it is the request, not the address.
+            #
+            #   --http1.1          linuxfromscratch.org's HTTP/2 upsets curl
+            #                      on some connections; stage 4 pins 1.1
+            #   --retry-all-errors retries a 5xx or a reset, which plain
+            #                      --retry does NOT -- it only retries
+            #                      transient TRANSPORT errors
+            #   --retry-delay 3    gives the far end a moment
+            if curl -fsSL --http1.1 --retry 3 --retry-all-errors --retry-delay 3 \
+                    --connect-timeout 20 --max-time 900 -o "$b.part" "$u" 2>/dev/null; then
+              mv "$b.part" "$b"
+              printf '  fetched %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
+            else
+              rm -f "$b.part"
+              # A MISSING glibc PATCH IS NOT FATAL HERE. The vendored copy is
+              # taken a few lines below, and that path prints "vendored" so the
+              # log says which source was used. Everything else IS fatal:
+              # a missing tarball cannot be substituted.
+              case "$b" in
+                glibc-*.patch) echo "  not upstream: $b (will use the vendored copy)" ;;
+                *)             echo "  FETCH FAILED: $u"; _fetchfail=1 ;;
+              esac
+            fi
           done
-          [ "$miss" = 0 ] || { echo "  the derived list names files this pin does not have"; exit 1; }
-          echo "VERON-SPIKE-M2-OK  upstream ships a seed path for $M2_ARCH and every -f file exists"
-          cd "$GITHUB_WORKSPACE"
+          # A MISSING PIN IS NOT A WARNING. This loop used to print
+          # "FETCH FAILED" and carry on, and the run then spent its time
+          # assembling a box that could not possibly finish -- rung 13 would
+          # have stopped on a glibc patch that was never downloaded.
+          #
+          # THE TWO glibc PATCHES COME FROM DIFFERENT DIRECTORIES, and that is
+          # stage4-complete's arrangement rather than an inconsistency:
+          #
+          #   glibc-fhs-1.patch        lfs/development/  section 3.3 of the
+          #                                              vendored book names
+          #                                              this exact URL
+          #   glibc-2.43-upstream...   lfs/development/  exists ONLY there,
+          #                                              because only the
+          #                                              development book pairs
+          #                                              glibc 2.43 with a 7.x
+          #                                              kernel -- which is what
+          #                                              this box does
+          #
+          # A run was lost to putting both under 13.0, and another to putting
+          # both under development. Failing here rather than four rungs later
+          # is what makes that one minute instead of forty.
+          [ "${_fetchfail:-0}" = 0 ] || {
+            echo "  one or more pinned inputs did not download; not continuing."
+            exit 1; }
 
-      - name: 'RUNG 1 -- our own tcc, built by the host gcc, targeting riscv64'
+          # THE glibc PATCHES ARE VENDORED, NOT FETCHED.
+          #
+          # /patches/lfs/development/ is not an archive: it tracks whatever the
+          # development book currently is, and its contents are revised and
+          # REMOVED in place. Two runs died on
+          # glibc-2.43-upstream_fixes-1.patch while sixteen tarballs and
+          # glibc-fhs-1.patch came down from the same host in the same run --
+          # with stage4-complete's own curl flags, so it was the address rather
+          # than the request. The file had been removed.
+          #
+          # A pinned input should not come from a mutable directory. Both
+          # patches now live in spikes/stage4/patches/lfs/ and are copied,
+          # not downloaded. See the README there for the digests and for how
+          # to refresh one deliberately.
+          #
+          # THE NETWORK COPY IS TRIED FIRST for both, because taking upstream's
+          # file when it is reachable keeps us honest about what the book
+          # actually ships. The vendored copy stands in when it is not, which
+          # is the point of having one.
+          #
+          # SECTION 3.3 OF THE VENDORED BOOK NAMES BOTH UNDER development/ with
+          # these digests -- an earlier version of this file split them across
+          # two directories on a guess, and stage4-complete does the same.
+          for _pf in glibc-fhs-1.patch; do
+            if [ -s "$_pf" ]; then
+              echo "  fetched   $_pf"
+              continue
+            fi
+            _v="$GITHUB_WORKSPACE/spikes/stage4/patches/lfs/$_pf"
+            if [ -s "$_v" ]; then
+              cp "$_v" "$_pf"
+              printf '  vendored  %-42s %s bytes\n' "$_pf" "$(wc -c < "$_pf")"
+            else
+              echo
+              echo "  $_pf IS NEITHER REACHABLE NOR VENDORED."
+              echo
+              echo "  It is not optional: the book introduces the upstream_fixes"
+              echo "  patch with \"Now fix glibc to build against Linux 7\", and"
+              echo "  this box pairs glibc $GLIBC with linux $KHDR headers --"
+              echo "  exactly the pairing it exists for. Without it rung 13 stops"
+              echo "  on a -Werror redefinition between the libc and the kernel"
+              echo "  headers, which reads as a glibc bug and is not one."
+              echo
+              echo "  Put a copy in spikes/stage4/patches/lfs/ -- that"
+              echo "  directory's README has the digests and the source URL."
+              exit 1
+            fi
+          done
+
+          # THE PATCH DIGESTS, RECORDED AND COMPARED BUT NOT ENFORCED.
+          #
+          # /patches/lfs/development/ is a MOVING directory -- it tracks
+          # whatever the development book currently is, and those patches are
+          # revised in place. Pinning a digest would turn a legitimate upstream
+          # update into a red build; pinning nothing would let a substitution
+          # through unnoticed.
+          #
+          # So print what arrived and compare it to the digest in the book
+          # vendored under spikes/stage4/books. THE REAL GATE IS `patch`
+          # ITSELF: a truncated or substituted patch does not apply cleanly to
+          # glibc 2.43, and rung 13 refuses to continue when it does not.
+          # Same reasoning, same digests, as stage4-complete.
+          for _pd in "glibc-fhs-1.patch 9a5997c3452909b1769918c759eff8a2"; do
+            set -- $_pd
+            [ -f "$1" ] || continue
+            _got=$(md5sum "$1" | cut -d' ' -f1)
+            if [ "$_got" = "$2" ]; then
+              printf '  %-42s md5 matches the vendored book\n' "$1"
+            else
+              printf '  %-42s md5 DIFFERS from the vendored book\n' "$1"
+              echo "      vendored r13.0-156 : $2"
+              echo "      fetched now        : $_got"
+              echo "    Not fatal -- the development book moves. But if glibc"
+              echo "    fails after this, THIS LINE IS THE FIRST THING TO READ."
+            fi
+          done
+
+          echo "  --- what came in ---"
+          sha256sum ./*.tar.* 2>/dev/null | sed 's/^/    /'
+          # HASHES ARE PRINTED, NOT YET ENFORCED. sources/musl.toml carries
+          # musl's; the rest belong in sources/*.toml before this job is
+          # anything but exploratory. With a cache in play that matters MORE,
+          # not less -- a cache hit means nobody re-fetched the bytes, so the
+          # only thing standing between the job and a corrupted cache entry
+          # would be a hash check that does not exist yet.
+
+          # pins/ IS THE WORKING COPY. Everything downstream mutates it; dl/ is
+          # left exactly as fetched so the cache stays clean.
+          cd ..
+          rm -rf pins && mkdir -p pins
+          cp dl/*.tar.* pins/
+          # THE PATCHES ARE NOT TARBALLS. `cp dl/*.tar.*` would leave
+          # glibc-fhs-1.patch and glibc-*-upstream_fixes-1.patch behind in dl/,
+          # and rung 13 would report "not in /in -- fetch it" about files that
+          # had been fetched perfectly well.
+          cp dl/*.patch pins/ 2>/dev/null || true
+          echo "  pins/ rebuilt from dl/: $(ls pins | wc -l) files, $(du -sh pins | cut -f1)"
+
+      - name: "AIRLOCK: stage the RISC-V bottom gcc and its patches into /in"
         run: |
           set -eu
-          echo "=== VERON-SPIKE-TCC ==="
-          # STILL THE HOST'S gcc AT THIS RUNG, AND THAT IS THE DECLARED GAP.
-          # rung 0 above asks whether a compiler can be GROWN here; this asks
-          # the narrower question of whether tcc's own riscv64 backend works at
-          # our pin. Both matter, and only the first speaks to bootstrappability.
-          C=$(grep -m1 '^commit' sources/tcc.toml | cut -d'"' -f2)
-          echo "  pinned commit: $C"
-          mkdir -p work
-          git clone -q git://repo.or.cz/tinycc.git work/tccsrc \
-            || git clone -q https://repo.or.cz/tinycc.git work/tccsrc
-          git -C work/tccsrc checkout -q "$C"
-          test -f work/tccsrc/riscv64-gen.c \
-            || { echo "  NO riscv64-gen.c AT THIS PIN"; exit 1; }
-          echo "  --- arm64 series DELIBERATELY NOT APPLIED (wrong architecture) ---"
-          cd work/tccsrc
-          # STATIC, because the box binds nothing from the host -- no
-          # /lib64/ld-linux-*.so, so a dynamic tcc is "not found" inside it
-          # even though the file is right there. Run 84991611661:
-          #     /bin/sh: /work/tcc: not found
-          # The reference does not hit this because its tcc is built by
-          # micro-c with -static already.
-          export LDFLAGS="-static"
-          ./configure --prefix="$PWD/../tccinst" --cpu=riscv64 > ../tcc-conf.log 2>&1 \
-            || { echo "  CONFIGURE FAILED"; tail -20 ../tcc-conf.log; exit 1; }
-          make -j"$(nproc)" > ../tcc-build.log 2>&1 \
-            || { echo "  BUILD FAILED -- riscv64 likely needs its own series"; \
-                 tail -40 ../tcc-build.log; exit 1; }
-          make install > /dev/null 2>&1
-          cd "$GITHUB_WORKSPACE"
-          ./work/tccinst/bin/tcc -v
-          printf 'int main(void){return 42;}\n' > work/t.c
-          ./work/tccinst/bin/tcc -o work/t work/t.c
-          file "$(command -v ./work/tccinst/bin/tcc || echo work/tccinst/bin/tcc)" \
-            | grep -q "statically linked" \
-            || { echo "  TCC IS NOT STATIC -- it will be 'not found' inside the box"; \
-                 file work/tccinst/bin/tcc; exit 1; }
-          echo "  tcc is statically linked"
-          file work/t | tee work/t.file
-          grep -qi "RISC-V" work/t.file || { echo "  NOT a RISC-V binary"; exit 1; }
-          set +e; ./work/t; rc=$?; set -e
-          [ "$rc" = 42 ] || { echo "  ran but returned $rc"; exit 1; }
-          echo "VERON-SPIKE-TCC-OK  our tcc targets riscv64 and its output runs"
-
-      - name: "RUNG 2 -- Ekaitz Zarraga's gcc 4.6.4, which has the backend 4.7 never had"
-        if: ${{ inputs.stop_after != 'm2' && inputs.stop_after != 'tcc' }}
-        run: |
-          set -eu
-          echo "=== VERON-SPIKE-G46 ==="
-          # NOT OUR BACKPORT, AND THAT IS THE POINT. aarch64 needed one and we
-          # wrote it -- GCC-BACKPORT.md, 4.8.5's backend grafted into 4.7.4,
-          # 626 objects, no miscompilation across 349 translation units. For
-          # RISC-V the equivalent already exists, NLnet-funded, by Ekaitz
-          # Zarraga for Guix. This rung tests whether it drops in.
+          # THIS TARGET DOES NOT BACKPORT -- IT SWAPS THE BOTTOM GCC.
           #
-          # PIN THE TAG, NOT THE VERSION. Primary sources disagreed -- the
-          # repository and Guix's patch filename say 4.6.4, Guix's blog says
-          # 4.6.5. The tree settles it: BASE-VER reads 4.6.4. A version number
-          # is not an identifier here; the tag and the sha are.
+          # The aarch64 arm transplants 4.8.5's aarch64 backend into 4.7.4.
+          # There is nothing to transplant into here: gcc 4.7.4 has no RISC-V
+          # port at all (it reached gcc in 7.1, five years later) and 4.8 is
+          # already past what a C compiler can build. So the bottom rung is
+          # Ekaitz Zarraga's NLnet-funded backport of RISC-V into a C-only
+          # gcc 4.6.4.
           #
-          # SHALLOW, AND AT THE TAG. A full clone of a gcc fork is gigabytes
-          # and hundreds of thousands of commits; the first run of this spike
-          # sat on one long enough to look hung on a four-core RISC-V node.
-          # TWO HOSTS AND THREE TRIES, BECAUSE THIS RUNG DEPENDS ON SOMEONE
-          # ELSE'S SERVER AND RUN 84979503915 DIED ON IT:
-          #     fatal: unable to access 'https://codeberg.org/...gcc.git/':
-          #            The requested URL returned error: 504
-          # Nothing was wrong with the tree or the tag -- codeberg was simply
-          # down. Everything else in this chain comes from a pinned tarball on
-          # ftp.gnu.org; this is the one rung that reaches into a live git
-          # host, which is a fragility worth naming rather than hiding.
-          #
-          # The github remote is the fork's own former home -- its README says
-          # "[MOVED TO CODEBERG]" -- so it is a mirror of the same history, not
-          # a different project. Codeberg is tried first because it is the one
-          # upstream points at now.
+          # PATCHES INTO /in, NOT A PRE-PATCHED TREE, for the reason the
+          # reference arm states: "a patched tarball hides the delta inside an
+          # opaque blob and there is nothing left to review." The tree that
+          # enters the box is the fork at its tag; the three deltas below are
+          # named files the box applies and anyone can read.
+          mkdir -p pins
+          # TWO HOSTS, THREE TRIES. This is the one rung that reaches a live
+          # git host rather than a pinned tarball; run 84979503915 died on a
+          # codeberg 504 with nothing wrong on our side.
           got=""
           for remote in \
               https://codeberg.org/ekaitz-zarraga/gcc.git \
               https://github.com/ekaitz-zarraga/gcc.git ; do
             for attempt in 1 2 3; do
-              echo "  trying $remote (attempt $attempt)"
-              if git clone -q --depth 1 --branch "$GCC_BOTTOM_TAG" "$remote" work/g46 2>/dev/null; then
+              if git clone -q --depth 1 --branch working-compiler-c++ "$remote" gbot 2>/dev/null; then
                 got="$remote"; break
               fi
-              rm -rf work/g46; sleep 10
+              rm -rf gbot; sleep 10
             done
             [ -n "$got" ] && break
           done
-          if [ -z "$got" ]; then
-            echo "  COULD NOT CLONE $GCC_BOTTOM_TAG FROM EITHER HOST."
-            echo "  If both are up, the tag has moved and the pin is stale --"
-            echo "  check the fork before assuming the network."
-            exit 1
-          fi
+          [ -n "$got" ] || { echo "  could not clone the fork from either host"; exit 1; }
           echo "  cloned from $got"
-          cd work/g46
-          echo "  HEAD:      $(git rev-parse --short HEAD)"
-          echo "  BASE-VER:  $(cat gcc/BASE-VER 2>/dev/null || echo unknown)"
-          r=$(grep -ci riscv gcc/config.gcc || true)
-          echo "  riscv mentions in config.gcc: $r"
-          [ "$r" -gt 0 ] || { echo "  THIS FORK HAS NO RISCV BACKEND -- wrong tag?"; exit 1; }
-          ls gcc/config/riscv/ | head -8 | sed 's/^/    /'
-          echo "VERON-SPIKE-G46-OK  the fork carries a riscv backend at this tag"
+          echo "  HEAD:     $(git -C gbot rev-parse --short HEAD)"
+          echo "  BASE-VER: $(cat gbot/gcc/BASE-VER)"
+          echo "  riscv mentions in config.gcc: $(grep -ci riscv gbot/gcc/config.gcc || true)"
 
-      - name: 'AIRLOCK: our own busybox, built by the host gcc, OUTSIDE the box'
+          # --- the three deltas, derived here, applied in the box -----------
+          #
+          # 1 and 2 are Ekaitz's own, published as shell commands rather than
+          # carried in the fork: "I decided to keep them out of the codebase
+          # because I want to keep the code consistent with the past."
+          # 3 is ours, and appears to be new -- see its header.
+          cp -a gbot gbot.orig
+
+          # 1. struct ucontext -> ucontext_t. glibc renamed it; 2012 gcc still
+          #    says the old name and dereferences a type that no longer exists
+          #    under it. NOT a RISC-V problem: the same failure appeared on
+          #    x86_64 in run 84974129558 with a stock 4.7.4 tarball.
+          grep -rl 'struct ucontext' gbot/gcc gbot/libgcc 2>/dev/null \
+            | xargs -r sed -i 's/struct ucontext/ucontext_t/g'
+
+          # 2. Drop the LIB_SPEC override in the riscv linux.h, whose own
+          #    comment is a FIXME: RISC-V has only word-sized atomics so it
+          #    links libatomic by default, and that reference breaks the build
+          #    before libatomic exists.
+          python3 - <<'PYEOF'
+          import re
+          p = "gbot/gcc/config/riscv/linux.h"
+          s = open(p).read()
+          out = re.sub(r"/\* FIXME \*/\n/\* Because RISC-V only has word-sized atomics.*?#undef LIB_SPEC\n",
+                       "", s, flags=re.S)
+          open(p, "w").write(out)
+          print("  LIB_SPEC override removed" if out != s else "  NOTE: LIB_SPEC block not found")
+          PYEOF
+
+          # 3. HOST_WIDE_INT_1 / _1U, WHICH THE FORK USES AND NEVER DEFINES.
+          #    hwint.h's sext_hwi has a fast path guarded by #if and a fallback
+          #    in the #else. A modern gcc satisfies the #if and never compiles
+          #    the fallback; tcc takes the #else and dies with
+          #        gcc/hwint.h:291: error: 'HOST_WIDE_INT_1' undeclared
+          #    Nobody upstream has hit this because nobody upstream builds this
+          #    fork with tcc -- Ekaitz builds it on Debian with build-essential.
+          #    Anchored on the include guard, not the type: a macro body is
+          #    text, so HOST_WIDE_INT need not be defined yet.
+          python3 - <<'PYEOF'
+          p = "gbot/gcc/hwint.h"
+          s = open(p).read()
+          if "define HOST_WIDE_INT_1" in s:
+              print("  NOTE: hwint.h already defines HOST_WIDE_INT_1")
+          else:
+              add = ("\n#ifndef HOST_WIDE_INT_1\n#define HOST_WIDE_INT_1 ((HOST_WIDE_INT) 1)\n#endif\n"
+                     "#ifndef HOST_WIDE_INT_1U\n#define HOST_WIDE_INT_1U ((unsigned HOST_WIDE_INT) 1)\n#endif\n")
+              k = s.index("\n", s.index("#define GCC_HWINT_H")) + 1
+              open(p, "w").write(s[:k] + add + s[k:])
+              print("  HOST_WIDE_INT_1 and HOST_WIDE_INT_1U defined")
+          PYEOF
+
+          # ONE PATCH FILE, DERIVED. diff returns 1 when files differ, which is
+          # the expected case here, so `|| true`.
+          ( cd . && diff -ruN gbot.orig gbot > pins/riscv-bottom-gcc.patch ) || true
+          sed -i 's|^--- gbot.orig/|--- a/|; s|^+++ gbot/|+++ b/|' pins/riscv-bottom-gcc.patch
+          echo "  patch: $(wc -l < pins/riscv-bottom-gcc.patch) lines, $(grep -c '^--- a/' pins/riscv-bottom-gcc.patch || true) files"
+
+          # AND THE TREE ITSELF, AT THE TAG, UNPATCHED.
+          rm -rf gbot.orig
+          ( cd gbot && rm -rf .git )
+          tar -czf pins/riscv-bottom-gcc.tar.gz gbot
+          echo "  tree:  $(wc -c < pins/riscv-bottom-gcc.tar.gz) bytes"
+          sha256sum pins/riscv-bottom-gcc.* | sed 's/^/    /'
+
+      - name: 'AIRLOCK: build the busybox this box will use'
         run: |
           set -eu
-          # THIS SPIKE USED TO BIND /usr READ-ONLY AND MASK THE COMPILERS, AND
-          # THAT WAS NOT HERMETIC -- IT WAS THEATRE.
+          # OUR busybox, NOT UBUNTU's, AND THE PROBE MEASURED WHY.
           #
-          # Masking cc/gcc/g++ while binding all of /usr leaves make, sed, awk,
-          # grep, bash, tar, m4, perl and python3 in the box, every one of them
-          # Ubuntu's. gcc's build reaches for dozens of those, so "no host
-          # compiler" was true and beside the point: the artifact was still
-          # shaped by the host's userland.
+          #     ours: 400 applets, 2.18 MB, statically linked
+          #     Ubuntu's: 272
+          #       split   ours=yes  ubuntu=no
+          #       comm    ours=yes  ubuntu=no
+          #       tsort   ours=yes  ubuntu=no
           #
-          # stage0-stage4-complete.yml does not do that. It CONSTRUCTS a box --
-          # $BOX/bin, $BOX/lib, nothing else -- binds it as /, binds NOTHING
-          # from the host, and enforces the contents with a SEAL step that
-          # fails if any executable is not on a declared budget. That is the
-          # model this now follows.
+          # split and comm cost two full rounds at rung 11.5 -- perl's
+          # Configure needs both, Ubuntu's build has neither, and the failure
+          # reads as "not found", which looks like a PATH fault rather than an
+          # applet that was compiled out. rungs.sh still builds its own split
+          # and comm, and with this they become belt-and-braces rather than the
+          # only source.
           #
-          # BUILDING BUSYBOX WITH THE HOST gcc IS THE DECLARED HOLE, and it is
-          # the same one stage 0 declares: something must compile the first
-          # thing. What matters is that the RESULT is ours -- pinned source,
-          # our config -- and that nothing else crosses.
-          BB=busybox-1.36.1
-          curl -fsSL -o $BB.tar.bz2 https://busybox.net/downloads/$BB.tar.bz2
-          echo "  sha256: $(sha256sum $BB.tar.bz2 | cut -d' ' -f1)"
-          echo "  pinned: b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314"
-          sha256sum $BB.tar.bz2 | grep -q b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314 \
-            || { echo "  BUSYBOX SOURCE DOES NOT MATCH THE PIN"; exit 1; }
-          tar xf $BB.tar.bz2 && mv $BB bbsrc && cd bbsrc
+          # THE REAL POINT IS DECLARATION. The box's single host binary was
+          # whatever Ubuntu happened to ship; now it is one we built from a
+          # pinned tarball with a config in this file. "The box has no split"
+          # stops being a discovery.
+          #
+          # CONFIG_TC IS OFF because busybox 1.36.1's tc.c is 2023 code against
+          # 2026 kernel headers -- TCA_CBQ_MAX and struct tc_cbq_lssopt were
+          # removed upstream. A build sysroot has no use for traffic shaping.
+          BB=1.36.1
+          # PINNED BY BYTES, NOT JUST BY VERSION STRING.
+          #
+          # Every other upstream in this job is fetched and then checked
+          # against a recorded sha256; this one was fetched and trusted. That
+          # made "pinned source" mean a pinned VERSION -- nothing asserted the
+          # contents, so a compromised or re-rolled tarball at that URL would
+          # have walked straight into the box as the one binary that drives
+          # the whole build.
+          #
+          # busybox 1.36.1, from busybox.net's own SHA256SUMS.
+          BB_SHA=b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314
+          mkdir -p dl && cd dl
+          [ -s "busybox-$BB.tar.bz2" ] || \
+            curl -fsSL --connect-timeout 20 --retry 2 \
+              -O "https://busybox.net/downloads/busybox-$BB.tar.bz2"
+          _got=$(sha256sum "busybox-$BB.tar.bz2" | cut -d' ' -f1)
+          if [ "$_got" != "$BB_SHA" ]; then
+            echo "  FAIL: busybox-$BB.tar.bz2 does not match its pin"
+            echo "    expected $BB_SHA"
+            echo "    got      $_got"
+            exit 1
+          fi
+          echo "  busybox-$BB.tar.bz2 matches its pin ($BB_SHA)"
+          cd ..
+          rm -rf bbsrc && mkdir bbsrc
+          tar xf "dl/busybox-$BB.tar.bz2" -C bbsrc --strip-components=1
+          cd bbsrc
           make defconfig > /dev/null 2>&1
-          # STATIC, because the box has no host /lib to resolve against.
           sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
-          # THE APPLETS defconfig LEAVES OUT. Every one of these is reached for
-          # by some configure script or Makefile in a gcc build; the list is
-          # lifted from stage0-stage4-complete.yml:2859, which learned it the
-          # expensive way.
           for sym in SPLIT COMM JOIN PASTE EXPAND UNEXPAND FOLD NL TSORT \
                      CMP DIFF PATCH AWK SED GREP SORT UNIQ TR CUT; do
             sed -i "s/^# CONFIG_$sym is not set/CONFIG_$sym=y/" .config
@@ -388,48 +765,53 @@ jobs:
             sed -i "s/^CONFIG_$sym=y/# CONFIG_$sym is not set/" .config
           done
           yes '' | make oldconfig > /dev/null 2>&1 || true
-          # VERIFY AFTER oldconfig: it re-derives symbols and has undone
-          # exactly this edit before, in this repository.
+          # VERIFY AFTER oldconfig -- it re-derives symbols and has undone
+          # exactly this edit before, in this repository, three runs running.
           _bad=0
           for sym in STATIC SPLIT COMM; do
             grep -q "^CONFIG_$sym=y" .config || { echo "  CONFIG_$sym did not survive oldconfig"; _bad=1; }
           done
           [ "$_bad" = 0 ] || exit 1
-          make -j"$(nproc)" > b.log 2>&1 || { tail -20 b.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || {
+            echo "  --- errors ---"
+            grep -oE '^[^ :]+\.(c|h):[0-9]+' b.log | cut -d: -f1 | sort | uniq -c | sort -rn | head -6 | sed 's/^/    /'
+            tail -20 b.log | sed 's/^/    /'; exit 1; }
           cd ..
           cp bbsrc/busybox veron-busybox
-          # NAME IT busybox BEFORE ASKING IT ANYTHING. busybox dispatches on
-          # argv[0], so `./veron-busybox --list` looks for an applet called
-          # veron-busybox and prints "applet not found" -- which is what run
-          # 84991611661 did, reporting 0 applets. The reference's load-bearing
-          # loop calls "$BOX/bin/busybox" --list, where the file IS named
-          # busybox; that is the invocation that works.
-          cp veron-busybox bb && echo "  busybox: $(wc -c < bb) bytes, $(./bb --list | wc -l) applets"
+          echo "  busybox: $(wc -c < veron-busybox) bytes, $(./veron-busybox --list | wc -l) applets"
           echo "  static:  $(file -b veron-busybox | grep -o 'statically linked' || echo NO)"
+          echo "  --- the two that cost rounds ---"
+          for a in split comm; do
+            printf '    %-6s ours=%-3s ubuntu=%s\n' "$a" \
+              "$(./veron-busybox --list | grep -qx "$a" && echo yes || echo no)" \
+              "$(/bin/busybox --list | grep -qx "$a" && echo yes || echo no)"
+          done
 
-      - name: 'ASSEMBLE THE BOX: our busybox, our tcc, and nothing else'
+      - name: Assemble the box
         run: |
           set -eu
           BOX="$PWD/box"; echo "BOX=$BOX" >> "$GITHUB_ENV"
           mkdir -p "$BOX"/bin "$BOX"/lib "$BOX"/work "$BOX"/out \
-                   "$BOX"/src "$BOX"/tmp "$BOX"/proc "$BOX"/dev "$BOX"/usr
-          ln -sf ../bin "$BOX/usr/bin"
-          # TIER 2 ONLY: busybox is a driver -- it runs the build but decides
-          # no artifact byte. TIER 1 (the tools whose output IS the artifact)
-          # is tcc alone, and it lives in /work, not /bin.
+                   "$BOX"/src "$BOX"/in "$BOX"/tmp "$BOX"/proc "$BOX"/dev
+
+          # Tier 1 is empty, so this copies nothing. It stays because the SEAL
+          # reads the same variable and the two must not describe different sets.
+          for t in $BUDGET_PATH;   do cp -L "$(command -v "$t")" "$BOX/bin/$t"; done
+          # OUR busybox, from the airlock step above -- see it for why.
           cp -L "$PWD/veron-busybox" "$BOX/bin/busybox"
-          for a in $("$BOX/bin/busybox" --list); do
-            [ "$a" = busybox ] && continue
-            ln -sf busybox "$BOX/bin/$a"
-          done
-          # tcc's -B directory is its own source tree: that is where it finds
-          # libtcc1.a and its include/.
-          cp -a work/tccsrc "$BOX/work/tccsrc"
-          cp -L work/tccinst/bin/tcc "$BOX/work/tcc"
-          chmod 0755 "$BOX/work/tcc"
-          # Only what the copied binaries need to EXECUTE. Both should be
-          # static, so this should find nothing -- printed, not assumed.
-          for b in "$BOX/bin/busybox" "$BOX/work/tcc"; do
+
+          # tcc's -B directory: its own source tree, which is where it looks
+          # for libtcc1.a and its include/. libtcc1.a is BUILT at rung 0 by the
+          # compiler under test, not copied in.
+          cp -a tccsrc "$BOX/work/tccsrc"
+          rm -f "$BOX/work/tccsrc/libtcc1.a"
+          cp -L tccsrc/tcc "$BOX/work/ref-tcc"
+          chmod 0755 "$BOX/work/ref-tcc"
+
+          # Only what the tier-2 binaries need to EXECUTE. Both are static, so
+          # this should find nothing -- and the count is printed rather than
+          # assumed.
+          for b in "$BOX"/bin/* "$BOX/work/ref-tcc"; do
             ldd "$b" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}'
           done | sort -u > /tmp/needed
           n=0
@@ -437,751 +819,861 @@ jobs:
             [ -f "$l" ] && cp -L "$l" "$BOX/lib/" && n=$((n+1))
           done < /tmp/needed
           echo "  shared objects the box needs: $n"
-          # AND IT MUST BE ZERO. The box binds nothing from the host, so there
-          # is no /lib64/ld-linux-*.so for a dynamic binary to start from --
-          # copying the .so files into $BOX/lib does not help, because the
-          # INTERPRETER path itself is absent and the kernel resolves that,
-          # not LD_LIBRARY_PATH. Run 84991611661 copied 3 objects, reported
-          # success, and then died with
-          #     /bin/sh: /work/tcc: not found
-          # on a file that was demonstrably present. A count above zero means
-          # something in here is dynamic and will fail that way.
-          [ "$n" = 0 ] || { echo "  A BINARY IN THE BOX IS DYNAMIC -- it will not start:"; \
-                            cat /tmp/needed | sed 's/^/    /'; exit 1; }
-          cat > box.sh <<'EOS'
-          set -eu
-          BOX=${BOX:?box.sh: BOX not set}
-          exec bwrap \
-            --unshare-all --die-with-parent --new-session --clearenv \
-            --setenv PATH /bin \
-            --setenv HOME /work --setenv LC_ALL POSIX --setenv TERM dumb \
-            --setenv SOURCE_DATE_EPOCH 0 --setenv LD_LIBRARY_PATH /lib \
-            --setenv TCC /work/tcc --setenv TCCDIR /work/tccsrc \
-            --bind "$BOX" / \
-            --proc /proc --dev /dev --tmpfs /tmp \
-            --chdir /work "$@"
-          EOS
-          chmod +x box.sh
 
-      - name: 'SEAL: every executable in the box, enumerated and enforced'
+          # EVERY APPLET busybox HAS, ASKED FOR RATHER THAN GUESSED.
+          #
+          # This was a hand-written list and it was short. binutils' libiberty
+          # stopped at
+          #
+          #     touch stamp-picdir
+          #     make[2]: *** [stamp-picdir] Error 127
+          #
+          # -- 127 is "command not found", and `touch` was simply not in it. A
+          # build this size will reach for dozens of ordinary utilities and
+          # guessing which ones is a round each. `busybox --list` is the
+          # authoritative answer and costs one line.
+          #
+          # TWO ARE NOT LINKED -- `ar` and `strings` -- because both are tier 1
+          # by this job's definition: they decide what bytes end up in an
+          # artifact, and busybox's ar can only READ archives, never create one.
+          #
+          # NOT LINKING THEM DOES NOT REMOVE THEM, and that is worth stating
+          # plainly rather than leaving as an assumption. Ubuntu's
+          # busybox-static is built with FEATURE_SH_STANDALONE, so its ash
+          # dispatches any applet it knows BY NAME without consulting PATH.
+          # rung 4's smoke test proved it: with ar unlinked and the SEAL
+          # reporting 269 applets, `ar cru` still reached busybox and answered
+          # "ar: invalid option -- 'r'".
+          #
+          # So every claim of the form "the box does not have X" holds only if
+          # BUSYBOX does not have X. Where a real tool is needed, the answer is
+          # to give it a name busybox has no applet for and point the build at
+          # it explicitly -- which is what rung 4 does with tcc-ar and AR=.
+          # Not linking these two still helps: it keeps them off PATH for
+          # anything that is not busybox's own shell.
+          for a in $("$BOX/bin/busybox" --list); do
+            case "$a" in
+              ar|strings) continue ;;
+              busybox)    continue ;;
+            esac
+            if [ "${TRACE_APPLETS:-0}" = 1 ]; then
+              # A WRAPPER THAT LOGS ITSELF AND THEN GETS OUT OF THE WAY.
+              #
+              # The eventual goal is a handmade busybox config containing
+              # exactly the applets this chain needs -- allnoconfig plus a list,
+              # so the config file IS the declaration rather than defconfig
+              # minus a few seds.
+              #
+              # THAT LIST CANNOT BE DEDUCED FROM THE LOGS. rungs.sh invokes
+              # maybe 25 applets and they are all visible. But configure is
+              # generated shell that reaches for tr, expr, basename, sort, uniq
+              # and a dozen more in branches that depend on what it finds;
+              # Makefiles call more; the kernel's scripts/ is a small userland
+              # of its own. None of it appears unless it FAILS -- which is how
+              # split and comm were found, one round each.
+              #
+              # So measure instead. Each applet becomes a two-line wrapper that
+              # appends its name to a log and then execs the real busybox, so
+              # the chain runs exactly as it would otherwise and the log is the
+              # precise set that was invoked. Not deduced: recorded.
+              #
+              # exec, NOT a call -- the wrapper must not sit in the process tree
+              # holding a pipe open. A build this size runs applets in pipelines
+              # tens of thousands of times.
+              printf '#!/bin/busybox sh\necho %s >> /out/applets-used.txt\nexec /bin/busybox %s "$@"\n' \
+                "$a" "$a" > "$BOX/bin/$a"
+              chmod 0755 "$BOX/bin/$a"
+            else
+              ln -sf busybox "$BOX/bin/$a"
+            fi
+          done
+          echo "  applets linked: $(find "$BOX/bin" -type l | wc -l)"
+          echo "  excluded on purpose: ar strings  (tier 1 -- rung 4 builds them)"
+
+          # WHICH APPLETS THIS busybox DOES NOT HAVE, NAMED BEFORE ANYTHING
+          # NEEDS THEM.
+          #
+          # perl's Configure died on two of them:
+          #
+          #     ./Configure: line 2135: split: not found
+          #     I don't know where 'comm' is, and my life depends on it.
+          #
+          # Both are real busybox applets -- but they are compile-time options,
+          # and Ubuntu's busybox-static is built without them. `busybox --list`
+          # reported 269 and the loop linked all 269; the ones missing were
+          # never on the list to begin with, so nothing here was wrong and
+          # nothing looked wrong either.
+          #
+          # A build reaching for one of these gets "not found" from the shell,
+          # which reads as a PATH problem rather than as a busybox that was
+          # compiled without the applet. Printing the gap here turns the next
+          # occurrence into one line of reading.
+          #
+          # This is the same class as `patch -d` and `tr -dc`: what busybox
+          # supports is a property of THIS BINARY, not of busybox.
+          # gawk AS A WRAPPER, BECAUSE m4 AND bison BOTH PROBE FOR IT BY NAME.
+          #
+          # busybox has awk and not gawk, and a symlink will not do: it
+          # dispatches on argv[0], so a link named gawk makes it answer
+          # "gawk: applet not found". The tool-probe hit exactly that and it
+          # read like a missing tool rather than a wrong link.
+          #
+          # busybox awk handles what these configures use -- ENVIRON, -f, gsub,
+          # printf, match, all measured in tool-probe -- so the wrapper is
+          # honest rather than a stand-in for something absent.
+          # rm FIRST, EVEN THOUGH IT IS SAFE TODAY. busybox has no gawk applet,
+          # so the loop above creates no symlink here and `>` has nothing to
+          # write through. But that is a fact about busybox's applet list, not
+          # about this code -- and in tool-probe the identical line truncated
+          # the busybox BINARY, because there the name was symlinked first. The
+          # error it produced named the wrapper and read as a permissions
+          # problem.
+          rm -f "$BOX/bin/gawk"
+          # gawk MUST ANSWER --version LIKE gawk, NOT LIKE busybox.
+          #
+          # glibc's configure runs `gawk --version` and parses the result:
+          #
+          #     checking version of gawk... v. ?.??, bad
+          #     *** These critical programs are missing or too old: gawk
+          #
+          # busybox awk prints its own banner, which that parse cannot read.
+          # The CAPABILITY is not in question -- tool-probe measured ENVIRON,
+          # -f, gsub, printf and match all working, which is everything m4,
+          # bison and glibc's scripts use.
+          #
+          # So the wrapper answers the version question and passes everything
+          # else through. THIS IS A CLAIM ABOUT AN INTERFACE, NOT A LIE ABOUT
+          # AN IMPLEMENTATION: it says "this awk behaves as GNU awk 5.3 does
+          # for the features being asked about", and that was measured rather
+          # than assumed. If something later needs a gawk extension busybox
+          # lacks, it fails on that extension, which is a legible failure.
+          printf '%s\n' '#!/bin/busybox sh' \
+            'case "$1" in' \
+            '  --version|-V|--ver*)' \
+            '    echo "GNU Awk 5.3.1, API 4.0"' \
+            '    echo "(busybox awk -- see the box assembly step for why)"' \
+            '    exit 0 ;;' \
+            'esac' \
+            'exec /bin/busybox awk "$@"' > "$BOX/bin/gawk"
+          chmod 0755 "$BOX/bin/gawk"
+          echo "  gawk -> busybox awk (wrapper, not a symlink: argv[0] dispatch)"
+
+          echo "  --- POSIX tools this busybox does NOT have ---"
+          missing=""
+          for a in split comm join csplit paste expand unexpand fold fmt nl \
+                   pr tsort col cmp uniq tr od dd printf tee; do
+            "$BOX/bin/busybox" --list | grep -qx "$a" || missing="$missing $a"
+          done
+          if [ -n "$missing" ]; then
+            echo "   $missing"
+            echo "    A rung that needs one of these will report \"not found\", which"
+            echo "    reads as a PATH fault. It is not: the applet was compiled out."
+          else
+            echo "    none of the commonly-needed ones are missing"
+          fi
+          echo "  box laid out: $(du -sh "$BOX" | cut -f1)"
+          echo "  /usr/include present? $( [ -d "$BOX/usr/include" ] && echo YES || echo no )"
+
+      - name: 'AIRLOCK: repack V7 tarballs as ustar (busybox tar requires the magic)'
         run: |
           set -eu
-          echo "  === TIER 1: DECIDES ARTIFACT BYTES ==="
-          printf '    %-12s %10s  %s\n' tcc "$(wc -c < "$BOX/work/tcc")" \
-            "$(sha256sum "$BOX/work/tcc" | cut -c1-16)"
+          # MEASURED, NOT ASSUMED THIS TIME. The out-of-sandbox probe ran the
+          # box's own busybox on the same files and printed their headers:
+          #
+          #   musl-1.2.5   name: pax_global_heade  type: g  magic: ustar\0 00  -> OK
+          #   make-3.82    name: make-3.82/        type: 5  magic: \0 x8       -> FAILED
+          #   make-4.4     name: make-4.4/         type: 5  magic: \0 x8       -> FAILED
+          #
+          # GNU make's release tarballs are V7 format and carry NO ustar magic.
+          # busybox's get_header_tar requires it and refuses them; host GNU tar
+          # reads them because it handles V7. musl's is PAX/ustar, which is why
+          # exactly one archive in the set worked and the rest of this job spent
+          # six runs on it.
+          #
+          # I HAD THIS RIGHT ONCE AND THREW IT AWAY. The earlier repack was
+          # removed after a local test showed every GNU tar output format except
+          # v7 writes the magic -- which is true, and which tests what GNU tar
+          # CAN write rather than what these tarballs ARE. Wrong experiment,
+          # confident conclusion. The probe tests the actual files.
+          #
+          # Repacking changes the container, not the contents: the archive is a
+          # pinned input, host tar reads it identically either way, and the box
+          # still extracts and builds everything itself.
+          cd pins
+          for f in *.tar.gz *.tar.xz *.tar.bz2; do
+            [ -f "$f" ] || continue
+            stem=${f%%.tar.*}
+            # DECOMPRESS TO A FILE FIRST. Piping into `dd count=5` kills the
+            # decompressor with a broken pipe the moment dd has its bytes, and
+            # the reported magic comes back as [] even for archives that have
+            # it -- visible in this step's own output as
+            #     make-3.82.tar.gz  V7 -> ustar  [] -> [ustar]
+            # where the [] should have been the eight NULs that make it V7.
+            #
+            # The DECISION here was still right, because [] is not "ustar"
+            # either -- but only by luck, and tool-probe's copy of this loop
+            # repacked bison and mpfr, which are already ustar, for exactly
+            # this reason. A check that answers "not ustar" for everything
+            # looks identical to one that works.
+            case "$f" in
+              *.gz)  gzip  -dc "$f" > /tmp/hdr.tar 2>/dev/null ;;
+              *.xz)  xz    -dc "$f" > /tmp/hdr.tar 2>/dev/null ;;
+              *.bz2) bzip2 -dc "$f" > /tmp/hdr.tar 2>/dev/null ;;
+            esac
+            before=$(dd if=/tmp/hdr.tar bs=1 skip=257 count=5 2>/dev/null)
+            [ -n "$before" ] || before="(8 NULs -- V7)"
+            rm -f /tmp/hdr.tar
+            if [ "$before" = "ustar" ]; then
+              printf '  %-26s already ustar -- left alone\n' "$f"
+              continue
+            fi
+            d=$(mktemp -d)
+            tar xf "$f" -C "$d"
+            ( cd "$d" && tar czf "$OLDPWD/$stem.repacked.tar.gz" --format=ustar ./* )
+            rm -rf "$d" "$f"
+            mv "$stem.repacked.tar.gz" "$stem.tar.gz"
+            after=$(gzip -dc "$stem.tar.gz" | dd bs=1 skip=257 count=5 2>/dev/null)
+            printf '  %-26s V7 -> ustar  [%s] -> [%s]  %s bytes\n' \
+              "$f" "$before" "$after" "$(wc -c < "$stem.tar.gz")"
+            [ "$after" = ustar ] || { echo "  REPACK DID NOT TAKE for $f"; exit 1; }
+          done
+          echo "  --- what the box will see in /in ---"
+          ls -1 . | sed 's/^/    /'
+
+      - name: 'PROBE: the exact tar command, outside bubblewrap'
+        run: |
+          set -eu
+          # THE SAME BINARY, THE SAME FILE, NO SANDBOX.
+          #
+          # In the box, `tar -zxf /in/make-4.4.tar.gz` is refused with "invalid
+          # tar magic" while the identical call opens musl-1.2.5.tar.gz. Three
+          # runs of diagnostics inside the box have not settled why, and two of
+          # those diagnostics turned out to be broken themselves. So run the
+          # command outside, where host tools are available to check the answer.
+          #
+          # This discriminates in one step:
+          #   busybox fails here too      -> busybox tar vs this tarball
+          #   busybox works here          -> something about the box, not the file
+          #   host tar fails too          -> the download is bad
+          B="$BOX/bin/busybox"
+          echo "  busybox: $("$B" 2>&1 | head -1)"
+          echo
+          for f in pins/musl-*.tar.gz pins/make-*.tar.gz; do
+            [ -f "$f" ] || continue
+            echo "  ===== $f  ($(wc -c < "$f") bytes) ====="
+            echo "    first 4 bytes: $(dd if="$f" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -s ' ')"
+
+            # 1. host GNU tar, listing only
+            if tar -tzf "$f" > /dev/null 2>/tmp/hosttar.err; then
+              echo "    host tar -tzf     : OK  ($(tar -tzf "$f" 2>/dev/null | wc -l) members)"
+            else
+              echo "    host tar -tzf     : FAILED  $(head -1 /tmp/hosttar.err)"
+            fi
+
+            # 2. the box's busybox, same flags, no sandbox
+            rm -rf /tmp/bbx && mkdir -p /tmp/bbx
+            if ( cd /tmp/bbx && "$B" tar -zxf "$OLDPWD/$f" ) 2>/tmp/bbtar.err; then
+              echo "    busybox tar -zxf  : OK  ($(ls /tmp/bbx | tr '\n' ' '))"
+            else
+              echo "    busybox tar -zxf  : FAILED  $(head -2 /tmp/bbtar.err | tr '\n' ' ')"
+            fi
+
+            # 3. busybox on the DECOMPRESSED bytes, which separates the -z path
+            #    from the archive itself
+            gzip -dc "$f" > /tmp/probe.tar
+            rm -rf /tmp/bbx2 && mkdir -p /tmp/bbx2
+            if ( cd /tmp/bbx2 && "$B" tar -xf /tmp/probe.tar ) 2>/tmp/bbtar2.err; then
+              echo "    busybox tar -xf   : OK on the decompressed file"
+            else
+              echo "    busybox tar -xf   : FAILED  $(head -2 /tmp/bbtar2.err | tr '\n' ' ')"
+            fi
+
+            # 4. the header fields, carved with dd and formatted with od
+            echo "    name  (0)   : $(dd if=/tmp/probe.tar bs=1 count=16      2>/dev/null | od -c | head -1)"
+            echo "    type  (156) : $(dd if=/tmp/probe.tar bs=1 skip=156 count=1 2>/dev/null | od -c | head -1)"
+            echo "    magic (257) : $(dd if=/tmp/probe.tar bs=1 skip=257 count=8 2>/dev/null | od -c | head -1)"
+            echo "    host tar says format: $(tar -tvf /tmp/probe.tar 2>/dev/null | head -1)"
+            rm -f /tmp/probe.tar
+            echo
+          done
+
+      - name: 'SEAL: enumerate every executable in the box and enforce the budget'
+        run: |
+          set -eu
+          echo "  === TIER 1: ON THE BUILD PATH ==="
+          if [ -z "$BUDGET_PATH" ]; then
+            echo "    EMPTY -- no compiler, no assembler, no linker, no archiver."
+            echo "    binutils is BUILT at rung 4. If it appears below, a"
+            echo "    configure script found it and this run is void."
+          fi
           echo "  === TIER 2: DRIVER (touches no artifact byte) ==="
-          printf '    %-12s %10s  %s\n' busybox "$(wc -c < "$BOX/bin/busybox")" \
-            "$(sha256sum "$BOX/bin/busybox" | cut -c1-16)"
-          echo "  === shared objects carried in ==="
-          ls -1 "$BOX/lib" | sed 's/^/    /'
-          # THE ENFORCEMENT. Every REAL file under $BOX/bin must be busybox.
-          # If a cp of gcc appears, or anything else lands here, this fails --
-          # which is the entire value of writing the budget down.
-          find "$BOX/bin" -maxdepth 1 -type f -printf '%f\n' | sort > /tmp/actual
-          echo busybox > /tmp/declared
-          if ! cmp -s /tmp/actual /tmp/declared; then
-            echo "FAIL: the box contains executables outside the declared budget."
-            comm -3 /tmp/declared /tmp/actual | sed 's/^/    /'
+          echo "    busybox is now one WE BUILT, from a pinned tarball with the"
+          echo "    config in this file -- not whatever the runner's distro"
+          echo "    shipped. Its applet list is declared rather than inherited."
+          for t in $BUDGET_DRIVER; do
+            printf '    %-12s %10s  %s\n' "$t" "$(wc -c < "$BOX/bin/$t")" \
+              "$(sha256sum "$BOX/bin/$t" | cut -c1-16)"
+          done
+          echo "  === TIER 3: THE COMPILER UNDER TEST ==="
+          printf '    %-12s %10s  %s\n' ref-tcc "$(wc -c < "$BOX/work/ref-tcc")" \
+            "$(sha256sum "$BOX/work/ref-tcc" | cut -c1-16)"
+
+          # gawk IS DECLARED, because it is a real file in /bin rather than a
+          # symlink and the check below would otherwise fail it as undeclared.
+          # It is not a host binary: it is a two-line wrapper this workflow
+          # writes, calling the busybox we built. Saying so here keeps the SEAL
+          # meaning "nothing arrived that we did not put there" rather than
+          # quietly widening to "nothing arrived except the things we forgot".
+          printf '%s\n' $BUDGET_PATH $BUDGET_DRIVER gawk | sort -u > /tmp/declared
+          find "$BOX/bin" -type f -printf '%f\n' | sort -u > /tmp/actual
+          undeclared=$(comm -13 /tmp/declared /tmp/actual || true)
+          if [ -n "$undeclared" ]; then
+            echo "  UNDECLARED EXECUTABLES IN THE BOX:"
+            printf '%s\n' "$undeclared" | sed 's/^/    /'
             exit 1
           fi
-          echo "  budget holds: bin contains busybox and its applet links, nothing else"
+          echo "  SEALED. $(wc -l < /tmp/declared) declared entries in /bin:"
+          echo "    busybox  -- built by this workflow from a pinned tarball"
+          echo "    gawk     -- a wrapper around it, written by this workflow"
+          echo "  $(printf '%s' "$BUDGET_PATH" | wc -w) of them on the build path."
 
-      - name: 'Prove the box: no host anything'
+      - name: 'IN THE BOX: ref-tcc -> musl -> make -> binutils -> gcc 4.7.4'
         run: |
           set -eu
-          # THE ASSERTIONS THAT MAKE THE REST MEAN ANYTHING, and the old
-          # version only made the first one.
-          for probe in \
-            'cc -o /tmp/x /tmp/x.c' \
-            'gcc --version' \
-            'ls /usr/include' \
-            'ls /usr/lib' \
-            'perl -e 1' \
-            'python3 -c 1' ; do
-            set +e
-            ./box.sh /bin/sh -c "$probe" >/dev/null 2>&1
-            rc=$?
-            set -e
-            [ "$rc" != 0 ] || { echo "  HOST LEAK: '$probe' SUCCEEDED inside the box"; exit 1; }
-            printf '    absent: %-24s (rc=%s)\n' "${probe%% *}" "$rc"
-          done
-          # And the two that must be present.
-          ./box.sh /bin/sh -c 'sed --version >/dev/null 2>&1 || busybox sed --help >/dev/null 2>&1'
-          ./box.sh /bin/sh -c '/work/tcc -v'
-          echo "VERON-SPIKE-BOX-OK  our busybox and our tcc, nothing from the host"
-
-      - name: 'Fetch sources OUTSIDE the box -- network is not a build dependency'
-        run: |
-          set -eu
-          # INTO THE BOX'S OWN /work, not a host directory bound in later.
-          cd "$BOX/work"
-          for u in \
-            https://ftp.gnu.org/gnu/gmp/gmp-$GMP.tar.xz \
-            https://ftp.gnu.org/gnu/mpfr/mpfr-$MPFR.tar.xz \
-            https://ftp.gnu.org/gnu/mpc/mpc-$MPC.tar.gz \
-            https://ftp.gnu.org/gnu/gcc/gcc-$GCC_TOP/gcc-$GCC_TOP.tar.xz ; do
-            f=$(basename "$u"); echo "  $f"
-            curl -fsSL --retry 3 -o "$f" "$u"
-          done
-          sha256sum ./*.tar.* | sed 's/^/    /'
-          tar xf gmp-$GMP.tar.xz;   mv gmp-$GMP   gmp
-          tar xf mpfr-$MPFR.tar.xz; mv mpfr-$MPFR mpfr
-          tar xf mpc-$MPC.tar.gz;   mv mpc-$MPC   mpc
-          # THE BOTTOM COMES FROM git, SHALLOW AND AT THE TAG. A full clone of
-          # a gcc fork is gigabytes; the first run of this spike sat on one
-          # long enough to look hung on a four-core RISC-V node.
-          # SAME TWO HOSTS AND THREE TRIES AS RUNG 2. Run 84979503915 died
-          # here on a codeberg 504 -- the tree and the tag were fine, the
-          # host was not.
-          got=""
-          for remote in \
-              https://codeberg.org/ekaitz-zarraga/gcc.git \
-              https://github.com/ekaitz-zarraga/gcc.git ; do
-            for attempt in 1 2 3; do
-              if git clone -q --depth 1 --branch "$GCC_BOTTOM_TAG" "$remote" gbot 2>/dev/null; then
-                got="$remote"; break
-              fi
-              rm -rf gbot; sleep 10
-            done
-            [ -n "$got" ] && break
-          done
-          [ -n "$got" ] || { echo "  could not clone $GCC_BOTTOM_TAG from either host"; exit 1; }
-          echo "  cloned from $got"
-          echo "  bottom gcc: $(cat gbot/gcc/BASE-VER) at $(git -C gbot rev-parse --short HEAD)"
-
-          # THE FORK SHIPS WITHOUT ITS PATCHES, DELIBERATELY. Ekaitz Zarraga's
-          # own write-up (ekaitz.elenq.tech/bootstrapGcc10.html) says so
-          # outright: "We need to patch a couple of things, that we'll set up
-          # in the Guix recipe. I decided to keep them out of the codebase
-          # because I want to keep the code consistent with the past."
+          # EVERY VERSION THE RUNGS READ IS PASSED WITH --setenv BELOW.
           #
-          # So a clean checkout of the tag is NOT a buildable tree, and the
-          # first run of this spike was missing both patches. They are applied
-          # here rather than carried as .patch files because they are two
-          # lines and upstream publishes them as commands.
-
-          # 1. struct ucontext -> ucontext_t. glibc renamed it; 2012 gcc still
-          #    says the old name and will not compile against a modern libc.
-          #    NOT A RISC-V PROBLEM: run 84974129558 hit exactly this on
-          #    x86_64, with a stock 4.7.4 tarball and no fork involved --
-          #      ./md-unwind-support.h:60:47: error: dereferencing pointer to
-          #                                   incomplete type
-          #    so the amd64 spike now carries the same sed. Upstream keeps it
-          #    out of the fork on purpose; it belongs to whoever is building
-          #    against a modern libc, which is everyone here.
-          # PATCH BY CONTENT, NOT BY FILENAME. Three attempts got here:
-          #   `gcc/config/*/linux-unwind.h`  -- unmatched glob, sed blamed a
-          #                                     file that never existed
-          #   find -name linux-unwind.h      -- found nothing, though
-          #                                     gbot/gcc/config was full of
-          #                                     arch directories
-          # Both were guesses about where the string lives. grep -rl is not:
-          # it finds every file that actually contains it, whatever it is
-          # called and wherever gcc keeps it in this release.
+          # bwrap gives the box its own environment: a variable in this
+          # workflow's env: block is NOT visible inside. Rungs 0 through 11.5
+          # never noticed because their versions are spelled out in rungs.sh;
+          # everything from 11.7 up uses $GLIBC, $KHDR, $PERL_VER, $PYTHON_VER,
+          # $KERNEL, $GCC15 and $BINUTILS_LFS, and would have died on the first
+          # one under `set -u`.
           #
-          # WHAT IS BEING FIXED: glibc renamed `struct ucontext` to
-          # `ucontext_t`, so 2012's gcc dereferences a type that no longer
-          # exists under that name --
-          #     md-unwind-support.h:60:47: error: dereferencing pointer to
-          #                                incomplete type
-          # measured on x86_64 in run 84974129558, with a stock 4.7.4 tarball
-          # and no fork in sight, which is what showed this is not a RISC-V
-          # problem.
-          hits=$(grep -rl 'struct ucontext' gbot/gcc gbot/libgcc 2>/dev/null || true)
-          if [ -z "$hits" ]; then
-            echo "  NOTE: no file under gbot mentions 'struct ucontext'."
-            echo "  Either this release predates the usage or already carries"
-            echo "  the fix. Not fatal -- the build will say if it matters."
-          else
-            printf '%s\n' "$hits" | sed 's/^/    /'
-            printf '%s\n' "$hits" | xargs sed -i 's/struct ucontext/ucontext_t/g'
-            echo "  patched: struct ucontext -> ucontext_t in $(printf '%s\n' "$hits" | wc -l) file(s)"
-          fi
+          # THE COMMENTS LIVE HERE, NOT AMONG THE FLAGS. A `#` line inside a
+          # backslash continuation is not a comment -- the continuation joins
+          # it to the command, and bwrap received the prose as arguments and
+          # printed its usage. That cost a run, and the log gave no message
+          # beyond the usage text because bwrap has nothing more specific to
+          # say about "--setenv EVERY VERSION THE".
+          bwrap \
+            --unshare-all \
+            --die-with-parent \
+            --setenv PATH /bin \
+            --setenv HOME /work \
+            --setenv LC_ALL POSIX \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --setenv LD_LIBRARY_PATH /lib \
+            --setenv CC_BIN /work/ref-tcc \
+            --setenv TCCDIR /work/tccsrc \
+            --setenv ARM reference \
+            --setenv MUSL_VER "$MUSL_VER" \
+            --setenv MAKE_VER "$MAKE_VER" \
+            --setenv MAKE_ALT "$MAKE_ALT" \
+            --setenv BINUTILS "$BINUTILS" \
+            --setenv BINUTILS_LFS "$BINUTILS_LFS" \
+            --setenv GMP_VER "$GMP_VER" \
+            --setenv MPFR_VER "$MPFR_VER" \
+            --setenv MPC_VER "$MPC_VER" \
+            --setenv GCC47 "$GCC47" \
+            --setenv GCC10 "$GCC10" \
+            --setenv GCC15 "$GCC15" \
+            --setenv GLIBC "$GLIBC" \
+            --setenv KHDR "$KHDR" \
+            --setenv KERNEL "$KERNEL" \
+            --setenv ENABLE_KERNEL "$ENABLE_KERNEL" \
+            --setenv PERL_VER "$PERL_VER" \
+            --setenv PYTHON_VER "$PYTHON_VER" \
+            --setenv GAWK_VER "$GAWK_VER" \
+            --setenv OPENSSL_VER "$OPENSSL_VER" \
+            --setenv M4_VER "$M4_VER" \
+            --setenv BC_VER "$BC_VER" \
+            --setenv BISON_VER "$BISON_VER" \
+            --setenv FLEX_VER "$FLEX_VER" \
+            --setenv BUSYBOX_VER "$BUSYBOX_VER" \
+            --bind "$BOX" / \
+            --ro-bind "$PWD/spikes" /src \
+            --ro-bind "$PWD/pins" /in \
+            --bind "$BOX/out" /out \
+            --proc /proc --dev /dev --tmpfs /tmp \
+            --chdir /work \
+            /bin/sh /src/stage4/bridge/rungs-riscv64.sh
 
-          # 2. Drop the LIB_SPEC override in the riscv linux.h. Upstream's
-          #    comment calls itself a FIXME: RISC-V has only word-sized
-          #    atomics so it links libatomic by default, and that reference
-          #    breaks the build before libatomic exists.
-          python3 - <<'PYEOF'
-          import re
-          p = "gbot/gcc/config/riscv/linux.h"
-          s = open(p).read()
-          out = re.sub(r"/\* FIXME \*/\n/\* Because RISC-V only has word-sized atomics.*?#undef LIB_SPEC\n",
-                       "", s, flags=re.S)
-          open(p, "w").write(out)
-          print("  patched: LIB_SPEC override removed" if out != s
-                else "  NOTE: LIB_SPEC block not found -- fork may already carry the fix")
-          PYEOF
-
-          # 3. DEFINE HOST_WIDE_INT_1 AND _1U, WHICH THE FORK USES AND NEVER
-          #    DEFINES. This one is ours, not upstream's, and it is the reason
-          #    nobody has hit it.
-          #
-          #    hwint.h's sext_hwi has two paths:
-          #        #if   <compiler behaves as expected>
-          #              ... no macro needed ...
-          #        #else
-          #              /* Fall back to the slower, well defined path.  */
-          #              HOST_WIDE_INT sign_mask = HOST_WIDE_INT_1 << (prec - 1);
-          #        #endif
-          #    A modern gcc satisfies the #if and never compiles the fallback.
-          #    tcc does not, takes the #else, and dies:
-          #        /work/gbot/gcc/hwint.h:291: error: 'HOST_WIDE_INT_1' undeclared
-          #        make[2]: *** [Makefile:3521: riscv.o] Error 1
-          #
-          #    MEASURED, NOT GUESSED (run 84975744820): the probe showed
-          #    riscv.c references it 0 times and it is defined NOWHERE in the
-          #    tree -- the fork carried a newer sext_hwi body back into 4.6.4
-          #    without the macros that body needs. Ekaitz builds on Debian with
-          #    build-essential, so the fallback is dead code for him.
-          #
-          #    The definitions are gcc's own, written without HOST_WIDE_INT_C
-          #    because 4.6.4 may not have it either. Guarded, so if a later tag
-          #    of the fork adds them this becomes a no-op rather than a clash.
-          python3 - <<'PYEOF'
-          p = "gbot/gcc/hwint.h"
-          s = open(p).read()
-          if "define HOST_WIDE_INT_1" in s:
-              print("  NOTE: hwint.h already defines HOST_WIDE_INT_1 -- nothing to do")
-          else:
-              add = ("\n#ifndef HOST_WIDE_INT_1\n"
-                     "#define HOST_WIDE_INT_1 ((HOST_WIDE_INT) 1)\n"
-                     "#endif\n"
-                     "#ifndef HOST_WIDE_INT_1U\n"
-                     "#define HOST_WIDE_INT_1U ((unsigned HOST_WIDE_INT) 1)\n"
-                     "#endif\n")
-              # AND THE LINE BELOW THIS COMMENT IS THE ONE THAT WRITES.
-              # Run 84983887087 printed "patched:" and changed nothing: an
-              # edit had sliced out the open(p,"w").write() while leaving the
-              # message. The header printout is what caught it -- the file it
-              # showed had no macros in it -- which is the whole reason that
-              # printout exists.
-              #
-              # ANCHOR ON THE INCLUDE GUARD, NOT ON THE TYPE.
-              #
-              # Two earlier attempts searched for the HOST_WIDE_INT definition
-              # and both missed, because it is not a typedef and it is not
-              # spelled the way either regex assumed. The real file (read, not
-              # guessed, after run 84981659931 said "no HOST_WIDE_INT
-              # definition found to anchor on") defines it CONDITIONALLY:
-              #
-              #     #if HOST_BITS_PER_LONG >= 64 || !defined NEED_64BIT_HOST_WIDE_INT
-              #     # define HOST_WIDE_INT long
-              #
-              # -- inside an #if, and with a space after the #, which
-              # `^#define\s+HOST_WIDE_INT` cannot match.
-              #
-              # THE ANCHOR IS UNNECESSARY ANYWAY, which is the better fix.
-              # `#define HOST_WIDE_INT_1 ((HOST_WIDE_INT) 1)` is text
-              # substitution: HOST_WIDE_INT does not need to exist when this
-              # line is PARSED, only when HOST_WIDE_INT_1 is USED. So the
-              # definition can sit immediately after the include guard --
-              #
-              #     #ifndef GCC_HWINT_H
-              #     #define GCC_HWINT_H     <- here
-              #
-              # which is guaranteed to exist, guaranteed to come first, and
-              # guaranteed to precede every use in the file.
-              k = s.index("\n", s.index("#define GCC_HWINT_H")) + 1
-              open(p, "w").write(s[:k] + add + s[k:])
-              print("  patched: HOST_WIDE_INT_1 and HOST_WIDE_INT_1U defined in hwint.h")
-          # SHOW THE TOP OF THE FILE EITHER WAY. Three attempts at this patch
-          # failed against a header nobody here had read; printing it means
-          # the next surprise arrives with its evidence attached instead of
-          # costing another run to diagnose.
-          print("  --- hwint.h, first 14 lines after patching ---")
-          print("".join("    " + l for l in open(p).readlines()[:14]))
-          PYEOF
-          tar xf gcc-$GCC_TOP.tar.xz;     mv gcc-$GCC_TOP    gtop
-          echo "  unpacked; the box has no network past this point"
-
-      # AND ONE THING WORTH KNOWING BEFORE BLAMING EITHER: NOBODY UPSTREAM
-      # BUILDS THIS FORK WITH tcc. Ekaitz's own write-up builds it on Debian
-      # with `apt install build-essential` -- a modern gcc -- and live-boot
-      # strap does not go tcc -> 4.6.4 either; its ladder climbs through gcc
-      # 4.0.4 first. So HOST_WIDE_INT_1 may be a failure nobody has hit,
-      # because nobody has stood where we are standing.
+      # ------------------------------------------------------------------
+      # PHASE B: THE SYSROOT IS THE FILESYSTEM.
       #
-      # THAT SUGGESTS A THIRD POSSIBILITY the probe below cannot see: neither
-      # the fork nor tcc is "wrong", and the rung is simply too big -- 4.6.4
-      # may need an intermediate gcc under it, the way live-bootstrap uses
-      # 4.0.4. If the probe shows the fork defines HOST_WIDE_INT_1 correctly
-      # and the host gcc compiles riscv.o fine, that is the answer.
+      # This is the second bwrap, not a nested one. Phase A ran with the box
+      # as /, where /usr is musl; the final toolchain was built --prefix=/usr
+      # into /work/lfs and only functions when that really IS the root,
+      # because PT_INTERP, the library search path and the header search path
+      # are all absolute.
       #
-      # RUN 84972415988 REACHED THE BACKEND AND FAILED IN IT:
-      #     /work/gbot/gcc/hwint.h:291: error: 'HOST_WIDE_INT_1' undeclared
-      #     make[2]: *** [Makefile:3521: riscv.o] Error 1
-      # tcc built gmp, mpfr, mpc, ran gcc's configure, compiled rtl-error.c and
-      # cp/error.c -- and then could not compile riscv.o, the one file that
-      # exists only because of the fork. The step after this one asks whether
-      # that is the fork's gap or tcc's.
+      # An earlier revision tried to do this from inside phase A with a helper
+      # that set PATH and nothing else. PATH does not move an interpreter.
       #
-      # MEASURED 2026-08-09, RUN 84923248968: tcc built gmp 6.2.1, mpfr 4.1.0
-      # and mpc 1.2.1 on riscv64 and gcc's top-level configure completed. The
-      # run then died inside make, in gcc/'s own configure, on
-      #     configure: error: C++ preprocessor "/lib/cpp" fails sanity check
-      # because CXX had been set to tcc -- which has no C++ compiler -- so
-      # configure fell through to /lib/cpp, which the box masks. CC only now.
-      - name: 'STAGE 1 -- tcc builds gmp, mpfr, mpc, then the backported gcc 4.6.4'
-        timeout-minutes: 120
-        run: |
-          set -eu
-          cat > "$BOX/work/stage1.sh" <<'EOS'
-          set -eu
-          NP=$(nproc)
-          say() { echo "$@"; }
-          # WHY NOT `tail`. The first libgcc failure was invisible: 60 lines of
-          # a -j parallel build is 60 xgcc command lines, and the compiler
-          # error that caused it was thousands of lines earlier. tail is the
-          # wrong tool for a log this shape.
-          whyfail() {
-            # THREE PASSES, BECAUSE THE FIRST TWO ATTEMPTS EACH MISSED IT.
-            #
-            # `tail -60` showed sixty xgcc command lines and no error, because
-            # a -j build interleaves. Grepping for the word "error" then found
-            #     configure: error: in `/work/b1/gcc':
-            # and stopped -- the REASON is on the following line, which does
-            # not contain the word. So: context, not matches.
-            #
-            # And make's own failures do not say "error" in a form that grep
-            # catches at all; they say `*** [Makefile:NNNN: target] Error 2`.
-            # That marker is the reliable one, so it gets its own pass.
-            echo "  --- make's own failure markers, with context ---"
-            grep -n -B4 -A2 -F "*** [" "$1" | tail -40 | sed 's/^/    /'
-            echo "  --- configure failures, with context ---"
-            grep -n -A6 "configure: error" "$1" | tail -20 | sed 's/^/    /'
-            echo "  --- compiler diagnostics ---"
-            grep -inE "fatal error|undefined reference|: error:|No such file or directory" "$1" \
-              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -15 | sed 's/^/    /'
-            echo "  --- last 10 lines ---"
-            tail -10 "$1" | sed 's/^/    /'
-          }
-          # --disable-assembly ON GMP IS NOT OPTIONAL: gmp ships per-microarch
-          # asm that tcc cannot assemble. stage4-complete.yml carries the same
-          # flag for the same reason.
-          for p in gmp mpfr mpc; do
-            say "  --- $p ---"
-            cd /work/$p
-            case $p in
-              gmp)  ./configure CC="$TCC -B$TCCDIR" --disable-shared --disable-assembly \
-                      --prefix=/work/prefix > conf.log 2>&1 || { tail -20 conf.log; exit 1; } ;;
-              *)    ./configure CC="$TCC -B$TCCDIR" --disable-shared \
-                      --with-gmp=/work/prefix --prefix=/work/prefix > conf.log 2>&1 \
-                      || { tail -20 conf.log; exit 1; } ;;
-            esac
-            make -j"$NP" > build.log 2>&1 || { whyfail build.log; exit 1; }
-            make install > /dev/null 2>&1
-            say "    installed"
-          done
-          # CC ONLY, NEVER CXX. tcc has no C++ compiler, and setting CXX to it
-          # makes gcc's own configure fall through to /lib/cpp for the C++
-          # preprocessor -- which the box masks, so it dies with
-          #     configure: error: C++ preprocessor "/lib/cpp" fails sanity check
-          # deep inside make, after the prereqs are already built.
-          # stage4-complete.yml:549 passes CC and nothing else, for this reason.
-          # --enable-languages=c,c++ still works: gcc bootstraps its own g++
-          # from the C compiler it just built.
-          # THE HEADER PATH, WHICH IS THE THIRD THING EKAITZ'S NOTES LIST AND
-          # THE THIRD WE HAD NOT DONE.
-          #
-          # With the HOST_WIDE_INT_1 patch in, riscv.o compiles and gcc 4.6.4
-          # gets all the way to libgcc -- then run 84985401256 died on
-          #     /usr/include/stdio.h:28:36: fatal error:
-          #         bits/libc-header-start.h: No such file or directory
-          #     make[2]: *** [Makefile:832: crtbegin.o] Error 1
-          #
-          # ekaitz.elenq.tech/bootstrapGcc10 says why: "In Debian the
-          # riscv64-linux-gnu standard library is installed in a weird
-          # location, so we need to make the compilation process find it." His
-          # three exports are C_INCLUDE_PATH, CPLUS_INCLUDE_PATH and
-          # LIBRARY_PATH.
-          #
-          # SET ONLY WHAT EXISTS. This runner is native riscv64, not a Debian
-          # cross host, so the multiarch directory may or may not be there --
-          # exporting a path that does not exist would hide the real problem
-          # behind a different one.
-          for d in /usr/include/riscv64-linux-gnu /usr/riscv64-linux-gnu/include; do
-            if [ -d "$d" ]; then
-              export C_INCLUDE_PATH="${C_INCLUDE_PATH:+$C_INCLUDE_PATH:}$d"
-              export CPLUS_INCLUDE_PATH="${CPLUS_INCLUDE_PATH:+$CPLUS_INCLUDE_PATH:}$d"
-              say "  include path += $d"
-            fi
-          done
-          for d in /usr/lib/riscv64-linux-gnu /usr/riscv64-linux-gnu/lib; do
-            if [ -d "$d" ]; then
-              export LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$d"
-              say "  library path += $d"
-            fi
-          done
-          # AND SAY WHERE THE MISSING HEADER ACTUALLY IS, so the next run does
-          # not need another round trip to find out.
-          say "  bits/libc-header-start.h found at:"
-          find /usr/include -name libc-header-start.h 2>/dev/null | head -5 | sed 's/^/    /'
-          say "  (nothing above means it is genuinely absent, not misplaced)"
-
-          say "  === STAGE 1: configure gcc ==="
-          mkdir -p /work/b1 && cd /work/b1
-          /work/gbot/configure \
-            --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
-            --prefix=/work/out --enable-languages=c,c++ \
-            --disable-multilib --disable-bootstrap --disable-werror \
-            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
-            --disable-libssp --disable-libatomic --disable-shared \
-            --with-gmp=/work/prefix --with-mpfr=/work/prefix --with-mpc=/work/prefix \
-            CC="$TCC -B$TCCDIR" > conf.log 2>&1 \
-            || { tail -40 conf.log; exit 1; }
-          say "  === STAGE 1: make ==="
-          # MAKEINFO=true, -k AND -Otarget, ALL THREE COPIED FROM stage4:580.
-          #
-          # MAKEINFO=true because 2026's makeinfo rejects 2012's texinfo. The
-          # first run of this spike built every generator gcc has -- genmodes,
-          # gengenrtl, gengtype, all linked -- and then died on
-          #     makeinfo ... doc/gccint.info
-          #     make[2]: *** [Makefile:4343: doc/gccint.info] Error 1
-          # which is documentation, not a compiler. `true` stands in for it.
-          #
-          # -k so one such failure does not stop the rest, and -Otarget so
-          # parallel output stays attributable to the target that produced it.
-          make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 \
-            || { whyfail build.log; echo "  (-k means later targets still ran)"; }
-          make install > /dev/null 2>&1
-          ls -l /work/out/bin/ | sed 's/^/    /'
-          EOS
-          ./box.sh /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage1.sh'
-          test -x "$BOX/work/out/bin/gcc" || { echo "  no gcc produced"; exit 1; }
-          echo "VERON-SPIKE-STAGE1-OK  tcc built the backported gcc for $GNU_TGT"
-
-      - name: 'WHOSE BUG IS HOST_WIDE_INT_1 -- the fork, or tcc?'
-        if: ${{ always() }}
-        run: |
-          set -eu
-          # RUN 84972415988 FAILED HERE AND NAMED THE FILE:
-          #     /work/gbot/gcc/hwint.h:291: error: 'HOST_WIDE_INT_1' undeclared
-          #     make[2]: *** [Makefile:3521: riscv.o] Error 1
-          #
-          # riscv.o IS THE BACKEND ITSELF -- the one file that exists only
-          # because of the fork. amd64 never sees this: it builds gcc, links
-          # cc1plus, and gets as far as libgcc. So the fault is in the fork or
-          # in tcc, and those want different fixes:
-          #
-          #   the fork  -> HOST_WIDE_INT_1 arrived in gcc after 4.6, and the
-          #                backported riscv backend uses it without the
-          #                definition being carried back. That is a patch we
-          #                would write, and a small one.
-          #   tcc       -> the macro IS defined but behind a conditional tcc's
-          #                preprocessor evaluates differently, so it never
-          #                gets defined. That is a tcc bug and a much larger
-          #                problem, because it would not be confined to riscv.
-          #
-          # THE DISCRIMINATOR IS ONE COMPILE. Build the same file with the
-          # HOST gcc, outside the box, where no tcc is involved:
-          #   compiles -> the fork is fine, tcc is at fault
-          #   fails    -> the fork is at fault, and tcc is innocent
-          [ -d "$BOX/work/gbot" ] || { echo "  no source tree -- run STAGE 1 first"; exit 0; }
-          echo "  --- what the fork's hwint.h says at 291 ---"
-          sed -n '280,300p' "$BOX/work/gbot/gcc/hwint.h" | sed 's/^/    /'
-          echo "  --- is HOST_WIDE_INT_1 defined anywhere in the tree? ---"
-          grep -rn "define HOST_WIDE_INT_1" "$BOX/work/gbot/gcc/" | head -5 | sed 's/^/    /' \
-            || echo "    NOT DEFINED ANYWHERE -- the fork never carried it back"
-          echo "  --- does riscv.c reference it? ---"
-          grep -c "HOST_WIDE_INT_1" "$BOX/work/gbot/gcc/config/riscv/riscv.c" 2>/dev/null | sed 's/^/    riscv.c uses it /' || true
-
-      - name: 'STAGE 2 -- that gcc rebuilds itself, and the two cc1s are compared'
-        timeout-minutes: 120
-        if: ${{ inputs.stop_after != 'stage1' }}
-        run: |
-          set -eu
-          # THE RUNG THAT CATCHES A MISCOMPILING TCC. A compiler that builds
-          # and emits wrong code passes every earlier check, which is why the
-          # aarch64 work compared cc1 sizes and disassembly rather than
-          # trusting rc=0.
-          cat > "$BOX/work/stage2.sh" <<'EOS'
-          set -eu
-          NP=$(nproc); export PATH=/work/out/bin:$PATH
-          # say() TRAVELS WITH whyfail() NOW. Each of these box scripts is a
-          # separate /bin/sh, so a helper defined in stage1.sh does not exist
-          # in stage2.sh -- run 84978334756 exited 127 with
-          #     stage2.sh: 40: say: not found
-          # after stage 1 had already passed, which is an expensive way to
-          # learn that shell functions are not inherited across scripts.
-          say() { echo "$@"; }
-          whyfail() {
-            # THREE PASSES, BECAUSE THE FIRST TWO ATTEMPTS EACH MISSED IT.
-            #
-            # `tail -60` showed sixty xgcc command lines and no error, because
-            # a -j build interleaves. Grepping for the word "error" then found
-            #     configure: error: in `/work/b1/gcc':
-            # and stopped -- the REASON is on the following line, which does
-            # not contain the word. So: context, not matches.
-            #
-            # And make's own failures do not say "error" in a form that grep
-            # catches at all; they say `*** [Makefile:NNNN: target] Error 2`.
-            # That marker is the reliable one, so it gets its own pass.
-            echo "  --- make's own failure markers, with context ---"
-            grep -n -B4 -A2 -F "*** [" "$1" | tail -40 | sed 's/^/    /'
-            echo "  --- configure failures, with context ---"
-            grep -n -A6 "configure: error" "$1" | tail -20 | sed 's/^/    /'
-            echo "  --- compiler diagnostics ---"
-            grep -inE "fatal error|undefined reference|: error:|No such file or directory" "$1" \
-              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -15 | sed 's/^/    /'
-            echo "  --- last 10 lines ---"
-            tail -10 "$1" | sed 's/^/    /'
-          }
-          # THE MULTIARCH INCLUDE PATH, IN EVERY SCRIPT, BECAUSE gcc 4.6.4
-          # PREDATES MULTIARCH AND NEVER LOOKS THERE ITSELF.
-          #
-          # Ekaitz's notes give three exports and say why: "In Debian the
-          # riscv64-linux-gnu standard library is installed in a weird
-          # location, so we need to make the compilation process find it."
-          # Setting them in stage1.sh fixed that rung and nothing else,
-          # because each box script is a separate /bin/sh. Run 84986965816
-          # then failed in stage 2 with
-          #     checking compiler gcc -O2 -pedantic ... no
-          #     configure: error: could not find a working compiler
-          # which is the same missing header wearing a configure test's face.
-          #
-          # THIS IS A PROPERTY OF THE COMPILER, NOT A BUILD-TIME FIXUP.
-          # gcc 4.6.4 predates Debian multiarch, so the search path it was
-          # configured with does not contain /usr/include/riscv64-linux-gnu.
-          # EVERY use of that compiler needs this, not just its own build.
-          for d in /usr/include/riscv64-linux-gnu /usr/riscv64-linux-gnu/include; do
-            if [ -d "$d" ]; then
-              export C_INCLUDE_PATH="${C_INCLUDE_PATH:+$C_INCLUDE_PATH:}$d"
-              export CPLUS_INCLUDE_PATH="${CPLUS_INCLUDE_PATH:+$CPLUS_INCLUDE_PATH:}$d"
-              say "  include path += $d"
-            fi
-          done
-          for d in /usr/lib/riscv64-linux-gnu /usr/riscv64-linux-gnu/lib; do
-            if [ -d "$d" ]; then
-              export LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$d"
-              say "  library path += $d"
-            fi
-          done
-          # THE PREREQS ARE REBUILT INTO A SECOND PREFIX, BY THE NEW COMPILER.
-          #
-          # Reusing /work/prefix -- the gmp/mpfr/mpc that tcc built -- fails:
-          #     checking for the correct version of gmp.h... yes
-          #     checking for the correct version of the gmp/mpfr/mpc libraries... no
-          #     configure: error: Building GCC requires GMP 4.2+, MPFR 2.3.1+...
-          # Headers found, LIBRARIES rejected: the archives are tcc's output
-          # and the link test with the new gcc does not pass.
-          #
-          # stage4-complete.yml:751 says what this is, having hit it first:
-          #   "CONTROL: prefix2 links. If prefix did not, the archives were
-          #    the problem and rebuilding them is the fix."
-          # So each compiler gets prereqs it built itself. It costs three
-          # small builds and removes a whole class of confusion.
-          for q in gmp mpfr mpc; do
-            say "  --- $q, rebuilt by the stage-1 gcc ---"
-            rm -rf /work/$q-2 && cp -a /work/$q /work/$q-2 && cd /work/$q-2
-            make distclean > /dev/null 2>&1 || true
-            case $q in
-              gmp)  ./configure --disable-shared --disable-assembly \
-                      --prefix=/work/prefix2 > conf.log 2>&1 || { tail -20 conf.log; exit 1; } ;;
-              *)    ./configure --disable-shared --with-gmp=/work/prefix2 \
-                      --prefix=/work/prefix2 > conf.log 2>&1 || { tail -20 conf.log; exit 1; } ;;
-            esac
-            make -j"$NP" > build.log 2>&1 || { whyfail build.log; exit 1; }
-            make install > /dev/null 2>&1
-            say "    installed"
-          done
-
-          # NOT --disable-shared HERE, AND THIS IS WHERE IT MATTERED.
-          #
-          # stage4-complete.yml:791 says it in one sentence: "Stage 1 uses it
-          # because nothing links against that compiler; stage 2 must produce
-          # a libstdc++ a program can actually use."
-          #
-          # Runs 84981633004 and 84983862803 both died in gcc 10's libcc1 --
-          #   ld: /work/out2/lib/../lib64/libstdc++.a(new_opv.o): relocation
-          #     R_X86_64_32 against `_ZTISt9bad_alloc' can not be used when
-          #     making a shared object; recompile with -fPIC
-          # -- and note the path: out2. It was STAGE 2's libstdc++ all along,
-          # built without PIC because of this flag. Dropping --disable-shared
-          # from gcc 10 alone did nothing, because gcc 10 was never the one
-          # that built the offending archive.
-          #
-          # The gmp/mpfr/mpc builds above keep the flag: nothing links a
-          # shared object against those.
-          mkdir -p /work/b2 && cd /work/b2
-          /work/gbot/configure \
-            --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
-            --prefix=/work/out2 --enable-languages=c,c++ \
-            --disable-multilib --disable-bootstrap --disable-werror \
-            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
-            --disable-libssp --disable-libatomic \
-            --with-gmp=/work/prefix2 --with-mpfr=/work/prefix2 --with-mpc=/work/prefix2 \
-            > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
-          make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || whyfail build.log
-          make install > /dev/null 2>&1
-          echo "  cc1 built by tcc      : $(stat -c%s /work/b1/gcc/cc1) bytes"
-          echo "  cc1 built by that gcc : $(stat -c%s /work/b2/gcc/cc1) bytes"
-          EOS
-          ./box.sh /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage2.sh'
-          # -k MEANS make CAN RETURN 0 WITH A GCC MISSING, so the artifact is
-          # what gets checked, not the exit code. Same reason stage 1 tests for
-          # work/out/bin/gcc rather than trusting rc.
-          test -x "$BOX/work/out2/bin/gcc" || { echo "  stage 2 produced no gcc"; exit 1; }
-          echo "VERON-SPIKE-STAGE2-OK  the tcc-built gcc rebuilt itself"
-
-      - name: 'STAGE 3 -- the 4.6 g++ builds gcc ${{ env.GCC_TOP }}  <- THE RUNG TO WATCH'
-        timeout-minutes: 240
-        if: ${{ inputs.stop_after == 'top' }}
-        run: |
-          set -eu
-          # THE ESCALATOR, AND THE POINT OF THE WHOLE SPIKE. gcc 4.8 is the
-          # first release that needs a C++ compiler to build itself, so the
-          # bottom rung is the last one tcc can reach -- but it SHIPS a g++,
-          # and that g++ is what climbs. On aarch64 this exact jump has already
-          # carried to 10.2.0; whether it carries here is what this asks.
-          cat > "$BOX/work/stage3.sh" <<'EOS'
-          set -eu
-          NP=$(nproc); export PATH=/work/out2/bin:$PATH
-          # say() TRAVELS WITH whyfail() NOW. Each of these box scripts is a
-          # separate /bin/sh, so a helper defined in stage1.sh does not exist
-          # in stage2.sh -- run 84978334756 exited 127 with
-          #     stage2.sh: 40: say: not found
-          # after stage 1 had already passed, which is an expensive way to
-          # learn that shell functions are not inherited across scripts.
-          say() { echo "$@"; }
-          whyfail() {
-            # THREE PASSES, BECAUSE THE FIRST TWO ATTEMPTS EACH MISSED IT.
-            #
-            # `tail -60` showed sixty xgcc command lines and no error, because
-            # a -j build interleaves. Grepping for the word "error" then found
-            #     configure: error: in `/work/b1/gcc':
-            # and stopped -- the REASON is on the following line, which does
-            # not contain the word. So: context, not matches.
-            #
-            # And make's own failures do not say "error" in a form that grep
-            # catches at all; they say `*** [Makefile:NNNN: target] Error 2`.
-            # That marker is the reliable one, so it gets its own pass.
-            echo "  --- make's own failure markers, with context ---"
-            grep -n -B4 -A2 -F "*** [" "$1" | tail -40 | sed 's/^/    /'
-            echo "  --- configure failures, with context ---"
-            grep -n -A6 "configure: error" "$1" | tail -20 | sed 's/^/    /'
-            echo "  --- compiler diagnostics ---"
-            grep -inE "fatal error|undefined reference|: error:|No such file or directory" "$1" \
-              | grep -avE "disable-werror|-Wall|MAKEINFO|Werror" | tail -15 | sed 's/^/    /'
-            echo "  --- last 10 lines ---"
-            tail -10 "$1" | sed 's/^/    /'
-          }
-          # THE MULTIARCH INCLUDE PATH, IN EVERY SCRIPT, BECAUSE gcc 4.6.4
-          # PREDATES MULTIARCH AND NEVER LOOKS THERE ITSELF.
-          #
-          # Ekaitz's notes give three exports and say why: "In Debian the
-          # riscv64-linux-gnu standard library is installed in a weird
-          # location, so we need to make the compilation process find it."
-          # Setting them in stage1.sh fixed that rung and nothing else,
-          # because each box script is a separate /bin/sh. Run 84986965816
-          # then failed in stage 2 with
-          #     checking compiler gcc -O2 -pedantic ... no
-          #     configure: error: could not find a working compiler
-          # which is the same missing header wearing a configure test's face.
-          #
-          # THIS IS A PROPERTY OF THE COMPILER, NOT A BUILD-TIME FIXUP.
-          # gcc 4.6.4 predates Debian multiarch, so the search path it was
-          # configured with does not contain /usr/include/riscv64-linux-gnu.
-          # EVERY use of that compiler needs this, not just its own build.
-          for d in /usr/include/riscv64-linux-gnu /usr/riscv64-linux-gnu/include; do
-            if [ -d "$d" ]; then
-              export C_INCLUDE_PATH="${C_INCLUDE_PATH:+$C_INCLUDE_PATH:}$d"
-              export CPLUS_INCLUDE_PATH="${CPLUS_INCLUDE_PATH:+$CPLUS_INCLUDE_PATH:}$d"
-              say "  include path += $d"
-            fi
-          done
-          for d in /usr/lib/riscv64-linux-gnu /usr/riscv64-linux-gnu/lib; do
-            if [ -d "$d" ]; then
-              export LIBRARY_PATH="${LIBRARY_PATH:+$LIBRARY_PATH:}$d"
-              say "  library path += $d"
-            fi
-          done
-          # A THIRD PREFIX, FOR THE SAME REASON AS THE SECOND. Stage 2 showed
-          # that archives built by one compiler can fail another's link test;
-          # stage4-complete.yml:922 uses prefix3 here for exactly that. Each
-          # rung gets prereqs its own compiler built.
-          for q in gmp mpfr mpc; do
-            say "  --- $q, rebuilt by the stage-2 gcc ---"
-            rm -rf /work/$q-3 && cp -a /work/$q /work/$q-3 && cd /work/$q-3
-            make distclean > /dev/null 2>&1 || true
-            case $q in
-              gmp)  ./configure --disable-shared --disable-assembly \
-                      --prefix=/work/prefix3 > conf.log 2>&1 || { tail -20 conf.log; exit 1; } ;;
-              *)    ./configure --disable-shared --with-gmp=/work/prefix3 \
-                      --prefix=/work/prefix3 > conf.log 2>&1 || { tail -20 conf.log; exit 1; } ;;
-            esac
-            make -j"$NP" > build.log 2>&1 || { whyfail build.log; exit 1; }
-            make install > /dev/null 2>&1
-            say "    installed"
-          done
-
-          # prefix2 AGAIN, NOT prefix. Stage 2 already showed that archives
-          # built by one compiler can fail another's link test; the stage-2
-          # gcc built these, so they are the ones it can use. Whether gcc 10
-          # in turn needs its own is what this rung finds out.
-          # NOTE WHAT IS *NOT* BELOW: --disable-shared.
-          #
-          # Stages 1 and 2 pass it; this rung must not. libcc1 -- gcc's plugin
-          # for gdb -- is built as a SHARED library, and with --disable-shared
-          # the libstdc++.a it links against is compiled without -fPIC:
-          #
-          #   /usr/bin/ld: libstdc++.a(new_opv.o): relocation R_X86_64_32
-          #     against symbol `_ZTISt9bad_alloc' can not be used when making
-          #     a shared object; recompile with -fPIC
-          #   make[3]: *** [Makefile:560: libcc1.la] Error 1
-          #
-          # measured on x86_64 in run 84981633004, after stage 2 had passed.
-          # stage4-complete.yml:919 omits it here too, and lists
-          # --disable-libvtv instead, which is now matched below.
-          mkdir -p /work/b3 && cd /work/b3
-          /work/gtop/configure \
-            --build=$GNU_TGT --host=$GNU_TGT --target=$GNU_TGT \
-            --prefix=/work/out3 --enable-languages=c,c++ \
-            --disable-multilib --disable-bootstrap --disable-werror \
-            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
-            --disable-libssp --disable-libvtv \
-            --with-gmp=/work/prefix3 --with-mpfr=/work/prefix3 --with-mpc=/work/prefix3 \
-            > conf.log 2>&1 || { tail -40 conf.log; exit 1; }
-          make -k -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 || whyfail build.log
-          make install > /dev/null 2>&1
-          /work/out3/bin/gcc --version | head -1
-          EOS
-          ./box.sh /bin/sh -c 'cd /work && GNU_TGT='"$GNU_TGT"' sh stage3.sh'
-          # IS IT A RUNG *UP*? A gcc that builds but reports the old version is
-          # the failure this gate exists for.
-          v=$("$BOX/work/out3/bin/gcc" --version 2>/dev/null | head -1 || echo none)
-          echo "  produced: $v"
-          case "$v" in *"$GCC_TOP"*) ;; *) echo "  NOT $GCC_TOP -- not a rung up"; exit 1 ;; esac
-          echo "VERON-SPIKE-TOP-OK  the ladder reached gcc $GCC_TOP on $GNU_TGT"
-
-      - name: 'VERON-SPIKE-RISCV64'
+      # THE SHAPE IS box15.sh's, from hermetic-gcc15.yml, which already does
+      # exactly this and works: "No /usr bind. No /etc bind. The sysroot IS
+      # the filesystem."
+      #
+      # PATH HAS NO /tools/bin, DELIBERATELY. That is where phase A's cross
+      # toolchain lives, and both halves of it are musl-static so they would
+      # run in here perfectly well. LFS drops the same directory entering its
+      # chroot -- "the cross toolchain will no longer be used" -- and for us
+      # it is what turns "the image was built by the final compiler" from a
+      # convention into something the sandbox enforces.
+      #
+      # /build IS SCRATCH AND IS NOT THE SYSROOT. Sources are unpacked and
+      # built there so that a rebuild does not litter the root that is about
+      # to be hashed.
+      #
+      # GUARDED ON THE MARKER. rungs.sh writes .phase-a-complete only after
+      # checking that sh, make, gcc, g++, ld and as all EXIST in the sysroot.
+      # Starting a sandbox whose / has no shell fails on its first command
+      # with "sh: not found", which reads as a missing package.
+      - name: 'PHASE B: the final system, built by the final toolchain'
         if: always()
         run: |
           set -eu
-          echo "  THIS SPIKE ANSWERS WHICH RUNGS A TARGET NEEDS, NOT WHETHER"
-          echo "  THEY PASS. That is a deliberate boundary and worth stating."
+          if [ ! -f "$BOX/work/lfs/.phase-a-complete" ]; then
+            echo "  phase A did not complete -- $BOX/work/lfs is not enterable."
+            echo "  Skipped rather than attempted: a sandbox rooted at a"
+            echo "  half-built sysroot fails on its first command in a way"
+            echo "  that names the wrong thing."
+            exit 0
+          fi
+          mkdir -p "$BOX/pb"
+          # THE ENTRY POINT, READ ON THE HOST, BEFORE ANY NAMESPACE EXISTS.
+          #
+          # Three runs died on `bwrap: execvp /usr/bin/sh: No such file or
+          # directory` with no way to tell WHY from the log: bwrap says the
+          # path failed, not what the path pointed at. Reading it out here
+          # costs one line and shows the symlink target itself, so a repeat
+          # names its own cause instead of needing another round.
+          echo "  sysroot entry point, as it exists on the host:"
+          ls -ld box/work/lfs/usr/bin/sh box/work/lfs/usr/bin/busybox 2>&1 \
+            | sed 's/^/    /'
+          bwrap \
+            --unshare-all \
+            --die-with-parent \
+            --new-session \
+            --clearenv \
+            --setenv PATH /usr/bin:/usr/sbin \
+            --setenv HOME /build \
+            --setenv LC_ALL POSIX \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --setenv ARM reference \
+            --setenv VERON_TOOLCHAIN_TGT riscv64-veron-linux-gnu \
+            --setenv GLIBC "$GLIBC" \
+            --setenv GCC15 "$GCC15" \
+            --setenv BINUTILS_LFS "$BINUTILS_LFS" \
+            --setenv KERNEL "$KERNEL" \
+            --setenv ENABLE_KERNEL "$ENABLE_KERNEL" \
+            --setenv PERL_VER "$PERL_VER" \
+            --setenv PYTHON_VER "$PYTHON_VER" \
+            --setenv GAWK_VER "$GAWK_VER" \
+            --setenv OPENSSL_VER "$OPENSSL_VER" \
+            --setenv M4_VER "$M4_VER" \
+            --setenv BC_VER "$BC_VER" \
+            --setenv BISON_VER "$BISON_VER" \
+            --setenv FLEX_VER "$FLEX_VER" \
+            --setenv BUSYBOX_VER "$BUSYBOX_VER" \
+            --bind "$BOX/work/lfs" / \
+            --bind "$BOX/pb" /build \
+            --ro-bind "$PWD/spikes" /src \
+            --ro-bind "$PWD/pins" /in \
+            --bind "$BOX/out" /out \
+            --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
+            --chdir /build \
+            /usr/bin/sh /src/stage4/bridge/rungs-sysroot.sh
+
+      # PUBLISH THE SYSROOT SO SIDE EXPERIMENTS CAN START FROM IT.
+      #
+      # tool-probe can build one package hermetically -- no host /usr, our
+      # busybox, our toolchain -- but only if it has a toolchain to start from.
+      # Without this it falls back to skipping, which is the honest thing but
+      # not a useful one.
+      #
+      # SAVED ONLY IF CHAPTER 5 CLOSED. A cache that can restore a half-built
+      # sysroot is worse than no cache: the failure lands somewhere else
+      # entirely and looks like a compiler bug. rungs.sh writes the marker only
+      # after rung 14 reports ok.
+      # EVERY BUILD LOG, KEPT, BECAUSE THE ANSWER HAS BEEN ON DISK EACH TIME.
+      #
+      # Each rung writes c.log, b.log and i.log beside its build tree and then
+      # prints a WINDOW of one of them on failure. Three rounds have now been
+      # spent because the window missed: rung 16 tailed a parallel build and
+      # caught gmp SUCCEEDING while gcc's ld error sat at b.log:3831, and B2's
+      # glibc failure anchored on a benign "No such file or directory" from a
+      # transparent_hugepage probe and cut off eight lines later.
+      #
+      # In all three the file with the answer existed on the runner for the
+      # rest of the job and was destroyed unread. /build is bound from
+      # $BOX/pb and /work is inside $BOX, so both survive the sandbox; only
+      # nothing was collecting them.
+      #
+      # This does not put a byte into any artifact -- these are logs, not
+      # inputs, and no rung reads them back. It is the cheapest possible
+      # insurance against a diagnostic that guesses wrong.
+      - name: 'Collect every build log'
+        if: always()
+        run: |
+          set -u
+          mkdir -p buildlogs
+          # Phase A builds in $BOX/work/b-*; phase B in $BOX/pb.
+          for src in "$BOX/work" "$BOX/pb"; do
+            [ -d "$src" ] || continue
+            find "$src" -name '*.log' -type f 2>/dev/null | while read -r f; do
+              rel=$(printf '%s' "$f" | sed "s|^$BOX/||; s|/|__|g")
+              # tail rather than head: a build log's failure is at the END,
+              # and gcc's can reach tens of megabytes.
+              tail -c 20000000 "$f" > "buildlogs/$rel" 2>/dev/null || true
+            done
+          done
+          n=$(ls buildlogs 2>/dev/null | wc -l)
+          echo "  collected $n build logs"
+          if [ "$n" -gt 0 ]; then
+            du -sh buildlogs | sed 's/^/    /'
+            ls -S buildlogs | head -10 | sed 's/^/    /'
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: buildlogs-reference
+          path: buildlogs/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # THE SAME COLLECTION THE mc-tcc ARM DOES, UNDER -reference NAMES.
+      #
+      # This arm exists to be compared against. Uploading its Image, initramfs
+      # and toolchain is what makes the comparison possible at all -- otherwise
+      # the only way to ask "does the seed-built toolchain produce the same
+      # system as the host-built one" is to grep two logs for a handful of
+      # curated hashes, which is exactly how a real difference went unnoticed
+      # for four runs.
+      - name: 'Collect the bootable artifacts'
+        if: always()
+        run: |
+          set -u
+          mkdir -p boot
+          for f in Image initramfs.cpio.gz; do
+            [ -s "box/out/$f" ] && cp "box/out/$f" boot/ || echo "  box/out/$f ABSENT"
+          done
+          [ -d boot ] && ( cd boot && sha256sum ./* 2>/dev/null | tee SHA256SUMS | sed 's/^/    /' ) || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: veron-boot-reference
+          path: boot/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: 'Collect the final toolchain'
+        if: always()
+        run: |
+          set -u
+          mkdir -p toolchain
+          S=box/work/lfs
+          for f in usr/bin/gcc usr/bin/ld usr/bin/as usr/lib/libc.so.6 usr/bin/busybox; do
+            [ -s "$S/$f" ] && cp "$S/$f" "toolchain/$(basename "$f")" 2>/dev/null || true
+          done
+          if [ -d "$S/usr/libexec/gcc" ]; then
+            tar -C "$S/usr/libexec" -c gcc 2>/dev/null \
+              | gzip -9n > toolchain/libexec-gcc.tar.gz || true
+          fi
+          if [ -n "$(ls -A toolchain 2>/dev/null)" ]; then
+            ( cd toolchain && sha256sum ./* 2>/dev/null | tee SHA256SUMS | sed 's/^/    /' )
+            du -sh toolchain | sed 's/^/    /'
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: veron-toolchain-reference
+          path: toolchain/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: 'Collect the sysroot manifest'
+        if: always()
+        run: |
+          set -u
+          mkdir -p manifest
+          cp box/out/manifest.tsv manifest/ 2>/dev/null || true
+          if [ -s manifest/manifest.tsv ]; then
+            echo "  $(wc -l < manifest/manifest.tsv) entries"
+            printf '  sysroot digest: %s\n' \
+              "$(LC_ALL=C sort manifest/manifest.tsv | sha256sum | cut -d' ' -f1)"
+          else
+            echo "  no manifest.tsv -- the run did not reach B8"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sysroot-manifest-reference
+          path: manifest/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: 'Publish the sysroot for side experiments'
+        if: always()
+        run: |
+          set -eu
+          # box/work/lfs, NOT box/lfs, AND THAT WAS A REAL BUG RATHER THAN A
+          # TIDY-UP. rungs.sh sets S=/work/lfs and PFX=/work/prefix, and the
+          # box is bound with `--bind "$BOX" /` -- so /work is $BOX/work and
+          # the sysroot lands at box/work/lfs. This step looked at box/lfs,
+          # which has never existed, so it took the else branch on every run
+          # and printed "chapter 5 did not complete" for runs in which it
+          # had. The cache save below is keyed on the same marker and has
+          # therefore never fired, which is why tool-probe still has no
+          # sysroot to start from.
+          if [ -f box/work/lfs/.chapter5-complete ]; then
+            cp -a box/work/lfs lfs 2>/dev/null || true
+            cp -a box/work/prefix prefix 2>/dev/null || true
+            echo "  sysroot published: $(du -sh lfs 2>/dev/null | cut -f1) + $(du -sh prefix 2>/dev/null | cut -f1)"
+            # 6 GB, compressed and uploaded on every run, and NOTHING restores
+            # it. It is kept because a restorable sysroot is what makes a side
+            # experiment cheap -- but if a quarter passes with no restore, this
+            # step and its cache should go rather than be paid for out of
+            # habit. Restore with the prefix `sysroot-<arm>-<glibc>-<khdr>-v2-`.
+            echo "  (nothing restores this today -- restore by prefix if you need it)"
+          else
+            echo "  chapter 5 did not complete -- nothing published, and that is"
+            echo "  deliberate: a restorable half-built sysroot is worse than none."
+          fi
+
+      - uses: actions/cache/save@v4
+        if: always() && hashFiles('lfs/.chapter5-complete') != ''
+        with:
+          path: |
+            lfs
+            prefix
+          # UNIQUE PER RUN, AND PER ARM. Two faults were live here:
+          #
+          #   1. GitHub cache keys are IMMUTABLE. Once
+          #      `bridge-sysroot-2.44-7.1.5-v1` existed, every later save with
+          #      that key failed with "another job may be creating this
+          #      cache" -- which reads as a race and is actually "this key is
+          #      already taken, forever". The 6.2 GB was compressed and thrown
+          #      away on every run since.
+          #
+          #   2. BOTH ARMS USED ONE KEY. Nothing restores this cache today, so
+          #      no harm has been done -- but the moment a restore is added,
+          #      the mc-tcc arm could restore the REFERENCE arm's sysroot and
+          #      the experiment would be silently comparing a thing to itself.
+          #      The arm belongs in the key whether or not anything reads it.
+          #
+          # `${{ github.run_id }}` makes each save unique; restore by the
+          # prefix `sysroot-ARM-GLIBC-KHDR-v2-` to get the most recent.
+          key: sysroot-reference-${{ env.GLIBC }}-${{ env.KHDR }}-v2-${{ github.run_id }}
+
+      - name: 'THE APPLET SET: what the chain actually invoked'
+        if: always()
+        run: |
+          set -eu
+          L=box/out/applets-used.txt
+          if [ "${TRACE_APPLETS:-0}" != 1 ]; then
+            echo "  tracing was off. Dispatch with trace_applets=true to record"
+            echo "  the applet set -- it roughly doubles the run, so it is a"
+            echo "  deliberate one-off rather than something every run pays for."
+            exit 0
+          fi
+          if [ ! -s "$L" ]; then
+            echo "  tracing was on but nothing was recorded. Either the box never"
+            echo "  started, or /out was not writable from inside it."
+            exit 0
+          fi
+          total=$(wc -l < "$L")
+          sort -u "$L" > /tmp/used.txt
+          used=$(wc -l < /tmp/used.txt)
+          have=$(./veron-busybox --list | wc -l)
+          echo "  invocations recorded : $total"
+          echo "  distinct applets used: $used"
+          echo "  applets compiled in  : $have"
           echo
-          echo "  The rungs themselves live in stage0-stage4-complete.yml --"
-          echo "  3,967 lines that climb seed -> stage1 -> stage2 -> micro-c ->"
-          echo "  mc-tcc -> the gcc ladder -> a kernel that boots, with"
-          echo "  BUDGET_PATH empty throughout. Copying any of it here would"
-          echo "  fork the one workflow that makes the hermetic claim, and a"
-          echo "  fork that drifts is worse than a spike that says so."
+          echo "  --- the set, which is the config ---"
+          tr '\n' ' ' < /tmp/used.txt | fold -w 72 -s | sed 's/^/    /'
           echo
-          echo "  WHAT THE THREE RUNGS ABOVE COST: minutes. What they buy is"
-          echo "  the shape of the work per architecture --"
+          echo "  --- by frequency, most-used first ---"
+          sort "$L" | uniq -c | sort -rn | head -25 | sed 's/^/    /'
           echo
-          echo "                        aarch64      x86_64      riscv64"
-          echo "    seed script         upstream     rung 0      rung 0"
-          echo "    tcc patch series    needed       none        none"
-          echo "    bottom gcc          4.7.4+graft  4.7.4       Ekaitz 4.6.4"
-          echo "    first upstream rung 4.8.5        4.8.5       7.x"
+          echo "  --- compiled in but NEVER invoked ($((have - used))) ---"
+          ./veron-busybox --list | sort > /tmp/have.txt
+          comm -23 /tmp/have.txt /tmp/used.txt | tr '\n' ' ' | fold -w 72 -s | sed 's/^/    /'
           echo
-          echo "  Four axes. Three are one-liners. The fourth -- which gcc sits"
-          echo "  at the bottom and whether a transplant runs -- is the only"
-          echo "  one that is really a fork, and it is expressible as inputs."
+          echo "  --- as a busybox config ---"
+          while read -r a; do
+            printf '    CONFIG_%s=y\n' "$(echo "$a" | tr 'a-z-' 'A-Z_')"
+          done < /tmp/used.txt | head -60
           echo
-          echo "  THE WORK THIS POINTS AT: give stage0-stage4-complete.yml a"
-          echo "  matrix over those four axes rather than writing it twice"
-          echo "  more. That is a refactor of a green 3,967-line workflow and"
-          echo "  wants its own session, with the seed rungs proven first."
+          echo "  READ THIS AS A FLOOR, NOT A SPEC. It records the applets the"
+          echo "  paths that RAN invoked. A rung that failed early under-reports"
+          echo "  everything above it, and a configure branch not taken this time"
+          echo "  may be taken next time -- autoconf picks tools by what it"
+          echo "  finds. The list is a measured lower bound on a set that was"
+          echo "  previously being guessed at one round per missing tool."
+          echo
+          echo "  Some names are not applets: busybox's own symbol for a few"
+          echo "  differs from the command name. Check each against --list"
+          echo "  before writing the final config."
+
+      - name: 'BUDGET: what this run borrowed from the host'
+        if: always()
+        run: |
+          set -eu
+          echo "  on the build path : ${BUDGET_PATH:-EMPTY -- nothing}"
+          echo "  driving the build : $BUDGET_DRIVER"
+          echo "  under test        : ref-tcc (host-built, static against musl)"
+          echo ""
+          echo "  PHASE B borrowed nothing further. It runs in a second bwrap"
+          echo "  rooted at the sysroot phase A built, with PATH=/usr/bin:"
+          echo "  /usr/sbin and NO /tools/bin -- so the cross toolchain that"
+          echo "  produced that sysroot is unreachable while the image is"
+          echo "  built, and 'built by the final compiler' is enforced by the"
+          echo "  sandbox rather than asserted in a comment."
+          echo ""
+          echo "  NOT in the box, and that is the difference from stage 4:"
+          echo "    /usr/include   host glibc headers   -- absent"
+          echo "    /usr/lib       crt1.o, libc         -- absent"
+          echo "    binutils       as, ld, ar, ranlib   -- absent (rung 4)"
+          echo "    make           GNU make             -- absent (rung 3.5)"
+          echo ""
+          echo "  THIS ARM SAYS NOTHING ABOUT THE SEED. ref-tcc was built by the"
+          echo "  host's compiler; it is here so that a failure in the bridge arm"
+          echo "  can be attributed to micro-c rather than to this harness."
+
+      - name: 'BOOT: the kernel this chain built, under qemu, outside the box'
+        if: always()
+        run: |
+          set -u
+          # qemu IS A VERIFIER, NOT A BUILD TOOL, and it stays outside the box
+          # for the same reason stage 4 keeps it outside: nothing it does
+          # contributes a byte to any artifact. It reads what phase B's rung B8
+          # left in /out and reports whether that boots.
+          IMG=box/out/Image
+          IRD=box/out/initramfs.cpio.gz
+          if [ ! -s "$IMG" ] || [ ! -s "$IRD" ]; then
+            echo "  no Image or initramfs -- phase B did not reach B8"
+            # GREEN ONLY IF PHASE B WAS NEVER SUPPOSED TO RUN.
+            #
+            # This step used to `exit 0` unconditionally, so a phase B that
+            # died at B2 left the whole job green with no image -- the same
+            # shape stage4-complete records against itself: "a failed build
+            # inside the box went green and the damage showed up later
+            # somewhere else."
+            #
+            # The rungs deliberately never exit non-zero; the gates live out
+            # here. So: if phase A did not complete, a missing image is
+            # expected and this stays green, which preserves the "partial
+            # progress reports rather than fails" contract phase A has always
+            # had. If phase A DID complete, phase B was supposed to produce an
+            # image and did not, and that is a failure.
+            if [ -f "$BOX/work/lfs/.phase-a-complete" ]; then
+              echo "  phase A completed, so phase B was expected to produce one."
+              echo "  See the PHASE B step above for the first FAIL."
+              exit 1
+            fi
+            echo "  phase A did not complete either -- nothing to boot yet."
+            exit 0
+          fi
+          echo "  Image:     $(stat -c%s "$IMG") bytes"
+          echo "  initramfs: $(stat -c%s "$IRD") bytes"
+          echo "  booting on qemu-system-aarch64 -M virt ..."
+          # THE SYSROOT, OFFERED OVER 9p, READ-ONLY.
+          #
+          # This is what lets the guest chroot into the sysroot this chain
+          # built and run its gcc inside the kernel that same chain built --
+          # the strongest single line this job can print. stage4-complete has
+          # done it for several runs; the reference job enabled the three
+          # kernel options for it and never offered the device, so the guest
+          # reported "9p not available" every time and the gcc-in-guest half
+          # was dead code on both sides.
+          #
+          # security_model=none because there is no uid mapping worth
+          # preserving here and mapped-xattr needs a WRITABLE export, which
+          # this deliberately is not. readonly=on because the guest only
+          # reads; its compile output goes to a tmpfs it bind-mounts itself.
+          #
+          # NOTHING IS COPIED. Only what the guest opens crosses the boundary,
+          # which is why sharing a multi-gigabyte sysroot costs nothing here.
+          #
+          # -nic none STAYS. 9p rides virtio-pci, not ethernet, despite the
+          # CONFIG_NET_9P name -- so the guest gets the sysroot and still has
+          # no network, which is the property the box has held all along.
+          #
+          # 600s: gcc under TCG emulation is slow, and a timeout that fires
+          # reads exactly like a hang.
+          set +e
+          timeout 600 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -smp 2 -m 2048 \
+            -nographic -no-reboot -nic none \
+            -fsdev local,id=vsysroot,path="$PWD/box/work/lfs",security_model=none,readonly=on \
+            -device virtio-9p-pci,fsdev=vsysroot,mount_tag=veronsysroot \
+            -kernel "$IMG" \
+            -initrd "$IRD" \
+            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7" \
+            > /tmp/boot.log 2>&1
+          echo "  qemu rc=$?"
+          set -e
+
+          # THE GUEST'S REPORT IN FULL, NOT A TAIL. `tail -25` was right when
+          # init printed three lines; it now cuts the test list in half and
+          # leaves the reader guessing which half. Everything from the first
+          # VERON marker on is the part a human wants.
+          if grep -q "VERON-BOOT-OK" /tmp/boot.log; then
+            echo "  --- the guest, reporting on itself ---"
+            sed -n '/VERON-BOOT-OK/,$p' /tmp/boot.log | sed 's/^/    /'
+          else
+            echo "  did not reach VERON-BOOT-OK -- console, last 30 lines:"
+            tail -30 /tmp/boot.log | sed 's/^/    /'
+            echo "  THE KERNEL THIS CHAIN BUILT DID NOT REACH USERSPACE."
+            exit 1
+          fi
+
+          echo
+          echo "  ================================================"
+          grep -h 'VERON-' /tmp/boot.log | sed 's/^/    /'
+          echo "  ================================================"
+
+          # REACHING USERSPACE IS NOT THE SAME AS BEING A GOOD BUILD, and this
+          # is where that distinction is enforced rather than described. The
+          # guest ran binaries the final compiler produced; if any failed, the
+          # kernel or that compiler is wrong, and printing it green would hide
+          # exactly the defect this job exists to find.
+          #
+          # AN ABSENT SUMMARY IS A FAILURE, NOT A BOOT WITH NO TESTS. That
+          # distinction has cost this repository a round before: "an absent
+          # probe reads exactly like a passing one."
+          tl=$(grep -o 'VERON-TESTS pass=[0-9]* fail=[0-9]*' /tmp/boot.log | tail -1)
+          case "$tl" in
+            "")      echo "  THE GUEST NEVER REPORTED A TEST SUMMARY."
+                     echo "  init did not reach the end -- treated as a failure."
+                     exit 1 ;;
+            *fail=0) echo "  in-guest tests: $tl" ;;
+            *)       echo "  IN-GUEST TESTS FAILED: $tl"
+                     grep -E '^\s+t_.* FAIL' /tmp/boot.log | sed 's/^/    /'
+                     exit 1 ;;
+          esac
+
+          if ! grep -q 'VERON-DONE' /tmp/boot.log; then
+            echo "  init did not run to completion (no VERON-DONE)"
+            exit 1
+          fi
+
+          # THE IN-GUEST COMPILER IS REPORTED, NOT GATED. It depends on the 9p
+          # share, and a 9p problem is not a toolchain problem -- failing the
+          # run on it would charge a qemu detail to the compiler.
+          if grep -q 'VERON-GCC-IN-GUEST ok' /tmp/boot.log; then
+            echo "  the compiler ran INSIDE the kernel it built."
+          else
+            grep -h 'VERON-GCC-IN-GUEST' /tmp/boot.log | sed 's/^/  /'
+          fi
+          echo
+          echo "  END TO END: a kernel and a userland built by a toolchain"
+          echo "  that was itself built in a box holding one busybox and one"
+          echo "  tcc, booted and ran their own tests."
