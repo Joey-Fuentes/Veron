@@ -7,13 +7,12 @@ architecture must not make the working arm answerable for it. `stage5-spike`
 is what currently produces the published image, and a red X on it would read
 as a stage-5 regression when it is an architecture nobody has ported yet.
 
-**Nothing here has been built.** The workflow, the overlay recipes and the
-plan were checked by running the project's own gates locally — see *What was
-measured* below — but no package has been compiled for x86_64 and the first
-dispatch is a measurement rather than a confirmation. Where this file predicts
-something, the run's job is to correct it: a prediction that turns out wrong
-is the useful outcome, and a prediction that was never written down is how
-five rounds get spent on a member offset three functions away.
+**It has run once.** Run `85280166724` built **45 of 122 packages** on x86_64
+and stopped at 46, `freetype-bootstrap`. Every one of the seven predicted
+architecture faults was correct and none of them fired — gmp configured with
+the right triple, libvpx built without an assembler. What stopped it was not
+on the list, and is the more interesting finding: see *What the first run
+found* below.
 
 ---
 
@@ -90,10 +89,10 @@ diffs anyway — contents differing is expected, but a package installing a
 
 ---
 
-## The seven recipes that name aarch64, and where they now live
+## The nine recipes that differ, and where they live
 
-Seven recipes carry a literal that is wrong on x86_64. They are **not edited
-in place** — `packages/` is the aarch64 arm's tree and stays exactly as it is.
+Nine recipes need to say something different on x86_64 — seven predicted from
+reading, two found by the first run. They are **not edited in place** — `packages/` is the aarch64 arm's tree and stays exactly as it is.
 Each has a replacement in **`packages-amd64/`**, which only
 `stage5-spike-amd64` loads, via `veron --overlay packages-amd64`.
 
@@ -106,6 +105,8 @@ Each has a replacement in **`packages-amd64/`**, which only
 | 81 | `orc` | `-Dorc-target=neon` | `-Dorc-target=sse` | none |
 | 90 | `ffmpeg` | (probes for nasm) | `--disable-x86asm` | large |
 | 98 | `llvm` | `LLVM_TARGETS_TO_BUILD=AArch64;AMDGPU` | `X86;AMDGPU` | none |
+| 46 | `freetype-bootstrap` | (bzip2 autodetected) | `--without-bzip2` | none — see *What the first run found* |
+| 105 | `freetype` | (bzip2 autodetected) | `--without-bzip2` | none |
 
 **Four of the seven are one fact and one missing tool.** libvpx, dav1d and
 ffmpeg all need `nasm` on x86 where aarch64 needs nothing — its `.S` files go
@@ -124,6 +125,115 @@ from a slow video.
 libdir by running `ldd` and taking the second path component — `lib` on
 aarch64, `lib64` on a typical x86-64 host — and pins `lib=lib` explicitly,
 naming the x86 case in its own notes.
+
+---
+
+## What the first run found
+
+**The entry contract answered first**, which is what that step exists for:
+
+```
+arch     x86_64      triplet  x86_64-veron-linux-gnu
+sysroot  7bf01bc5…   kernel verified against PROVENANCE  37fa5549…
+loader   lib/ld-linux-x86-64.so.2
+gcc      gcc, g++, x86_64-veron-linux-gnu-gcc, x86_64-veron-linux-gnu-g++
+libdir   usr/lib/gcc/x86_64-veron-linux-gnu/
+VERON-ENTRY-OK
+```
+
+The triple matches what the gmp overlay names, so the port's central
+assumption was confirmed before a single package was compiled. Taking the
+kernel from the same release as the sysroot worked, and it was verified
+against `PROVENANCE` rather than merely downloaded.
+
+**45 packages built, through `curl`.** All seven overlay recipes that got
+their turn were correct: `gmp` configured `--build/--host=x86_64-veron-linux-gnu`,
+`libvpx` built in 186s with `--target=generic-gnu`. No predicted fault fired.
+
+### The stop: a declaration that was never true, on either architecture
+
+```
+[46/122] freetype-bootstrap 2.14.1
+  ld: /usr/lib/libbz2.a(bzlib.o): relocation R_X86_64_PC32 against symbol
+      `stderr@@GLIBC_2.2.5' can not be used when making a shared object;
+      recompile with -fPIC
+  ld: final link failed: bad value
+VERON-BUILD-FAIL  freetype-bootstrap: step 'build' rc=2
+```
+
+Read as a linker error this is an x86_64 quirk. It is not.
+
+`freetype-bootstrap`'s `[deps].optional_off` has listed **`bzip2`** since the
+recipe was written — the package declares bzip2 declined. **That was never
+told to the build system.** The configure line passes `--without-harfbuzz` and
+`--without-brotli` and says nothing about bzip2, and freetype's
+`--with-bzip2` defaults to **auto**. bzip2 is package 1 and is staged into the
+build root forty-five rungs earlier, so configure found `bzlib.h` and
+`libbz2.a` and linked `-lbz2`. **The recipe said off and the build was on.**
+
+**On aarch64 that link succeeds**, and has been succeeding all along. So the
+published aarch64 image ships a `libfreetype.so` with bzip2's code compiled
+into it, under a recipe that says bzip2 is declined.
+
+### Why three detectors could not see it, and an architecture could
+
+bzip2 is the **only package in the set that ships a static archive and no
+shared library** — swept across all 122 committed `installs.txt` listings:
+
+| package | static | shared |
+|---|---|---|
+| **bzip2** | `libbz2.a` | **none** |
+| elfutils, libcap, libudev-zero, llvm, ncurses, zlib, zstd | some `.a` | also `.so` |
+| tzdb | `libtz.a` | none, and nothing links it |
+
+A static archive leaves **no `DT_NEEDED` entry**. `veron linked` reads exactly
+that field — it is the detector that exists to catch "a library picked up from
+the sysroot by a configure script nobody told to look" — and it is structurally
+blind to a dependency that got absorbed rather than linked. The static scan
+reads intent and the recipe's intent was correct. The distro comparison reads
+someone else's intent. All three were right and the build was wrong.
+
+x86_64's linker refuses non-PIC objects in a shared object where aarch64
+accepts them, so **the architecture is what surfaced it** — which is the case
+for a second arm stated more sharply than it could have been stated in advance.
+
+### The fix, and the one that was rejected
+
+`packages-amd64/freetype-bootstrap` and `packages-amd64/freetype` add
+**`--without-bzip2`**. That is not a workaround for the linker; it makes the
+recipe true.
+
+The alternative was to install `libbz2.so` — which bzip2's recipe **already
+builds**, at its `build-shared` step, and then never stages. That would also
+make the link succeed and would give freetype a real runtime dependency on
+bzip2. It was rejected: it contradicts `optional_off`. When a recipe has
+already decided, the fix is to make the build obey it, not to satisfy the
+linker.
+
+**The base recipes are deliberately not changed.** Same gap, same one-flag fix
+— but applying it on aarch64 moves `libfreetype.so`'s bytes and every install
+digest downstream of it, so it needs its own dispatch and a re-seeding run.
+Three things for whoever takes it:
+
+1. `--without-bzip2` on `packages/freetype-bootstrap` and `packages/freetype`.
+2. `bzip2` builds a shared library and throws it away. Either stage it or stop
+   building it; a package that silently offers only a static archive hands the
+   next consumer a static link nobody decided on.
+3. There is a licence edge here too — `bzip2-1.0.6` code sitting inside
+   `libfreetype.so` under a node whose ledger record does not mention it.
+
+**77 recipes name something in `optional_off` without passing any
+corresponding flag**, so this shape is not rare and a gate over it would fire
+on 77 correct recipes. Most are genuinely default-off. The narrow, checkable
+version — *a name in `optional_off` that the build system defaults to auto* —
+needs per-package knowledge no sweep has.
+
+### What is still unknown
+
+The run stopped at 46 of 122. **Nothing beyond `curl` has been compiled for
+x86_64**, so the second half of the set — glib, mesa, llvm, wlroots, the
+compositor, wpewebkit — is entirely unmeasured, as are the image, the boot,
+the DHCP test and the screenshot. Expect more findings of exactly this kind.
 
 ---
 
@@ -179,19 +289,19 @@ it does not build.
 
 `PLAN-amd64.txt` is committed beside `PLAN.txt` and checked by
 `veron --overlay packages-amd64 --plan PLAN-amd64.txt plan --check`. The two
-files differ in **28 lines: seven `argv` lines and seven `recipe-sha` lines,
+files differ in **36 lines: nine `argv` lines and nine `recipe-sha` lines,
 and nothing else** — which is both the proof that the overlay changes only
 what it claims to and the cheapest available review of what this architecture
 does differently.
 
 ```
 diff PLAN.txt PLAN-amd64.txt | grep -c '^[<>]'
-28
+36
 ```
 
 ---
 
-## What was measured before shipping this
+## What was measured before each dispatch
 
 Run locally against the tree at this commit, with the symlinks under
 `packages/veron-system/files/` restored (a zip round-trip flattens them, which
@@ -201,8 +311,8 @@ makes `plan --check` stale for a reason that is not a fault):
 |---|---|
 | `veron selftest` — no overlay | `VERON-SELFTEST-OK`, output identical to the unmodified driver except three counts that moved because a new workflow file exists |
 | `veron plan --check` — no overlay | `VERON-PLAN-OK`, `plan-sha256 7799c291…` |
-| `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `7 overlay recipe(s) pin the same source as their base` |
-| `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 7a059bf4…` |
+| `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `9 overlay recipe(s) pin the same source as their base` |
+| `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 d652603b…` |
 | the three new gates | broken on purpose, each confirmed red |
 | the workflow | parses as YAML; every `run:` block passes `sh -n` |
 
@@ -213,12 +323,11 @@ position. It now checks 47 invocations rather than 29, so the aarch64 arm's
 own selftest validates this workflow's command lines on every run, without
 running its overlay check.
 
-**What none of this establishes: that anything builds.** No package has been
-compiled for x86_64. The entry contract there is unproven — `stage5-entry.yml`
-proves the aarch64 sysroot compiles C, C++, `-flto` and `-static` and boots,
-and there is no equivalent. The first dispatch is a measurement, and the
-step that reports what the toolchain calls itself exists so that the first
-thing in the log is the fact the port turns on.
+**What this establishes and what it does not.** The gates check that the tools
+agree with the recipes; run 85280166724 checked that 45 packages compile. The
+remaining 77 are unmeasured, and so is everything after the build: the merge,
+the image, the boot, the DHCP test and the screenshot have never run on this
+architecture.
 
 ---
 
@@ -239,3 +348,10 @@ thing in the log is the fact the port turns on.
   verifier and contributes no artifact byte, so it cannot change what is
   built — but it can change what a hang looks like, and a first run should not
   vary two things at once.
+- **The base freetype recipes still declare bzip2 off while building it on.**
+  One flag, and a re-seeding run on aarch64 to go with it. See *The fix, and
+  the one that was rejected*.
+- **bzip2 builds a shared library and stages only the static one.** Either
+  ship it or stop building it.
+- **Packages 47–122 are unbuilt on x86_64**, and so is every step after the
+  build.

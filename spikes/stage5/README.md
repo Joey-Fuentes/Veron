@@ -1313,10 +1313,10 @@ not a matrix over it, for the reason stage 4's arch spikes give about their
 own copies — a failure on one architecture must not make the working arm
 answerable for it, and this workflow is the one that publishes the image.
 
-**Seven recipes name aarch64 literally** — a triplet, a NEON flag, an LLVM
-backend, and four packages whose x86 assembly needs a `nasm` that is not
-pinned. They are not edited. `packages-amd64/` holds replacements that only
-that workflow loads:
+**Nine recipes need to say something different on x86_64** — a triplet, a NEON
+flag, an LLVM backend, four packages whose x86 assembly needs a `nasm` that is
+not pinned, and two found by the first run. They are not edited.
+`packages-amd64/` holds replacements that only that workflow loads:
 
 ```sh
 python3 tools/veron --overlay packages-amd64 --plan PLAN-amd64.txt plan --check
@@ -1333,11 +1333,19 @@ what an overlay exists to change; what is built is not. Without it the two
 trees would eventually compile different upstream source under one package
 name while both looked green.
 
-`PLAN.txt` and `PLAN-amd64.txt` differ in **28 lines** — seven `argv` and
-seven `recipe-sha` — which is the whole architectural delta and the cheapest
-review of it. **Nothing has been built for x86_64 yet.** See
-[`AMD64.md`](./AMD64.md) for what each of the seven costs, what is still open,
-and what was measured before the first dispatch.
+`PLAN.txt` and `PLAN-amd64.txt` differ in **36 lines** — nine `argv` and nine
+`recipe-sha` — which is the whole architectural delta and the cheapest review
+of it.
+
+**The first run built 45 of 122 and found something the three detectors could
+not.** `freetype` has declared bzip2 declined since it was written and never
+passed `--without-bzip2`; configure autodetected it and linked `libbz2.a`,
+which aarch64 accepts into a shared library and x86_64 refuses. bzip2 is the
+only package in the set shipping a static archive and no shared library, so
+there was no `DT_NEEDED` entry for `veron linked` to read. **The aarch64 image
+therefore ships a `libfreetype.so` with bzip2 compiled into it, under a recipe
+that says otherwise.** The base recipes are unchanged — the fix moves every
+digest downstream and needs its own dispatch. See [`AMD64.md`](./AMD64.md).
 
 ---
 

@@ -1648,7 +1648,7 @@ package freetype-bootstrap 2.14.1
   group        text-rendering
   build-only   yes -- staged for later packages, not installed into the image
   license      FTL-or-GPL-2.0
-  recipe-sha   013e7421c6a1204fa713274b9fa8ccef64e37436597d203bf7b90f1abee80a97
+  recipe-sha   9055a9d45e0f13d778da06e618d0aaa5e0431c8844a9ee381defdcb453956581
 
   source
     url        https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz
@@ -1668,7 +1668,7 @@ package freetype-bootstrap 2.14.1
          argv ["tar", "-xf", "dl/freetype-2.14.1.tar.xz", "-C", "build/freetype-bootstrap-2.14.1"]
     [02] configure
          cwd  build/freetype-bootstrap-2.14.1/freetype-2.14.1
-         argv ["./configure", "--prefix=/usr", "--disable-static", "--without-harfbuzz", "--without-brotli", "--enable-freetype-config"]
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--without-harfbuzz", "--without-brotli", "--without-bzip2", "--enable-freetype-config"]
     [03] build
          cwd  build/freetype-bootstrap-2.14.1/freetype-2.14.1
          argv ["make", "-j1"]
@@ -3767,7 +3767,7 @@ package mesa 26.1.6
 package freetype 2.14.1
   group        text-rendering
   license      FTL-or-GPL-2.0
-  recipe-sha   a33b2bfbec4bc32bcb073c76627fcb4228edb52a95d90f5b4305a2b1a8569351
+  recipe-sha   858943b5565ea77183276dfa2e10dac29260e8574fa17b82d0f0b62d63692fc6
 
   source
     url        https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz
@@ -3787,7 +3787,7 @@ package freetype 2.14.1
          argv ["tar", "-xf", "dl/freetype-2.14.1.tar.xz", "-C", "build/freetype-2.14.1"]
     [02] configure
          cwd  build/freetype-2.14.1/freetype-2.14.1
-         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-harfbuzz", "--without-brotli", "--enable-freetype-config"]
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-harfbuzz", "--without-brotli", "--without-bzip2", "--enable-freetype-config"]
     [03] build
          cwd  build/freetype-2.14.1/freetype-2.14.1
          argv ["make", "-j1"]

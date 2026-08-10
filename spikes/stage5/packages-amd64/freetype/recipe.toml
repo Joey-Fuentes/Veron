@@ -1,0 +1,170 @@
+# ============================================================ AMD64 OVERLAY
+# A REPLACEMENT FOR packages/freetype/recipe.toml, USED ONLY BY
+# stage5-spike-amd64 (`veron --overlay packages-amd64`). The aarch64 arm never
+# loads this file.
+#
+# WHAT DIFFERS FROM THE BASE RECIPE:
+#   --without-bzip2 ADDED.
+#
+# FOUND BY RUN 85280166724, WHICH STOPPED AT PACKAGE 46 OF 122:
+#
+#     ld: /usr/lib/libbz2.a(bzlib.o): relocation R_X86_64_PC32 against
+#         symbol `stderr@@GLIBC_2.2.5' can not be used when making a shared
+#         object; recompile with -fPIC
+#     ld: final link failed: bad value
+#
+# THE FLAG IS NOT A WORKAROUND FOR THAT ERROR -- IT MAKES THE RECIPE TRUE.
+# [deps].optional_off already lists bzip2, so this package has always DECLARED
+# bzip2 declined. It was never told to the build system: freetype's configure
+# defaults --with-bzip2 to AUTO, bzip2 is package 1 and is staged into the
+# build root long before this rung, so configure found bzlib.h and libbz2.a
+# and linked -lbz2. The recipe said off; the build was on.
+#
+# WHY aarch64 NEVER NOTICED. bzip2 is the ONLY package in the set shipping a
+# static archive and no shared library -- swept across all 122 installs.txt
+# listings. aarch64 links non-PIC objects into a shared library without
+# complaint; x86_64 refuses. So on aarch64 this produced a libfreetype.so with
+# bzip2's code compiled INTO it, silently: a static archive leaves no
+# DT_NEEDED entry, and DT_NEEDED is exactly what the third detector reads, so
+# `veron linked` could not see it either. This is that detector's blind spot,
+# and an architecture found it where three detectors could not.
+#
+# THE OTHER FIX WAS AVAILABLE AND IS WRONG. bzip2's recipe already BUILDS
+# libbz2.so at its `build-shared` step and then never stages it; installing it
+# would also make this link succeed, and would give freetype a real runtime
+# dependency on bzip2. That contradicts optional_off. When a recipe has
+# already decided, the fix is to make the build obey it -- not to satisfy the
+# linker.
+#
+# THE BASE RECIPE IS NOT CHANGED HERE. It has the same gap and the same fix,
+# and applying it on aarch64 moves libfreetype.so's bytes and every install
+# digest downstream. That is a real change with a re-seeding run attached and
+# it belongs to whoever dispatches that arm. AMD64.md records it.
+#
+# THE PIN IS NOT ALLOWED TO DIFFER. `veron --overlay ... selftest` compares
+# version and every [source] key against packages/freetype/recipe.toml and fails
+# if they disagree, so this file can change flags and can never change what is
+# built. Bump the version in both files or in neither.
+# ===========================================================================
+
+name    = "freetype"
+version = "2.14.1"
+group   = "text-rendering"
+license = "FTL-or-GPL-2.0"
+srcdir  = "freetype-2.14.1"
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz"
+sha256    = "32427e8c471ac095853212a37aef816c60b42052d4d9e48230bab3bdf2936ccc"
+signature = "https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz.sig"
+crosschecked_against = []
+
+[deps]
+# pkgconf, ADDED BECAUSE stage5-isolate MEASURED IT rather than because it
+# seemed likely. Eight meson/cmake recipes got pkgconf on the argument that
+# meson's dependency() always resolves through pkg-config; the fourteen
+# autotools ones were deliberately left alone, because some use
+# PKG_CHECK_MODULES and some use AC_CHECK_LIB, and adding it to all of them
+# would be over-declaring -- the same error in the other direction.
+#
+# freetype uses PKG_CHECK_MODULES, and in a root composed only of its
+# declarations it fails:
+#
+#   checking for HARFBUZZ... no
+#   configure: error: harfbuzz support requested but library not found
+#
+# harfbuzz WAS in the layer stack. Nothing could find it. Note the shape of
+# the surrounding checks -- ZLIB no, BZIP2 no, LIBPNG no, then a working
+# `-lz` fallback -- every pkg-config lookup failing while the direct link
+# tests pass, which is what a missing pkg-config looks like from configure.
+build        = ["zlib", "libpng", "harfbuzz", "pkgconf"]
+link         = ["zlib", "libpng", "harfbuzz"]
+runtime      = ["zlib", "libpng", "harfbuzz"]
+# CORROBORATIVE DECLINES, TWO DIFFERENT KINDS.
+#   meson  -- Arch builds freetype2 with meson; upstream ships both and
+#             this recipe uses ./configure.
+#   cairo  -- Arch's freetype2 builds the ftview/ftbench DEMO programs,
+#             which link cairo. We build neither, and cairo is at rung 45
+#             against freetype's 40: a freetype that needed cairo would be
+#             a cycle, which is why upstream keeps the demos separate.
+optional_off = ["brotli", "bzip2", "meson", "cairo"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--with-harfbuzz",
+                   "--without-brotli", "--without-bzip2",
+                   "--enable-freetype-config"]
+# THEY DO NOT USE OUR NAME. Without this the reconciler looks up
+# "freetype", finds no PKGBUILD, and reports the package as
+# uncorroborated -- which is a false absence, not a real one.
+packaged_as     = ["freetype2"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+FREETYPE AND HARFBUZZ DEPEND ON EACH OTHER. freetype can use harfbuzz to \
+improve auto-hinting of complex scripts; harfbuzz needs freetype to read the \
+font files it shapes. Neither can be built first with both features on.
+
+THE BREAK IS TWO SEPARATE RECIPES, NOT A FLAG ON ONE. `freetype-bootstrap` \
+builds without harfbuzz, harfbuzz builds against it, then `freetype` rebuilds \
+with harfbuzz enabled and replaces it. They are genuinely two different \
+artifacts with different bytes and different capabilities, so they get two \
+names, two ledger records, and the topological sort handles them with no \
+special case. A `pass = 1/2` field would have needed driver support and made \
+one name mean two things.
+
+THIS IS THE ONE THAT SHIPS. It overwrites freetype-bootstrap's install when \
+staged. --without-brotli drops WOFF2 font decompression: brotli is in the \
+planned set for the browser, and this should be revisited then, because a \
+browser without WOFF2 cannot load a large fraction of web fonts."""
+
+[undeclarable]
+# Lookups that no .pc name can answer, disclosed per ROADMAP.md rule 4.
+# Locations come from `probe.py reconcile`; every reason is read from the
+# tarball. Entries whose reason could be DERIVED -- a build file this recipe
+# never invokes, an option the argv disables, an applet busybox provides --
+# were drafted by `--propose`; the rest were answered by hand.
+# meson.build:38 python3 (REQUIRED)
+"program:python3" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+
+[installs]
+prefixes = ["usr/bin", "usr/include/freetype2", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/man"]
+# files/digest DELIBERATELY ABSENT. They are a per-file
+# sha256 measured on aarch64; the same source compiled
+# for x86_64 cannot match them. prefixes is kept because
+# it is architecture-independent and still enforced.
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/freetype-2.14.1.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--with-harfbuzz",
+         "--without-brotli", "--without-bzip2",
+         "--enable-freetype-config"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+# 26.4.20, NOT 27.6.1 -- AND THE OLD VALUE WAS NEVER MEASURED. freetype2.pc
+# carries the LIBTOOL version, not the release: freetype 2.14.1 reports
+# 26.4.20. The 27.6.1 in this field was a plausible-looking number that
+# nothing had ever checked, and it was then quoted elsewhere as though it were
+# evidence -- including in this project's own reading of harfbuzz's and
+# cairo's version constraints.
+#
+# THE CONCLUSIONS STILL HOLD, which is luck rather than method: harfbuzz needs
+# `freetype2 >= 12.0.6`, cairo needs `>= 23.0.17` and `>= 25.0.19` for COLRv1,
+# and 26.4.20 clears all three. A wrong number that happens to satisfy every
+# constraint is the kind of error that survives for a long time.
+test   = [["/usr/bin/pkgconf", "--modversion", "freetype2"]]
+expect = ["26.4.20"]
