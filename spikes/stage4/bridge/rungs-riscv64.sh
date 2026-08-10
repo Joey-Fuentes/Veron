@@ -3536,6 +3536,16 @@ if [ "$R6" = ok ]; then
     # Each line prints BEFORE the thing it tests, so a crash names the
     # construct rather than leaving a bare "Segmentation fault" against a
     # whole program.
+    #
+    # C89 DECLARATIONS, BECAUSE THIS COMPILER IS gcc 4.6.4 AND DEFAULTS TO
+    # gnu89. The first version wrote `for (int i = 0; ...)` and run
+    # 85043627188 refused it:
+    #     p1b.c:21: error: 'for' loop initial declarations are only allowed
+    #                      in C99 mode
+    # A preflight that will not compile tests nothing, and it hid the very
+    # question it was added to answer. Declaring the counter up front costs
+    # nothing and keeps the program buildable by the oldest compiler in the
+    # chain -- which is the compiler under test here.
     ( cd /tmp && rm -f p1b.c p1b.bin
       cat > p1b.c <<'P1BEOF'
 #include <stdio.h>
@@ -3543,22 +3553,33 @@ if [ "$R6" = ok ]; then
 #include <string.h>
 int main(void)
 {
+    /* ALL DECLARATIONS FIRST, because gcc 4.6.4 defaults to gnu89 and
+       rejected `for (int i = ...)` outright. Verified against gnu89 rather
+       than assumed: this compiles clean and runs. It is not strict C90 --
+       `long long` is a gnu89 extension -- and it does not need to be; gnu89
+       is the mode the compiler under test actually uses. */
     char buf[64];
+    void *p;
+    double d;
+    long double L;
+    long long n;
+    int i;
+
     printf("      stdio ok\n");
     memset(buf, 0, sizeof buf);
     snprintf(buf, sizeof buf, "%d", 12345);
     printf("      snprintf ok (%s)\n", buf);
-    void *p = malloc(4096);
+    p = malloc(4096);
     if (!p) { printf("      malloc FAILED\n"); return 1; }
     memset(p, 0xa5, 4096);
     free(p);
     printf("      malloc/memset/free ok\n");
-    double d = 1.5;
+    d = 1.5;
     printf("      double ok (%f)\n", d * 2.0);
-    long double L = 1.5L;
+    L = 1.5L;
     printf("      long double ok (%Lf)\n", L * 2.0L);
-    long long n = 1;
-    for (int i = 0; i < 40; i++) n *= 2;
+    n = 1;
+    for (i = 0; i < 40; i++) n *= 2;
     printf("      64-bit arith ok (%lld)\n", n);
     return 0;
 }
