@@ -2897,7 +2897,7 @@ if stop_here 6; then
   say ""
   say "  === stopping after rung $STOP_AFTER, as asked ==="
 else
-head1 "RUNG 6 -- gcc 4.7.4.  THE OVERLAP WITH stage4-complete."
+head1 "RUNG 6 -- the gcc 4.6.4 fork, BY TCC.  (4.7.4 on the other arms.)"
 # The rung stage 4 already reaches with a host-gcc-built tcc, against host
 # glibc and host binutils. Reaching it here -- from this box, with a libc, a
 # make and a binutils all built inside it -- is what makes the two jobs one
@@ -3733,7 +3733,29 @@ if stop_here 8; then
   say ""
   say "  === stopping after rung $STOP_AFTER, as asked ==="
 else
-head1 "RUNG 8 -- gcc 4.7.4 AGAIN, built by the gcc tcc built"
+head1 "RUNG 8 -- the 4.6.4 fork AGAIN, built by the gcc tcc built"
+# CC_FOR_BUILD IS tcc HERE FOR THE SAME REASON IT IS AT RUNG 7.
+#
+# Run 85204685661 configured and then died on
+#     build/genmodes > tmp-modes.c
+#     make[2]: *** [Makefile:3670: s-modes] Error 1
+# -- no diagnostic, just a nonzero exit, which is what a crash looks like
+# through make. genmodes is one of gcc's BUILD-SIDE generators: small C
+# programs that emit source, are compiled with CC_FOR_BUILD and run on the
+# build machine. They are not part of the compiler being made.
+#
+# THE SAME COMPILER, THE SAME SHAPE OF PROGRAM, THE SAME FAILURE. gmp's
+# gen-fac and gen-sieve died this way at rung 7, and mpfr's correctness test
+# then caught that library computing wrong answers. The stage-1 4.6.4 tcc
+# built miscompiles this class of code, and gcc's own build system already
+# separates it: CC_FOR_BUILD exists so a cross build can use a different
+# compiler for exactly these programs.
+#
+# WHAT THIS DOES NOT FIX, AND IT MATTERS. cc1 and the rest of the compiler
+# are still compiled by the stage-1 4.6.4. If it miscompiles those too, the
+# stage-2 compiler this rung produces is quietly wrong rather than loudly
+# broken. Rung 9 building gcc 10.2.0 is the real test of whether stage 2 is
+# sound, and this note is where to start if it is not.
 # THE SECOND 4.7.4 IS NOT REDUNDANT. Stage 4's own diagram:
 #
 #     tcc -> gcc 4.7.4 (c,c++) -> gcc 4.7.4 again -> gcc 10.2.0
@@ -3762,6 +3784,7 @@ if [ "$R7" = ok ]; then
     --disable-libssp --disable-libatomic --disable-libitm --disable-shared \
     --disable-decimal-float \
     CFLAGS_FOR_TARGET="-static" CXXFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
+    CC_FOR_BUILD="$PFX/bin/cc-static" \
     --with-gmp=/work/prereq2 --with-mpfr=/work/prereq2 --with-mpc=/work/prereq2 \
     > cfg.log 2>&1
   _c8=$?
@@ -3793,7 +3816,19 @@ if stop_here 9; then
   say ""
   say "  === stopping after rung $STOP_AFTER, as asked ==="
 else
-head1 "RUNG 9 -- gcc 10.2.0, built by g++ (GCC) 4.7.4"
+head1 "RUNG 9 -- gcc 10.2.0, built by g++ from the 4.6.4 fork"
+# AND AT RUNG 9 TOO, FOR BOTH BUILDS IT DOES.
+#
+# The stage-2 compiler rung 8 produces is built BY the stage-1 one, so it
+# inherits whatever that got wrong until something rebuilds it from source.
+# Assuming stage 2 is clean because stage 1 was routed around would be
+# exactly the mistake this chain keeps making. gmp's generators and gcc's
+# genmodes are the same class of program; both go to tcc here.
+#
+# gcc 10 IS WHERE THIS STOPS. It is built from source by the stage-2 4.6.4,
+# and everything above uses gcc 10 rather than the fork. If rung 9 completes
+# and gcc 10 rebuilds its own prerequisites, the 4.6.4 miscompilation is
+# behind us.
 # THIS IS WHAT THE WHOLE 4.7 DETOUR WAS FOR.
 #
 # 4.7 is the last gcc written in C, which is why tcc can reach it. Its C++ front
@@ -3843,7 +3878,7 @@ if [ "$R8" = ok ]; then
       ( cd "/work/src/$pk-g2" && untar "/in/$pk-" ) || { r9=FAIL; say "      $pk did not extract"; break; }
       _pd2=$(cd "/work/src/$pk-g2" && onedir "$pk-* ./$pk-*")
       ( cd "/work/src/$pk-g2/$_pd2" \
-        && ./configure CC="$GCC2 -static" --disable-shared $EXTRA \
+        && ./configure CC="$GCC2 -static" CC_FOR_BUILD="$PFX/bin/cc-static" --disable-shared $EXTRA \
              --prefix=/work/prereq3 > cfg3.log 2>&1 \
         && timeout 1800 make -j"$NP" MAKEINFO=true > build3.log 2>&1 \
         && make install MAKEINFO=true > /dev/null 2>&1 ) \
@@ -3887,6 +3922,7 @@ if [ "$R8" = ok ]; then
         say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: gcc 10 configure, CXX=$GXX2"
         "/work/src/$g10/configure" \
           CC="$GCC2 -static" CXX="$GXX2 -static" \
+          CC_FOR_BUILD="$PFX/bin/cc-static" \
           --build=riscv64-unknown-linux-gnu \
           --host=riscv64-unknown-linux-gnu \
           --target=riscv64-unknown-linux-gnu \
