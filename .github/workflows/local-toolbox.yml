@@ -177,7 +177,23 @@ jobs:
           # Falling back to dynamic and packing the libraries alongside is
           # worse for portability and still better than an apt binary, so the
           # fallback is taken rather than the job failed.
-          COMMON="--target-list=aarch64-softmmu,aarch64-linux-user
+          # THREE ARCHITECTURES, BECAUSE THE LADDER HAS THREE.
+          #
+          # This list was aarch64-only, from when aarch64 was the only arm.
+          # The amd64 spike now produces a bzImage and the riscv64 one an
+          # Image, and neither can be booted by what this job currently
+          # builds: qemu-system-aarch64 emulates one machine, and
+          # qemu-aarch64-static runs aarch64 EXECUTABLES rather than kernels.
+          #
+          # x86_64-softmmu boots the amd64 kernel and riscv64-softmmu the
+          # riscv64 one. The -linux-user pair for each comes along because it
+          # costs almost nothing beside the system emulator and makes the
+          # same "run one foreign binary" trick available on every arm.
+          #
+          # THE HOST IS x86_64, so x86_64-softmmu is native here and the other
+          # two are TCG. That matters for how long a boot test takes, not for
+          # whether it works.
+          COMMON="--target-list=aarch64-softmmu,aarch64-linux-user,x86_64-softmmu,x86_64-linux-user,riscv64-softmmu,riscv64-linux-user
                   --disable-docs --disable-gtk --disable-sdl --disable-vnc
                   --disable-spice --disable-curses --disable-opengl
                   --disable-virglrenderer --disable-libssh --disable-bzip2
@@ -225,8 +241,16 @@ jobs:
             LINK=dynamic
           fi
           cd ..
-          cp "qemu-${QEMU_VER}/build/qemu-system-aarch64" out/
-          cp "qemu-${QEMU_VER}/build/qemu-aarch64" out/qemu-aarch64-static
+          # ONE LOOP, THREE ARCHITECTURES. The user-mode binaries are named
+          # qemu-<arch> in the build tree and qemu-<arch>-static in out/ --
+          # keeping the existing name means the README, the shims and every
+          # caller that already works do not have to change.
+          for _a in aarch64 x86_64 riscv64; do
+            cp "qemu-${QEMU_VER}/build/qemu-system-$_a" out/ \
+              || { echo "  qemu-system-$_a was not built"; exit 1; }
+            cp "qemu-${QEMU_VER}/build/qemu-$_a" "out/qemu-$_a-static" \
+              || { echo "  qemu-$_a (user mode) was not built"; exit 1; }
+          done
           # pc-bios IS NOT OPTIONAL, AND A BINARY WITHOUT IT LOOKS BROKEN.
           # qemu-system loads firmware and option ROMs from its data
           # directory at RUN time; packing only the executable produced
@@ -258,9 +282,13 @@ jobs:
             || echo "  WARNING: no decompressed edk2-aarch64-code.fd -- EFI boot untestable"
           printf '  pc-bios: %s files, %s\n' \
             "$(find out/pc-bios -type f | wc -l)" "$(du -sh out/pc-bios | cut -f1)"
-          chmod +x out/qemu-system-aarch64 out/qemu-aarch64-static
+          for _a in aarch64 x86_64 riscv64; do
+            chmod +x "out/qemu-system-$_a" "out/qemu-$_a-static"
+          done
           echo "  link mode: $LINK"
-          for b in qemu-system-aarch64 qemu-aarch64-static; do
+          for b in qemu-system-aarch64 qemu-aarch64-static \
+                   qemu-system-x86_64 qemu-x86_64-static \
+                   qemu-system-riscv64 qemu-riscv64-static; do
             printf '  %-24s %s bytes\n' "$b" "$(stat -c%s out/$b)"
             printf '  %-24s %s\n' "" "$(file -b out/$b | cut -c1-70)"
           done
@@ -268,7 +296,9 @@ jobs:
             # PACK WHAT IT NEEDS, or the artifact is a binary that will not
             # start on the machine it was made for.
             mkdir -p out/lib
-            for b in out/qemu-system-aarch64 out/qemu-aarch64-static; do
+            for b in out/qemu-system-aarch64 out/qemu-aarch64-static \
+                     out/qemu-system-x86_64 out/qemu-x86_64-static \
+                     out/qemu-system-riscv64 out/qemu-riscv64-static; do
               ldd "$b" | awk '/=> \//{print $3}'
             done | sort -u | while read -r l; do cp -L "$l" out/lib/; done
             cp -L /lib64/ld-linux-x86-64.so.2 out/lib/ 2>/dev/null || true
@@ -283,7 +313,9 @@ jobs:
             # printf, NOT A HEREDOC: an unindented EOF terminator inside a
             # YAML block scalar ends the BLOCK, and the workflow stops
             # parsing. Caught by the yaml check, not by the run.
-            for b in qemu-system-aarch64 qemu-aarch64-static; do
+            for b in qemu-system-aarch64 qemu-aarch64-static \
+                     qemu-system-x86_64 qemu-x86_64-static \
+                     qemu-system-riscv64 qemu-riscv64-static; do
               {
                 printf '#!/bin/sh\n'
                 printf 'd=$(cd "$(dirname "$0")" && pwd)\n'
@@ -454,27 +486,56 @@ jobs:
           # must not start depending on it.
           export PATH="$PWD/out:$PATH"
           if [ -d out/lib ]; then export LD_LIBRARY_PATH="$PWD/out/lib"; fi
-          out/qemu-system-aarch64 --version | head -1 | sed 's/^/  /'
-          if gh release download stage4/latest --pattern Image \
-               --pattern 'initramfs.cpio.gz' --dir bootcheck 2>/dev/null; then
-            # -L FOR THE ROMS, -nic none BECAUSE THE DEFAULT MACHINE ADDS A
-            # NIC WHOSE OPTION ROM WE DO NOT NEED. The stage-4 initramfs test
-            # touches no network; leaving the NIC on cost a romfile lookup
-            # and nothing else.
-            timeout 600 out/qemu-system-aarch64 -machine virt -cpu max \
+          # ONE PROOF PER ARCHITECTURE, EACH AGAINST ITS OWN RELEASE.
+          #
+          # An emulator that has never booted anything is a binary someone
+          # will discover is broken at the worst moment. This step existed for
+          # aarch64; the other two get the same treatment rather than being
+          # packed on the strength of having compiled.
+          #
+          # THE THREE DIFFER IN MORE THAN THE BINARY NAME:
+          #   aarch64  -machine virt -cpu max, console ttyAMA0 (the PL011 on
+          #            that board)
+          #   x86_64   has a default machine, console ttyS0
+          #   riscv64  -machine virt, console ttyS0, and its firmware
+          #            (OpenSBI) comes out of pc-bios via -L
+          #
+          # A MISSING RELEASE IS NOT A FAILURE. The amd64 and riscv64 tags do
+          # not exist until those spikes publish, so an absent download skips
+          # that arm and says so. What must never pass quietly is an emulator
+          # that downloaded a kernel and then could not boot it.
+          _any=0
+          for _spec in "aarch64:stage4/latest:-machine virt -cpu max:ttyAMA0" \
+                       "x86_64:stage4/latest-amd64::ttyS0" \
+                       "riscv64:stage4/latest-riscv64:-machine virt:ttyS0"; do
+            _a=${_spec%%:*};   _r=${_spec#*:}
+            _tag=${_r%%:*};    _r=${_r#*:}
+            _mach=${_r%%:*};   _con=${_r##*:}
+            echo "  === $_a ==="
+            "out/qemu-system-$_a" --version | head -1 | sed 's/^/    /'
+            rm -rf "bootcheck-$_a"
+            if ! gh release download "$_tag" --pattern Image \
+                   --pattern 'initramfs.cpio.gz' --dir "bootcheck-$_a" 2>/dev/null; then
+              echo "    no $_tag release yet -- boot check skipped"
+              continue
+            fi
+            _any=1
+            timeout 900 "out/qemu-system-$_a" $_mach \
               -L out/pc-bios -nic none \
               -m 2048 -nographic -no-reboot \
-              -device virtio-gpu-pci -device virtio-keyboard-pci \
-              -kernel bootcheck/Image -initrd bootcheck/initramfs.cpio.gz \
-              -append "console=ttyAMA0 rdinit=/init panic=1" \
-              > boot.log 2>&1 || true
-            tail -25 boot.log | sed 's/^/    /'
-            grep -q VERON-DONE boot.log \
-              && echo "  VERON-TOOLBOX-BOOT-OK  the packed emulator booted stage 4" \
-              || { echo "  VERON-TOOLBOX-BOOT-FAIL"; exit 1; }
-          else
-            echo "  no stage4/latest release yet -- boot check skipped"
-          fi
+              -kernel "bootcheck-$_a/Image" \
+              -initrd "bootcheck-$_a/initramfs.cpio.gz" \
+              -append "console=$_con rdinit=/init panic=1" \
+              > "boot-$_a.log" 2>&1 || true
+            tail -20 "boot-$_a.log" | sed 's/^/    /'
+            if grep -q VERON-DONE "boot-$_a.log"; then
+              echo "    VERON-TOOLBOX-BOOT-OK  $_a booted its own stage 4"
+            else
+              echo "    VERON-TOOLBOX-BOOT-FAIL  $_a downloaded a kernel and did not boot it"
+              exit 1
+            fi
+          done
+          [ "$_any" = 1 ] || echo "  no stage-4 releases exist yet -- nothing booted"
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -553,14 +614,24 @@ jobs:
             echo "runner: $(uname -m) $(lsb_release -ds 2>/dev/null || echo linux)"
             echo "date:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
-            echo "qemu-system-aarch64  (+ .sh shim)"
-            echo "  $(out/qemu-system-aarch64 --version 2>/dev/null | head -1 || echo 'see the shim')"
-            echo "  boot a Veron image with:"
-            echo "      ./qemu-system-aarch64.sh -machine virt -cpu max -m 2048 \\"
-            echo "        -nographic -no-reboot -nic none \\"
-            echo "        -device virtio-gpu-pci -device virtio-keyboard-pci \\"
-            echo "        -kernel Image -initrd initramfs.cpio.gz \\"
-            echo "        -append 'console=ttyAMA0 rdinit=/init panic=1'"
+            # ALL THREE INVOCATIONS, BECAUSE THEY DIFFER IN MORE THAN A NAME.
+            # Someone reading this manifest is about to paste a command;
+            # handing them the aarch64 one for an x86_64 image costs them an
+            # afternoon on console=ttyAMA0 and a kernel that says nothing.
+            for _s in "aarch64:-machine virt -cpu max:ttyAMA0" \
+                      "x86_64::ttyS0" \
+                      "riscv64:-machine virt:ttyS0"; do
+              _a=${_s%%:*}; _rest=${_s#*:}
+              _m=${_rest%%:*}; _c=${_rest##*:}
+              echo "qemu-system-$_a  (+ .sh shim)"
+              echo "  $(out/qemu-system-$_a --version 2>/dev/null | head -1 || echo 'see the shim')"
+              echo "  boot a Veron image with:"
+              echo "      ./qemu-system-$_a.sh $_m -m 2048 \\"
+              echo "        -nographic -no-reboot -nic none \\"
+              echo "        -kernel Image -initrd initramfs.cpio.gz \\"
+              echo "        -append 'console=$_c rdinit=/init panic=1'"
+              echo
+            done
             echo "  the .sh shim uses the PACKED loader and libraries, so the"
             echo "  host's glibc does not have to match the one this was built"
             echo "  against. Use it in preference to the bare binary."
