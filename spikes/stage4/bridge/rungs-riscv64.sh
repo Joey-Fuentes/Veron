@@ -2717,6 +2717,76 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG 4.8 -- flex, because this target's gcc source is a git tree"
+
+# MEASURED AT RUNG 6, ANSWERED HERE.
+#
+# The probe added to rung 6 reported, in run 85020156486:
+#
+#     gcc/gengtype-lex.c: ABSENT -- a generated file this tree does not carry.
+#     gcc/gengtype-parse.c: 23297 bytes
+#
+# gengtype-parse.c is hand-written and present; gengtype-lex.c is generated
+# from gengtype-lex.l by flex, and a git tree does not carry build products.
+# The amd64 arm untars a gnu.org RELEASE, which ships it, so that arm has
+# never needed flex and does not build it. This target's bottom gcc is a
+# clone of Ekaitz's fork, so it does.
+#
+# Without it the build got configure rc=0, built genhooks and genmodes, and
+# then died on
+#     tcc: error: undefined symbol 'lexer_line'  'yybegin'  'yylex'  'yyend'
+# -- the names flex emits.
+#
+# flex NEEDS m4 AT RUNTIME, not just to build: its skeleton is processed by
+# m4. Rung 4.7 built m4 1.4.7 and put /work/prefix/bin on PATH, so this rung
+# must come after it. That ordering is the whole reason this is 4.8 and not
+# 4.55.
+R48=skip
+if [ "$R47" = ok ]; then
+  R48=ok
+  cd /work/src
+  rm -rf /work/src/flex-t && mkdir -p /work/src/flex-t
+  ( cd /work/src/flex-t && untar /in/flex- ) \
+    || { R48=FAIL; say "    flex did not extract"; }
+  if [ "$R48" = ok ]; then
+    _fd=$(cd /work/src/flex-t && onedir 'flex-* ./flex-*')
+    # --disable-nls AND NO DOCS. flex's configure wants help2man for its man
+    # page and texinfo for its manual; neither is in this box, and MAKEINFO=true
+    # covers the second the way every other rung here does.
+    ( cd "/work/src/flex-t/$_fd" \
+      && ./configure --prefix=/work/prefix --disable-nls --disable-shared \
+           --build=riscv64-unknown-linux-gnu \
+           CC="/work/prefix/bin/cc-static" LDFLAGS="-static" \
+           M4=/work/prefix/bin/m4 > cfg.log 2>&1 \
+      && timeout 2400 make -j"$NP" MAKEINFO=true help2man=true > b.log 2>&1 \
+      && make install MAKEINFO=true help2man=true > /dev/null 2>&1 ) \
+      || { R48=FAIL
+           say "    flex NOT INSTALLED"
+           tail -12 "/work/src/flex-t/$_fd/cfg.log" 2>/dev/null | sed 's/^/      /'
+           tail -12 "/work/src/flex-t/$_fd/b.log" 2>/dev/null | sed 's/^/      /'; }
+  fi
+  if [ "$R48" = ok ]; then
+    if [ -x /work/prefix/bin/flex ]; then
+      say "    flex: $(/work/prefix/bin/flex --version 2>&1 | head -1)"
+      # AND PROVE IT GENERATES, because installing is not the thing we need.
+      printf '%%%%\n.  { return 1; }\n' > /tmp/probe.l
+      if /work/prefix/bin/flex -o /tmp/probe.c /tmp/probe.l 2>/tmp/probe.err \
+         && grep -q 'yylex' /tmp/probe.c; then
+        say "    generates a lexer defining yylex ($(wc -l < /tmp/probe.c) lines)"
+      else
+        say "    flex ran but produced no yylex:"
+        sed 's/^/      /' /tmp/probe.err 2>/dev/null | head -4
+        R48=FAIL
+      fi
+    else
+      say "    flex installed but /work/prefix/bin/flex is not there"; R48=FAIL
+    fi
+  fi
+else
+  say "    skipped: rung 4.7 did not finish"
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNG 5 -- gmp, mpfr, mpc.  gcc's arithmetic dependencies."
 # Same three, same versions, same configure shape as
 # spikes/stage4/chain/rung1.sh. If they build here and there, the overlap is
@@ -5758,6 +5828,7 @@ printf '    %-40s %s\n' "4   binutils"                       "$R4"
 printf '    %-40s %s\n' "4.5 make rebuilt with real binutils" "$R45"
 printf '    %-40s %s\n' "4.6 libc.a gets libtcc1's helpers"   "$R46"
 printf '    %-40s %s\n' "4.7 m4 (gmp's configure needs it)"    "$R47"
+printf '    %-40s %s\n' "4.8 flex (git tree lacks gengtype-lex.c)" "$R48"
 printf '    %-40s %s\n' "5   gmp / mpfr / mpc"               "$R5"
 printf '    %-40s %s\n' "6   gcc 4.7.4 by tcc -- stage 4 stage 1" "$R6"
 printf '    %-40s %s\n' "7   gmp/mpfr/mpc rebuilt by that gcc"   "$R7"
