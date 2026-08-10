@@ -2774,7 +2774,47 @@ if [ "$R47" = ok ]; then
     # built, and an exported CC pointing at cc-static would quietly override
     # them. configure, config.status and make all run within these parens, so
     # the export reaches everything that needs it and nothing that does not.
+    # A `gcc` ON PATH, WHICH IS WHAT flex's configure IS ACTUALLY ASKING FOR.
+    #
+    # Exporting CC did not help, so the earlier reading -- that
+    # `config.status --recheck` was dropping a command-line assignment -- was
+    # wrong. Run 85030076718 repeats the same shape with CC exported:
+    #
+    #     checking for gcc... (cached) /work/prefix/bin/cc-static
+    #     ...
+    #     checking for gcc... no
+    #     checking for cc... no
+    #     checking for cl.exe... no
+    #     configure: error: no acceptable C compiler found in $PATH
+    #
+    # AC_PROG_CC runs twice and the second search ignores $CC entirely and
+    # looks for the NAMES on PATH. Which macro re-runs it is not established
+    # here, and does not need to be: the fix is to make the name exist.
+    #
+    # THE REFERENCE ALREADY DOES THIS, at rungs.sh:3954, for perl:
+    #
+    #     ./Configure: ./UU/checkcc: line 10: gcc: not found
+    #
+    # with the reasoning worked out there too -- rung 6 installs its gcc into
+    # /work/out/bin and rung 8 into /work/out2/bin, never $PFX/bin, so the
+    # name is free and pointing it at the box's compiler means every path
+    # reaches the same one.
+    # IN A DIRECTORY THAT LIVES ONLY FOR THIS RUNG, not in $PFX/bin.
+    #
+    # The reference puts its `gcc` name straight into $PFX/bin, and can:
+    # rung 11.5 runs AFTER the real compilers exist in /work/out and
+    # /work/out2, so a `gcc` in the tools directory is unambiguous. This rung
+    # is 4.8 -- rung 6 has not built anything yet, and a `gcc` on PATH from
+    # here to the end of the script would answer for tcc every time something
+    # later looked one up by name. A directory prepended to PATH inside the
+    # subshell disappears with it.
+    rm -rf /work/ccnames && mkdir -p /work/ccnames
+    for _n in gcc cc; do
+      ln -sf /work/prefix/bin/cc-static "/work/ccnames/$_n"
+    done
+    say "    gcc, cc -> cc-static, in /work/ccnames (this rung only)"
     ( cd "/work/src/flex-t/$_fd" \
+      && PATH="/work/ccnames:$PATH" && export PATH \
       && CC="/work/prefix/bin/cc-static" && export CC \
       && LDFLAGS="-static" && export LDFLAGS \
       && M4=/work/prefix/bin/m4 && export M4 \
