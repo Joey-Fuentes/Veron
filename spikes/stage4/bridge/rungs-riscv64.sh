@@ -2801,6 +2801,30 @@ if [ "$R5" = ok ]; then
     say "    no gbot directory after extraction"; R6=FAIL
   else
     say "    bottom gcc: $(cat "$g47/gcc/BASE-VER" 2>/dev/null || echo unknown)"
+
+    # THE FLEX-GENERATED SOURCES, CHECKED BEFORE THEY ARE MISSED.
+    #
+    # gcc's build links build/gengtype from gengtype-lex.o, whose C source is
+    # generated from gengtype-lex.l by flex. RELEASE TARBALLS SHIP THE
+    # GENERATED .c; git trees do not, because it is a build product. This
+    # target's bottom gcc is a GIT CLONE of Ekaitz's fork where the amd64 arm
+    # untars a gnu.org release -- exactly the kind of difference that does not
+    # announce itself.
+    #
+    # Run 85015824106 got configure rc=0, built genhooks and genmodes, and
+    # then died four hundred lines later on
+    #     tcc: error: undefined symbol 'lexer_line'
+    #     tcc: error: undefined symbol 'yybegin'  'yylex'  'yyend'
+    # -- the names flex emits. Saying it here, by name, costs one ls.
+    for _gen in gcc/gengtype-lex.c gcc/gengtype-parse.c; do
+      if [ -f "$g47/$_gen" ]; then
+        say "    $_gen: $(wc -c < "$g47/$_gen") bytes"
+      else
+        say "    $_gen: ABSENT -- a generated file this tree does not carry."
+        say "    Release tarballs ship it; git trees do not. Without flex in"
+        say "    the box, whatever links against it fails on yylex."
+      fi
+    done
   fi
 
   if [ "$R6" != FAIL ]; then
@@ -3196,6 +3220,23 @@ SITEEOF
         # command, the error and the verdict together.
         grep -n -B6 -E "^configure:[0-9]+: \\$\\? = [1-9]" "$_cl" 2>/dev/null \
           | tail -24 | sed 's/^/          /'
+        # AND THE FATAL LINE WITH ITS OWN CONTEXT, SEPARATELY.
+        #
+        # The failing-status grep above keeps the LAST two dozen, and a
+        # configure log is mostly negative feature tests -- "does the
+        # assembler support .uleb128", no, recorded, carry on. Run
+        # 85015824106 filled that window with exactly those and pushed the
+        # one line that stopped the build off the top:
+        #
+        #     configure:8578: error: in `/work/bld/gcc':
+        #
+        # 8578 is early; 21844 and 26353 are late and harmless. The fatal
+        # marker is `configure:N: error:` at the start of a line, and it
+        # deserves its own look rather than a place in a queue ordered by
+        # position.
+        say "    --- the line that stopped it, in $_d ---"
+        grep -n -B8 -E "^configure:[0-9]+: error:" "$_cl" 2>/dev/null \
+          | grep -avE "^[0-9]+-\\| " | tail -14 | sed 's/^/          /'
         say "    --- conftest commands in $_d ---"
         grep -nE "^configure:[0-9]+: .*(gcc|g\+\+|xgcc|xg\+\+|cc-static)" "$_cl" 2>/dev/null \
           | tail -6 | sed 's/^/          /'
