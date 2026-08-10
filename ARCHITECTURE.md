@@ -98,8 +98,17 @@ There are no hidden verifications, no "well it compiled, so it works" assumption
 >    aarch64 transplants 4.8.5's backend into 4.7.4, amd64 needs nothing, and
 >    riscv64 uses a different compiler entirely.
 >
+> A FOURTH CLASS APPEARED ONCE amd64 REACHED THE SYSROOT: what the kernel
+> needs. objtool is an x86 tool, force-selected on x86_64 by the speculative
+> mitigations, and it needs libelf — so x86_64 must build zlib, pkgconf and
+> elfutils that aarch64 never wanted. The kernel's own image name and output
+> directory differ per architecture too, and neither follows from the `ARCH=`
+> string.
+>
 > The design pressure the paragraph above describes is right. The cost of the
-> convergence point is that *portable C* means the sources, not the ladder.
+> convergence point is that *portable C* means the sources, not the ladder —
+> and the ladder is where three architectures diverge in a dozen small ways,
+> each of which costs a CI round to find.
 
 ### The three audit regimes
 

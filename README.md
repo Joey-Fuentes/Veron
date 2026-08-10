@@ -223,14 +223,28 @@ script with mc-tcc and is the experiment that matters; the reference exists so
 that when it fails, the failure is attributable to micro-c rather than to the
 harness. Six of the first seven runs found harness bugs, not compiler bugs.
 
-**And the same rungs now run on two more architectures.**
+**And the same rungs now run on two more architectures — one of them finished.**
 `stage4-arch-spike-amd64` clears every rung — musl, binutils, gcc 4.7.4 twice,
-gcc 10.2.0, then LFS chapters 5 and 6 — and stops entering the sysroot on the
-ELF interpreter: gcc bakes `/lib64/ld-linux-x86-64.so.2` into every binary and
-this sysroot has no `/lib64`, deliberately. `stage4-arch-spike-riscv64` is green
-through gmp/mpfr/mpc. Both are **copies** of the reference rather than a matrix
-over it, so a failure on one architecture cannot make the working arm
-answerable for it.
+gcc 10.2.0, LFS chapters 5 and 6 — then enters the sysroot, builds glibc,
+binutils and gcc natively, builds a kernel, and boots it:
+
+```
+VERON-BOOT-OK Linux 7.1.5 x86_64
+VERON-TESTS pass=8 fail=0
+VERON-GCC-IN-GUEST ok compiled and ran, rc=42 (expect 42)
+```
+
+That last line is the ladder closing on itself: the compiler this chain built,
+running inside the kernel it built, compiling and running a program. The
+trimmed sysroot — 5,264 MB down to 586 MB, 136 MB compressed — publishes to
+**`stage4/latest-amd64`**, its own tag, so a botched run cannot reach the
+aarch64 release.
+
+`stage4-arch-spike-riscv64` is green through rung 7 and stops at rung 8, where
+the stage-2 compiler segfaults on `--version` while the stage-1 compiler that
+built it passes every check and compiles cleanly. Both spikes are **copies** of
+the reference rather than a matrix over it, so a failure on one architecture
+cannot make the working arm answerable for it.
 
 They need things aarch64 does not, and each cost a run to find: musl's x87 and
 CSR assembly is unassemblable by tcc where aarch64's is portable; `libc.a`
@@ -244,8 +258,14 @@ of RISC-V into a C-only gcc 4.6.4** rather than a backported release tarball.
 the way out: on a native aarch64 runner it cross-builds `x86_64-tcc` and
 `riscv64-tcc`, builds a target musl with each, and links a **native** tcc for
 both — an x86_64 binary emitting x86_64, with no host compiler in its history.
-Whether those binaries walk a ladder is not yet answered, and nothing is
-published until they do.
+Whether those binaries walk a ladder is not yet answered.
+
+**The x86_64 release therefore has Ubuntu in its ancestry**, through the tcc
+that starts the chain, and that is a fact about the artifact rather than a
+caveat to be argued away. It is published anyway, because a stage-4 sysroot
+that boots and runs its own compiler is worth having in hand while the seed
+path is finished. When the ladders consume a micro-c-descended tcc, the
+release is rebuilt and the hole closes.
 
 Twelve substitutions, all declared. Eleven are one thing: old GNU source
 treating "not glibc" as "barely a libc" — `alloca`, `strncasecmp`, `getlogin`,
