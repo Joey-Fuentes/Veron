@@ -1197,6 +1197,17 @@ if [ "$B5" = ok ]; then
               && make install > i.log 2>&1
             fi ); then
       say "      installed"
+      # pkgconf INSTALLS pkgconf, AND autoconf LOOKS FOR pkg-config.
+      # PKG_PROG_PKG_CONFIG searches PATH for the name `pkg-config`; pkgconf
+      # is the implementation, not the name. Every distro that ships pkgconf
+      # provides this symlink, and without it elfutils' configure would find
+      # no pkg-config at all -- which is the whole reason pkgconf is in this
+      # rung. Verified locally: a clean pkgconf 3.0.5 build installs bin/
+      # pkgconf, bomtool, pccritic and spdxtool, and no pkg-config.
+      if [ "$_p" = pkgconf ] && [ -x /usr/bin/pkgconf ]; then
+        ln -sf pkgconf /usr/bin/pkg-config
+        say "      pkg-config -> pkgconf"
+      fi
     else
       B55=FAIL
       say "      $_p FAILED"
