@@ -1158,6 +1158,32 @@ if [ "$B5" = ok ]; then
       else echo "# CONFIG_$1 is not set" >> .config; fi
     }
     set_cfg WERROR n
+
+    # NO objtool, BECAUSE IT NEEDS libelf AND THIS SYSROOT HAS NONE.
+    #
+    # The ARCH fix worked -- run 85045490139 got as far as building
+    # tools/objtool/arch/x86 -- and then:
+    #     tools/objtool/include/objtool/elf.h:10: fatal error:
+    #         gelf.h: No such file or directory
+    # gelf.h is elfutils', which nothing in this chain builds. The aarch64
+    # arm never meets this: objtool is an x86 tool and arm64 does not build
+    # it, so libelf has never been on anyone's list.
+    #
+    # objtool IS PULLED IN BY THE ORC UNWINDER, which x86_64 defconfig
+    # selects. FRAME_POINTER is the other supported x86 unwinder -- slower
+    # stack traces and a slightly bigger kernel, and nothing this boot test
+    # does can tell the difference. Choosing it is a configuration decision,
+    # not a workaround: the alternative is building elfutils and its
+    # dependencies to satisfy a tool whose output this chain never reads.
+    #
+    # ALL THREE ARE SET. UNWINDER_ORC off alone leaves OBJTOOL selected by
+    # other things on a modern kernel; naming OBJTOOL and STACK_VALIDATION
+    # too means the answer does not depend on which of them Kconfig happens
+    # to key off in this release.
+    set_cfg UNWINDER_ORC n
+    set_cfg UNWINDER_FRAME_POINTER y
+    set_cfg OBJTOOL n
+    set_cfg STACK_VALIDATION n
     set_cfg DEVTMPFS y
     set_cfg DEVTMPFS_MOUNT y
     set_cfg NET_9P y
@@ -1259,6 +1285,18 @@ if [ "$B5" = ok ]; then
     _bad=0
     [ "$B6" = FAIL ] && _bad=1
     grep -q "^CONFIG_WERROR=y" .config && { say "    WERROR came back after olddefconfig"; _bad=1; }
+    # AND objtool, WHICH IS THE ONE THAT WILL COME BACK IF ANYTHING DOES.
+    # It is `select`ed rather than chosen, so olddefconfig re-derives it from
+    # whatever still wants it. Checking here means a silent revert shows up as
+    # a config fault rather than as `gelf.h: No such file` two thousand lines
+    # into a kernel build.
+    if grep -qE "^CONFIG_(OBJTOOL|UNWINDER_ORC|STACK_VALIDATION)=y" .config; then
+      say "    objtool came back after olddefconfig:"
+      grep -E "^CONFIG_(OBJTOOL|UNWINDER_ORC|STACK_VALIDATION|UNWINDER_FRAME_POINTER)" .config \
+        | sed 's/^/      /'
+      say "    (something still selects it, and this build has no libelf)"
+      _bad=1
+    fi
     grep -q "^CONFIG_DEVTMPFS_MOUNT=y" .config || { say "    DEVTMPFS_MOUNT did not take"; _bad=1; }
     # HARD, AND =y RATHER THAN MERELY PRESENT. olddefconfig can quietly turn a
     # requested =y into =m when a dependency is modular, and in this system
