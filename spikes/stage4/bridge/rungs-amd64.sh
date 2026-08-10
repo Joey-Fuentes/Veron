@@ -3907,16 +3907,44 @@ if [ "$R10" = ok ]; then
     say "    gcc 15 did not extract"; R11=FAIL
   else
     g15=$(onedir 'gcc-15* ./gcc-15*')
-    _t="/work/src/$g15/gcc/config/x86_64/t-x86_64-linux"
-    if [ ! -f "$_t" ]; then
-      say "    $_t is missing -- gcc has moved this file"; R11=FAIL
-    elif ! grep -q 'mabi\.lp64=' "$_t"; then
-      say "    $_t has no mabi.lp64= line. It now reads:"
-      sed 's/^/      /' "$_t"; R11=FAIL
+    # FIND THE FILE, DO NOT NAME IT. gcc keeps its x86_64 support under
+      # gcc/config/i386 -- the run's own tmake_file list shows
+      # $(srcdir)/config/i386/t-linux -- but the FILENAME differs per
+      # architecture and per release. The aarch64 arm seds
+      # t-aarch64-linux and its `mabi.lp64=` line; LFS seds
+      # config/i386/t-linux64 for x86_64, whose line is MULTILIB_OSDIRNAMES.
+      # Substituting the arch into the aarch64 path produced
+      #     /work/src/gcc-15.2.0/gcc/config/x86_64/t-x86_64-linux is missing
+      # (run 85015318677) -- a directory gcc has never had.
+      #
+      # WHAT MATTERS IS THE lib64 IN A MULTILIB DIRECTORY NAME, whatever file
+      # carries it. Search for that, sed every hit, and print each one. The
+      # rule the aarch64 arm states still holds: a sed that matches nothing
+      # ships an unchanged file and looks exactly like a sed that worked, so
+      # finding zero files is a failure here rather than at exec time six
+      # rungs later.
+    _cd="/work/src/$g15/gcc/config/i386"
+    if [ ! -d "$_cd" ]; then
+      say "    $_cd is missing -- gcc has moved this target's config"
+      say "    directories present:"
+      ls "/work/src/$g15/gcc/config" | sed 's/^/      /' | head -30
+      R11=FAIL
     else
-      sed -e '/mabi\.lp64=/s|lib64|lib|' -i.orig "$_t"
-      say "    64-bit libdir: $(grep 'mabi\.lp64=' "$_t")"
-    fi
+      _hits=$(grep -l 'lib64' "$_cd"/t-* 2>/dev/null || true)
+      if [ -z "$_hits" ]; then
+        say "    no t-* file under $_cd mentions lib64. Present:"
+        ls "$_cd"/t-* 2>/dev/null | sed 's/^/      /'
+        say "    (if this target has no multilib lib64 split there is nothing"
+        say "     to sed, but say so deliberately rather than by silence)"
+        R11=FAIL
+      else
+        for _t in $_hits; do
+          sed -i.orig 's|lib64|lib|g' "$_t"
+        say "    $(basename "$_t"): $(grep -c 'lib' "$_t") lib lines, lib64 removed"
+          grep -n 'MULTILIB_OSDIRNAMES\|mabi' "$_t" 2>/dev/null | head -4 | sed 's/^/      /'
+        done
+      fi
+      fi
   fi
 
   if [ "$R11" != FAIL ]; then
