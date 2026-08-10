@@ -3661,110 +3661,66 @@ P1BEOF
       fi
       rm -f p2.c p2.bin )
 
-    say "    --- prerequisites, rebuilt by the tcc-built gcc ---"
+    # THIS TARGET DOES NOT REBUILD THE PREREQUISITES, AND THE EVIDENCE FOR
+    # THAT IS IN THE RUN THAT MADE ME STOP TRYING.
+    #
+    # The aarch64 and amd64 arms rebuild gmp/mpfr/mpc here because that is
+    # stage 4's design: each stage rebuilds its prerequisites with the
+    # compiler it just made. On this target the compiler it just made is the
+    # tcc-built gcc 4.6.4, and it produces a gmp that is WRONG.
+    #
+    # Run 85145067016, mpfr's own configure against that gmp:
+    #     checking if we can link with GMP... yes
+    #     checking if gmp.h version and libgmp version are the same...
+    #         (6.3.0/6.3.0) yes
+    #     checking for GMP_NUMB_BITS and sizeof(mp_limb_t) consistency... yes
+    #     checking for GMP library vs header correctness... no (exit 82)
+    #     configure: error: bad GMP library or header - ABI problem?
+    # Everything that INSPECTS passes. The one check that RUNS a program and
+    # compares the answer fails.
+    #
+    # AND THE COMPARISON IS CONTROLLED. Rung 5 built gmp with tcc, and the
+    # same mpfr running the same test passed. Same source, same version, same
+    # configure flags -- the compiler is the only variable. Before that, the
+    # same compiler's gmp segfaulted in gen-fac and gen-sieve, which four
+    # preflights could not reproduce. GMP's maintainers say this is the usual
+    # shape of it: "the absolutely most common cause for incorrect
+    # computations with GMP is bugs in the compiler used for building the
+    # library".
+    #
+    # WHY REUSING tcc's ARCHIVES IS SOUND RATHER THAN A DODGE. Rung 8 needs
+    # gmp/mpfr/mpc only to build gcc 4.7.4, and 4.6.4 has to compile gcc's
+    # ordinary C rather than gmp's limb arithmetic -- GMP is the canary
+    # precisely because it is unusually sensitive to code generation. The
+    # ladder is also self-correcting: rung 9 rebuilds these with 4.7.4, and
+    # gcc 10 rebuilds everything after that.
+    #
+    # THIS IS WHAT GUIX DOES ON RISC-V. Its gmp-boot, mpfr-boot and mpc-boot
+    # are configured CC=tcc and handed TO the 4.6.4 fork; that chain never
+    # asks the fork to build them.
+    #
+    # THE MISCOMPILATION IS ROUTED AROUND, NOT FIXED. Rung 8 still asks 4.6.4
+    # to build gcc 4.7.4. If that yields a compiler that fails later, this
+    # note is where to start looking.
+    say "    --- prerequisites: REUSING the tcc-built archives ---"
     mkdir -p /work/prereq2
-    r7=ok
-    for pk in gmp mpfr mpc; do
-      [ "$r7" = ok ] || break
-      case "$pk" in
-        gmp)  EXTRA="--disable-assembly" ;;
-        mpfr) EXTRA="--with-gmp=/work/prereq2" ;;
-        mpc)  EXTRA="--with-gmp=/work/prereq2 --with-mpfr=/work/prereq2" ;;
-      esac
-      # FRESH TREE, NOT `make distclean`. Stage 4's reason, verbatim: "Fresh
-      # trees from the tarballs, so no object built by a different compiler
-      # survives into an archive this rung attributes to stage 2's gcc."
-      # USE THE HELPER. This was `tar xf ...` and got "tar: invalid tar magic",
-      # because /in still holds COMPRESSED pins -- gmp is .tar.xz -- and
-      # busybox does not autodetect. untar picks the flag from the extension
-      # and has been doing it correctly for eight rungs; reaching past it for a
-      # raw tar was reintroducing a bug this job already fixed twice.
-      # ONE BUILD, gmp's OWN FLAGS. The -O2/-O0 retry that was here tested
-      # nothing and cost a build: gmp compiles its generators with
-      # CC_FOR_BUILD and no CFLAGS at all --
-      #     /work/out/bin/gcc -static -std=gnu99 gen-fac.c -o gen-fac
-      # -- so setting CFLAGS never reached the code that crashes. Run
-      # 85066705476 duly failed identically at both levels. The optimiser is
-      # not ruled out by that result; it was never tested by it.
-      rm -rf "/work/src/$pk-g1" && mkdir -p "/work/src/$pk-g1"
-      ( cd "/work/src/$pk-g1" && untar "/in/$pk-" ) \
-        || { r7=FAIL; say "      $pk did not extract"; break; }
-      _pd=$(cd "/work/src/$pk-g1" && onedir "$pk-* ./$pk-*")
-      # CC_FOR_BUILD IS tcc, AND GMP's MANUAL SAYS THAT IS WHAT IT IS FOR.
-      #
-      # gmp compiles its table generators with CC_FOR_BUILD, not CC, and with
-      # no CFLAGS -- the command line is exactly
-      #     /work/out/bin/gcc -static -std=gnu99 gen-fac.c -o gen-fac
-      # They then segfault when run, while the library objects compile fine.
-      #
-      # cc-static, NOT BARE $CC, AND THAT DISTINCTION HAS BITTEN THIS PROJECT
-      # BEFORE. gmp's configure COMPILES AND RUNS a conftest with
-      # CC_FOR_BUILD, and a dynamically linked binary does not run in this box
-      # -- there is no loader. cc-static is the wrapper rung 3 built for
-      # exactly that: tcc, the right -B, and -static. It is also a single
-      # path with no spaces, which a bare "$CC" (tcc plus its -B) is not.
-      #
-      # THE MANUAL'S OWN WORDS, on CC_FOR_BUILD: "It doesn't need to be in any
-      # particular ABI or mode, it merely needs to generate executables that
-      # can run." So pointing it at the tcc that already built gmp cleanly at
-      # rung 5 is the documented use of the variable rather than a dodge. The
-      # LIBRARY is still compiled by the gcc under test; only the throwaway
-      # generators, whose output is a table of constants, are not.
-      #
-      # THIS IS AN UNBLOCK, NOT A DIAGNOSIS, AND THE DIFFERENCE MATTERS.
-      # gen-fac and gen-sieve are gmp's INTEGER-only generators -- gen-bases
-      # and gen-psqr are the ones that want -lm -- so the fault is in integer
-      # or pointer code, not in the soft-float helpers rung 4.6 merged. Both
-      # generators #include bootstrap.c, which is mini-gmp: mpz_t as a
-      # one-element array decaying to a pointer, realloc'd limb vectors,
-      # pointer walking. That is a different shape from anything the
-      # preflights reach.
-      #
-      # If this gcc miscompiles that, rung 8 asks it to build gcc 4.7.4 --
-      # a much larger program than gen-fac -- so a pass here is not a
-      # clearance. The preflight above tests the constructs one at a time and
-      # is the thing that might actually name the bug.
-      #
-      # GUIX DOES NOT REBUILD gmp WITH THIS COMPILER AT ALL: its gmp-boot,
-      # mpfr-boot and mpc-boot are configured with CC=tcc and handed TO the
-      # 4.6.4 fork. This rung exists because stage 4's design is that each
-      # stage rebuilds its prerequisites with the compiler it just made, so
-      # dropping it would be a real divergence rather than a tidy-up.
-      ( cd "/work/src/$pk-g1/$_pd" \
-        && ./configure CC="$GCC1 -static" CC_FOR_BUILD="$PFX/bin/cc-static" \
-          --disable-shared $EXTRA \
-          --prefix=/work/prereq2 > cfg2.log 2>&1 \
-        && timeout 1800 make -j"$NP" MAKEINFO=true > build2.log 2>&1 \
-        && make install MAKEINFO=true > /dev/null 2>&1 ) \
-        || { r7=FAIL
-             say "      $pk NOT INSTALLED"
-             # cfg2.log FIRST, AND THIS IS WHY. Run 85076839947 printed
-             # "gmp NOT INSTALLED" and then nothing at all -- because the
-             # only log this path showed was build2.log, which make never
-             # created, because configure is what failed. A failure path
-             # that can explain only one of the two ways a rung dies is
-             # silent exactly half the time.
-             if [ -s "/work/src/$pk-g1/$_pd/build2.log" ]; then
-               say "      --- build2.log ---"
-               grep -aE "error:|Error [0-9]|Segmentation" \
-                 "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null | head -6 | sed 's/^/        /'
-               tail -12 "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null | sed 's/^/        /'
-             else
-               say "      no build2.log -- configure never got that far"
-             fi
-             say "      --- cfg2.log ---"
-             tail -20 "/work/src/$pk-g1/$_pd/cfg2.log" 2>/dev/null | sed 's/^/        /'; }
-      # AND SAY WHICH COMPILER MADE THE GENERATORS, since the whole point of
-      # this rung is which compiler made what. A log that shows gmp installed
-      # without showing that its tables came from tcc would misattribute the
-      # result the next time someone reads it.
-      if [ "$pk" = gmp ] && [ "$r7" = ok ]; then
-        _gcmd=$(grep -m1 'gen-fac' "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null || true)
-        [ -n "$_gcmd" ] && say "      generators built by: $(echo "$_gcmd" | cut -c1-64)"
+    if [ -d /work/prereq/lib ]; then
+      cp -a /work/prereq/. /work/prereq2/ 2>/dev/null || true
+      R7=ok
+      say "    copied /work/prereq -> /work/prereq2 (built by tcc at rung 5)"
+    else
+      R7=FAIL
+      say "    /work/prereq/lib is missing -- rung 5's archives are not there"
+    fi
+    # AND NAME THE THREE, because a copy that silently moved nothing would
+    # read exactly like a copy that worked.
+    for _a in libgmp.a libmpfr.a libmpc.a; do
+      if [ -f "/work/prereq2/lib/$_a" ]; then
+        say "      $_a: $(wc -c < "/work/prereq2/lib/$_a") bytes"
+      else
+        say "      $_a MISSING"; R7=FAIL
       fi
-      [ "$r7" = ok ] && say "      $pk INSTALLED"
     done
-    R7=$r7
     [ "$R7" = ok ] && say "    prereq2/lib: $(ls /work/prereq2/lib 2>/dev/null | tr '\n' ' ')"
   fi
   cd /work
