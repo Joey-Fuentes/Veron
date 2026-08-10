@@ -95,6 +95,12 @@ on:
 # actions/cache, which is already concurrency-safe and keyed on the version
 # set. Two runs racing on it produce the same bytes.
 
+permissions:
+  # write, BECAUSE THIS JOB NOW PUBLISHES A RELEASE.
+  # stage0-stage4-complete.yml carries the same for the same command; the
+  # reference arm does not publish and stays read-only.
+  contents: write
+
 env:
   TCC_SHA: 5ec0e6f84b47ebd8c269b581712666313f5edaef
   MUSL_VER: '1.2.5'
@@ -1556,6 +1562,21 @@ jobs:
           # 600s: gcc under TCG emulation is slow, and a timeout that fires
           # reads exactly like a hang.
           set +e
+          # console=ttyS0, NOT ttyAMA0, AND THE COMMENT LIVES UP HERE.
+          #
+          # ttyAMA0 is the PL011 on arm's `virt` board and does not exist on a
+          # PC; getting it wrong gives a kernel that boots and says nothing,
+          # which reads exactly like a kernel that did not boot.
+          #
+          # THE COMMENT WAS ORIGINALLY INSIDE THE COMMAND AND THAT BROKE IT.
+          # A `#` line between two backslash-continued lines ends the
+          # continuation, so run 85202723681 ran qemu with no -append at all
+          # and then tried to execute the next line as a command:
+          #     line 77: -append: command not found
+          #     THE KERNEL THIS CHAIN BUILT DID NOT REACH USERSPACE.
+          # Every rung had passed. The only thing wrong was where a comment
+          # sat.
+          #
           # NATIVE x86_64, WITH NO -M virt AND NO -cpu. The aarch64 arm names
           # a board and a CPU because qemu-system-aarch64 has no default
           # machine and refuses to start without one. x86 has one -- `pc` --
@@ -1568,11 +1589,6 @@ jobs:
             -device virtio-9p-pci,fsdev=vsysroot,mount_tag=veronsysroot \
             -kernel "$IMG" \
             -initrd "$IRD" \
-            # ttyS0, NOT ttyAMA0. The console is the one part of this line
-            # that is not portable: ttyAMA0 is the PL011 on arm's `virt`
-            # board and does not exist on a PC. Getting it wrong gives a
-            # kernel that boots and says nothing, which reads exactly like a
-            # kernel that did not boot.
             -append "console=ttyS0 earlycon rdinit=/init panic=1 loglevel=7" \
             > /tmp/boot.log 2>&1
           echo "  qemu rc=$?"
@@ -1634,3 +1650,117 @@ jobs:
           echo "  END TO END: a kernel and a userland built by a toolchain"
           echo "  that was itself built in a box holding one busybox and one"
           echo "  tcc, booted and ran their own tests."
+
+      - name: 'PUBLISH: stage 4 for x86_64, to its own tag'
+        # NOT if: always(). Everything else in this job reports; this one
+        # SHIPS. A release that exists because a step ran unconditionally is
+        # a release someone will consume believing it booted.
+        run: |
+          set -eu
+          # ITS OWN TAG, AND THAT IS THE WHOLE POINT.
+          #
+          # stage0-stage4-complete.yml publishes aarch64 to stage4/latest with
+          # --clobber, and its filenames are unqualified -- sysroot.tar.zst,
+          # Image, initramfs.cpio.gz, manifest.tsv, PROVENANCE. Publishing
+          # x86_64 to that tag would overwrite every one of them.
+          #
+          # SUFFIXED FILENAMES ON A SHARED TAG WOULD ALSO WORK and is worse:
+          # it is one typo from a collision, three jobs would be writing to
+          # the same object, and a botched run could damage a release it was
+          # never meant to touch. Separate tags make the isolation structural
+          # rather than conventional. A consumer's download path stays the
+          # same shape for every architecture; only the tag changes.
+          TAG=stage4/latest-amd64
+          rm -rf rel lfs && mkdir -p rel
+
+          # TRIMMED FIRST, THE WAY THE aarch64 ARM DOES IT. A release named
+          # the same as another that carries a different tree is worse than
+          # no release: stage 5 would consume two shapes under one name.
+          #
+          # A COPY, BECAUSE THE TRIM DELETES. box/work/lfs is what every rung
+          # above built and what the artifact steps below still read; trimming
+          # it in place would hollow out the thing the rest of the job is
+          # reporting on.
+          cp -a box/work/lfs lfs
+          before=$(du -sm lfs | cut -f1)
+
+          # NATIVE_TRIPLET AND CROSS_TRIPLET ARE NOT OPTIONAL, and this is
+          # where an arch copy goes wrong quietly. The trim tells the native
+          # toolchain from the cross one BY TRIPLET, and the script's defaults
+          # are aarch64's. Left unset here it would either keep the cross
+          # toolchain or delete the native one, and both look like success.
+          VERON_TRIM=1 TRIM_STRIP_ARCHIVES=0 \
+          TRIM_LOG=rel/trim.txt \
+          NATIVE_TRIPLET=x86_64-veron-linux-gnu \
+          CROSS_TRIPLET=x86_64-toolchain-linux-gnu \
+            /bin/sh spikes/stage4/bridge/sysroot-trim.sh lfs 2>&1 | sed 's/^/    /'
+          after=$(du -sm lfs | cut -f1)
+          echo "  trimmed: ${before} MB -> ${after} MB"
+
+          # THE ONE CHECK THE aarch64 ARM KEPT, AND FOR ITS REASON: the trim
+          # silently doing nothing (TRIM_LOG unset) reported the same size
+          # before and after and pushed a 5.96 GB tarball at a 2 GB limit. No
+          # absolute threshold is asserted here -- the arm that tried one
+          # failed a run over a number nobody had measured.
+          [ "$after" -lt "$before" ] || {
+            echo "  TRIM REMOVED NOTHING: ${before} MB -> ${after} MB"
+            echo "  the trim did not run; check TRIM_LOG is writable"
+            exit 1
+          }
+
+          # THE SYSROOT, REPRODUCIBLY AND COMPRESSED. Same tar flags as the
+          # aarch64 arm: sorted names, zeroed mtimes, numeric owner, gnu
+          # format. Compression does not make a tar reproducible -- the flags
+          # do -- but zstd is deterministic at a fixed level, and without it
+          # the upload is several GB and GitHub refuses it at 2 GB.
+          ZSTD_CLEVEL=19
+          export ZSTD_CLEVEL
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+              --format=gnu --zstd -cf rel/sysroot.tar.zst -C lfs .
+          sha256sum rel/sysroot.tar.zst | tee rel/SYSROOT-SHA256
+          printf '  sysroot.tar.zst: %s (from %s MB of files)\n' \
+            "$(du -h rel/sysroot.tar.zst | cut -f1)" "$after"
+
+          for f in Image initramfs.cpio.gz; do
+            if [ -s "box/out/$f" ]; then
+              cp "box/out/$f" rel/
+            else
+              echo "  box/out/$f is missing -- refusing to publish a partial release"
+              exit 1
+            fi
+          done
+          [ -s box/out/manifest.tsv ] && cp box/out/manifest.tsv rel/ || true
+
+          # PROVENANCE, BECAUSE THE TAG MOVES. Someone holding a download a
+          # month from now needs to know which commit produced it, and the
+          # tag alone cannot tell them.
+          {
+            echo "arch     x86_64"
+            echo "triplet  x86_64-veron-linux-gnu"
+            echo "commit   ${GITHUB_SHA}"
+            echo "run      ${GITHUB_RUN_ID}"
+            echo "built    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "sysroot  $(cut -d' ' -f1 rel/SYSROOT-SHA256)"
+            echo "kernel   $(sha256sum rel/Image | cut -d' ' -f1)"
+            echo "initrd   $(sha256sum rel/initramfs.cpio.gz | cut -d' ' -f1)"
+            echo
+            echo "built by .github/workflows/stage4-arch-spike-amd64.yml"
+            echo "from tcc, through gcc 4.7.4 and 10.2.0, in a box holding"
+            echo "busybox and tcc and nothing else. The tcc itself is built"
+            echo "by the host compiler -- the one declared hole."
+          } > rel/PROVENANCE
+          ls -l rel/ | sed 's/^/    /'
+
+          gh release create "$TAG" --title 'Veron stage 4 (x86_64)' \
+            --notes 'The bootable stage-4 system for x86_64: sysroot, kernel and initramfs. See PROVENANCE for the commit. Separate from stage4/latest, which is aarch64.' \
+            2>/dev/null || true
+          if gh release upload "$TAG" rel/* --clobber; then
+            echo "VERON-STAGE4-PUBLISHED-AMD64  $(cut -d' ' -f1 rel/SYSROOT-SHA256)"
+          else
+            # A FAILED PUBLISH MUST NOT FAIL THE CHAIN, for the reason the
+            # aarch64 arm gives: the build is the result, the release is a
+            # convenience, and losing it costs a re-dispatch rather than a run.
+            echo "VERON-STAGE4-UNPUBLISHED -- the build stands, the release does not"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
