@@ -3697,6 +3697,13 @@ P1BEOF
       #     /work/out/bin/gcc -static -std=gnu99 gen-fac.c -o gen-fac
       # They then segfault when run, while the library objects compile fine.
       #
+      # cc-static, NOT BARE $CC, AND THAT DISTINCTION HAS BITTEN THIS PROJECT
+      # BEFORE. gmp's configure COMPILES AND RUNS a conftest with
+      # CC_FOR_BUILD, and a dynamically linked binary does not run in this box
+      # -- there is no loader. cc-static is the wrapper rung 3 built for
+      # exactly that: tcc, the right -B, and -static. It is also a single
+      # path with no spaces, which a bare "$CC" (tcc plus its -B) is not.
+      #
       # THE MANUAL'S OWN WORDS, on CC_FOR_BUILD: "It doesn't need to be in any
       # particular ABI or mode, it merely needs to generate executables that
       # can run." So pointing it at the tcc that already built gmp cleanly at
@@ -3724,14 +3731,29 @@ P1BEOF
       # stage rebuilds its prerequisites with the compiler it just made, so
       # dropping it would be a real divergence rather than a tidy-up.
       ( cd "/work/src/$pk-g1/$_pd" \
-        && ./configure CC="$GCC1 -static" CC_FOR_BUILD="$CC" \
+        && ./configure CC="$GCC1 -static" CC_FOR_BUILD="$PFX/bin/cc-static" \
           --disable-shared $EXTRA \
           --prefix=/work/prereq2 > cfg2.log 2>&1 \
         && timeout 1800 make -j"$NP" MAKEINFO=true > build2.log 2>&1 \
         && make install MAKEINFO=true > /dev/null 2>&1 ) \
         || { r7=FAIL
              say "      $pk NOT INSTALLED"
-             tail -12 "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null | sed 's/^/        /'; }
+             # cfg2.log FIRST, AND THIS IS WHY. Run 85076839947 printed
+             # "gmp NOT INSTALLED" and then nothing at all -- because the
+             # only log this path showed was build2.log, which make never
+             # created, because configure is what failed. A failure path
+             # that can explain only one of the two ways a rung dies is
+             # silent exactly half the time.
+             if [ -s "/work/src/$pk-g1/$_pd/build2.log" ]; then
+               say "      --- build2.log ---"
+               grep -aE "error:|Error [0-9]|Segmentation" \
+                 "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null | head -6 | sed 's/^/        /'
+               tail -12 "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null | sed 's/^/        /'
+             else
+               say "      no build2.log -- configure never got that far"
+             fi
+             say "      --- cfg2.log ---"
+             tail -20 "/work/src/$pk-g1/$_pd/cfg2.log" 2>/dev/null | sed 's/^/        /'; }
       # AND SAY WHICH COMPILER MADE THE GENERATORS, since the whole point of
       # this rung is which compiler made what. A log that shows gmp installed
       # without showing that its tables came from tcc would misattribute the
