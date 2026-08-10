@@ -3815,10 +3815,109 @@ if [ "$R7" = ok ]; then
     done
     /work/out2/bin/gcc --version 2>&1 | head -1 | sed 's/^/      /'
   else
-    R8=FAIL; say "    --- where it stopped ---"
-    grep -nE "error:|Error [0-9]|internal compiler error" build.log 2>/dev/null \
-      | grep -v 'make\[' | head -15 | sed 's/^/      /'
-    tail -20 build.log 2>/dev/null | sed 's/^/      /'
+      R8=FAIL; say "    --- where it stopped ---"
+      grep -nE "error:|Error [0-9]|internal compiler error" build.log 2>/dev/null \
+        | grep -v 'make\[' | head -15 | sed 's/^/      /'
+      tail -20 build.log 2>/dev/null | sed 's/^/      /'
+
+      # ============ WHICH BINARY IS BROKEN, AND WHERE ============
+      #
+      # Run 85225865301 died with
+      #     /work/bld2/./gcc/xgcc -B/work/bld2/./gcc/ -dumpspecs > tmp-specs
+      #     make[2]: *** [Makefile:1868: specs] Segmentation fault (core dumped)
+      # -dumpspecs is the simplest thing a driver does: it prints a built-in
+      # string table and exits. It execs nothing -- no cc1, no as, no ld -- so
+      # the crash is inside xgcc itself.
+      #
+      # FOUR QUESTIONS, EACH ANSWERABLE IN SECONDS, NONE OF WHICH THE BUILD
+      # LOG ANSWERS:
+      #
+      #   1. Does STAGE 1's driver do this too, or only stage 2's? Stage 1
+      #      built stage 2, so if stage 1 is clean the miscompilation happened
+      #      in this rung; if stage 1 crashes the same way, rung 6 shipped a
+      #      broken compiler and its preflights missed it.
+      #   2. WHERE does it stop? --version, -dumpversion, -dumpmachine,
+      #      -print-search-dirs and -dumpspecs are increasing amounts of
+      #      driver, in roughly that order. The first one that dies names the
+      #      code path.
+      #   3. Is it DETERMINISTIC? Three runs of the same command. Intermittent
+      #      failure is uninitialised memory, which points somewhere quite
+      #      different from a consistent crash.
+      #   4. Does cc1 exist and run? xgcc is the driver; cc1 is the compiler.
+      #      A working cc1 behind a broken driver is a different repair.
+      #
+      # ONLY ON FAILURE, so a green run pays nothing for it.
+      say ""
+      say "    ============ POST-MORTEM: which binary, which call ============"
+      for _stage in 1 2; do
+        case "$_stage" in
+          1) _d=/work/bld  ; _lbl="stage 1 (built by tcc)" ;;
+          2) _d=/work/bld2 ; _lbl="stage 2 (built by stage 1)" ;;
+        esac
+        _x="$_d/gcc/xgcc"
+        say ""
+        say "    --- $_lbl: $_x ---"
+        if [ ! -x "$_x" ]; then
+          say "      not present"
+          continue
+        fi
+        say "      $(wc -c < "$_x") bytes"
+        for _arg in --version -dumpversion -dumpmachine -print-search-dirs -dumpspecs; do
+          set +e
+          "$_x" -B"$_d/gcc/" "$_arg" > /tmp/pm.out 2>/tmp/pm.err
+          _rc=$?
+          set -e
+          # 128+N IS A SIGNAL, AND 139 IS SIGSEGV. Printing the raw number
+          # rather than "failed" is the difference between "it crashed" and
+          # "it exited 1 with a message", which are not the same problem.
+          case "$_rc" in
+            0)   printf '      %-20s ok   %s\n' "$_arg" "$(head -c 60 /tmp/pm.out | tr '\n' ' ')" ;;
+            139) printf '      %-20s SEGFAULT (rc=139)\n' "$_arg" ;;
+            13[0-9]|14[0-9]) printf '      %-20s KILLED BY SIGNAL %s\n' "$_arg" "$((_rc-128))" ;;
+            *)   printf '      %-20s rc=%s  %s\n' "$_arg" "$_rc" "$(head -c 60 /tmp/pm.err | tr '\n' ' ')" ;;
+          esac
+        done
+        # DETERMINISM. Three of the same call; a mix of results is the answer
+        # on its own.
+        _codes=
+        for _i in 1 2 3; do
+          set +e; "$_x" -B"$_d/gcc/" -dumpspecs > /dev/null 2>&1; _codes="$_codes $?"; set -e
+        done
+        say "      -dumpspecs three times: rc =$_codes"
+        # AND THE COMPILER PROPER, which the driver only ever execs.
+        if [ -x "$_d/gcc/cc1" ]; then
+          set +e
+          printf 'int main(void){return 0;}\n' > /tmp/pm.c
+          "$_d/gcc/cc1" -quiet /tmp/pm.c -o /tmp/pm.s > /tmp/cc1.out 2>&1
+          _rc=$?
+          set -e
+          case "$_rc" in
+            0)   say "      cc1: compiled a trivial program ($(wc -c < /tmp/pm.s) bytes of asm)" ;;
+            139) say "      cc1: SEGFAULT -- the compiler, not just the driver" ;;
+            *)   say "      cc1: rc=$_rc"; head -3 /tmp/cc1.out | sed 's/^/        /' ;;
+          esac
+        else
+          say "      cc1: not present"
+        fi
+      done
+      # AND THE INSTALLED STAGE-1 DRIVER, which is not the same file as the
+      # one in /work/bld/gcc. $GCC1 is what rung 8 actually invoked to build
+      # stage 2, so if the two disagree the install is where to look.
+      say ""
+      say "    --- the installed stage-1 gcc: $GCC1 ---"
+      if [ -x "$GCC1" ]; then
+        for _arg in --version -dumpmachine -dumpspecs; do
+          set +e; "$GCC1" "$_arg" > /tmp/pm.out 2>/tmp/pm.err; _rc=$?; set -e
+          case "$_rc" in
+            0)   printf '      %-16s ok   %s\n' "$_arg" "$(head -c 56 /tmp/pm.out | tr '\n' ' ')" ;;
+            139) printf '      %-16s SEGFAULT (rc=139)\n' "$_arg" ;;
+            *)   printf '      %-16s rc=%s\n' "$_arg" "$_rc" ;;
+          esac
+        done
+      else
+        say "      not present"
+      fi
+      say "    ==============================================================="
   fi
   cd /work
 fi
@@ -6104,10 +6203,16 @@ printf '    %-40s %s\n' "4.6 libc.a gets libtcc1's helpers"   "$R46"
 printf '    %-40s %s\n' "4.7 m4 (gmp's configure needs it)"    "$R47"
 printf '    %-40s %s\n' "4.8 flex (git tree lacks gengtype-lex.c)" "$R48"
 printf '    %-40s %s\n' "5   gmp / mpfr / mpc"               "$R5"
-printf '    %-40s %s\n' "6   gcc 4.7.4 by tcc -- stage 4 stage 1" "$R6"
+# THE SUMMARY SAYS 4.6.4 BECAUSE THE RUNGS BUILD 4.6.4.
+# These labels still read "gcc 4.7.4" long after the head1 titles were
+# corrected, and they are what a reader sees FIRST -- I read this table in
+# run 85225865301 and concluded the run predated a commit it actually
+# contained. A summary that disagrees with the rungs it summarises is worse
+# than no summary.
+printf '    %-40s %s\n' "6   the 4.6.4 fork, by tcc"            "$R6"
 printf '    %-40s %s\n' "7   gmp/mpfr/mpc rebuilt by that gcc"   "$R7"
-printf '    %-40s %s\n' "8   gcc 4.7.4 again -- stage 4 stage 2" "$R8"
-printf '    %-40s %s\n' "9   gcc 10.2.0 by g++ 4.7.4"            "$R9"
+printf '    %-40s %s\n' "8   the 4.6.4 fork again"             "$R8"
+printf '    %-40s %s\n' "9   gcc 10.2.0 by the fork's g++"    "$R9"
 printf '    %-40s %s\n' "10  LFS 5.2 binutils pass 1"            "$R10"
 printf '    %-40s %s\n' "11  LFS 5.3 gcc 15 pass 1"              "$R11"
 printf '    %-40s %s\n' "11.5 perl (LFS puts it in ch7)"          "$R115"
