@@ -1129,7 +1129,7 @@ if [ "$B5" = ok ]; then
     else
       say "    kernel/time/timeconst.bc absent -- the kernel has moved it"
     fi
-    make ARCH=arm64 defconfig > /dev/null 2>&1
+    make ARCH=riscv defconfig > /dev/null 2>&1
     set_cfg() {   # $1 = symbol without CONFIG_, $2 = y|n
       sed -i "/^CONFIG_$1=/d; /^# CONFIG_$1 is not set/d" .config
       if [ "$2" = y ]; then echo "CONFIG_$1=y" >> .config
@@ -1143,7 +1143,7 @@ if [ "$B5" = ok ]; then
     set_cfg 9P_FS y
     # DRM AND INPUT, BUILT IN, BECAUSE =m IS THE SAME AS =n IN THIS SYSTEM.
     #
-    # Only arch/arm64/boot/Image leaves this build -- `make modules_install`
+    # Only arch/riscv/boot/Image leaves this build -- `make modules_install`
     # never runs, no /lib/modules ships, and there is no kmod and no modprobe.
     # So a symbol arm64 defconfig leaves at =m does not merely fail to load,
     # it does not exist. hwdata's stage-5 recipe already declines its
@@ -1233,7 +1233,7 @@ if [ "$B5" = ok ]; then
     # to see raw frames before an address exists.
     set_cfg VIRTIO_NET y
     set_cfg PACKET y
-    make ARCH=arm64 olddefconfig > /dev/null 2>&1
+    make ARCH=riscv olddefconfig > /dev/null 2>&1
     _bad=0
     [ "$B6" = FAIL ] && _bad=1
     grep -q "^CONFIG_WERROR=y" .config && { say "    WERROR came back after olddefconfig"; _bad=1; }
@@ -1372,9 +1372,16 @@ if [ "$B5" = ok ]; then
       # the documented failure is `date -d"$(date)"` under a non-C locale -- and
       # every timestamp path above runs through it.
       export LC_ALL=C
-      if timeout 7200 make ARCH=arm64 -j"$NP" Image > b.log 2>&1 \
-         && [ -f arch/arm64/boot/Image ]; then
-        cp arch/arm64/boot/Image "$W/Image"; B6=ok
+      # ARCH, THE TARGET AND THE PATH ARE ALL PER-ARCHITECTURE, and only the
+      # first was obvious. The kernel calls its image `Image` on arm64 and
+      # riscv and `bzImage` on x86, and puts it under arch/<dir>/boot where
+      # <dir> is not the ARCH= string either -- x86_64 builds land in
+      # arch/x86. Copying the aarch64 arm left `make ARCH=arm64` here, which
+      # would have configured and built a kernel for the wrong machine on a
+      # host that had just built a working native toolchain.
+      if timeout 7200 make ARCH=riscv -j"$NP" Image > b.log 2>&1 \
+         && [ -f arch/riscv/boot/Image ]; then
+        cp arch/riscv/boot/Image "$W/Image"; B6=ok
         say "    Image: $(wc -c < "$W/Image") bytes"
       else
         B6=FAIL; say "    --- errors ---"

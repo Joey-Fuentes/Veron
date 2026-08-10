@@ -1511,7 +1511,7 @@ jobs:
           fi
           echo "  Image:     $(stat -c%s "$IMG") bytes"
           echo "  initramfs: $(stat -c%s "$IRD") bytes"
-          echo "  booting on qemu-system-aarch64 -M virt ..."
+          echo "  booting on qemu-system-x86_64 ..."
           # THE SYSROOT, OFFERED OVER 9p, READ-ONLY.
           #
           # This is what lets the guest chroot into the sysroot this chain
@@ -1537,14 +1537,24 @@ jobs:
           # 600s: gcc under TCG emulation is slow, and a timeout that fires
           # reads exactly like a hang.
           set +e
-          timeout 600 qemu-system-aarch64 \
-            -M virt -cpu cortex-a57 -smp 2 -m 2048 \
+          # NATIVE x86_64, WITH NO -M virt AND NO -cpu. The aarch64 arm names
+          # a board and a CPU because qemu-system-aarch64 has no default
+          # machine and refuses to start without one. x86 has one -- `pc` --
+          # and this runner is x86_64, so the guest is the same architecture
+          # as the kernel it has just built.
+          timeout 600 qemu-system-x86_64 \
+            -smp 2 -m 2048 \
             -nographic -no-reboot -nic none \
             -fsdev local,id=vsysroot,path="$PWD/box/work/lfs",security_model=none,readonly=on \
             -device virtio-9p-pci,fsdev=vsysroot,mount_tag=veronsysroot \
             -kernel "$IMG" \
             -initrd "$IRD" \
-            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7" \
+            # ttyS0, NOT ttyAMA0. The console is the one part of this line
+            # that is not portable: ttyAMA0 is the PL011 on arm's `virt`
+            # board and does not exist on a PC. Getting it wrong gives a
+            # kernel that boots and says nothing, which reads exactly like a
+            # kernel that did not boot.
+            -append "console=ttyS0 earlycon rdinit=/init panic=1 loglevel=7" \
             > /tmp/boot.log 2>&1
           echo "  qemu rc=$?"
           set -e
