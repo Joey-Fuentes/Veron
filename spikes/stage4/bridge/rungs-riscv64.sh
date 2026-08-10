@@ -3511,6 +3511,66 @@ if [ "$R6" = ok ]; then
       ./p1.bin; say "      ran: exit=$? (expect 42)"
       rm -f p1.c p1.bin )
 
+    # AND A PROGRAM THAT DOES SOMETHING, because `return 42` proves almost
+    # nothing about a compiler.
+    #
+    # Run 85034305609 passed preflight 1, then gmp's own generators -- built
+    # by this gcc, from gmp's C -- died the moment they ran:
+    #     ./gen-fac 64 0 >fac_table.h
+    #     Segmentation fault
+    #     ./gen-sieve 64 >sieve_table.h
+    #     Segmentation fault
+    # Compilation and linking are fine; execution is not, and a `main` that
+    # returns a constant exercises neither the stack, nor printf, nor any
+    # library call, nor the soft-float helpers.
+    #
+    # THE SOFT-FLOAT HELPERS ARE THE FIRST SUSPECT AND THIS NAMES THEM.
+    # Rung 4.6 merged 19 of them out of libtcc1.a into libc.a because
+    # tcc-compiled musl called them. Those objects are TCC's, and RISC-V's
+    # long double is binary128 -- if tcc and gcc disagree about how a 128-bit
+    # float is passed, a gcc-compiled caller reaching a tcc-compiled helper is
+    # exactly the kind of fault that links cleanly and crashes at run time.
+    # gcc's own libgcc should define them too, and whichever the linker
+    # reaches first wins.
+    #
+    # Each line prints BEFORE the thing it tests, so a crash names the
+    # construct rather than leaving a bare "Segmentation fault" against a
+    # whole program.
+    ( cd /tmp && rm -f p1b.c p1b.bin
+      cat > p1b.c <<'P1BEOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+int main(void)
+{
+    char buf[64];
+    printf("      stdio ok\n");
+    memset(buf, 0, sizeof buf);
+    snprintf(buf, sizeof buf, "%d", 12345);
+    printf("      snprintf ok (%s)\n", buf);
+    void *p = malloc(4096);
+    if (!p) { printf("      malloc FAILED\n"); return 1; }
+    memset(p, 0xa5, 4096);
+    free(p);
+    printf("      malloc/memset/free ok\n");
+    double d = 1.5;
+    printf("      double ok (%f)\n", d * 2.0);
+    long double L = 1.5L;
+    printf("      long double ok (%Lf)\n", L * 2.0L);
+    long long n = 1;
+    for (int i = 0; i < 40; i++) n *= 2;
+    printf("      64-bit arith ok (%lld)\n", n);
+    return 0;
+}
+P1BEOF
+      if "$GCC1" -static -o p1b.bin p1b.c 2>/tmp/p1b.err; then
+        ./p1b.bin; say "      exit=$? (expect 0)"
+      else
+        say "      p1b did not compile:"
+        head -6 /tmp/p1b.err | sed 's/^/        /'
+      fi
+      rm -f p1b.c p1b.bin )
+
     say "    --- preflight 2: the tcc-built gmp/mpfr/mpc, as configure checks them ---"
     ( cd /tmp && rm -f p2.c p2.bin
       printf '#include <mpc.h>\nint main(void){ mpc_t x; mpc_init2(x, 53); return 0; }\n' > p2.c
