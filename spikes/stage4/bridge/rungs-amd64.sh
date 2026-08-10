@@ -3195,6 +3195,23 @@ SITEEOF
         # command, the error and the verdict together.
         grep -n -B6 -E "^configure:[0-9]+: \\$\\? = [1-9]" "$_cl" 2>/dev/null \
           | tail -24 | sed 's/^/          /'
+        # AND THE FATAL LINE WITH ITS OWN CONTEXT, SEPARATELY.
+        #
+        # The failing-status grep above keeps the LAST two dozen, and a
+        # configure log is mostly negative feature tests -- "does the
+        # assembler support .uleb128", no, recorded, carry on. Run
+        # 85015824106 filled that window with exactly those and pushed the
+        # one line that stopped the build off the top:
+        #
+        #     configure:8578: error: in `/work/bld/gcc':
+        #
+        # 8578 is early; 21844 and 26353 are late and harmless. The fatal
+        # marker is `configure:N: error:` at the start of a line, and it
+        # deserves its own look rather than a place in a queue ordered by
+        # position.
+        say "    --- the line that stopped it, in $_d ---"
+        grep -n -B8 -E "^configure:[0-9]+: error:" "$_cl" 2>/dev/null \
+          | grep -avE "^[0-9]+-\\| " | tail -14 | sed 's/^/          /'
         say "    --- conftest commands in $_d ---"
         grep -nE "^configure:[0-9]+: .*(gcc|g\+\+|xgcc|xg\+\+|cc-static)" "$_cl" 2>/dev/null \
           | tail -6 | sed 's/^/          /'
@@ -3930,19 +3947,69 @@ if [ "$R10" = ok ]; then
       ls "/work/src/$g15/gcc/config" | sed 's/^/      /' | head -30
       R11=FAIL
     else
-      _hits=$(grep -l 'lib64' "$_cd"/t-* 2>/dev/null || true)
-      if [ -z "$_hits" ]; then
-        say "    no t-* file under $_cd mentions lib64. Present:"
+      # ONLY THE MULTILIB DIRECTORY NAMES, AND ONLY IN t-linux64.
+      #
+      # The first version sed'd lib64 -> lib in EVERY t-* under config/i386
+      # that mentioned it, and run 85019254195 shows what that touched:
+      #     t-gnu64: 12 lib lines, lib64 removed      (GNU Hurd)
+      #     t-linux64: 12 lib lines, lib64 removed
+      #     t-mingw-w32: 1 lib lines, lib64 removed   (Windows)
+      # Two of those three are targets this chain never builds. The aarch64
+      # arm seds one line -- `mabi.lp64=` -- and that precision is the point.
+      _t="$_cd/t-linux64"
+      if [ ! -f "$_t" ]; then
+        say "    $_t is missing. t-* files present:"
         ls "$_cd"/t-* 2>/dev/null | sed 's/^/      /'
-        say "    (if this target has no multilib lib64 split there is nothing"
-        say "     to sed, but say so deliberately rather than by silence)"
+        R11=FAIL
+      elif ! grep -q 'MULTILIB_OSDIRNAMES' "$_t"; then
+        say "    $_t has no MULTILIB_OSDIRNAMES line. It reads:"
+        sed 's/^/      /' "$_t"
         R11=FAIL
       else
-        for _t in $_hits; do
-          sed -i.orig 's|lib64|lib|g' "$_t"
-        say "    $(basename "$_t"): $(grep -c 'lib' "$_t") lib lines, lib64 removed"
-          grep -n 'MULTILIB_OSDIRNAMES\|mabi' "$_t" 2>/dev/null | head -4 | sed 's/^/      /'
-        done
+        sed -i.orig '/MULTILIB_OSDIRNAMES/s|\.\./lib64|../lib|g' "$_t"
+        say "    t-linux64 multilib dirs:"
+        grep -n 'MULTILIB_OSDIRNAMES' "$_t" | sed 's/^/      /'
+      fi
+
+      # AND THE ELF INTERPRETER, WHICH IS A SEPARATE THING ENTIRELY.
+      #
+      # The lines above say where LIBRARIES go. This one is the path baked
+      # into every executable gcc links: GLIBC_DYNAMIC_LINKER64 in
+      # config/i386/linux64.h, which reads /lib64/ld-linux-x86-64.so.2.
+      #
+      # THIS SYSROOT HAS NO /lib64 AND THAT IS DELIBERATE. rungs.sh quotes
+      # the book: "The LFS editors have deliberately decided not to use a
+      # /usr/lib64 directory ... If for any reason this directory appears it
+      # may break your system." aarch64 never meets this because its
+      # interpreter is /lib/ld-linux-aarch64.so.1.
+      #
+      # glibc HERE PUTS ITS LOADER IN /usr/lib -- rung 13 passes
+      # libc_cv_slibdir=/usr/lib -- and phase A's own diagnostic said so:
+      #     [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+      #     That interpreter lives at /work/lfs/usr/lib
+      # So the loader is where the sysroot wants it and only gcc disagrees.
+      # Run 85019254195 cleared every rung to 16, entered phase B, and
+      # stopped at B0 with every tool "present, DOES NOT EXECUTE".
+      #
+      # A /lib64 SYMLINK WOULD ALSO WORK and is what LFS does on x86_64. It
+      # is not what this chain wants: the directory would have to survive
+      # into stage 5, where the book warns it may break things. Changing the
+      # path gcc bakes in keeps the sysroot single-libdir.
+      _dl="$_cd/linux64.h"
+      if [ ! -f "$_dl" ]; then
+        say "    $_dl is missing -- gcc has moved the dynamic linker define"
+        R11=FAIL
+      elif ! grep -q 'GLIBC_DYNAMIC_LINKER64' "$_dl"; then
+        say "    $_dl has no GLIBC_DYNAMIC_LINKER64. Defines present:"
+        grep -n 'DYNAMIC_LINKER' "$_dl" | sed 's/^/      /'
+        R11=FAIL
+      else
+        sed -i.orig 's|/lib64/ld-linux-x86-64\.so\.2|/lib/ld-linux-x86-64.so.2|g' "$_dl"
+        say "    interpreter:"
+        grep -n 'GLIBC_DYNAMIC_LINKER' "$_dl" | sed 's/^/      /'
+        if grep -q '/lib64/ld-linux' "$_dl"; then
+          say "    STILL /lib64 SOMEWHERE -- the sed did not take"; R11=FAIL
+        fi
       fi
       fi
   fi

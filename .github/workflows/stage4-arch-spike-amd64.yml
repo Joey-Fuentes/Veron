@@ -1268,7 +1268,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: buildlogs-reference
+          name: buildlogs-amd64
           path: buildlogs/
           retention-days: 14
           if-no-files-found: ignore
@@ -1294,7 +1294,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: veron-boot-reference
+          name: veron-boot-amd64
           path: boot/
           retention-days: 30
           if-no-files-found: ignore
@@ -1320,7 +1320,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: veron-toolchain-reference
+          name: veron-toolchain-amd64
           path: toolchain/
           retention-days: 30
           if-no-files-found: ignore
@@ -1342,7 +1342,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sysroot-manifest-reference
+          name: sysroot-manifest-amd64
           path: manifest/
           retention-days: 30
           if-no-files-found: ignore
@@ -1398,7 +1398,7 @@ jobs:
           #
           # `${{ github.run_id }}` makes each save unique; restore by the
           # prefix `sysroot-ARM-GLIBC-KHDR-v2-` to get the most recent.
-          key: sysroot-reference-${{ env.GLIBC }}-${{ env.KHDR }}-v2-${{ github.run_id }}
+          key: sysroot-amd64-${{ env.GLIBC }}-${{ env.KHDR }}-v2-${{ github.run_id }}
 
       - name: 'THE APPLET SET: what the chain actually invoked'
         if: always()
