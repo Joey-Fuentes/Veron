@@ -1306,6 +1306,41 @@ rather than truncating them away behind the successes.
 
 ---
 
+## A second architecture, and how it stays separate
+
+`stage5-spike-amd64` is stage 5 on x86_64. It is a **copy** of the workflow,
+not a matrix over it, for the reason stage 4's arch spikes give about their
+own copies — a failure on one architecture must not make the working arm
+answerable for it, and this workflow is the one that publishes the image.
+
+**Seven recipes name aarch64 literally** — a triplet, a NEON flag, an LLVM
+backend, and four packages whose x86 assembly needs a `nasm` that is not
+pinned. They are not edited. `packages-amd64/` holds replacements that only
+that workflow loads:
+
+```sh
+python3 tools/veron --overlay packages-amd64 --plan PLAN-amd64.txt plan --check
+```
+
+`--overlay` **replaces** recipes by name and can do nothing else: a name with
+no base in `packages/` is refused, because the only way to write one is a
+typo. With no `--overlay` every path is the one it was before, so this arm
+runs unchanged.
+
+**The gate that makes duplicating a recipe safe** is that `selftest` refuses
+to let the two copies disagree about `version`, `url` or `sha256` — flags are
+what an overlay exists to change; what is built is not. Without it the two
+trees would eventually compile different upstream source under one package
+name while both looked green.
+
+`PLAN.txt` and `PLAN-amd64.txt` differ in **28 lines** — seven `argv` and
+seven `recipe-sha` — which is the whole architectural delta and the cheapest
+review of it. **Nothing has been built for x86_64 yet.** See
+[`AMD64.md`](./AMD64.md) for what each of the seven costs, what is still open,
+and what was measured before the first dispatch.
+
+---
+
 ## Where to read next
 
 - [`PACKAGES.md`](./PACKAGES.md) — nine tarballs read source-first, digests
@@ -1313,6 +1348,9 @@ rather than truncating them away behind the successes.
 - [`ROADMAP.md`](./ROADMAP.md) — the rules the driver enforces (a package's
   peculiarity stays in its recipe; global policy is a closed set; declare what
   you install; disclose what static analysis cannot find) and the ordered work.
+- [`AMD64.md`](./AMD64.md) — the x86_64 arm: the overlay mechanism, the seven
+  recipes that differ and what declining their assembly costs, and the gates
+  that keep the two trees from drifting.
 - [`KERNEL-CHANGES.md`](./KERNEL-CHANGES.md) — what stage 5 has measured that
   the kernel needs, accumulated and reconciled in **one pass at the end**
   rather than one rebuild per finding. Currently: `MODULES=n` (1423 modules

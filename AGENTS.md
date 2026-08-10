@@ -379,6 +379,31 @@ upstream that starts shipping one more binary becomes a decision rather than a
 quiet growth in the image. Seed it with `veron installs --propose --write`
 from a build whose gates have already passed, never from an arbitrary one.
 
+## Per-architecture recipes
+
+A recipe that must say something different on another architecture is
+**replaced through an overlay, never edited in place and never forked as a
+tree**. `veron --overlay <dir>` swaps individual recipes by name;
+`stage5-spike-amd64` uses `spikes/stage5/packages-amd64/` and its own
+`PLAN-amd64.txt`.
+
+Three rules, all enforced by `selftest`:
+
+- **An overlay replaces; it does not introduce.** A directory with no base in
+  `packages/` is refused, because the only way to write one is a typo — and a
+  typo would add a package while leaving the one it meant to override alone.
+- **An overlay changes flags, not what is built.** `version` and every
+  `[source]` key must match the base recipe. Bump a pin in both files or in
+  neither; two architectures building different upstream source under one
+  package name would make every comparison between them meaningless while
+  looking green.
+- **An overlay recipe is a whole recipe.** Not a set of keys to merge — a
+  reader of one recipe must still see everything strange about that package,
+  and a merge puts the thing that runs in neither file. It carries its own
+  `patches/` and `files/`.
+
+Each architecture gets its own plan file. Never point two at one `PLAN.txt`.
+
 ## Authentication
 
 The system is **PAM-free** and passwordless by design — see

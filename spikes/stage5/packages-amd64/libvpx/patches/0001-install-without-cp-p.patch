@@ -1,0 +1,35 @@
+Install with cp rather than cp -p, so installed modes are the target's.
+
+WHY: libvpx's install rule uses `cp -p`, which preserves the SOURCE file's
+ownership, permissions and timestamps rather than applying the install target's.
+BLFS carries the same edit and explains it as correcting "the ownership and
+permissions of installed files".
+
+IT MATTERS MORE HERE THAN THERE. Every path in the image is recorded in
+files.tsv with its mode, and `veron compare` checks that record against a
+running system. A library whose permissions came from whatever the tarball
+happened to carry is a mode nobody chose, and it would differ between a build
+from a fresh unpack and one from a restored checkpoint.
+
+WHY A PATCH RATHER THAN A sed STEP. This was first written as
+`sed -i 's/cp -p/cp/' build/make/Makefile` inside a shell step, and that was
+the only place in the set where source was modified outside patches/ --
+ROADMAP.md makes the recipe the unit and the other four source edits (glib,
+graphite2, wlroots twice) are all patches. apply_patches records a patch in
+PLAN.txt by name and FAILS THE BUILD if it no longer applies; a sed that
+matches nothing succeeds silently and ships an unmodified file, which is
+exactly the failure this project keeps finding elsewhere.
+
+Generated with `diff -u`, not written by hand.
+
+--- a/build/make/Makefile
++++ b/build/make/Makefile
+@@ -302,7 +302,7 @@
+ $(DIST_DIR)/$(1): $(2)
+ 	$(if $(quiet),@echo "    [INSTALL] $$@")
+ 	$(qexec)mkdir -p $$(dir $$@)
+-	$(qexec)cp -p $$< $$@
++	$(qexec)cp $$< $$@
+ endef
+ 
+ define archive_template

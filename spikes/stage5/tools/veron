@@ -45,6 +45,35 @@ PKGDIR = os.path.join(HERE, "packages")
 POLICY = os.path.join(HERE, "policy")
 PLANFILE = os.path.join(HERE, "PLAN.txt")
 
+# A SECOND ARCHITECTURE'S RECIPES, WITHOUT A SECOND DRIVER.
+#
+# stage5-spike-amd64 needs seven recipes to say something different -- a
+# triplet, a NEON flag, an LLVM backend -- and must not be able to change what
+# stage5-spike builds. Three shapes were possible and two were rejected:
+#
+#   A SECOND packages/ TREE, COPIED WHOLE. 122 recipes duplicated so that 7
+#   could differ. Every pin, every patch and every version bump would then
+#   exist twice with nothing comparing them, which is the drift argument
+#   stage 4's two arms make about rungs.sh.
+#
+#   A SECOND DRIVER. 4,900 lines duplicated for the same 7. Worse for the
+#   same reason and harder to see.
+#
+#   AN OVERLAY, WHICH IS THIS. `--overlay <dir>` REPLACES individual recipes
+#   by name and can do nothing else: it cannot introduce a package (a name not
+#   in the base tree is refused, because the only way to produce one is a
+#   typo) and it cannot reach the base tree at all. With no --overlay the
+#   value is "" and every path below is the one it was before -- the aarch64
+#   arm passes no such flag and runs byte-identically.
+#
+# THE OVERLAY IS NOT A DIFF, DELIBERATELY. An overlay recipe is a WHOLE
+# recipe, not a set of keys to merge, because ROADMAP.md's first rule is that
+# a reader of one recipe can see everything strange about that package -- and
+# a merge means the thing that runs is in neither file. The cost is that pins
+# are stated twice, so `selftest` refuses to let the two copies disagree about
+# version, url or sha256. That gate is what makes the duplication safe.
+OVERLAY = ""
+
 PLAN_VERSION = "1"
 
 
@@ -78,91 +107,107 @@ def load_recipes():
     out = {}
     if not os.path.isdir(PKGDIR):
         return out
-    for name in sorted(os.listdir(PKGDIR)):
-        rp = os.path.join(PKGDIR, name, "recipe.toml")
-        if not os.path.isfile(rp):
-            continue
-        raw = open(rp, "rb").read()
-        r = tomllib.loads(raw.decode())
-        r["_dir"] = os.path.join(PKGDIR, name)
-        # THE RECIPE IS NOT THE WHOLE INPUT FOR A LOCAL PACKAGE, AND THAT
-        # SHIPPED A STALE /etc.
-        #
-        # For every other package the source is a pinned tarball, so hashing
-        # recipe.toml identifies the build completely. `kind = "local"` breaks
-        # that: veron-system's source IS its files/ directory, and editing
-        # /etc/dinit.d/early-filesystems does not touch recipe.toml.
-        #
-        # So the key did not move, the checkpoint restored the old DESTDIR,
-        # and a boot fixed and tested locally failed in CI with the identical
-        # error -- because the image still carried the previous /etc. The
-        # restore was correct about the key and the key was wrong about the
-        # inputs.
-        #
-        # files/ is folded in, sorted, path and content both, so a rename is
-        # as visible as an edit.
-        # THE KEY HASHES BUILD INPUTS, NOT ASSERTIONS ABOUT THE OUTPUT.
-        #
-        # It used to hash the whole recipe.toml, and that made the checkpoint
-        # eat itself. `[installs].digest` DESCRIBES WHAT THE BUILD PRODUCED;
-        # it is not an input to producing it. So re-deriving those pins moved
-        # every key and rebuilt all 69 packages -- bzip2's entire diff was one
-        # digest line, and it rebuilt from source.
-        #
-        # Worse, it is self-perpetuating: `seed_installs` writes an [installs]
-        # block into every recipe, so the run that records what a build
-        # produced guarantees the next run cannot reuse it. The cache was
-        # invalidated by the act of describing its own contents.
-        #
-        # EXCLUDED BY NAME, AND EXCLUSION IS THE SAFE DIRECTION. A section
-        # added later is included automatically, so a genuine new input
-        # invalidates the key rather than being silently ignored -- which is
-        # the failure that would be expensive. Each of these four is an
-        # assertion or a description, checked elsewhere:
-        #
-        #   installs      output pins; `veron installs` compares them
-        #   guest         post-build sanity tests, run on every boot anyway
-        #   declared      documentation of flags; the selftest cross-checks it
-        #                 against the argv in [[steps]], which IS hashed
-        #   undeclarable  prose, per ROADMAP.md rule 4
-        #
-        # HASHED FROM THE PARSED DOCUMENT, NOT THE TEXT. Stripping sections
-        # out of the raw bytes would make the key depend on comment placement
-        # and key order -- so a reflowed comment would rebuild the world for
-        # the same reason this comment block exists.
-        _inputs = {k: v for k, v in r.items()
-                   if k not in ("installs", "guest", "declared",
-                                "undeclarable", "_dir")}
-        h = hashlib.sha256(
-            json.dumps(_inputs, sort_keys=True, default=str).encode())
-        fdir = os.path.join(PKGDIR, name, "files")
-        if os.path.isdir(fdir):
-            for root, dirs, fs in os.walk(fdir):
-                dirs.sort()
-                for fn in sorted(fs):
-                    fp = os.path.join(root, fn)
-                    rel = os.path.relpath(fp, fdir).encode()
-                    h.update(b"\0" + rel + b"\0")
-                    if os.path.islink(fp):
-                        h.update(b"L" + os.readlink(fp).encode())
-                    else:
-                        with open(fp, "rb") as fh:
-                            h.update(b"F" + fh.read())
-        # PATCHES ARE INPUTS AND WERE ONLY HASHED BY ACCIDENT. They used to
-        # ride along inside the raw recipe bytes -- they did not; the recipe
-        # only names the directory. A patch edit changed what got built and
-        # moved no key. Folded in explicitly now, same shape as files/.
-        pdir = os.path.join(PKGDIR, name, "patches")
-        if os.path.isdir(pdir):
-            for fn in sorted(f for f in os.listdir(pdir)
-                             if f.endswith(".patch")):
-                h.update(b"\0P" + fn.encode() + b"\0")
-                with open(os.path.join(pdir, fn), "rb") as fh:
-                    h.update(fh.read())
-        r["_recipe_sha256"] = h.hexdigest()
-        if r["name"] != name:
-            die(f"{rp}: name '{r['name']}' does not match directory '{name}'")
-        out[r["name"]] = r
+    dirs = [PKGDIR] + ([OVERLAY] if OVERLAY else [])
+    for base in dirs:
+        if base is not PKGDIR and not os.path.isdir(base):
+            die(f"--overlay {base} is not a directory")
+        for name in sorted(os.listdir(base)):
+            rp = os.path.join(base, name, "recipe.toml")
+            if not os.path.isfile(rp):
+                continue
+            # AN OVERLAY MAY REPLACE, NEVER INTRODUCE.
+            #
+            # The only way to write an overlay directory whose name is not in
+            # the base tree is to misspell one -- and the misspelling would
+            # otherwise ADD a package while leaving the one it meant to
+            # override untouched. Both halves of that are silent: the plan
+            # grows by one, the flag that was supposed to change is still the
+            # old one, and the build fails somewhere else for a reason that
+            # names neither.
+            if base is not PKGDIR and name not in out:
+                die(f"overlay recipe {name!r} has no base in packages/ -- "
+                    f"an overlay replaces, it does not introduce. Misspelling?")
+            raw = open(rp, "rb").read()
+            r = tomllib.loads(raw.decode())
+            r["_dir"] = os.path.join(base, name)
+            # THE RECIPE IS NOT THE WHOLE INPUT FOR A LOCAL PACKAGE, AND THAT
+            # SHIPPED A STALE /etc.
+            #
+            # For every other package the source is a pinned tarball, so hashing
+            # recipe.toml identifies the build completely. `kind = "local"` breaks
+            # that: veron-system's source IS its files/ directory, and editing
+            # /etc/dinit.d/early-filesystems does not touch recipe.toml.
+            #
+            # So the key did not move, the checkpoint restored the old DESTDIR,
+            # and a boot fixed and tested locally failed in CI with the identical
+            # error -- because the image still carried the previous /etc. The
+            # restore was correct about the key and the key was wrong about the
+            # inputs.
+            #
+            # files/ is folded in, sorted, path and content both, so a rename is
+            # as visible as an edit.
+            # THE KEY HASHES BUILD INPUTS, NOT ASSERTIONS ABOUT THE OUTPUT.
+            #
+            # It used to hash the whole recipe.toml, and that made the checkpoint
+            # eat itself. `[installs].digest` DESCRIBES WHAT THE BUILD PRODUCED;
+            # it is not an input to producing it. So re-deriving those pins moved
+            # every key and rebuilt all 69 packages -- bzip2's entire diff was one
+            # digest line, and it rebuilt from source.
+            #
+            # Worse, it is self-perpetuating: `seed_installs` writes an [installs]
+            # block into every recipe, so the run that records what a build
+            # produced guarantees the next run cannot reuse it. The cache was
+            # invalidated by the act of describing its own contents.
+            #
+            # EXCLUDED BY NAME, AND EXCLUSION IS THE SAFE DIRECTION. A section
+            # added later is included automatically, so a genuine new input
+            # invalidates the key rather than being silently ignored -- which is
+            # the failure that would be expensive. Each of these four is an
+            # assertion or a description, checked elsewhere:
+            #
+            #   installs      output pins; `veron installs` compares them
+            #   guest         post-build sanity tests, run on every boot anyway
+            #   declared      documentation of flags; the selftest cross-checks it
+            #                 against the argv in [[steps]], which IS hashed
+            #   undeclarable  prose, per ROADMAP.md rule 4
+            #
+            # HASHED FROM THE PARSED DOCUMENT, NOT THE TEXT. Stripping sections
+            # out of the raw bytes would make the key depend on comment placement
+            # and key order -- so a reflowed comment would rebuild the world for
+            # the same reason this comment block exists.
+            _inputs = {k: v for k, v in r.items()
+                       if k not in ("installs", "guest", "declared",
+                                    "undeclarable", "_dir")}
+            h = hashlib.sha256(
+                json.dumps(_inputs, sort_keys=True, default=str).encode())
+            fdir = os.path.join(r["_dir"], "files")
+            if os.path.isdir(fdir):
+                for root, dirs, fs in os.walk(fdir):
+                    dirs.sort()
+                    for fn in sorted(fs):
+                        fp = os.path.join(root, fn)
+                        rel = os.path.relpath(fp, fdir).encode()
+                        h.update(b"\0" + rel + b"\0")
+                        if os.path.islink(fp):
+                            h.update(b"L" + os.readlink(fp).encode())
+                        else:
+                            with open(fp, "rb") as fh:
+                                h.update(b"F" + fh.read())
+            # PATCHES ARE INPUTS AND WERE ONLY HASHED BY ACCIDENT. They used to
+            # ride along inside the raw recipe bytes -- they did not; the recipe
+            # only names the directory. A patch edit changed what got built and
+            # moved no key. Folded in explicitly now, same shape as files/.
+            pdir = os.path.join(r["_dir"], "patches")
+            if os.path.isdir(pdir):
+                for fn in sorted(f for f in os.listdir(pdir)
+                                 if f.endswith(".patch")):
+                    h.update(b"\0P" + fn.encode() + b"\0")
+                    with open(os.path.join(pdir, fn), "rb") as fh:
+                        h.update(fh.read())
+            r["_recipe_sha256"] = h.hexdigest()
+            if r["name"] != name:
+                die(f"{rp}: name '{r['name']}' does not match directory '{name}'")
+            out[r["name"]] = r
     return out
 
 
@@ -3447,9 +3492,15 @@ def cmd_selftest(a):
             'env = { VERON_SELFTEST_MARKER = "applied" }\n'
             "run = [['sh','-c','test \"$VERON_SELFTEST_MARKER\" = applied']]\n")
 
-        global PKGDIR
-        saved = PKGDIR
+        # THE OVERLAY IS SUSPENDED FOR THE FIXTURE, NOT MERELY UNUSED. With
+        # --overlay set, load_recipes() would try to replace names in a
+        # one-package temporary tree and die on "no base in packages/" -- so
+        # the amd64 arm's selftest would fail on the fixture rather than on
+        # anything it was written to test.
+        global PKGDIR, OVERLAY
+        saved, saved_ov = PKGDIR, OVERLAY
         PKGDIR = os.path.join(td, "packages")
+        OVERLAY = ""
         try:
             recipes = load_recipes()
             policy = load_policy()
@@ -3474,7 +3525,7 @@ def cmd_selftest(a):
             else:
                 print("  ok    per-step env reaches the process")
         finally:
-            PKGDIR = saved
+            PKGDIR, OVERLAY = saved, saved_ov
 
     with tempfile.TemporaryDirectory() as td:
         d = os.path.join(td, "dest", "p"); os.makedirs(os.path.join(d, "usr", "bin"))
@@ -4648,6 +4699,63 @@ def cmd_selftest(a):
     else:
         print("  ok    every triplet a recipe names carries the veron vendor")
 
+    # AN OVERLAY RECIPE MAY CHANGE FLAGS. IT MAY NOT CHANGE WHAT IS BUILT.
+    #
+    # This is the gate that makes the duplication safe, and without it the
+    # overlay is a liability rather than a mechanism. An overlay recipe is a
+    # WHOLE recipe, so it restates the version, the url and the sha256 -- and
+    # the failure mode of every copied pin in history is that one copy gets
+    # bumped and the other does not. Two architectures would then build
+    # different upstream source under one package name, and every artifact
+    # comparison between them would be measuring the wrong thing while looking
+    # green.
+    #
+    # WHAT IS COMPARED IS THE SOURCE IDENTITY AND NOTHING ELSE: version, and
+    # every key of [source]. Flags, steps, patches and [installs] are exactly
+    # what an overlay exists to change and are deliberately not compared.
+    #
+    # ONLY WHEN AN OVERLAY IS IN USE. With no --overlay this block does not
+    # run at all, so the aarch64 arm's selftest is unchanged -- an arm must
+    # not go red for a fault in an architecture it does not build.
+    if OVERLAY:
+        _ov = load_recipes()                     # base + overlay applied
+        _saved_ov = OVERLAY
+        globals()["OVERLAY"] = ""
+        try:
+            _base = load_recipes()               # base alone
+        finally:
+            globals()["OVERLAY"] = _saved_ov
+        _drift = []
+        _n = 0
+        for _name in sorted(os.listdir(OVERLAY)):
+            if not os.path.isfile(os.path.join(OVERLAY, _name, "recipe.toml")):
+                continue
+            _n += 1
+            _b, _o = _base.get(_name), _ov.get(_name)
+            if _b is None:
+                # load_recipes already dies on this; belt and braces, because
+                # a check that assumes another check ran is a check that stops
+                # working the day that one moves.
+                _drift.append(f"{_name}: no base recipe")
+                continue
+            if _b.get("version") != _o.get("version"):
+                _drift.append(f"{_name}: version {_b.get('version')!r} "
+                              f"base vs {_o.get('version')!r} overlay")
+            _bs, _os_ = _b.get("source", {}), _o.get("source", {})
+            for _k in sorted(set(_bs) | set(_os_)):
+                if _bs.get(_k) != _os_.get(_k):
+                    _drift.append(f"{_name}: source.{_k} differs between "
+                                  f"packages/ and the overlay")
+        if _drift:
+            for _x in _drift:
+                print(f"  FAIL  overlay pin drift -- {_x}")
+            print("        an overlay changes FLAGS, not what is built. Fix "
+                  "the pin in both files or in neither.")
+            ok = False
+        else:
+            print(f"  ok    {_n} overlay recipe(s) pin the same source as "
+                  f"their base")
+
     # AND THE sha256 MUST AGREE WITH THE ROW, NOT MERELY HAVE ONE.
     #
     # unifdef shipped a digest measured off a .tar.GZ and pinned against a
@@ -4790,6 +4898,16 @@ def build_parser():
     ap.add_argument("--out", default="out")
     ap.add_argument("--logs", default="logs")
     ap.add_argument("--ledger", default="ledger")
+    # BOTH GLOBAL, BECAUSE EVERY SUBCOMMAND THAT LOADS RECIPES NEEDS THEM.
+    # --dest is global for the same reason and `veron merge --dest dest` still
+    # cost a run; a per-subcommand copy of these would cost the same run twice.
+    ap.add_argument("--overlay", default="",
+                    help="a directory of recipes that REPLACE ones in "
+                         "packages/ by name. Cannot introduce a package.")
+    ap.add_argument("--plan", dest="planfile", default="",
+                    help="the plan file to write or check (default PLAN.txt). "
+                         "An overlay produces a different plan and must not "
+                         "be diffed against the base tree's.")
     # NO DEFAULT WORTH TRUSTING. "/sysroot" was wrong inside the sandbox and
     # wrong outside it, and the wrongness was silent. Required, so it is
     # always a decision.
@@ -4934,6 +5052,15 @@ def main():
         pass
     reset_inherited_signals()
     a = build_parser().parse_args()
+    # THE GLOBALS ARE SET HERE AND NOWHERE ELSE. build_parser() is also called
+    # by the CLI-surface check, which parses every invocation in every
+    # workflow file -- if that call had side effects, checking the command
+    # lines would change what the checker itself loads.
+    global OVERLAY, PLANFILE
+    if getattr(a, "overlay", ""):
+        OVERLAY = os.path.abspath(a.overlay)
+    if getattr(a, "planfile", ""):
+        PLANFILE = os.path.abspath(a.planfile)
     sys.exit(a.fn(a))
 
 

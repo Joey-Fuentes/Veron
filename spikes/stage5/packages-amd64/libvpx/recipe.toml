@@ -1,0 +1,137 @@
+# ============================================================ AMD64 OVERLAY
+# A REPLACEMENT FOR packages/libvpx/recipe.toml, USED ONLY BY
+# stage5-spike-amd64 (`veron --overlay packages-amd64`). The aarch64 arm never
+# loads this file.
+#
+# WHAT DIFFERS FROM THE BASE RECIPE:
+#   --target=generic-gnu ADDED.
+#
+# THE BASE RECIPE PREDICTED THIS IN WRITING: "there is nothing to declare here
+# that would be required on x86 -- worth writing down, because a recipe that
+# builds on ARM and fails on x86 for a missing nasm is the kind of thing that
+# looks like a regression later." It is that, and it is not a regression.
+#
+# configure's --as offers yasm or nasm and defaults to auto; with neither
+# present on an x86_64 host it stops at assembler detection. --target=generic-
+# gnu selects the portable C target and takes the whole assembly path out,
+# which is the documented way to build libvpx without an assembler.
+#
+# THE COST IS LARGE AND DECLARED: generic-gnu also turns off runtime CPU
+# detection, so this is scalar C for VP8 and VP9. Pinning nasm and passing a
+# real x86_64 target is the fix -- AMD64.md.
+#
+# THE PIN IS NOT ALLOWED TO DIFFER. `veron --overlay ... selftest` compares
+# version and every [source] key against packages/libvpx/recipe.toml and fails
+# if they disagree, so this file can change flags and can never change what is
+# built. Bump the version in both files or in neither.
+# ===========================================================================
+
+name    = "libvpx"
+version = "1.16.0"
+group   = "media"
+license = "BSD-3-Clause"
+srcdir  = "libvpx-1.16.0"
+
+[source]
+url       = "https://github.com/webmproject/libvpx/archive/v1.16.0/libvpx-1.16.0.tar.gz"
+sha256    = "7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c"
+signature = "none published -- GitHub archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+# --enable-shared IS OPT-IN AND --enable-static IS THE DEFAULT. Both stated.
+optional_off = ["examples", "tools", "docs", "unit-tests"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--enable-shared", "--disable-static",
+                   "--disable-examples", "--disable-tools", "--disable-docs",
+                   "--enable-vp8", "--enable-vp9", "--enable-pic",
+                   "--target=generic-gnu"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libvpx"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+ITS configure IS HAND-WRITTEN, NOT autoconf, AND THE DEFAULTS RUN THE OTHER \
+WAY. `--enable-shared` is opt-IN here and `--disable-static` must be asked for \
+-- the reverse of the autotools convention used everywhere else in this set. \
+An unqualified build produces a static archive only, which would be linked \
+into ffmpeg and then invisible to `veron linked` for the same reason utf8proc \
+would have been.
+
+--enable-pic IS STATED. Without it a static-leaning build can produce objects \
+that will not link into a shared ffmpeg, and the failure appears at ffmpeg's \
+link step rather than here.
+
+VP8 AND VP9 ARE BOTH ENABLED, DELIBERATELY. VP9 is what WebM serves today and \
+VP8 is still present in WebRTC-era content; neither is large enough to argue \
+about, and enabling them by name means an upstream default change cannot \
+quietly drop one.
+
+BLFS CROSS-CHECK, AND IT CHANGED TWO THINGS. multimedia/libvpx.html agrees on \
+--enable-shared and --disable-static, and adds two steps this recipe did not \
+have: a dedicated build directory, because "the libvpx developers recommend \
+building in a dedicated build directory", and an edit to build/make/Makefile \
+correcting installed ownership and permissions. Both are now here -- the second \
+as patches/0001 rather than as the book's inline sed, because it modifies \
+source and every other source edit in this set is a patch. See that file.
+
+configure PROBED diff BY ASKING ITS VERSION, WHICH busybox DOES NOT ANSWER. \
+configure:194 runs `diff --version` and dies with "diff missing: Try installing \
+diffutils via your package manager" -- on a system whose diff works. NO \
+busybox applet supports --version: diff, sed, awk, grep, find and sort were all \
+checked and none does. patches/0002 changes the probe to `diff /dev/null \
+/dev/null`, which tests the capability rather than the implementation. libvpx \
+uses diff exactly once for real, at build/make/version.sh:77, and busybox \
+handles it.
+
+THE REST OF THIS BATCH WAS SWEPT FOR THE SAME PATTERN and libvpx is the only \
+one: no other recipe's configure, configure.ac, meson.build or CMakeLists \
+probes a coreutils-style tool for its version. BLFS also documents --disable-vp8 and --disable-vp9 as OPT-OUT \
+switches, confirming both codecs are on by default -- the --enable-vp8 and \
+--enable-vp9 passed here are therefore statements rather than changes.
+
+NO ASSEMBLER DEPENDENCY ON THIS ARCHITECTURE. configure's --as option offers \
+yasm or nasm and defaults to auto, but those are x86 assemblers; the aarch64 \
+paths are .S files handled by the C compiler. So there is nothing to declare \
+here that would be required on x86 -- worth writing down, because a recipe \
+that builds on ARM and fails on x86 for a missing nasm is the kind of thing \
+that looks like a regression later."""
+
+[installs]
+prefixes = ["usr/include/vpx", "usr/lib", "usr/lib/pkgconfig"]
+# files/digest DELIBERATELY ABSENT. They are a per-file
+# sha256 measured on aarch64; the same source compiled
+# for x86_64 cannot match them. prefixes is kept because
+# it is architecture-independent and still enforced.
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libvpx-1.16.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+# OUT OF TREE, ON UPSTREAM'S OWN ADVICE. BLFS: "The libvpx developers recommend
+# building in a dedicated build directory." The first version of this recipe
+# built in-tree, which libvpx tolerates rather than supports.
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --enable-shared --disable-static --disable-examples --disable-tools --disable-docs --enable-vp8 --enable-vp9 --enable-pic --target=generic-gnu"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-C", "_b", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "-C", "_b", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "vpx"]]
+expect = ["1.16.0"]

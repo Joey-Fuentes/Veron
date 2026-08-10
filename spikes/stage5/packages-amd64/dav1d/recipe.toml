@@ -1,0 +1,108 @@
+# ============================================================ AMD64 OVERLAY
+# A REPLACEMENT FOR packages/dav1d/recipe.toml, USED ONLY BY
+# stage5-spike-amd64 (`veron --overlay packages-amd64`). The aarch64 arm never
+# loads this file.
+#
+# WHAT DIFFERS FROM THE BASE RECIPE:
+#   -Denable_asm=true -> false.
+#
+# NOT A PREFERENCE -- A MISSING TOOL. dav1d's aarch64 assembly is .S files the
+# C compiler assembles; its x86 assembly needs nasm >= 2.14, which is not in
+# the package set and is not pinned. With enable_asm=true and no nasm, meson
+# fails at configure.
+#
+# THIS IS THE COST OF THE DECISION AND IT IS REAL: dav1d without asm is
+# several times slower, and dav1d is the AV1 decoder. Pinning nasm is the fix
+# and is recorded as open in AMD64.md; this is what ships until then, stated
+# rather than discovered later from a slow video.
+#
+# THE PIN IS NOT ALLOWED TO DIFFER. `veron --overlay ... selftest` compares
+# version and every [source] key against packages/dav1d/recipe.toml and fails
+# if they disagree, so this file can change flags and can never change what is
+# built. Bump the version in both files or in neither.
+# ===========================================================================
+
+name    = "dav1d"
+version = "1.5.4"
+group   = "media"
+license = "BSD-2-Clause"
+srcdir  = "dav1d-1.5.4"
+
+[source]
+url       = "https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz"
+sha256    = "686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf"]
+link         = []
+runtime      = []
+# enable_tools AND enable_tests ARE BOTH true BY DEFAULT.
+optional_off = ["tools", "tests", "examples"]
+
+[declared]
+configure_flags = ["--libdir=lib",
+                   "-Denable_tools=false", "-Denable_tests=false",
+                   "-Denable_examples=false", "-Denable_asm=false",
+                   "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["dav1d"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS HERE: AV1 decoding, which is what a browser needs for a large and \
+growing share of web video. It is a DECODER only -- there is no encoder in \
+this package and none is wanted.
+
+enable_tools AND enable_tests DEFAULT TO true (meson_options.txt), which is \
+unusual: most projects ship tests off. `tools` builds the dav1d command-line \
+decoder and `tests` builds a checkasm harness. Neither is wanted in an image \
+whose only consumer is a library call from GStreamer.
+
+enable_asm IS LEFT true AND ON aarch64 THAT COSTS NO EXTRA TOOL. dav1d's ARM \
+assembly is .S files assembled by the C compiler's own assembler, unlike the \
+x86 paths which need nasm -- so there is no build dependency to declare here \
+that would exist on another architecture. Stated rather than inherited because \
+a silent fallback to the C-only paths would be a large and invisible \
+performance loss, which is exactly the kind of thing a decoder recipe should \
+not leave to chance.
+
+bitdepths IS LEFT AT ITS DEFAULT (both 8 and 16). Restricting to 8 would drop \
+HDR and 10-bit content, which the web does serve."""
+
+[installs]
+prefixes = ["usr/include/dav1d", "usr/lib", "usr/lib/pkgconfig"]
+# files/digest DELIBERATELY ABSENT. They are a per-file
+# sha256 measured on aarch64; the same source compiled
+# for x86_64 cannot match them. prefixes is kept because
+# it is architecture-independent and still enforced.
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/dav1d-1.5.4.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
+         "--wrap-mode=nofallback",
+         "-Denable_tools=false", "-Denable_tests=false",
+         "-Denable_examples=false", "-Denable_asm=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "dav1d"]]
+expect = ["1.5.4"]

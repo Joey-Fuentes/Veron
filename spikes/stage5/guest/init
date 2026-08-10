@@ -324,12 +324,29 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
                 echo "  VERON-SWITCHROOT-FAIL  $DINIT is present and"
                 echo "    executable but cannot be LOADED -- almost always a"
                 echo "    missing dynamic loader or shared library."
-                if [ -e "$OVL/merged/lib/ld-linux-aarch64.so.1" ]; then
-                    echo "    /lib/ld-linux-aarch64.so.1 is present"
+                # THE LOADER IS FOUND, NOT NAMED. This read
+                # /lib/ld-linux-aarch64.so.1 literally, which is right on one
+                # architecture and actively misleading on the other: on x86_64
+                # the loader is /lib64/ld-linux-x86-64.so.2, so a healthy image
+                # would have been told its loader "IS MISSING" by our own
+                # diagnostic. A message that names the wrong file is worse than
+                # no message -- it sends the next reader after a loader that
+                # was never supposed to be there.
+                #
+                # The CHECK above is already architecture-neutral: rc 126/127
+                # is the shell's "cannot execute", whatever the interpreter
+                # was. Only the explanation was pinned to one arch.
+                _ld=$(ls "$OVL"/merged/lib64/ld-linux-*.so.* \
+                         "$OVL"/merged/lib/ld-linux-*.so.* \
+                         "$OVL"/merged/lib/ld-musl-*.so.* 2>/dev/null | head -1)
+                if [ -n "$_ld" ]; then
+                    echo "    a loader IS present: ${_ld#$OVL/merged}"
+                    echo "    so the missing piece is a shared library rather"
+                    echo "    than the interpreter."
                 else
-                    echo "    /lib/ld-linux-aarch64.so.1 IS MISSING -- the"
-                    echo "    image ships no dynamic loader. Build the kit"
-                    echo "    with \`veron loginkit\`, which refuses this."
+                    echo "    NO DYNAMIC LOADER IN THE IMAGE at /lib or"
+                    echo "    /lib64. Build the kit with \`veron loginkit\`,"
+                    echo "    which resolves PT_INTERP and refuses this."
                 fi
             else
                 # /run IS MOUNTED BEFORE dinit STARTS, AND THAT IS NOT

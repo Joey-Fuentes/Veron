@@ -1,0 +1,184 @@
+# ============================================================ AMD64 OVERLAY
+# A REPLACEMENT FOR packages/ffmpeg/recipe.toml, USED ONLY BY
+# stage5-spike-amd64 (`veron --overlay packages-amd64`). The aarch64 arm never
+# loads this file.
+#
+# WHAT DIFFERS FROM THE BASE RECIPE:
+#   --disable-x86asm ADDED.
+#
+# Same missing tool as dav1d. ffmpeg's configure probes for nasm or yasm and
+# stops with "nasm/yasm not found or too old. Use --disable-x86asm for a
+# crippled build" -- upstream's word, and worth keeping in view: this IS the
+# crippled build. On aarch64 nothing equivalent is needed, which is why the
+# base recipe passes no such flag.
+#
+# PASSED EXPLICITLY RATHER THAN LEFT TO THE PROBE. Without it the outcome
+# depends on whether the build machine happens to have nasm, which is the
+# class of thing this project pins by hand everywhere else.
+#
+# THE PIN IS NOT ALLOWED TO DIFFER. `veron --overlay ... selftest` compares
+# version and every [source] key against packages/ffmpeg/recipe.toml and fails
+# if they disagree, so this file can change flags and can never change what is
+# built. Bump the version in both files or in neither.
+# ===========================================================================
+
+name    = "ffmpeg"
+version = "8.1.2"
+group   = "media"
+license = "LGPL-2.1-or-later"
+srcdir  = "ffmpeg-8.1.2"
+
+[source]
+url       = "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz"
+sha256    = "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c"
+signature = "none -- ffmpeg.org publishes no detached signature beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "libdrm", "dav1d", "libvpx", "opus", "libvorbis",
+                "libogg", "zlib"]
+link         = ["dav1d", "libvpx", "opus", "libvorbis", "libogg", "zlib"]
+runtime      = ["dav1d", "libvpx", "opus", "libvorbis", "libogg", "zlib"]
+# --disable-autodetect IS THE LOAD-BEARING FLAG HERE -- see the deferral.
+optional_off = ["autodetect", "programs", "doc", "gpl", "version3",
+                "nonfree", "debug", "alsa", "libwebp", "sdl2", "x11grab"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--enable-shared", "--disable-static",
+                   "--disable-autodetect", "--disable-programs",
+                   "--disable-doc", "--disable-debug", "--enable-pic",
+                   "--enable-libdav1d", "--enable-libvpx", "--enable-libopus",
+                   "--enable-libvorbis", "--enable-zlib",
+                   "--disable-x86asm"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["ffmpeg"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes. This has the largest configure surface in the set \
+after WPE.
+
+--disable-autodetect IS THE MOST IMPORTANT FLAG IN THIS RECIPE. ffmpeg's \
+configure PROBES FOR EVERY EXTERNAL LIBRARY IT KNOWS ABOUT and enables what it \
+finds -- so the feature set, the link map and the resulting licence are all \
+functions of what happens to be installed in the sysroot beside it. That is \
+the iproute2 problem at fifty times the scale, and unlike iproute2 there IS a \
+switch for it. With autodetect off, nothing is enabled unless this recipe \
+names it, and adding a package elsewhere in the set cannot silently change \
+what ffmpeg is.
+
+--enable-shared AND --disable-static ARE BOTH REQUIRED, AND THE DEFAULTS ARE \
+BACKWARDS FROM autotools. `--enable-shared [no]` and `--disable-static [no]` \
+-- ffmpeg builds static-only unless told otherwise. gst-libav needs the shared \
+libraries.
+
+WHAT IS ENABLED IS EXACTLY WHAT gst-libav AND WPE NEED, AND NOTHING ELSE. \
+gst-libav's meson.build:21-25 requires libavcodec, libavfilter, libavformat \
+and libavutil, all of which are built by default and none of which needs a \
+flag. The four external codecs -- dav1d for AV1, libvpx for VP8/VP9, opus and \
+vorbis for audio -- are named because with autodetect off they would otherwise \
+be absent, and STAGE5.md's codec argument rests on them: H.264 decoding comes \
+from ffmpeg's own native decoder via gst-libav, which is why gst-plugins-ugly \
+and x264 were dropped from the set entirely.
+
+--enable-gpl IS NOT PASSED, AND THAT IS A LICENCE DECISION RATHER THAN A \
+FEATURE ONE. ffmpeg is LGPL-2.1-or-later by default; --enable-gpl relicenses \
+the whole build to GPL and unlocks components that are GPL-only. Nothing here \
+needs one. license.py reports on composition and this would have moved a large \
+package's terms without anyone deciding to.
+
+BLFS CROSS-CHECK, AND THIS IS THE ONE PLACE THE BOOK MUST NOT BE FOLLOWED. \
+multimedia/ffmpeg.html builds a maximalist ffmpeg:
+
+    --enable-gpl --enable-version3 --enable-nonfree
+    --enable-libx264 --enable-libx265 --enable-libfdk-aac
+    --enable-libaom --enable-libsvtav1 --enable-libass --enable-libmp3lame ...
+
+--enable-nonfree IS THE SHOWSTOPPER, and ffmpeg's own --help says why: "allow \
+use of nonfree code, THE RESULTING LIBS AND BINARIES WILL BE \
+UNREDISTRIBUTABLE". BLFS readers build for themselves, so an \
+unredistributable binary on their own machine costs nothing. Veron PUBLISHES \
+AN IMAGE. That flag would make the artifact illegal to distribute, and it \
+would do so quietly -- there is no build failure and no warning, just a \
+licence that cannot be honoured.
+
+That is the sharpest example yet of the rule this project keeps rediscovering: \
+BLFS is a second source of truth about a PACKAGE, never about THIS SYSTEM. It \
+caught libnl's --sysconfdir and libvpx's out-of-tree build; here, followed \
+literally, it would produce something Veron cannot ship.
+
+BLFS ALSO DOES NOT PASS --disable-autodetect, relying on autodetection plus \
+explicit enables -- which is exactly the nondeterminism this recipe removes.
+
+--disable-debug IS TAKEN FROM BLFS, and it is the one flag worth borrowing. \
+Debug symbols are on by default and this is a set of shared libraries in a \
+shipped image, not a development build.
+
+alsa IS NOT ENABLED HERE EVEN THOUGH alsa-lib IS IN THIS SET. ffmpeg's ALSA \
+support is for its command-line programs to capture and play audio directly; \
+the programs are disabled and GStreamer owns the output path through \
+gst-plugins-base's alsasink. With autodetect off it would have been absent \
+anyway -- stated so the omission is visibly deliberate rather than a \
+consequence.
+
+libwebp IS ALSO NOT ENABLED despite libwebp being in the set for graphics. \
+ffmpeg's is a WebP ENCODER; nothing here encodes.
+
+--disable-programs DROPS ffmpeg, ffplay AND ffprobe. This is a set of \
+libraries for GStreamer, not a media toolkit -- and ffplay would pull SDL2, \
+which is not here.
+
+--enable-pic, for the same reason as libvpx: the shared libraries have to be \
+linkable into gst-libav's plugin."""
+
+[installs]
+prefixes = ["usr/include/libavcodec", "usr/include/libavdevice", "usr/include/libavfilter", "usr/include/libavformat", "usr/include/libavutil", "usr/include/libswresample", "usr/include/libswscale", "usr/lib", "usr/lib/pkgconfig", "usr/share/ffmpeg"]
+# files/digest DELIBERATELY ABSENT. They are a per-file
+# sha256 measured on aarch64; the same source compiled
+# for x86_64 cannot match them. prefixes is kept because
+# it is architecture-independent and still enforced.
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/ffmpeg-8.1.2.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+# NOT ./configure --prefix ONLY: ffmpeg's configure is hand-written, does not
+# accept every autoconf convention, and has no --disable-dependency-tracking.
+run  = [["./configure", "--prefix=/usr", "--enable-shared", "--disable-static",
+         "--disable-autodetect", "--disable-programs", "--disable-doc",
+         "--disable-debug", "--enable-pic",
+         "--enable-libdav1d", "--enable-libvpx", "--enable-libopus",
+         "--enable-libvorbis", "--enable-zlib",
+         "--disable-x86asm"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+# THE FOUR LIBRARIES gst-libav ACTUALLY REQUIRES, by name. A test naming only
+# libavcodec would leave three of its four dependencies unchecked.
+#
+# THE EXPECTED VERSIONS ARE THE LIBRARY SONAMES, NOT 8.1.2, and they were read
+# out of the tree rather than guessed: libavcodec 62.28, libavformat 62.12,
+# libavfilter 11.14, libavutil 60.26 (lib*/version_major.h and version.h).
+# ffmpeg's package version and its per-library versions are unrelated numbers,
+# so a test expecting "8.1.2" would fail against a correct build.
+#
+# ALL FOUR CLEAR gst-libav's FLOORS by a wide margin -- meson.build:21-25 asks
+# for libavcodec >=58.18.100, libavfilter >=7.16.100, libavformat >=58.12.100
+# and libavutil >=56.14.100.
+test   = [["/usr/bin/pkgconf", "--modversion", "libavcodec"],
+          ["/usr/bin/pkgconf", "--modversion", "libavformat"],
+          ["/usr/bin/pkgconf", "--modversion", "libavfilter"],
+          ["/usr/bin/pkgconf", "--modversion", "libavutil"]]
+expect = ["62.", "62.", "11.", "60."]

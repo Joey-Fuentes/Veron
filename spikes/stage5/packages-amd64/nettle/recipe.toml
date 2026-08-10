@@ -1,0 +1,118 @@
+# ============================================================ AMD64 OVERLAY
+# A REPLACEMENT FOR packages/nettle/recipe.toml, USED ONLY BY
+# stage5-spike-amd64 (`veron --overlay packages-amd64`). The aarch64 arm never
+# loads this file.
+#
+# WHAT DIFFERS FROM THE BASE RECIPE:
+#   --enable-arm-neon: REMOVED. There is no such option on x86_64.
+#
+# The base recipe states NEON explicitly rather than leaving it at auto,
+# because auto means the build machine decides and a flag nobody chose is a
+# flag nobody can audit. The same argument applies here and produces a
+# different answer: x86_64's equivalents (aesni, sha-ni, pclmul) are OPTIONAL
+# CPU extensions, not part of the base architecture the way NEON is on
+# ARMv8 -- so enabling them would pin the image to the runner's CPU, which is
+# exactly what the base recipe declines for arm64-crypto and for the same
+# reason. --disable-fat is kept, so there is no runtime dispatch either.
+#
+# THE RESULT IS THE PORTABLE C IMPLEMENTATION and it is slower. That is a
+# declared cost, not an oversight.
+#
+# THE PIN IS NOT ALLOWED TO DIFFER. `veron --overlay ... selftest` compares
+# version and every [source] key against packages/nettle/recipe.toml and fails
+# if they disagree, so this file can change flags and can never change what is
+# built. Bump the version in both files or in neither.
+# ===========================================================================
+
+name    = "nettle"
+version = "3.10.2"
+group   = "tls"
+license = "LGPL-3.0-or-later OR GPL-2.0-or-later"
+srcdir  = "nettle-3.10.2"
+
+[source]
+url       = "https://ftp.gnu.org/gnu/nettle/nettle-3.10.2.tar.gz"
+sha256    = "fe9ff51cb1f2abb5e65a6b8c10a92da0ab5ab6eaf26e7fc2b675c45f1fb519b5"
+signature = "https://ftp.gnu.org/gnu/nettle/nettle-3.10.2.tar.gz.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "gmp", "m4"]
+link         = ["gmp"]
+runtime      = ["gmp"]
+optional_off = ["static", "documentation", "openssl", "fat", "gcov"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static",
+                   "--disable-documentation", "--disable-openssl",
+                   "--disable-fat"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["nettle"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+TWO LIBRARIES, AND gnutls NEEDS BOTH. nettle is the symmetric crypto; hogweed \
+is the public-key half and is what links gmp. gnutls's configure checks for \
+`nettle >= $NETTLE_MINIMUM` AND `hogweed >= $NETTLE_MINIMUM` separately \
+(configure:13477 and :13558), so a build with --disable-public-key would \
+satisfy half the check and fail the other. Both .pc files are asserted in the \
+guest test.
+
+--disable-fat, AND IT IS THE SAME QUESTION gmp POSES WITH THE OPPOSITE ANSWER \
+AVAILABLE. A fat build compiles every SIMD variant and dispatches at runtime, \
+which makes the binary independent of the build machine's CPU -- the property \
+gmp gets from a pinned triple instead. Here fat is declined and the ARM \
+extensions are named explicitly, so what is compiled is stated rather than \
+detected either way.
+
+--enable-arm-neon IS "default=auto" AND auto MEANS THE BUILD MACHINE DECIDES. \
+Stated enabled: every aarch64 CPU has NEON, it is part of the base \
+architecture rather than an extension, so this is asserting something already \
+guaranteed rather than gambling.
+
+--enable-arm64-crypto IS NOT PASSED, AND THAT IS DELIBERATE. It defaults to \
+NO, and unlike NEON the ARMv8 crypto extensions are OPTIONAL in the \
+architecture -- a binary built with them SIGSEGVs on a CPU that lacks them. \
+Veron does not know what hardware its image will run on. Declining costs AES \
+and SHA acceleration and buys an image that boots everywhere, which is the \
+right trade for a distribution rather than a local build.
+
+--disable-openssl removes glue in the BENCHMARK program only, not from the \
+library.
+
+DUAL-LICENSED, a genuine OR, same shape as gmp below it."""
+
+[installs]
+prefixes = ["usr/bin", "usr/include/nettle", "usr/lib", "usr/lib/pkgconfig"]
+# files/digest DELIBERATELY ABSENT. They are a per-file
+# sha256 measured on aarch64; the same source compiled
+# for x86_64 cannot match them. prefixes is kept because
+# it is architecture-independent and still enforced.
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/nettle-3.10.2.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static",
+         "--disable-documentation", "--disable-openssl", "--disable-fat",
+         ]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "nettle"],
+          ["/usr/bin/pkgconf", "--modversion", "hogweed"]]
+expect = ["3.10.2", "3.10.2"]

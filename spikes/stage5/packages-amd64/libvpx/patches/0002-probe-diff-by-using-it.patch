@@ -1,0 +1,41 @@
+Probe diff by using it, not by asking its version.
+
+WHY: configure:194 is `if ! diff --version >/dev/null; then die "diff
+missing"`. busybox's diff HAS NO --version, so the probe fails on a system
+where diff works perfectly:
+
+    diff: unrecognized option '--version'
+    BusyBox v1.36.1 ... Usage: diff [-abBdiNqrTstw] ...
+    diff missing: Try installing diffutils via your package manager.
+
+THE ADVICE IS WRONG FOR THIS SYSTEM AND THE PROBE IS WRONG IN GENERAL. libvpx
+uses diff exactly once outside this check -- build/make/version.sh:77:
+
+    diff $$.tmp ${out_file} >/dev/null 2>&1 || cat $$.tmp > ${out_file}
+
+A two-file compare with output discarded, which busybox implements. So the
+package's actual requirement is met and only the version probe disagrees.
+
+`diff /dev/null /dev/null` TESTS THE THING THAT MATTERS. It exits 0 on GNU
+diffutils and on busybox, and non-zero if diff is absent or broken -- which is
+what the check was trying to establish. Asking for --version tests which
+implementation is installed, and libvpx does not care.
+
+WHY NOT PACKAGE diffutils. It is not pinned, not mirrored and not in the
+sysroot, and adding an artifact to satisfy a version string for a tool already
+present is a large answer to a small problem. If something later needs GNU diff
+semantics that busybox lacks, that is when diffutils earns a pin.
+
+Generated with `diff -u`, not written by hand.
+
+--- a/configure
++++ b/configure
+@@ -191,7 +191,7 @@
+     [ -f "${source_path}/${t}.mk" ] && enable_feature ${t}
+ done
+ 
+-if ! diff --version >/dev/null; then
++if ! diff /dev/null /dev/null >/dev/null 2>&1; then
+   die "diff missing: Try installing diffutils via your package manager."
+ fi
+ 

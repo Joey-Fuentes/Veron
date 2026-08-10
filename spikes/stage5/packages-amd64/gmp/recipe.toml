@@ -1,0 +1,200 @@
+# ============================================================ AMD64 OVERLAY
+# A REPLACEMENT FOR packages/gmp/recipe.toml, USED ONLY BY
+# stage5-spike-amd64 (`veron --overlay packages-amd64`). The aarch64 arm never
+# loads this file.
+#
+# WHAT DIFFERS FROM THE BASE RECIPE:
+#   --build / --host: aarch64-veron-linux-gnu -> x86_64-veron-linux-gnu.
+#
+# The base recipe's own notes explain at length why the triple must be the
+# one the toolchain actually targets rather than a triple copied from
+# documentation -- autoconf compares build against host to decide whether it
+# is cross-compiling and never checks either against the compiler, so a wrong
+# triple is echoed back unchallenged. That argument is unchanged; only the
+# answer is. The x86_64 stage-4 sysroot carries x86_64-veron-linux-gnu-gcc and
+# /usr/lib/gcc/x86_64-veron-linux-gnu.
+#
+# READ THE BASE RECIPE'S NOTES WITH THAT SUBSTITUTION IN MIND: where they say
+# aarch64-veron-linux-gnu they are describing the aarch64 sysroot, and the
+# reasoning transfers verbatim.
+#
+# THE PIN IS NOT ALLOWED TO DIFFER. `veron --overlay ... selftest` compares
+# version and every [source] key against packages/gmp/recipe.toml and fails
+# if they disagree, so this file can change flags and can never change what is
+# built. Bump the version in both files or in neither.
+# ===========================================================================
+
+name    = "gmp"
+version = "6.3.0"
+group   = "tls"
+license = "LGPL-3.0-or-later OR GPL-2.0-or-later"
+srcdir  = "gmp-6.3.0"
+
+[source]
+url       = "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz"
+sha256    = "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898"
+signature = "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "m4"]
+link         = []
+runtime      = []
+optional_off = ["cxx", "fat", "static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--enable-cxx=no",
+                   "--build=x86_64-veron-linux-gnu",
+                   "--host=x86_64-veron-linux-gnu"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["gmp"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS HERE: nettle's public-key half (hogweed) links gmp, and gnutls \
+requires hogweed. It is three packages below the browser and none of the three \
+is optional.
+
+THE VENDOR FIELD IS veron, NOT unknown, AND GETTING IT WRONG BROKE THE BUILD \
+OUTRIGHT. configure died with:
+
+    checking compiler gcc -O2 -pedantic ... no, long long reliability test 1
+    configure: error: could not find a working compiler
+
+-- which reads as a broken toolchain and is nothing of the kind. \
+configure:1338 is
+
+    ac_tool_prefix=
+    test -n "$host_alias" && ac_tool_prefix=$host_alias-
+
+so PASSING --host AT ALL SETS A TOOL PREFIX, and every tool is then looked for \
+under it. `aarch64-unknown-linux-gnu-gcc` does not exist in this sysroot; \
+`aarch64-veron-linux-gnu-gcc` does, along with -g++, -ar, -nm and -ranlib. The \
+wrong vendor pointed the entire toolchain lookup at names nothing answers to.
+
+gcc 15 REJECTS gmp's OWN COMPILER PROBE, AND THE FIX IS A PATCH. configure \
+declares `void g(){}` and calls it with six arguments -- legal through C17, an \
+error in C23, which gcc 15 defaults to. All four attempts fail and configure \
+says "could not find a working compiler", which reads as a broken toolchain. \
+LFS 13.0 chapter 8 carries the same edit for the same stated reason; see \
+patches/0001 for why it is a patch here rather than the book's sed, and for why \
+CC="gcc -std=gnu17" was tried first and withdrawn.
+
+THE VENDOR FIELD IS veron, NOT unknown, AND GETTING IT WRONG BROKE THE BUILD \
+OUTRIGHT. configure died with:
+
+    checking compiler gcc -O2 -pedantic ... no, long long reliability test 1
+    configure: error: could not find a working compiler
+
+-- which reads as a broken toolchain and is nothing of the kind. \
+configure:1338 is
+
+    ac_tool_prefix=
+    test -n "$host_alias" && ac_tool_prefix=$host_alias-
+
+so PASSING --host AT ALL SETS A TOOL PREFIX, and every tool is then looked for \
+under it. `aarch64-unknown-linux-gnu-gcc` does not exist in this sysroot; \
+`aarch64-veron-linux-gnu-gcc` does, along with -g++, -ar, -nm and -ranlib. The \
+wrong vendor pointed the entire toolchain lookup at names nothing answers to.
+
+CC="gcc -std=gnu17" BECAUSE gmp's OWN COMPILER TEST IS PRE-C23 C. That was the \
+first diagnosis, it was then WITHDRAWN ON A BAD MEASUREMENT, and config.log \
+from the run settles it:
+
+    configure:6585: gcc -O2 -pedantic  conftest.c >&5
+    conftest.c:12:48: error: too many arguments to function 'g';
+                      expected 0, have 6
+    conftest.c:7:6: note: declared here
+        7 | void g(){}
+
+The test program at configure:6564 declares `void g(){}` and calls it with six \
+arguments. In C17 an empty parameter list means UNSPECIFIED parameters and the \
+call is legal; IN C23 IT MEANS (void). gcc 15 defaults to gnu23, so all four \
+attempts fail identically -- gcc and cc, ABI=64 and ABI=32 -- and configure \
+reports "could not find a working compiler", which reads as a broken toolchain \
+and is a language change.
+
+CC RATHER THAN CFLAGS. gmp builds its own optimisation and ABI flag lists and \
+setting CFLAGS replaces them wholesale, discarding the tuning this package \
+exists to get right. A multi-word CC is explicitly supported -- configure:5828 \
+names `CC="/usr/local/bin/gcc -pipe"` as the case it handles.
+
+HOW THE WITHDRAWAL HAPPENED IS WORTH RECORDING, because the reasoning looked \
+sound. The fix was removed after "testing" the program against the real \
+stage-4 gcc under bwrap plus qemu-aarch64-static and reading rc=0. Both halves \
+were wrong: the exit status came from a pipeline, so it was `head`'s and not \
+gcc's -- and qemu-user CANNOT EXEC AARCH64 CHILDREN, so the gcc driver never \
+reached cc1 and returns 1 with empty output whatever it is asked to compile. \
+That harness cannot answer a compilation question at all, in either direction. \
+The only authority for "does this compile with our toolchain" is a real run's \
+config.log or build log. The stage-4 toolchain is aarch64-veron-linux-gnu-gcc -- its \
+libdir is /usr/lib/gcc/aarch64-veron-linux-gnu and every driver in the sysroot \
+carries that prefix. Writing aarch64-unknown-linux-gnu asserts a host the \
+compiler does not agree it targets, and gmp's configure ECHOED IT BACK \
+unchallenged:
+
+    checking build system type... aarch64-unknown-linux-gnu
+    checking host system type... aarch64-unknown-linux-gnu
+
+-- which looks like confirmation and is only repetition. autoconf compares \
+build against host to decide whether it is cross-compiling; it does not check \
+either against the compiler.
+
+That selects microarchitecture-specific assembly paths. So the SAME SOURCE on \
+two different aarch64 machines produces DIFFERENT BINARIES -- a Neoverse \
+runner and a Cortex-A57 laptop would each get code tuned for themselves, and \
+files.tsv would differ with nothing in the recipe having changed. Naming a \
+generic triple stops config.guess from looking.
+
+THIS IS THE FIRST PACKAGE IN THE SET WHERE THE BUILD MACHINE'S CPU MODEL COULD \
+CHANGE THE ARTIFACT. Others read the host's filesystem (dhcpcd's passwd probe, \
+libcap's ldd) or its installed libraries (ffmpeg's autodetect); this one reads \
+its silicon.
+
+--enable-cxx=no IS THE DEFAULT AND IS STATED. The C++ bindings would add \
+libgmpxx, which nothing here uses, and would make libstdc++ a runtime \
+dependency of the TLS stack.
+
+--enable-fat IS NOT PASSED. It builds runtime CPU dispatch, which would be \
+another answer to the tuning problem -- one binary carrying every variant. It \
+is x86-oriented in practice and larger; pinning the triple is the smaller fix.
+
+DUAL-LICENSED LGPL-3.0-or-later OR GPL-2.0-or-later, a genuine OR at the \
+recipient's choice."""
+
+[undeclarable]
+"program:m4" = "gmp's build generates code with m4 during compilation, not merely during autoreconf. From the stage-4 sysroot."
+
+[installs]
+prefixes = ["usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/info"]
+# files/digest DELIBERATELY ABSENT. They are a per-file
+# sha256 measured on aarch64; the same source compiled
+# for x86_64 cannot match them. prefixes is kept because
+# it is architecture-independent and still enforced.
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/gmp-6.3.0.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--enable-cxx=no",
+         "--build=x86_64-veron-linux-gnu",
+         "--host=x86_64-veron-linux-gnu"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "gmp"]]
+expect = ["6.3.0"]
