@@ -194,7 +194,7 @@ W=/build                       # scratch, bound by the workflow; NOT the sysroot
 SRC=$W/src
 mkdir -p "$SRC" 2>/dev/null || true
 
-B0=skip; B1=skip; B2=skip; B3=skip; B4=skip; B5=skip; B6=skip; B7=skip; B8=skip
+B0=skip; B1=skip; B2=skip; B3=skip; B4=skip; B5=skip; B55=skip; B6=skip; B7=skip; B8=skip
 
 say ""
 say "  === PHASE B: the sysroot IS the filesystem ==="
@@ -1106,6 +1106,105 @@ if [ "$B4" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG B5.5 -- zlib, pkgconf, elfutils: what an x86_64 kernel needs"
+
+# THE KERNEL WAS TELLING THE TRUTH AND I WAS ARGUING WITH IT.
+#
+# Run 85066705475 died at B6 with
+#     tools/objtool/include/objtool/elf.h:10:10:
+#         fatal error: gelf.h: No such file or directory
+# gelf.h is elfutils'. Nothing in this chain builds elfutils, and the reason
+# is that the aarch64 arm never needed it: objtool is an x86 tool and arm64
+# does not build it. I inherited that arm's package list wholesale.
+#
+# THE FIRST ATTEMPT WAS TO CONFIGURE objtool AWAY, AND THAT WAS WRONG.
+# `config OBJTOOL` is a bare bool with no prompt -- it exists only to be
+# select'ed -- and on x86_64 the things that select it are MITIGATION_RETPOLINE
+# (default y), MITIGATION_RETHUNK (default y if X86_64), X86_KERNEL_IBT,
+# UNWINDER_ORC and HAVE_STATIC_CALL_INLINE. Turning off UNWINDER_ORC alone
+# left CONFIG_OBJTOOL=y, exactly as the check below reported. Turning off the
+# rest would buy a boot at the price of a kernel with retpoline, return
+# thunks and IBT disabled. That is not a trade to make quietly.
+#
+# THE CHAIN ALREADY BUILDS EVERY OTHER KERNEL PREREQUISITE -- perl, bc,
+# bison, flex, gawk, openssl, python are all pinned and built, and
+# Documentation/process/changes.rst lists libelf alongside them. This rung
+# adds the three that were missing, in dependency order.
+#
+#   zlib      elfutils' configure.ac: "zlib not found but is required"
+#   pkgconf   elfutils calls PKG_PROG_PKG_CONFIG unconditionally
+#   elfutils  provides gelf.h and libelf for objtool
+#
+# EVERY COMPRESSOR IS LEFT OUT ON PURPOSE. bzlib, lzma and zstd are optional
+# and auto-detected, so absent means off; naming them anyway makes the
+# absence a decision rather than an accident of what happened to be around.
+# debuginfod wants curl, json-c, sqlite and libmicrohttpd -- none of which
+# this chain has, and none of which objtool needs. --disable-demangler drops
+# the only C++ in elfutils; objtool does not demangle.
+B55=skip
+if [ "$B5" = ok ]; then
+  B55=ok
+  for _p in zlib pkgconf elfutils; do
+    [ "$B55" = ok ] || break
+    case "$_p" in
+      # zlib's configure is a hand-written shell script, NOT autoconf. It
+      # takes --prefix and reads CC from the environment and understands
+      # neither --host nor --disable-shared; --static is its own spelling.
+      zlib)     _cfg="--prefix=/usr --static" ;;
+      pkgconf)  _cfg="--prefix=/usr --disable-shared --with-system-libdir=/usr/lib --with-system-includedir=/usr/include" ;;
+      elfutils) _cfg="--prefix=/usr --disable-shared --disable-demangler
+                      --disable-libdebuginfod --disable-debuginfod
+                      --without-bzlib --without-lzma --without-zstd
+                      --without-libarchive --disable-nls" ;;
+    esac
+    rm -rf "/build/src/$_p" && mkdir -p "/build/src/$_p"
+    ( cd "/build/src/$_p" && untar "/in/$_p-" ) \
+      || { B55=FAIL; say "    $_p did not extract"; break; }
+    _d=$(cd "/build/src/$_p" && onedir "$_p-* ./$_p-*")
+    say "    --- $_p ---"
+    # elfutils BUILDS ONLY libelf, AND THAT IS THE WHOLE POINT OF IT HERE.
+    #
+    # A full `make` also builds libcpu, the x86 disassembler, whose Makefile
+    # generates i386_defs and x86_64_defs by running m4. That works in this
+    # box -- rung 4.7 built m4 -- but libcpu, libdw, libasm and the eu-*
+    # tools are all things objtool never touches. Verified locally: `make -C
+    # libelf` and `make -C lib` produce gelf.h, libelf.h and libelf.a, which
+    # is exactly what tools/objtool includes and links.
+    if ( cd "/build/src/$_p/$_d" \
+         && ./configure $_cfg > cfg.log 2>&1 \
+         && if [ "$_p" = elfutils ]; then
+              timeout 1800 make -j"$NP" -C lib > b.log 2>&1 \
+              && timeout 1800 make -j"$NP" -C libelf >> b.log 2>&1 \
+              && make -C libelf install >> i.log 2>&1
+            else
+              timeout 1800 make -j"$NP" > b.log 2>&1 \
+              && make install > i.log 2>&1
+            fi ); then
+      say "      installed"
+    else
+      B55=FAIL
+      say "      $_p FAILED"
+      tail -12 "/build/src/$_p/$_d/cfg.log" 2>/dev/null | sed 's/^/        /'
+      tail -12 "/build/src/$_p/$_d/b.log" 2>/dev/null | sed 's/^/        /'
+    fi
+  done
+  # THE HEADER objtool ACTUALLY INCLUDES, checked by name. A successful
+  # `make install` is not the claim that matters here; the claim is that the
+  # next rung's #include <gelf.h> resolves.
+  if [ "$B55" = ok ]; then
+    for _h in /usr/include/gelf.h /usr/include/libelf.h /usr/lib/libelf.a; do
+      if [ -e "$_h" ]; then
+        say "    $_h: $(wc -c < "$_h" 2>/dev/null || echo dir) bytes"
+      else
+        say "    $_h MISSING -- objtool will not build"; B55=FAIL
+      fi
+    done
+  fi
+else
+  say "    skipped: busybox did not finish"
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNG B6 -- the kernel, BY THE FINAL COMPILER"
 # NATIVELY, WITH NO CROSS_COMPILE AT ALL, which is what LFS chapter 10 does and
 # what stage4-complete's box15.sh does. An earlier revision cross-compiled this
@@ -1159,31 +1258,11 @@ if [ "$B5" = ok ]; then
     }
     set_cfg WERROR n
 
-    # NO objtool, BECAUSE IT NEEDS libelf AND THIS SYSROOT HAS NONE.
-    #
-    # The ARCH fix worked -- run 85045490139 got as far as building
-    # tools/objtool/arch/x86 -- and then:
-    #     tools/objtool/include/objtool/elf.h:10: fatal error:
-    #         gelf.h: No such file or directory
-    # gelf.h is elfutils', which nothing in this chain builds. The aarch64
-    # arm never meets this: objtool is an x86 tool and arm64 does not build
-    # it, so libelf has never been on anyone's list.
-    #
-    # objtool IS PULLED IN BY THE ORC UNWINDER, which x86_64 defconfig
-    # selects. FRAME_POINTER is the other supported x86 unwinder -- slower
-    # stack traces and a slightly bigger kernel, and nothing this boot test
-    # does can tell the difference. Choosing it is a configuration decision,
-    # not a workaround: the alternative is building elfutils and its
-    # dependencies to satisfy a tool whose output this chain never reads.
-    #
-    # ALL THREE ARE SET. UNWINDER_ORC off alone leaves OBJTOOL selected by
-    # other things on a modern kernel; naming OBJTOOL and STACK_VALIDATION
-    # too means the answer does not depend on which of them Kconfig happens
-    # to key off in this release.
-    set_cfg UNWINDER_ORC n
-    set_cfg UNWINDER_FRAME_POINTER y
-    set_cfg OBJTOOL n
-    set_cfg STACK_VALIDATION n
+    # objtool STAYS ON, and rung B5.5 is why. An earlier revision set
+    # UNWINDER_ORC/OBJTOOL/STACK_VALIDATION to n to dodge the missing libelf;
+    # CONFIG_OBJTOOL came back anyway (run 85066705475) because retpoline,
+    # rethunk and IBT select it too, and turning THOSE off ships an
+    # unmitigated kernel. Building elfutils is the smaller price.
     set_cfg DEVTMPFS y
     set_cfg DEVTMPFS_MOUNT y
     set_cfg NET_9P y
@@ -1285,16 +1364,15 @@ if [ "$B5" = ok ]; then
     _bad=0
     [ "$B6" = FAIL ] && _bad=1
     grep -q "^CONFIG_WERROR=y" .config && { say "    WERROR came back after olddefconfig"; _bad=1; }
-    # AND objtool, WHICH IS THE ONE THAT WILL COME BACK IF ANYTHING DOES.
-    # It is `select`ed rather than chosen, so olddefconfig re-derives it from
-    # whatever still wants it. Checking here means a silent revert shows up as
-    # a config fault rather than as `gelf.h: No such file` two thousand lines
-    # into a kernel build.
-    if grep -qE "^CONFIG_(OBJTOOL|UNWINDER_ORC|STACK_VALIDATION)=y" .config; then
-      say "    objtool came back after olddefconfig:"
-      grep -E "^CONFIG_(OBJTOOL|UNWINDER_ORC|STACK_VALIDATION|UNWINDER_FRAME_POINTER)" .config \
+    # AND objtool, WHICH SHOULD NOW BE ON. The check is inverted from what
+    # it was: with elfutils present the kernel is expected to select OBJTOOL,
+    # and its ABSENCE would mean something silently turned off a mitigation.
+    if grep -q "^CONFIG_OBJTOOL=y" .config; then
+      say "    objtool: on (elfutils is built at B5.5)"
+    else
+      say "    objtool is OFF, which means a mitigation got turned off too:"
+      grep -E "^(# )?CONFIG_(OBJTOOL|UNWINDER_ORC|MITIGATION_RETPOLINE|MITIGATION_RETHUNK|X86_KERNEL_IBT)" .config \
         | sed 's/^/      /'
-      say "    (something still selects it, and this build has no libelf)"
       _bad=1
     fi
     grep -q "^CONFIG_DEVTMPFS_MOUNT=y" .config || { say "    DEVTMPFS_MOUNT did not take"; _bad=1; }
