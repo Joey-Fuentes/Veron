@@ -1158,7 +1158,23 @@ if [ "$B5" = ok ]; then
                       --without-libarchive --disable-nls" ;;
     esac
     rm -rf "/build/src/$_p" && mkdir -p "/build/src/$_p"
-    ( cd "/build/src/$_p" && untar "/in/$_p-" ) \
+    # THE PREFIX IS NOT ALWAYS THE PACKAGE NAME. pkgconf comes from a
+    # release asset called 3acd3a8a-pkgconf-3.0.5.tar.xz -- GitHub prepends a
+    # hash to uploaded assets -- so `untar /in/pkgconf-` matches nothing and
+    # run 85144254765 stopped there with zlib already installed. Matching on
+    # the name ANYWHERE in the filename covers both shapes without having to
+    # know which packages happen to arrive hashed.
+    _tb=$(ls /in/*"$_p"-*.tar.* 2>/dev/null | head -1)
+    if [ -z "$_tb" ]; then
+      say "    no tarball matching *$_p-*.tar.* in /in"
+      B55=FAIL; break
+    fi
+    # untar TAKES A PREFIX, NOT A PATH -- it globs "$1"*.tar.gz and friends,
+    # so handing it a complete filename matches nothing. Strip the extension
+    # and hand back what it expects.
+    _pre=${_tb%.tar.*}
+    say "    source: $(basename "$_tb")"
+    ( cd "/build/src/$_p" && untar "$_pre" ) \
       || { B55=FAIL; say "    $_p did not extract"; break; }
     _d=$(cd "/build/src/$_p" && onedir "$_p-* ./$_p-*")
     say "    --- $_p ---"
