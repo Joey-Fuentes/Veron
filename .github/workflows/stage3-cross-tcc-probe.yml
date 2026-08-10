@@ -54,6 +54,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # THE SAME musl THE LADDERS BUILD, so what this probe proves transfers.
+  MUSL_VER: '1.2.5'
+
 jobs:
   cross:
     name: 'mc-tcc -> x86_64-tcc, riscv64-tcc'
@@ -206,6 +210,136 @@ jobs:
             echo "  do at rung 2. If they name a code-generation fault, that is"
             echo "  a different and larger answer."
           fi
+
+      - name: 'A target musl, built by the cross compiler'
+        run: |
+          set -eu
+          # THE SECOND GENERATION FAILED FOR WANT OF A LIBC, SO BUILD ONE.
+          #
+          # The step above ended with crt1.o, crti.o and stdarg.h missing --
+          # the code generator was never the problem. musl's own build system
+          # accepts a cross tcc as CC and works out the target from its name,
+          # so this is musl's configure and make, not a hand-driven rung.
+          #
+          # THREE ADJUSTMENTS, ALL OF THEM ALREADY KNOWN TO THIS PROJECT:
+          #
+          #   src/complex        tcc has no _Complex. rungs.sh drops it at
+          #                      rung 2 with the same one-line rm.
+          #   src/fenv/riscv64   CSR instructions tcc does not implement;
+          #                      musl ships a generic dummy fenv.c "for archs
+          #                      lacking fenv implementation".
+          #   tlsdesc.s          `add`/`sll` with immediates, which are `addi`
+          #                      and `slli`. GNU as accepts the short form
+          #                      silently; tcc does not.
+          #
+          #   AR and RANLIB      musl infers CROSS_COMPILE=riscv64- from the
+          #                      compiler's name and then calls riscv64-ar,
+          #                      which does not exist. tcc has its own
+          #                      archiver, so AR is a two-line shim around
+          #                      `tcc -ar` and RANLIB is `true` -- tcc's
+          #                      archiver writes the index itself.
+          curl -fsSL -o musl.tar.gz "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz"
+          echo "  sha256: $(sha256sum musl.tar.gz | cut -d' ' -f1)"
+          tar xzf musl.tar.gz
+          for t in x86_64 riscv64; do
+            echo "  ===== musl for $t ====="
+            rm -rf "m-$t" && cp -a "musl-$MUSL_VER" "m-$t"
+            ( cd "m-$t"
+              rm -f src/complex/*.c
+              if [ "$t" = riscv64 ]; then
+                rm -f src/fenv/riscv64/*
+                sed -i -e 's/^\tadd \(sp,sp,-\?[0-9]\)/\taddi \1/' \
+                       -e 's/^\tsll \(a0,a0,[0-9]\)/\tslli \1/' \
+                       src/ldso/riscv64/tlsdesc.s
+              fi )
+            cat > "/tmp/$t-ar" <<AREOF
+          #!/bin/sh
+          exec $PWD/tcc-src/$t-tcc -ar "\$@"
+          AREOF
+            printf '#!/bin/sh\nexit 0\n' > "/tmp/$t-ranlib"
+            chmod +x "/tmp/$t-ar" "/tmp/$t-ranlib"
+            rm -rf "b-$t" && mkdir "b-$t"
+            ( cd "b-$t" && "../m-$t/configure" --target="$t" --disable-shared \
+                --prefix=/ CC="$PWD/../tcc-src/$t-tcc" > cfg.log 2>&1 ) \
+              || { echo "    configure failed:"; tail -8 "b-$t/cfg.log" | sed 's/^/      /'; exit 1; }
+            ( cd "b-$t" && timeout 1800 make -j"$(nproc)" \
+                AR="/tmp/$t-ar" RANLIB="/tmp/$t-ranlib" > b.log 2>&1 ) \
+              || { echo "    make failed:"; \
+                   grep -aE "^[^ ]*\.(c|s|S):[0-9]+: error|Error [0-9]" "b-$t/b.log" | head -6 | sed 's/^/      /'; exit 1; }
+            # --prefix=/ WITH DESTDIR PUTS lib/ AND include/ AT THE TOP of the
+            # sysroot, so the next step can name them without searching. The
+            # first version used --prefix=/sys-$t and then guessed at the
+            # nesting, which is the kind of thing that reads as a compiler
+            # fault when it is a path fault.
+            ( cd "b-$t" && make install DESTDIR="$GITHUB_WORKSPACE/sys-$t" \
+                AR="/tmp/$t-ar" RANLIB="/tmp/$t-ranlib" > /dev/null 2>&1 )
+            printf '    libc.a %s bytes, crt1.o %s bytes\n' \
+              "$(wc -c < "b-$t/lib/libc.a")" "$(wc -c < "b-$t/lib/crt1.o")"
+          done
+          echo "VERON-XTCC-MUSL-OK  a target libc for each, built by the cross tcc"
+
+      - name: 'THE ANSWER: a native tcc for each target'
+        run: |
+          set -eu
+          # WHAT THE SPIKES ACTUALLY NEED. Not a cross compiler on aarch64 --
+          # an x86_64 binary that emits x86_64, and a riscv64 binary that
+          # emits riscv64, each with no host gcc anywhere in its history.
+          #
+          # libtcc1.a MUST BE THE TARGET'S. tcc's Makefile builds these as
+          # `$t-libtcc1.a`, which is why the cross build had to come first.
+          cd tcc-src
+          for t in x86_64 riscv64; do
+            make "$t-libtcc1.a" > "lt-$t.log" 2>&1 \
+              || { echo "  $t-libtcc1.a failed:"; tail -6 "lt-$t.log" | sed 's/^/    /'; exit 1; }
+            printf '  %-12s %s bytes\n' "$t-libtcc1.a" "$(wc -c < "$t-libtcc1.a")"
+          done
+          _bad=0
+          for pair in "x86_64:X86_64:x86-64" "riscv64:RISCV64:RISC-V"; do
+            t=${pair%%:*}; rest=${pair#*:}; def=${rest%%:*}; want=${rest##*:}
+            S="$GITHUB_WORKSPACE/sys-$t"
+            [ -f "$S/lib/libc.a" ] || { echo "    no libc.a under $S"; ls -R "$S" | head -20; _bad=1; continue; }
+            echo "  ===== tcc for $t ====="
+            # EXPLICIT crt AND libc, no -B guessing. The target sysroot is not
+            # where this tcc would look by default, and a wrong guess here
+            # reads as a code-generation failure.
+            timeout 900 "./$t-tcc" -o "/tmp/tcc-$t" \
+              -DONE_SOURCE=1 "-DTCC_TARGET_$def" -DCONFIG_TCC_STATIC=1 \
+              -I. -static -nostdinc -nostdlib -I"$S/include" \
+              "$S/lib/crt1.o" "$S/lib/crti.o" tcc.c "$S/lib/libc.a" \
+              "$t-libtcc1.a" "$S/lib/crtn.o" > "/tmp/g2-$t.log" 2>&1 \
+              || { echo "    FAILED:"; head -8 "/tmp/g2-$t.log" | sed 's/^/      /'; _bad=1; continue; }
+            got=$(file -b "/tmp/tcc-$t")
+            printf '    %s\n' "$(echo "$got" | cut -c1-72)"
+            case "$got" in *"$want"*) ;; *) echo "      EXPECTED $want"; _bad=1 ;; esac
+            case "$got" in *statically*) ;; *) echo "      EXPECTED a static binary"; _bad=1 ;; esac
+          done
+          [ "$_bad" = 0 ] || exit 1
+          echo "VERON-XTCC-NATIVE-OK  an x86_64 tcc and a riscv64 tcc, from the aarch64 seed"
+
+      - name: 'Do they run, and do they compile?'
+        run: |
+          set -eu
+          # file(1) SAYS WHAT A BINARY CLAIMS; RUNNING IT SAYS WHETHER THE
+          # CLAIM IS TRUE. qemu-user is here for this and nothing else -- it
+          # inspects the result, it does not take part in building it.
+          _bad=0
+          for t in x86_64 riscv64; do
+            echo "  ===== $t ====="
+            if ! qemu-"$t"-static "/tmp/tcc-$t" -v > "/tmp/v-$t.txt" 2>&1; then
+              echo "    would not run:"; head -3 "/tmp/v-$t.txt" | sed 's/^/      /'; _bad=1; continue
+            fi
+            sed 's/^/    /' "/tmp/v-$t.txt"
+            # AND THE REAL TEST: does it compile? A compiler that reports its
+            # version and cannot emit an object is not a compiler yet.
+            printf 'int main(void){return 42;}\n' > /tmp/n.c
+            if qemu-"$t"-static "/tmp/tcc-$t" -c -o "/tmp/n-$t.o" /tmp/n.c 2>"/tmp/n-$t.err"; then
+              printf '    emits: %s\n' "$(file -b "/tmp/n-$t.o" | cut -c1-50)"
+            else
+              echo "    could not compile:"; head -3 "/tmp/n-$t.err" | sed 's/^/      /'; _bad=1
+            fi
+          done
+          [ "$_bad" = 0 ] || exit 1
+          echo "VERON-XTCC-RUN-OK  each native tcc runs on its own architecture and compiles"
 
       - name: 'What this run established'
         if: always()

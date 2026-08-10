@@ -282,8 +282,8 @@ env:
   PYTHON_VER: '3.14.6'
 
 jobs:
-  reference:
-    runs-on: ubuntu-24.04-riscv          # NATIVE aarch64, no emulation
+  riscv64:
+    runs-on: ubuntu-24.04-riscv      # NATIVE riscv64, RISE runners
     # 20 RUNGS INCLUDING FOUR gcc BUILDS AND A KERNEL. 330 was set when this
     # job stopped at gcc 4.7.4; gcc 15 pass 1 alone can take an hour. GitHub's
     # hard ceiling for a job is 360 minutes, so this is the most that can be
