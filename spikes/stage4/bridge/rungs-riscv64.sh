@@ -3551,36 +3551,62 @@ if [ "$R6" = ok ]; then
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* ONE CONSTRUCT PER LINE, EACH ANNOUNCED BEFORE IT RUNS.
+   gen-fac and gen-sieve both #include dumbmp.c, gmp's bootstrap bignum:
+   recursion, structs by value, arrays on the stack, pointer walking,
+   function pointers, 64-bit division. The previous version of this program
+   exercised none of those and passed, which told us only where the fault is
+   NOT. stdout is flushed after every line so a crash leaves the last
+   successful construct visible rather than sitting in a buffer. */
+struct pair { long a; long b; };
+
+static struct pair mk(long a, long b)
+{ struct pair p; p.a = a; p.b = b; return p; }
+
+static long addp(struct pair p) { return p.a + p.b; }
+
+static long fact(long n) { return n <= 1 ? 1 : n * fact(n - 1); }
+
+static long apply(long (*fn)(long), long v) { return fn(v); }
+
+static long dbl(long v) { return v * 2; }
+
 int main(void)
 {
-    /* ALL DECLARATIONS FIRST, because gcc 4.6.4 defaults to gnu89 and
-       rejected `for (int i = ...)` outright. Verified against gnu89 rather
-       than assumed: this compiles clean and runs. It is not strict C90 --
-       `long long` is a gnu89 extension -- and it does not need to be; gnu89
-       is the mode the compiler under test actually uses. */
-    char buf[64];
-    void *p;
-    double d;
-    long double L;
-    long long n;
-    int i;
+    long arr[64];
+    struct pair p;
+    long i, s;
+    unsigned long u;
 
-    printf("      stdio ok\n");
-    memset(buf, 0, sizeof buf);
-    snprintf(buf, sizeof buf, "%d", 12345);
-    printf("      snprintf ok (%s)\n", buf);
-    p = malloc(4096);
-    if (!p) { printf("      malloc FAILED\n"); return 1; }
-    memset(p, 0xa5, 4096);
-    free(p);
-    printf("      malloc/memset/free ok\n");
-    d = 1.5;
-    printf("      double ok (%f)\n", d * 2.0);
-    L = 1.5L;
-    printf("      long double ok (%Lf)\n", L * 2.0L);
-    n = 1;
-    for (i = 0; i < 40; i++) n *= 2;
-    printf("      64-bit arith ok (%lld)\n", n);
+    printf("      recursion...\n"); fflush(stdout);
+    s = fact(20);
+    printf("      recursion ok (%ld)\n", s); fflush(stdout);
+
+    printf("      struct by value...\n"); fflush(stdout);
+    p = mk(3, 4);
+    printf("      struct by value ok (%ld)\n", addp(p)); fflush(stdout);
+
+    printf("      stack array + pointer walk...\n"); fflush(stdout);
+    for (i = 0; i < 64; i++) arr[i] = i * i;
+    s = 0;
+    { long *q = arr; for (i = 0; i < 64; i++) s += *q++; }
+    printf("      stack array ok (%ld)\n", s); fflush(stdout);
+
+    printf("      function pointer...\n"); fflush(stdout);
+    printf("      function pointer ok (%ld)\n", apply(dbl, 21)); fflush(stdout);
+
+    printf("      64-bit divide...\n"); fflush(stdout);
+    u = 18446744073709551615UL / 3UL;
+    printf("      64-bit divide ok (%lu)\n", u); fflush(stdout);
+
+    printf("      malloc + memset...\n"); fflush(stdout);
+    { void *m = malloc(65536);
+      if (!m) { printf("      malloc FAILED\n"); return 1; }
+      memset(m, 0xa5, 65536); free(m); }
+    printf("      malloc ok\n"); fflush(stdout);
+
+    printf("      long double...\n"); fflush(stdout);
+    printf("      long double ok (%Lf)\n", 1.5L * 2.0L); fflush(stdout);
     return 0;
 }
 P1BEOF
@@ -3653,59 +3679,68 @@ P1BEOF
       # busybox does not autodetect. untar picks the flag from the extension
       # and has been doing it correctly for eight rungs; reaching past it for a
       # raw tar was reintroducing a bug this job already fixed twice.
-      # TRY gmp's OWN -O2, THEN -O0, AND SAY WHICH WORKED.
+      # ONE BUILD, gmp's OWN FLAGS. The -O2/-O0 retry that was here tested
+      # nothing and cost a build: gmp compiles its generators with
+      # CC_FOR_BUILD and no CFLAGS at all --
+      #     /work/out/bin/gcc -static -std=gnu99 gen-fac.c -o gen-fac
+      # -- so setting CFLAGS never reached the code that crashes. Run
+      # 85066705476 duly failed identically at both levels. The optimiser is
+      # not ruled out by that result; it was never tested by it.
+      rm -rf "/work/src/$pk-g1" && mkdir -p "/work/src/$pk-g1"
+      ( cd "/work/src/$pk-g1" && untar "/in/$pk-" ) \
+        || { r7=FAIL; say "      $pk did not extract"; break; }
+      _pd=$(cd "/work/src/$pk-g1" && onedir "$pk-* ./$pk-*")
+      # CC_FOR_BUILD IS tcc, AND GMP's MANUAL SAYS THAT IS WHAT IT IS FOR.
       #
-      # Two preflights have now cleared this compiler of everything they can
-      # reach. Run 85049598425: stdio, malloc, double, LONG DOUBLE, 64-bit
-      # arithmetic, all fine -- so the soft-float helpers rung 4.6 merged into
-      # libc.a are not the fault. Run 85054319715: the same program built BOTH
-      # in the default gnu89 and in -std=gnu99, both exit 0 -- so the language
-      # mode gmp uses is not the fault either.
+      # gmp compiles its table generators with CC_FOR_BUILD, not CC, and with
+      # no CFLAGS -- the command line is exactly
+      #     /work/out/bin/gcc -static -std=gnu99 gen-fac.c -o gen-fac
+      # They then segfault when run, while the library objects compile fine.
       #
-      # What still fails is gmp's own generators:
-      #     ./gen-fac 64 0 >fac_table.h
-      #     Segmentation fault
-      #     ./gen-sieve 64 >sieve_table.h
-      #     Segmentation fault
-      # Both #include dumbmp.c, gmp's minimal bignum used only while
-      # bootstrapping, and gmp's configure compiles them at the -O2 it picks
-      # for gcc. Nothing the preflights reach looks like that code.
+      # THE MANUAL'S OWN WORDS, on CC_FOR_BUILD: "It doesn't need to be in any
+      # particular ABI or mode, it merely needs to generate executables that
+      # can run." So pointing it at the tcc that already built gmp cleanly at
+      # rung 5 is the documented use of the variable rather than a dodge. The
+      # LIBRARY is still compiled by the gcc under test; only the throwaway
+      # generators, whose output is a table of constants, are not.
       #
-      # SO CHANGE ONE THING. If -O0 builds what -O2 could not, the finding is
-      # precise: the gcc tcc built miscompiles at -O2 on this target -- which
-      # is exactly what rung 8 exists for, since "the first carries whatever
-      # tcc got wrong". If -O0 fails too, the optimiser is not the fault and
-      # this rules the direction out for a few minutes of build time.
+      # THIS IS AN UNBLOCK, NOT A DIAGNOSIS, AND THE DIFFERENCE MATTERS.
+      # gen-fac and gen-sieve are gmp's INTEGER-only generators -- gen-bases
+      # and gen-psqr are the ones that want -lm -- so the fault is in integer
+      # or pointer code, not in the soft-float helpers rung 4.6 merged. Both
+      # generators #include bootstrap.c, which is mini-gmp: mpz_t as a
+      # one-element array decaying to a pointer, realloc'd limb vectors,
+      # pointer walking. That is a different shape from anything the
+      # preflights reach.
       #
-      # A SLOW gmp COSTS NOTHING HERE. These archives exist to build gcc 4.7.4
-      # at rung 8, and rung 9 rebuilds them again with that compiler.
-      _built=
-      for _opt in "" "-O0"; do
-        [ -n "$_built" ] && break
-        _tag="${_opt:-gmp's own -O2}"
-        rm -rf "/work/src/$pk-g1" && mkdir -p "/work/src/$pk-g1"
-        ( cd "/work/src/$pk-g1" && untar "/in/$pk-" ) \
-          || { say "      $pk did not extract"; break; }
-        _pd=$(cd "/work/src/$pk-g1" && onedir "$pk-* ./$pk-*")
-        if ( cd "/work/src/$pk-g1/$_pd" \
-             && ./configure CC="$GCC1 -static" ${_opt:+CFLAGS="$_opt"} \
-               --disable-shared $EXTRA \
-               --prefix=/work/prereq2 > cfg2.log 2>&1 \
-             && timeout 1800 make -j"$NP" MAKEINFO=true > build2.log 2>&1 \
-             && make install MAKEINFO=true > /dev/null 2>&1 ); then
-          _built="$_tag"
-        else
-          say "      $pk did NOT build with $_tag"
-          grep -aE "Segmentation|Error [0-9]|error:" \
-            "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null | head -6 | sed 's/^/        /'
-        fi
-      done
-      if [ -n "$_built" ]; then
-        say "      $pk INSTALLED (built with $_built)"
-      else
-        r7=FAIL
-        say "      $pk NOT INSTALLED at any optimisation level"
+      # If this gcc miscompiles that, rung 8 asks it to build gcc 4.7.4 --
+      # a much larger program than gen-fac -- so a pass here is not a
+      # clearance. The preflight above tests the constructs one at a time and
+      # is the thing that might actually name the bug.
+      #
+      # GUIX DOES NOT REBUILD gmp WITH THIS COMPILER AT ALL: its gmp-boot,
+      # mpfr-boot and mpc-boot are configured with CC=tcc and handed TO the
+      # 4.6.4 fork. This rung exists because stage 4's design is that each
+      # stage rebuilds its prerequisites with the compiler it just made, so
+      # dropping it would be a real divergence rather than a tidy-up.
+      ( cd "/work/src/$pk-g1/$_pd" \
+        && ./configure CC="$GCC1 -static" CC_FOR_BUILD="$CC" \
+          --disable-shared $EXTRA \
+          --prefix=/work/prereq2 > cfg2.log 2>&1 \
+        && timeout 1800 make -j"$NP" MAKEINFO=true > build2.log 2>&1 \
+        && make install MAKEINFO=true > /dev/null 2>&1 ) \
+        || { r7=FAIL
+             say "      $pk NOT INSTALLED"
+             tail -12 "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null | sed 's/^/        /'; }
+      # AND SAY WHICH COMPILER MADE THE GENERATORS, since the whole point of
+      # this rung is which compiler made what. A log that shows gmp installed
+      # without showing that its tables came from tcc would misattribute the
+      # result the next time someone reads it.
+      if [ "$pk" = gmp ] && [ "$r7" = ok ]; then
+        _gcmd=$(grep -m1 'gen-fac' "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null || true)
+        [ -n "$_gcmd" ] && say "      generators built by: $(echo "$_gcmd" | cut -c1-64)"
       fi
+      [ "$r7" = ok ] && say "      $pk INSTALLED"
     done
     R7=$r7
     [ "$R7" = ok ] && say "    prereq2/lib: $(ls /work/prereq2/lib 2>/dev/null | tr '\n' ' ')"
