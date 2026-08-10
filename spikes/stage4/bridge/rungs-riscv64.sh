@@ -3653,18 +3653,59 @@ P1BEOF
       # busybox does not autodetect. untar picks the flag from the extension
       # and has been doing it correctly for eight rungs; reaching past it for a
       # raw tar was reintroducing a bug this job already fixed twice.
-      rm -rf "/work/src/$pk-g1" && mkdir -p "/work/src/$pk-g1"
-      ( cd "/work/src/$pk-g1" && untar "/in/$pk-" ) || { r7=FAIL; say "      $pk did not extract"; break; }
-      _pd=$(cd "/work/src/$pk-g1" && onedir "$pk-* ./$pk-*")
-      ( cd "/work/src/$pk-g1/$_pd" \
-        && ./configure CC="$GCC1 -static" --disable-shared $EXTRA \
-          --prefix=/work/prereq2 > cfg2.log 2>&1 \
-        && timeout 1800 make -j"$NP" MAKEINFO=true > build2.log 2>&1 \
-        && make install MAKEINFO=true > /dev/null 2>&1 ) \
-        || { r7=FAIL
-             say "      $pk NOT INSTALLED"
-             tail -12 "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null | sed 's/^/        /'; }
-      [ "$r7" = ok ] && say "      $pk INSTALLED"
+      # TRY gmp's OWN -O2, THEN -O0, AND SAY WHICH WORKED.
+      #
+      # Two preflights have now cleared this compiler of everything they can
+      # reach. Run 85049598425: stdio, malloc, double, LONG DOUBLE, 64-bit
+      # arithmetic, all fine -- so the soft-float helpers rung 4.6 merged into
+      # libc.a are not the fault. Run 85054319715: the same program built BOTH
+      # in the default gnu89 and in -std=gnu99, both exit 0 -- so the language
+      # mode gmp uses is not the fault either.
+      #
+      # What still fails is gmp's own generators:
+      #     ./gen-fac 64 0 >fac_table.h
+      #     Segmentation fault
+      #     ./gen-sieve 64 >sieve_table.h
+      #     Segmentation fault
+      # Both #include dumbmp.c, gmp's minimal bignum used only while
+      # bootstrapping, and gmp's configure compiles them at the -O2 it picks
+      # for gcc. Nothing the preflights reach looks like that code.
+      #
+      # SO CHANGE ONE THING. If -O0 builds what -O2 could not, the finding is
+      # precise: the gcc tcc built miscompiles at -O2 on this target -- which
+      # is exactly what rung 8 exists for, since "the first carries whatever
+      # tcc got wrong". If -O0 fails too, the optimiser is not the fault and
+      # this rules the direction out for a few minutes of build time.
+      #
+      # A SLOW gmp COSTS NOTHING HERE. These archives exist to build gcc 4.7.4
+      # at rung 8, and rung 9 rebuilds them again with that compiler.
+      _built=
+      for _opt in "" "-O0"; do
+        [ -n "$_built" ] && break
+        _tag="${_opt:-gmp's own -O2}"
+        rm -rf "/work/src/$pk-g1" && mkdir -p "/work/src/$pk-g1"
+        ( cd "/work/src/$pk-g1" && untar "/in/$pk-" ) \
+          || { say "      $pk did not extract"; break; }
+        _pd=$(cd "/work/src/$pk-g1" && onedir "$pk-* ./$pk-*")
+        if ( cd "/work/src/$pk-g1/$_pd" \
+             && ./configure CC="$GCC1 -static" ${_opt:+CFLAGS="$_opt"} \
+               --disable-shared $EXTRA \
+               --prefix=/work/prereq2 > cfg2.log 2>&1 \
+             && timeout 1800 make -j"$NP" MAKEINFO=true > build2.log 2>&1 \
+             && make install MAKEINFO=true > /dev/null 2>&1 ); then
+          _built="$_tag"
+        else
+          say "      $pk did NOT build with $_tag"
+          grep -aE "Segmentation|Error [0-9]|error:" \
+            "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null | head -6 | sed 's/^/        /'
+        fi
+      done
+      if [ -n "$_built" ]; then
+        say "      $pk INSTALLED (built with $_built)"
+      else
+        r7=FAIL
+        say "      $pk NOT INSTALLED at any optimisation level"
+      fi
     done
     R7=$r7
     [ "$R7" = ok ] && say "    prereq2/lib: $(ls /work/prereq2/lib 2>/dev/null | tr '\n' ' ')"
