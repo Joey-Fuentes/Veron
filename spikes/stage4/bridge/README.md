@@ -5,6 +5,17 @@ tcc to a working gcc 4.7.4 with a C++ compiler, in a sandbox whose entire host
 inventory is one busybox. `stage3-to-stage4-bridge` runs the same rungs with
 mc-tcc and has not been attempted yet.
 
+**Two more architectures now run the same rungs.** `stage4-arch-spike-amd64`
+clears every rung to 16 and stops in phase B on the ELF interpreter;
+`stage4-arch-spike-riscv64` is green through rung 5. Both are copies of the
+reference rather than a matrix over it. See *Three architectures, and where each
+one stands* below.
+
+**All three still start from a host-built tcc.** `stage3-cross-tcc-probe` shows
+that a native x86_64 tcc and a native riscv64 tcc can be produced from the
+aarch64 side with no host compiler in their history; whether they walk a ladder
+is unanswered. Nothing is published until they do.
+
 ```
 0    compiler runs, libtcc1.a             ok
 1    freestanding compile+link            ok
@@ -137,6 +148,27 @@ the log as it happens.
 | make 4.4 | *(none)* | 4.2.1 was live-bootstrap's pin and cost five substitutions in its bundled glob before hitting `gl_opendir`, a `glob_t` member from GNU's `GLOB_ALTDIRFUNC` that musl has no equivalent for. **4.3 dropped the bundled glob**; 4.4 keeps it dropped and uses gnulib. |
 | gcc | `--disable-nls` | musl's gettext makes gcc build its own `intl/`, which does not compile |
 | gcc | `--disable-libmudflap` | redeclares glibc's `__assert_fail` (`unsigned int` vs musl's `int`). Removed entirely in gcc 4.9. |
+
+### Source substitutions the other two architectures need
+
+Nothing below is aarch64's. Each was measured on its own arm, and the run that
+found it is named so the claim can be checked.
+
+| where | arch | what | why |
+|---|---|---|---|
+| musl | amd64 | `src/math/x86_64/*` dropped | 18 of 1349 objects failed, all in this directory: 8 × `unknown constraint 'x'` (SSE), 5 × `'t'` (x87 stack top), 2 × `invalid clobber register 'st'`. These are optimisations -- musl ships generic C for every one. |
+| musl | amd64 | `@PLT` stripped from `sigsetjmp.s` | `sigsetjmp.s:14: end of line expected` on `call setjmp@PLT`. **Not** the forward label `jz 1f`, which was the obvious suspect and which tcc handles. A static link needs no procedure linkage table. `src/signal/sigsetjmp.c` is a zero-byte placeholder, so the file cannot be dropped. |
+| musl | riscv64 | `src/fenv/riscv64/*` dropped | `fenv.S:52: ',' expected` on `fscsr t1`, plus `csrc`/`csrs`/`frflags`. `src/fenv/fenv.c` defines the same seven symbols -- checked, not assumed -- and musl's own comment calls it *"Dummy functions for archs lacking fenv implementation"*. |
+| musl | riscv64 | `add`→`addi`, `sll`→`slli` in `tlsdesc.s` | GNU `as` accepts the register form with an immediate and silently assembles `addi`; tcc says so instead. A spelling fix, not a behaviour change. |
+| libc.a | amd64 | `__fixxfdi`, `__floatundidf` added from `libtcc1.a` | see rung 4.6 above |
+| libc.a | riscv64 | 19 soft-float binary128 helpers added | same rung; the comment predicted an empty overlap and was wrong |
+| gcc 4.7.4 | amd64 | `--disable-decimal-float` | 4.7 defaults decimal float **on** for x86_64 and builds `libgcc/config/libbid`, which uses `FE_INEXACT` and friends. musl has them -- `arch/x86_64/bits/fenv.h` defines `FE_INEXACT` as 32 -- so this is a corner of gcc the early sysroot does not satisfy rather than a missing header. Needed on **both** 4.7.4 configures, rung 6 and rung 8. |
+| gcc 4.7.4 | both | `--disable-libitm` | `libitm/config/linux/x86/tls.h:28: missing binary operator before token "("` -- a function-like macro in an `#if` that is never defined, here `__GLIBC_PREREQ`. It was the only target library not already on the disable list. |
+| gcc 15 | amd64 | `t-linux64` `MULTILIB_OSDIRNAMES`, `../lib64`→`../lib` | the aarch64 equivalent is `t-aarch64-linux`'s `mabi.lp64=` line. A first version sed'd every `t-*` under `config/i386` mentioning lib64 and caught `t-gnu64` (Hurd) and `t-mingw-w32` -- targets this chain never builds. |
+| gcc 15 | amd64 | `linux64.h` `GLIBC_DYNAMIC_LINKER64`, `/lib64/`→`/lib/` | **a different thing from the line above.** That one says where libraries go; this is the path baked into every executable gcc links. This sysroot has no `/lib64` deliberately -- the book: *"The LFS editors have deliberately decided not to use a /usr/lib64 directory ... If for any reason this directory appears it may break your system."* glibc here installs its loader to `/usr/lib` (`libc_cv_slibdir=/usr/lib`), so the loader is where the sysroot wants it and only gcc disagrees. Adding a `/lib64` symlink would also work and is what LFS does; it would have to survive into stage 5. |
+| gcc 4.6.4 fork | riscv64 | `struct ucontext`→`ucontext_t`, headers only | glibc renamed it; 2012 gcc still says the old name. Restricted to `*.h`: a bare `grep -rl` matched `gcc/ChangeLog-2005`, a 2005 entry *describing this very rename*, and rewriting prose put a hunk in the derived patch that would not apply. |
+| gcc 4.6.4 fork | riscv64 | `LIB_SPEC` override removed from `config/riscv/linux.h` | its own comment is a FIXME: RISC-V has only word-sized atomics, so it links libatomic by default, and that reference breaks the build before libatomic exists. |
+| gcc 4.6.4 fork | riscv64 | `HOST_WIDE_INT_1` / `_1U` defined in `hwint.h` | see above -- the fallback branch tcc takes uses two macros the fork never defines. |
 | gcc | `CFLAGS/LDFLAGS_FOR_TARGET=-static` | target configures call `xgcc` directly, not through `cc-static`. Dynamic links get `--eh-frame-hdr` and failed with *".eh_frame_hdr refers to overlapping FDEs"*. |
 | binutils / gcc 15 pass 1 | `-Wl,--no-eh-frame-hdr` | **The same error, and rung 10 finally located it.** Every object in that link was compiled by *gcc 10*; the linker was the *tcc-built binutils 2.30*. So the malformed section is not something tcc puts in an object -- it is something tcc's `ld` emits when it **merges** them. Two earlier guesses in this file were wrong: not musl's crt files, and not tcc's own `.eh_frame`. Rung 6 hid it by going static, which suppresses the section; rung 10's link is static too and still trips it, because gas carries enough CFI. Nothing in a static binary reads `.eh_frame_hdr` -- it exists so a dynamic unwinder can find FDEs quickly, and there is no loader here. **The real fix is upward:** chapter 5 builds a new binutils, and once `$LFS_TGT-ld` exists this stops mattering. The flag only has to carry the links that produce it. |
 | gcc | libstdc++ `os/gnu-linux` → `os/generic` | `_IScntrl` and friends are glibc's *internal* ctype enum. gcc 4.7 predates musl -- support landed in 4.9 -- so there is no `linux-musl*` arm to fall into and no triple that would find one. |
@@ -193,6 +225,137 @@ And the rule that would have prevented most of the above: **read the line
 before changing it.** Nearly every entry here is a ten-second check -- `grep`
 for the variable, look at what `onedir` does, print the PATH -- skipped in
 favour of an assumption about what the code did.
+
+---
+
+## Three architectures, and where each one stands
+
+`stage4-arch-spike-amd64` and `stage4-arch-spike-riscv64` are **copies of this
+job**, not a refactor of it. The reference is the arm that works; a matrix over
+it would put every architecture's failures in one file and make the aarch64 arm
+answerable for the other two. Each spike is the same 27 steps, the same box, the
+same seal, driving its own `rungs-<arch>.sh`.
+
+```
+                              aarch64      amd64        riscv64
+0    compiler runs, libtcc1.a    ok          ok           ok
+1    freestanding                ok          ok           ok
+2    musl, no make               ok          ok           ok
+3    hosted program              ok          ok           ok
+4    binutils                    ok          ok           ok
+4.5  make rebuilt                ok          ok           ok
+4.6  libc.a gets tcc's helpers   n/a         ok           ok
+4.7  m4                          n/a         ok           ok
+4.8  flex                        n/a         n/a          untested
+5    gmp / mpfr / mpc            ok          ok           ok
+6    gcc 4.7.4 by tcc            ok          ok           untested
+7-9  4.7.4 again, gcc 10.2.0     ok          ok           --
+10   binutils pass 1             ok          ok           --
+11   gcc 15 pass 1               ok          ok           --
+12-16 headers, glibc, ch6        ok          ok           --
+B0   sysroot usable              ok          FAIL         --
+```
+
+**amd64 clears every rung to 16 and stops at B0**, where every tool is
+`present, DOES NOT EXECUTE`. That is the ELF interpreter and nothing else: gcc
+bakes `/lib64/ld-linux-x86-64.so.2` into every binary it links, and this sysroot
+deliberately has no `/lib64`. The fix moves the path gcc bakes in rather than
+adding the directory -- see the substitution ledger below.
+
+**riscv64 is green through rung 5** and waiting on flex.
+
+### What the other two need that aarch64 does not
+
+Every one of these was measured, and each cost a run to find:
+
+| rung | amd64 | riscv64 | why aarch64 never sees it |
+|---|---|---|---|
+| 2 | drop `src/math/x86_64`, strip `@PLT` from `sigsetjmp.s` | drop `src/fenv/riscv64`, `add`→`addi` in `tlsdesc.s` | its arch files are plain C and portable asm |
+| 4.6 | `__fixxfdi`, `__floatundidf` | 19 soft-float binary128 helpers | gcc's aarch64 libgcc ships the ones tcc calls |
+| 4.7 | m4 1.4.7 | m4 1.4.7 | gmp 6.3.0 asks for m4 on these targets, not on aarch64 |
+| 4.8 | -- | flex 2.6.4 | its bottom gcc is a git tree with no `gengtype-lex.c` |
+| 6 | `--disable-decimal-float` | Ekaitz's gcc 4.6.4 fork + 3 patches | 4.7 defaults decimal float on for x86_64; 4.7 has no RISC-V port at all |
+| 11 | `t-linux64` + `linux64.h` | -- | aarch64's interpreter is already `/lib/...` |
+
+**Rung 4.6 is the one worth reading.** musl's `libc.a` is compiled by tcc, and
+tcc *calls* helpers where gcc emits instructions -- the x87 long-double
+conversions on x86_64, the soft-float binary128 ones on RISC-V. Those live in
+`libtcc1.a`, which every tcc link picks up silently, so rungs 3 through 5 never
+notice. Rung 6 hands the same archive to xgcc and the symbol is gone. The rung
+computes the overlap with `nm` rather than carrying a list, because a list goes
+stale the moment musl or tcc moves: on riscv64 it found nineteen where the
+comment predicted none.
+
+### The bottom gcc is not the same program
+
+aarch64 and amd64 both start from the gcc 4.7.4 release tarball -- aarch64 with
+4.8.5's backend transplanted in, amd64 unmodified, because x86_64 is 4.7.4's
+oldest target. RISC-V reached gcc upstream in **7.1**, five years after 4.7 and
+well past what a C-only compiler can build, so there is nothing to transplant
+into. That arm uses **Ekaitz Zarraga's NLnet-funded backport of RISC-V into a
+C-only gcc 4.6.4**, at tag `working-compiler-c++`.
+
+It arrives as a pristine tree plus one derived patch, for the reason this
+project applies everywhere else: *a patched tarball hides the delta inside an
+opaque blob and there is nothing left to review.* The workflow clones the fork,
+applies three edits, diffs, and ships the **unpatched** tree beside the diff.
+
+Two of the three edits are Ekaitz's own, published as shell commands rather than
+carried in the fork. The third appears to be new:
+
+```
+gcc/hwint.h:291: error: 'HOST_WIDE_INT_1' undeclared
+```
+
+`sext_hwi` has a fast path guarded by `#if defined(__GNUC__)` and a fallback in
+the `#else`. A modern gcc satisfies the guard and never compiles the fallback;
+tcc takes it and finds two macros the fork uses and never defines. Nobody
+upstream has hit it because nobody upstream builds this fork with tcc -- Ekaitz
+builds it on Debian with build-essential.
+
+---
+
+## The seed, and the hole that is still declared
+
+Every arm above starts from a tcc built by the host's compiler. `stage4-complete`
+calls that **the one declared hole**, and the arch spikes inherited it: their
+first compiler's ancestry runs through Ubuntu.
+
+`stage3-cross-tcc-probe` asks whether it can be closed, and the answer is yes
+for the parts it can test. On a native aarch64 runner:
+
+```
+VERON-XTCC-BUILD-OK    x86_64-tcc and riscv64-tcc built from one tree
+VERON-XTCC-FILE-OK     each emits its own architecture
+VERON-XTCC-MUSL-OK     a target musl for each, by those cross compilers
+VERON-XTCC-NATIVE-OK   a NATIVE tcc for each: static, right architecture
+```
+
+The shape is not a cross build of the ladders -- that would make every rung
+above a cross build and trade one problem for a worse one. It is **one binary**
+crossed:
+
+```
+mc-tcc (aarch64, from the seed)
+  -> x86_64-tcc, riscv64-tcc          cross compilers, on aarch64
+  -> a target musl, built by each
+  -> a NATIVE tcc for each target     an x86_64 binary emitting x86_64
+  -> each runner walks its ladder natively, as it does now
+```
+
+The musl step needs the same four adjustments rung 2 already carries, which is
+the useful part: nothing new had to be invented.
+
+**What is not settled** is whether those binaries walk a ladder. qemu-user ran
+the riscv64 one and could not load the x86_64 one at all, which says more about
+emulating x86_64 on aarch64 than about the binary -- the same build performed on
+an x86_64 machine produced a tcc that reports its version and compiles. The
+authoritative test is the binary on its own hardware, and that is the next
+experiment rather than this one.
+
+**Nothing is integrated and nothing is published until both ladders are green
+end to end AND running on a micro-c-descended tcc.** A stage-4 sysroot released
+before then would have Ubuntu in its ancestry, and stage 5 would consume it.
 
 ---
 

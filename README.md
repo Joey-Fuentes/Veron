@@ -223,6 +223,30 @@ script with mc-tcc and is the experiment that matters; the reference exists so
 that when it fails, the failure is attributable to micro-c rather than to the
 harness. Six of the first seven runs found harness bugs, not compiler bugs.
 
+**And the same rungs now run on two more architectures.**
+`stage4-arch-spike-amd64` clears every rung — musl, binutils, gcc 4.7.4 twice,
+gcc 10.2.0, then LFS chapters 5 and 6 — and stops entering the sysroot on the
+ELF interpreter: gcc bakes `/lib64/ld-linux-x86-64.so.2` into every binary and
+this sysroot has no `/lib64`, deliberately. `stage4-arch-spike-riscv64` is green
+through gmp/mpfr/mpc. Both are **copies** of the reference rather than a matrix
+over it, so a failure on one architecture cannot make the working arm
+answerable for it.
+
+They need things aarch64 does not, and each cost a run to find: musl's x87 and
+CSR assembly is unassemblable by tcc where aarch64's is portable; `libc.a`
+compiled by tcc *calls* arithmetic helpers gcc emits inline, so the archive is
+not self-contained until the overlap with `libtcc1.a` is measured and merged;
+gmp asks for m4; and RISC-V reached gcc upstream only in 7.1, five years after
+4.7, so that arm's bottom compiler is **Ekaitz Zarraga's NLnet-funded backport
+of RISC-V into a C-only gcc 4.6.4** rather than a backported release tarball.
+
+**All three still begin with a host-built tcc.** `stage3-cross-tcc-probe` shows
+the way out: on a native aarch64 runner it cross-builds `x86_64-tcc` and
+`riscv64-tcc`, builds a target musl with each, and links a **native** tcc for
+both — an x86_64 binary emitting x86_64, with no host compiler in its history.
+Whether those binaries walk a ladder is not yet answered, and nothing is
+published until they do.
+
 Twelve substitutions, all declared. Eleven are one thing: old GNU source
 treating "not glibc" as "barely a libc" — `alloca`, `strncasecmp`, `getlogin`,
 `__P`, `__ptr_t`, `__assert_fail`, `_IScntrl`. See

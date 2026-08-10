@@ -79,6 +79,28 @@ There are no hidden verifications, no "well it compiled, so it works" assumption
 
 **The lower stages are written 3×; race to portable C.** Stages 1–3 are arch-specific by nature: stage 1's assembly is per-architecture, and anything written *in* it (stages 2–3) must also be written three times. The convergence point is stage 4 and beyond: from stage 4 up, sources are **portable C written once**, and the compiler targets all three arches. So the design pressure is to keep the assembly-language rungs *few and small* — every rung below the C line costs triple.
 
+> **Measured, and the convergence is not free.** The stage-4 ladder now runs on
+> all three architectures from one script per arch. The *sources* are indeed
+> portable C written once — musl, binutils, gcc, all the same tarballs — but
+> three classes of per-arch work remain, and none of them is source we wrote:
+>
+> 1. **Assembly inside portable projects.** musl ships per-architecture `.s` and
+>    `.S` files, and tcc refuses some of each: x87 and SSE inline-asm constraints
+>    on x86_64, CSR instructions on RISC-V. Every one has a generic C fallback
+>    musl already ships, so the fix is a deletion, not a rewrite.
+> 2. **The compiler's own runtime.** `libc.a` compiled by tcc *calls* arithmetic
+>    helpers that gcc emits inline — x87 long-double conversions on x86_64,
+>    soft-float binary128 on RISC-V — and gcc's libgcc has no reason to define
+>    them. The archive is not self-contained until the overlap with `libtcc1.a`
+>    is computed and merged, which is measurement, not a list.
+> 3. **When the bottom compiler predates the architecture.** gcc 4.7.4 has an
+>    x86_64 backend and no aarch64 one; RISC-V reached gcc only in 7.1. So
+>    aarch64 transplants 4.8.5's backend into 4.7.4, amd64 needs nothing, and
+>    riscv64 uses a different compiler entirely.
+>
+> The design pressure the paragraph above describes is right. The cost of the
+> convergence point is that *portable C* means the sources, not the ladder.
+
 ### The three audit regimes
 
 - **Regime A — read the whole thing (stages 1–3).** Each stage is small enough (hundreds of bytes to low thousands of lines) that "we read all of it" is *literally true*. Stage 1's audit is a read of its commented assembly source, with the produced binary confirmed to match by round-trip disassembly; stages 2 and 3 are complete source review plus reproducible rebuild.
