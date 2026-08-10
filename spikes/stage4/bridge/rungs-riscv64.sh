@@ -2753,7 +2753,31 @@ if [ "$R47" = ok ]; then
     # --disable-nls AND NO DOCS. flex's configure wants help2man for its man
     # page and texinfo for its manual; neither is in this box, and MAKEINFO=true
     # covers the second the way every other rung here does.
+    # CC IN THE ENVIRONMENT, NOT ONLY ON THE COMMAND LINE.
+    #
+    # Run 85023417880 got this sequence out of flex's configure:
+    #     checking for gcc... (cached) /work/prefix/bin/cc-static
+    #     ...
+    #     checking for gcc... no
+    #     checking for cc... no
+    #     checking for cl.exe... no
+    #     configure: error: no acceptable C compiler found in $PATH
+    # -- AC_PROG_CC ran twice, and the second time CC was empty. That is what
+    # `config.status --recheck` does: it replays configure with the
+    # ENVIRONMENT it was given and does NOT carry command-line assignments.
+    # m4 never tripped it because nothing made m4 re-check.
+    #
+    # Exporting them satisfies both paths at once, and passing them as
+    # arguments too costs nothing.
+    # INSIDE THE SUBSHELL, so it does not outlive this rung. CC is a
+    # load-bearing variable here: rungs 7 and up want the gcc that rung 6
+    # built, and an exported CC pointing at cc-static would quietly override
+    # them. configure, config.status and make all run within these parens, so
+    # the export reaches everything that needs it and nothing that does not.
     ( cd "/work/src/flex-t/$_fd" \
+      && CC="/work/prefix/bin/cc-static" && export CC \
+      && LDFLAGS="-static" && export LDFLAGS \
+      && M4=/work/prefix/bin/m4 && export M4 \
       && ./configure --prefix=/work/prefix --disable-nls --disable-shared \
            --build=riscv64-unknown-linux-gnu \
            CC="/work/prefix/bin/cc-static" LDFLAGS="-static" \
