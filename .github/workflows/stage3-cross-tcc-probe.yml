@@ -223,8 +223,15 @@ jobs:
           #
           # THREE ADJUSTMENTS, ALL OF THEM ALREADY KNOWN TO THIS PROJECT:
           #
+          # EVERY ONE OF THESE IS ALREADY IN THE LADDERS' rung 2. None was
+          # discovered here; they were copied, and the two I copied late cost
+          # a run each (85024674018 and a local repeat). The list:
+          #
           #   src/complex        tcc has no _Complex. rungs.sh drops it at
           #                      rung 2 with the same one-line rm.
+          #   src/math/x86_64    x87 and SSE inline-asm constraints tcc does
+          #                      not parse. musl ships generic C for all of it.
+          #   sigsetjmp.s        `call setjmp@PLT`; a static link needs no PLT.
           #   src/fenv/riscv64   CSR instructions tcc does not implement;
           #                      musl ships a generic dummy fenv.c "for archs
           #                      lacking fenv implementation".
@@ -246,6 +253,23 @@ jobs:
             rm -rf "m-$t" && cp -a "musl-$MUSL_VER" "m-$t"
             ( cd "m-$t"
               rm -f src/complex/*.c
+              # src/math/x86_64 IS x87 AND SSE INLINE ASM tcc DOES NOT PARSE.
+              # rungs-amd64.sh drops the same directory at rung 2 for the same
+              # reason; I applied the riscv64 fixes here and forgot the x86_64
+              # one, and run 85024674018 stopped on
+              #     src/math/x86_64/expl.s:40: error: end of line expected
+              # musl ships generic C for every function in there.
+              if [ "$t" = x86_64 ]; then
+                rm -f src/math/x86_64/*
+                # AND @PLT OUT OF sigsetjmp.s, THE SECOND ONE I FORGOT.
+                # rungs-amd64.sh already carries this: tcc's assembler does
+                # not parse `call setjmp@PLT`, and a static link needs no
+                # procedure linkage table anyway. Verified locally -- with
+                # both fixes musl builds and the native tcc links; with only
+                # the math drop it stops at
+                #     src/signal/x86_64/sigsetjmp.s:14: end of line expected
+                sed -i 's/@PLT//g' src/signal/x86_64/sigsetjmp.s
+              fi
               if [ "$t" = riscv64 ]; then
                 rm -f src/fenv/riscv64/*
                 sed -i -e 's/^\tadd \(sp,sp,-\?[0-9]\)/\taddi \1/' \
