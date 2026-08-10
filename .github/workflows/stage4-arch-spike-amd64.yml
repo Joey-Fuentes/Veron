@@ -70,6 +70,14 @@ on:
     branches: ['**']
     paths:
       - 'spikes/stage4/bridge/rungs-amd64.sh'
+      # AND PHASE B's SCRIPT, WHICH THIS FILTER PREDATES.
+      # sysroot-amd64.sh was split out of the shared rungs-sysroot.sh
+      # after these paths were written, so three commits that changed
+      # only phase B -- the per-arch split, the kernel ARCH string, the
+      # objtool config -- pushed cleanly and started nothing. A paths
+      # filter that does not name every script the job runs is a job
+      # that silently stops testing itself.
+      - 'spikes/stage4/bridge/sysroot-amd64.sh'
       - '.github/workflows/stage4-arch-spike-amd64.yml'
 
 # NO concurrency GROUP, DELIBERATELY.
