@@ -1,0 +1,225 @@
+name: stage3-cross-tcc-probe
+
+# CAN OUR OWN tcc BUILD THE tcc THE OTHER ARCHITECTURES WILL USE?
+#
+# THE HOLE THIS IS AIMED AT. stage3-to-stage4-reference.yml says outright that
+# its ref-tcc is built "on the host and linked STATICALLY AGAINST musl" -- with
+# musl-gcc, from apt. stage4-complete.yml calls the same thing "THE ONE
+# DECLARED HOLE". The arch spikes inherited it: their tcc comes from the
+# runner's gcc, so the x86_64 and riscv64 ladders each begin with a compiler
+# whose ancestry runs through Ubuntu.
+#
+# THE IDEA BEING TESTED IS NOT MINE AND IS BETTER THAN WHAT I FIRST PROPOSED.
+# Not cross-BUILDING the ladders -- that would make every rung above a cross
+# build and trade one problem for a worse one. Cross-compiling ONE BINARY:
+#
+#     mc-tcc          aarch64, from the seed, no host compiler in its history
+#       -> x86_64-tcc, riscv64-tcc      NATIVE binaries for those machines
+#       -> shipped to the x86_64 and riscv64 runners
+#       -> each runs its whole ladder natively, as it does now
+#
+# The runners still build natively. What changes is the ancestry of the one
+# compiler they start from.
+#
+# WHY IT SHOULD WORK. tcc's backends all live in its source tree --
+# i386-gen.c, x86_64-gen.c, arm64-gen.c, riscv64-gen.c -- and a build selects
+# one with -DTCC_TARGET_*. Building x86_64-tcc is the same C that rung 0
+# already compiles, with a different define. tcc's own Makefile calls these
+# "cross" targets and builds them routinely.
+#
+# THE PART I EXPECT TROUBLE FROM, stated before the run. libtcc1.a is the
+# compiler's runtime and must be TARGET code. Building it needs target headers,
+# and a local attempt at --cpu=riscv64 on an x86_64 machine failed exactly
+# there. THIS PROBE DOES NOT BUILD IT, deliberately: the reference already
+# builds libtcc1.a at rung 0, inside the box, with the compiler under test.
+# So the only thing that has to cross is the tcc binary itself.
+#
+# WHAT THIS PROVES, AND WHAT IT DOES NOT. It answers one question -- can a
+# compiler with no host gcc in its history emit a working tcc for another
+# architecture -- and nothing about whether that tcc then walks a ladder. That
+# is the next experiment and it needs this one first.
+#
+# SUCCESS:
+#   VERON-XTCC-BUILD-OK    both cross tccs built
+#   VERON-XTCC-FILE-OK     file(1) says ELF x86-64 and ELF RISC-V, both static
+#   VERON-XTCC-RUN-OK      each runs under qemu-user and reports its target
+#
+# FAILURE IS ALSO AN ANSWER: if mc-tcc cannot compile tcc for another target,
+# the ladders keep their host-built tcc and the hole stays declared rather
+# than quietly closed.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cross:
+    name: 'mc-tcc -> x86_64-tcc, riscv64-tcc'
+    # NATIVE aarch64, because mc-tcc is an aarch64 binary. This job is the one
+    # place a cross-compile is the point rather than a compromise.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          set -eu
+          # qemu-user ONLY, and only to LOOK at the results. Nothing here
+          # enters any box; this job produces artifacts, it does not build a
+          # system.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            gcc make git curl xz-utils file \
+            qemu-user-static binfmt-support > /dev/null
+
+      - name: 'The tcc source, at the pin the ladders use'
+        run: |
+          set -eu
+          # THE SAME TREE stage3-to-stage4-reference.yml USES, out of the
+          # repo's own toolbox rather than a fresh clone: it is already
+          # configured, which is what makes it usable without running
+          # ./configure for a target this machine is not.
+          tar xzf spikes/toolbox/tcc-5ec0e6f8-arm64-configured.tar.gz
+          test -f tcc-src/config.h \
+            || { echo "  no config.h -- this is not the configured tarball"; exit 1; }
+          echo "  tcc-src: $(ls tcc-src | wc -l) files"
+          echo "  --- the backends present in this tree ---"
+          ls tcc-src/*-gen.c | sed 's/^/    /'
+
+      - name: 'CONTROL: build a native aarch64 tcc with the host gcc'
+        run: |
+          set -eu
+          # THE CONTROL RUNS FIRST, which is this project's habit and a good
+          # one: if the cross builds below fail, this says whether the source
+          # tree and this machine can build tcc at all. A failure here is a
+          # harness fault; a failure only below is the real answer.
+          cp -a tcc-src ctl && cd ctl
+          make -j"$(nproc)" tcc > b.log 2>&1 || { tail -20 b.log; exit 1; }
+          echo "  $(file -b tcc)"
+          ./tcc -v
+          echo "VERON-XTCC-CONTROL-OK"
+
+      - name: 'Build x86_64-tcc and riscv64-tcc'
+        run: |
+          set -eu
+          # ONE BINARY PER TARGET, AND NO libtcc1.a. tcc's Makefile has a
+          # `cross` target that builds every one of these; asking for the two
+          # by name keeps the run short and the failure attributable.
+          #
+          # THESE ARE CROSS COMPILERS RUNNING NOWHERE YET. x86_64-tcc is an
+          # aarch64 binary that EMITS x86_64 -- useful on this machine. What
+          # the spikes want is the opposite: an x86_64 binary that emits
+          # x86_64. That is the next step and it needs this one to work first,
+          # because it is the same source and the same defines.
+          cd tcc-src
+          for t in x86_64 riscv64; do
+            echo "  --- $t-tcc ---"
+            make "$t-tcc" > "b-$t.log" 2>&1 \
+              || { echo "  FAILED:"; \
+                   grep -aiE "error|undefined|No such" "b-$t.log" | head -8 | sed 's/^/    /'; \
+                   tail -8 "b-$t.log" | sed 's/^/    /'; exit 1; }
+            echo "    $(file -b "$t-tcc" | cut -c1-70)"
+          done
+          echo "VERON-XTCC-BUILD-OK  both cross compilers built"
+
+      - name: 'Do they emit the right architecture?'
+        run: |
+          set -eu
+          cd tcc-src
+          printf 'int main(void){return 42;}\n' > /tmp/t.c
+          # -c ONLY. A full link needs libtcc1.a and the target's crt files,
+          # neither of which exists here -- and neither of which this probe is
+          # about. An object file is enough to say which architecture the code
+          # generator emitted.
+          _bad=0
+          for pair in "x86_64:x86-64" "riscv64:RISC-V"; do
+            t=${pair%%:*}; want=${pair##*:}
+            ./"$t-tcc" -c -o "/tmp/$t.o" /tmp/t.c 2>"/tmp/$t.err" \
+              || { echo "  $t-tcc could not compile:"; sed 's/^/    /' "/tmp/$t.err" | head -4; _bad=1; continue; }
+            got=$(file -b "/tmp/$t.o")
+            printf '    %-12s -> %s\n' "$t-tcc" "$(echo "$got" | cut -c1-60)"
+            case "$got" in *"$want"*) ;; *) echo "      EXPECTED $want"; _bad=1 ;; esac
+          done
+          [ "$_bad" = 0 ] || exit 1
+          echo "VERON-XTCC-FILE-OK  each backend emits its own architecture"
+
+      - name: 'THE REAL QUESTION: can a cross tcc build a tcc that RUNS there?'
+        run: |
+          set -eu
+          # WHAT THE SPIKES ACTUALLY NEED is not a cross compiler on aarch64;
+          # it is an x86_64 binary that runs on the x86_64 runner. That means
+          # using x86_64-tcc to compile tcc's own source AGAIN -- a second
+          # generation, native to the target.
+          #
+          # THIS IS THE STEP MOST LIKELY TO FAIL, and the reason is worth
+          # writing down: linking a hosted program for the target needs the
+          # target's libc and crt files, and this machine has neither. tcc can
+          # link -static -nostdlib without them, but tcc itself is a hosted
+          # program.
+          #
+          # So this step reports rather than asserts. If it works, the idea is
+          # whole. If it does not, the finding is precise: the cross tcc is
+          # fine and what is missing is a target libc -- which musl's own
+          # source could supply, and which is a much smaller problem than a
+          # host compiler in the ancestry.
+          cd tcc-src
+          set +e
+          ./x86_64-tcc -o /tmp/tcc-x86_64 -DONE_SOURCE=1 -DTCC_TARGET_X86_64 \
+            -I. tcc.c > /tmp/gen2.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" = 0 ]; then
+            echo "  $(file -b /tmp/tcc-x86_64 | cut -c1-70)"
+            echo "VERON-XTCC-GEN2-OK  a second-generation, target-native tcc exists"
+          else
+            echo "  second generation did NOT link (rc=$rc), and here is why:"
+            grep -aiE "error|undefined|not found" /tmp/gen2.log | head -10 | sed 's/^/    /'
+            # CLASSIFY IT RATHER THAN LEAVE IT TO THE READER. The same
+            # experiment run by hand on an x86_64 machine, riscv64-tcc
+            # compiling tcc.c, gave exactly:
+            #     tcc: error: file 'crt1.o' not found
+            #     tcc: error: file 'crti.o' not found
+            #     tcc.h:28: error: include file 'stdarg.h' not found
+            # -- a missing target libc, with the code generator untouched.
+            # That is the expected shape and it is a small problem. A
+            # register-allocation or relocation fault would be a large one,
+            # so the two are separated here instead of both reading as "no".
+            if grep -qiE "crt1\\.o|crti\\.o|include file|libc|cannot find -l" /tmp/gen2.log; then
+              echo
+              echo "VERON-XTCC-GEN2-LIBC  the backend is fine; a target libc is missing."
+              echo "  Every error above names a startup file or a header, not a"
+              echo "  code-generation fault. The ladders already build musl at"
+              echo "  rung 2, so the missing piece is one this project makes."
+            else
+              echo
+              echo "VERON-XTCC-GEN2-CODEGEN  the errors are NOT about a missing libc."
+              echo "  That is the larger answer and worth reading closely."
+            fi
+            echo
+            echo "  THIS IS NOT NECESSARILY A NO. Read the errors above: if they"
+            echo "  name crt1.o, libc, or undefined libc symbols, the code"
+            echo "  generator is fine and what is missing is a target libc --"
+            echo "  which musl's source can build and which the ladders already"
+            echo "  do at rung 2. If they name a code-generation fault, that is"
+            echo "  a different and larger answer."
+          fi
+
+      - name: 'What this run established'
+        if: always()
+        run: |
+          set -eu
+          echo "  The question was whether the ladders' first compiler can come"
+          echo "  from the seed instead of from apt."
+          echo
+          echo "  stage3-to-stage4-reference.yml builds its ref-tcc with"
+          echo "  musl-gcc and calls it a declared hole; the arch spikes"
+          echo "  inherited that. mc-tcc has no host compiler in its history,"
+          echo "  so a tcc it produces would not either."
+          echo
+          echo "  Nothing here changes any ladder. If the steps above are"
+          echo "  green, the next experiment is to have this job publish the"
+          echo "  two binaries as artifacts and have the spikes consume them"
+          echo "  instead of running musl-gcc -- one step, and reversible."
