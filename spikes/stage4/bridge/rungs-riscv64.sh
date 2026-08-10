@@ -3584,12 +3584,37 @@ int main(void)
     return 0;
 }
 P1BEOF
-      if "$GCC1" -static -o p1b.bin p1b.c 2>/tmp/p1b.err; then
-        ./p1b.bin; say "      exit=$? (expect 0)"
-      else
-        say "      p1b did not compile:"
-        head -6 /tmp/p1b.err | sed 's/^/        /'
-      fi
+      # BOTH LANGUAGE MODES, BECAUSE THAT IS THE ONE VARIABLE LEFT.
+      #
+      # Run 85049598425 ran every line of this program under the default mode
+      # -- stdio, malloc, double, LONG DOUBLE, 64-bit arithmetic, exit 0 --
+      # and gmp's generators segfaulted anyway. So the soft-float helpers
+      # rung 4.6 merged are not the fault, and neither is anything else this
+      # program touches.
+      #
+      # What gmp does differently is visible in its own command line:
+      #     gcc -static -std=gnu99 gen-fac.c -o gen-fac
+      # gcc 4.6.4 defaults to gnu89. -std=gnu99 changes inline semantics and
+      # a good deal else, and it is the only difference between a program
+      # that runs here and one that crashes there.
+      #
+      # If the gnu99 build crashes and the default one does not, the fault is
+      # in this compiler's C99 mode and the next question is which construct.
+      # If both run, the fault is in gmp's source rather than in the language
+      # mode, and this rules out a whole direction cheaply.
+      for _std in "" "-std=gnu99"; do
+        _lbl="${_std:-default (gnu89)}"
+        if "$GCC1" -static $_std -o p1b.bin p1b.c 2>/tmp/p1b.err; then
+          say "      --- built with $_lbl ---"
+          ./p1b.bin > /tmp/p1b.out 2>&1
+          _rc=$?
+          sed 's/^/  /' /tmp/p1b.out
+          say "      exit=$_rc (expect 0)"
+        else
+          say "      $_lbl did not compile:"
+          head -6 /tmp/p1b.err | sed 's/^/        /'
+        fi
+      done
       rm -f p1b.c p1b.bin )
 
     say "    --- preflight 2: the tcc-built gmp/mpfr/mpc, as configure checks them ---"
