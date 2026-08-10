@@ -3734,6 +3734,20 @@ if stop_here 8; then
   say "  === stopping after rung $STOP_AFTER, as asked ==="
 else
 head1 "RUNG 8 -- the 4.6.4 fork AGAIN, built by the gcc tcc built"
+# ON THE make LINE, BECAUSE configure THREW IT AWAY.
+#
+# The previous run passed CC_FOR_BUILD to configure and run 85214921726 still
+# compiled the generators with CC:
+#     /work/out/bin/gcc -static ... -o build/genmodes
+#     build/genmodes -m > tmp-min-modes.c
+#     make[2]: *** [Makefile:3680: s-modes-m] Error 1
+# gcc's configure sets CC_FOR_BUILD='$(CC)' when build == host -- a native
+# build has no reason to want two compilers, so it does not honour the one it
+# was given. A make command-line assignment cannot be overridden that way.
+#
+# NOTE THE FAILING TARGET MOVED: s-modes -> s-modes-m. The first genmodes
+# invocation now succeeds and the second, `genmodes -m`, does not. That is
+# the same program crashing in a different mode, not progress.
 # CC_FOR_BUILD IS tcc HERE FOR THE SAME REASON IT IS AT RUNG 7.
 #
 # Run 85204685661 configured and then died on
@@ -3792,8 +3806,8 @@ if [ "$R7" = ok ]; then
   if [ "$_c8" != 0 ]; then
     R8=FAIL
     tail -20 cfg.log 2>/dev/null | sed 's/^/      /'
-  elif timeout 5400 make -j"$NP" MAKEINFO=true > build.log 2>&1 \
-       && make install MAKEINFO=true > /dev/null 2>&1; then
+  elif timeout 5400 make -j"$NP" MAKEINFO=true CC_FOR_BUILD="$PFX/bin/cc-static" > build.log 2>&1 \
+       && make install MAKEINFO=true CC_FOR_BUILD="$PFX/bin/cc-static" > /dev/null 2>&1; then
     R8=ok
     say "    --- what stage 2 produced ---"
     for b in gcc g++ cpp; do
@@ -3880,8 +3894,8 @@ if [ "$R8" = ok ]; then
       ( cd "/work/src/$pk-g2/$_pd2" \
         && ./configure CC="$GCC2 -static" CC_FOR_BUILD="$PFX/bin/cc-static" --disable-shared $EXTRA \
              --prefix=/work/prereq3 > cfg3.log 2>&1 \
-        && timeout 1800 make -j"$NP" MAKEINFO=true > build3.log 2>&1 \
-        && make install MAKEINFO=true > /dev/null 2>&1 ) \
+        && timeout 1800 make -j"$NP" MAKEINFO=true CC_FOR_BUILD="$PFX/bin/cc-static" > build3.log 2>&1 \
+        && make install MAKEINFO=true CC_FOR_BUILD="$PFX/bin/cc-static" > /dev/null 2>&1 ) \
         || { r9=FAIL
              say "      $pk NOT INSTALLED"
              tail -12 "/work/src/$pk-g2/$_pd2/build3.log" 2>/dev/null | sed 's/^/        /'; }
@@ -3946,10 +3960,10 @@ if [ "$R8" = ok ]; then
         else
           # -k SO ONE BROKEN TARGET LIBRARY DOES NOT HIDE THE REST, and three
           # hours because this is the longest rung in the job.
-          timeout 10800 make -k -j"$NP" -Otarget MAKEINFO=true > build10.log 2>&1
+          timeout 10800 make -k -j"$NP" -Otarget MAKEINFO=true CC_FOR_BUILD="$PFX/bin/cc-static" > build10.log 2>&1
           _m9=$?
           say "    make rc=$_m9  ($(wc -l < build10.log) lines)"
-          make install MAKEINFO=true > /dev/null 2>&1
+          make install MAKEINFO=true CC_FOR_BUILD="$PFX/bin/cc-static" > /dev/null 2>&1
           if [ -x /work/out10/bin/gcc ] && [ -x /work/out10/bin/g++ ]; then
             r9=ok
             say "    --- what stage 3 produced ---"
