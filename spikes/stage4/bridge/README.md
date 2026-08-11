@@ -489,6 +489,63 @@ compile-only probe answers it and needs nothing linkable, so `CROSS 2` and
 that is the real capability gap rather than a missing flag, and the step says
 so in its own error path.
 
+#### The probe asked the wrong question, and its answer showed that
+
+Run 85537036642 probed for an eight-byte long double before setting
+`TCC_USING_DOUBLE_FOR_LDOUBLE`, and reported:
+
+```
+long double is not 8 bytes -- no override needed
+lib/libtcc1.c:624: error: can't cross compile long double constants
+```
+
+**`sizeof(long double)` compiled *by* `x86_64-tcc` is the target's — sixteen,
+from `x86_64-gen.c`.** The size that matters is the one `x86_64-tcc` was itself
+built with, which is mc-tcc's eight, and no probe compiled by that compiler can
+observe it. The probe was right to decline the flag; the flag was never the fix.
+
+`TCC_USING_DOUBLE_FOR_LDOUBLE` would not have helped either way. Patch 0001's
+preamble already says so — *"It is defined for PE, macOS/arm64 and Win32 in
+tcc.h and selects double-based branches in the float parser, but arm64-gen.c
+sets LDOUBLE_SIZE unconditionally, so the guard above still fires."* The same is
+true of `x86_64-gen.c`. Upstream tried exactly this for macOS/x86_64 in 2021 and
+withdrew it as a mistake.
+
+#### `0005`: the missing branch, not a changed ABI
+
+`init_putv`'s guard has two branches and both are equality tests:
+
+```c
+if (sizeof(long double) == LDOUBLE_SIZE)   /* 8 == 16, no */
+else if (sizeof(double) == LDOUBLE_SIZE)   /* 8 == 16, no */
+else if (0 == memcmp(ptr, &vtop->c.ld, LDOUBLE_SIZE))  /* reads 16 from 8 */
+else tcc_error("can't cross compile long double constants");
+```
+
+A host whose long double is **smaller** than the target slot has a correct
+answer available and no branch that reaches it. `0005` adds one: store the
+bytes the host actually has.
+
+**`LDOUBLE_SIZE` is deliberately left at 16, and that is the difference from
+patch 0001.** 0001 shrinks a type in a compiler that only ever builds the next
+compiler, and states the cost plainly. Doing the same in `x86_64-gen.c` would
+shrink it in the compiler that **builds musl** — and that musl is kept, as the
+libc the whole x86_64 ladder links against. Its headers would claim
+`LDBL_MANT_DIG 113` while every long double occupied eight bytes, which is the
+exact mismatch `rungs.sh` rung 2 spends thirty lines diagnosing on the other
+architecture. **A wrong ABI in a throwaway compiler is a declared limitation; a
+wrong ABI in a retained libc is a defect.**
+
+What is lost is precision in compile-time long-double *constants* — they carry
+double precision rather than eighty bits. Nothing else narrows, and the upper
+bytes are zero rather than garbage because `section_realloc` zeroes what it
+adds (`tccelf.c:284`).
+
+**Checked before shipping:** the patch applies to the pinned tree both by
+`git apply` and by `patch -p1`, and stacks on 0001–0004. The branch logic was
+run against six host/target size combinations — every case that worked before
+takes the same branch, and only mc-tcc→x86_64 takes the new one.
+
 **The cross itself has still never run.** `stage3-cross-tcc-probe` established
 that a cross tcc and a target-native tcc can be built — **with the host's
 gcc**. Doing the same
