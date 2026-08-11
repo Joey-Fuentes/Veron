@@ -312,8 +312,23 @@ qemu-system-x86_64 \
   -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci \
   -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
   -kernel Image -initrd initramfs.cpio.gz \
-  -append "console=ttyS0 rdinit=/init panic=1 loglevel=4"
+  -append "console=ttyS0 rdinit=/init panic=1 loglevel=4 veron.boot=system"
 ```
+
+**`veron.boot=system` is what gives you a system, and leaving it off is why an
+earlier version of this section did not work.** Read `guest/init`: the
+`switch_root` into dinit is at line 383 and the package test suite is at 477,
+so in system mode **the tests never run** and the machine stays up. Without the
+flag `BOOTMODE` defaults to `test`, init runs the suite, prints
+`VERON-STAGE5-TESTS pass=… fail=…`, and calls `poweroff -f`. A boot that ends
+
+```
+VERON-STAGE5-GUEST-DONE
+[    2.857876] reboot: Power down
+```
+
+did what it was told; it was told the wrong thing. The aarch64 command above
+has always carried the flag.
 
 **This is the aarch64 command above with four substitutions and nothing else**:
 `qemu-system-x86_64` for `qemu-system-aarch64`, `-enable-kvm -cpu host` for
@@ -343,6 +358,22 @@ dinit: Service console process terminated with exit code 1
 `packages-amd64/veron-system` states `ttyS0`. `spikes/stage5/AMD64.md` has the
 whole account, including why 157 passing tests did not catch it.
 
+**If your image predates the `ttyS0` fix, patch it before booting.** Images
+published before that change ship a console service naming `ttyAMA0`, so there
+is no shell to start labwc from. One word, in a copy:
+
+```sh
+cp rootfs.img rootfs-patched.img          # keep the published one intact
+sudo mkdir -p /mnt/veron
+sudo mount -o loop rootfs-patched.img /mnt/veron
+sudo sed -i 's/115200 ttyAMA0/115200 ttyS0/' /mnt/veron/etc/dinit.d/console
+sudo umount /mnt/veron
+```
+
+Boot `rootfs-patched.img`. It will no longer match `IMAGE-SHA256`, which is
+why the copy: the published image stays verifiable and the patched one is
+plainly a local artefact.
+
 **Then start the compositor by hand**, in the terminal you launched from, for
 the reason given under *the session* -- it is deliberately not in `boot.d`:
 
@@ -350,9 +381,11 @@ the reason given under *the session* -- it is deliberately not in `boot.d`:
 sh /etc/dinit.d/scripts/labwc-session
 ```
 
-#### The CI invocation is a different command, and running it by hand disappoints
+#### The CI invocations are two commands, and neither is the one to run by hand
 
-`stage5-spike-amd64` boots the same image like this:
+`stage5-spike-amd64` boots the image twice, and they differ in exactly the flag
+above. The **harness** boot omits it, so init runs the package tests and powers
+off — that is where `pass=157 fail=0 none=2` comes from:
 
 ```sh
 qemu-system-x86_64 -cpu qemu64 -smp 4 -m 4096 \
@@ -360,18 +393,19 @@ qemu-system-x86_64 -cpu qemu64 -smp 4 -m 4096 \
   -drive file=rootfs.img,format=raw,if=virtio \
   -device virtio-gpu-pci -device virtio-keyboard-pci \
   -kernel Image -initrd initramfs.cpio.gz \
-  -append "console=ttyS0 earlycon rdinit=/init panic=1 loglevel=7 veron.boot=system"
+  -append "console=ttyS0 earlycon rdinit=/init panic=1 loglevel=7"
 ```
 
-It is here because it is what the published result was measured with, **not
-because it is the one to run by hand**. `veron.boot=system` tells init to run
-the package test suite and exit, `-nographic` means no desktop and no window,
-and `-nic none` means no network. Someone reaching for the CI command expecting
-a system to use gets a test harness that talks to a terminal, and the console
-service respawning behind it looks like a fault rather than the absence of a
-login this file already records.
+The **system** boot adds `veron.boot=system` and switch_roots into dinit, which
+is what `VERON-STAGE5-LOGIN-OK` reports.
 
-`-cpu qemu64` in that command is also deliberate and is documented below.
+Both are here because they are what the published result was measured with,
+**not because either is the one to run by hand**. `-nographic` means no
+desktop, `-nic none` means no network, and the harness boot ends in a power
+down by design. Reach for one of these expecting a machine to use and you get a
+test harness talking to a terminal.
+
+`-cpu qemu64` in both is deliberate and is documented below.
 
 #### The two `-cpu` values disagree, and that is a finding rather than a nuisance
 

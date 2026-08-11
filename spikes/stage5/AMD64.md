@@ -458,23 +458,35 @@ qemu-system-x86_64 \
   -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci \
   -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
   -kernel Image -initrd initramfs.cpio.gz \
-  -append "console=ttyS0 rdinit=/init panic=1 loglevel=4"
+  -append "console=ttyS0 rdinit=/init panic=1 loglevel=4 veron.boot=system"
 ```
+
+**`veron.boot=system` is not optional.** `switch_root` into dinit is at line
+383 of `guest/init` and the package test suite is at 477, so in system mode the
+tests never run and the machine stays up; without the flag `BOOTMODE` defaults
+to `test` and init runs the suite and calls `poweroff -f`. A boot ending in
+`VERON-STAGE5-GUEST-DONE` and `reboot: Power down` was told to do that.
 
 Then `sh /etc/dinit.d/scripts/labwc-session` in the terminal you launched from;
 the compositor is deliberately not in `boot.d`. `Ctrl-A` then `X` quits. Drop
-`-enable-kvm -cpu host` for `-cpu qemu64` if KVM is unavailable. Full notes,
-including why the mouse must be `virtio-mouse-pci`, are in `STAGE5.md` under
-*Running the x86_64 image*.
+`-enable-kvm -cpu host` for `-cpu qemu64` if KVM is unavailable. Full notes are
+in `STAGE5.md` under *Running the x86_64 image*.
 
-**This is not the command CI uses**, and the difference matters if you are
-reading a CI log beside a local boot. CI passes `-nographic -nic none` and
-`veron.boot=system`, which runs the package test suite and exits -- no desktop,
-no network, and the console service respawning behind it, which looks like a
-fault and is the absence of a login `STAGE5.md` already records.
+**An image published before the `ttyS0` fix has no shell to start labwc from.**
+Patch a copy rather than waiting for a rebuild:
+
+```sh
+cp rootfs.img rootfs-patched.img
+sudo mount -o loop rootfs-patched.img /mnt/veron
+sudo sed -i 's/115200 ttyAMA0/115200 ttyS0/' /mnt/veron/etc/dinit.d/console
+sudo umount /mnt/veron
+```
+
+The patched copy no longer matches `IMAGE-SHA256`, which is the point of the
+copy: the published image stays verifiable and the local one is plainly local.
 
 **Swapping `-cpu host` for `-cpu qemu64` reproduces the libffi fault in two
-minutes** -- `qemu64` traps, `host` very likely does not -- which is the local
+minutes** — `qemu64` traps, `host` very likely does not — which is the local
 version of the finding above and the clearest demonstration of why the fix was
 to pin libffi rather than raise the emulated CPU.
 
