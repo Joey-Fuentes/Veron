@@ -151,7 +151,16 @@ jobs:
     # packages after glib include its own compile, harfbuzz, cairo and pango,
     # none of which has ever run here, at jobs=1. 90 was going to be tight
     # and silent about it.
-    timeout-minutes: 300
+    # NO JOB timeout-minutes, DELIBERATELY. GitHub's hard ceiling for a job is
+    # 360 minutes and it enforces that whatever this file says, so a value here
+    # can only ever give time away. This job asked for 300 and handed back an
+    # hour it was entitled to, on a build that has already run out of time
+    # once.
+    #
+    # THE STEP KEEPS ITS OWN, AND THAT ONE EARNS ITS PLACE -- see the note
+    # above the build step. It fires before the ceiling so the collector still
+    # runs; without it a hang is SIGKILLed at 360 with every build log still
+    # inside the container, and the run says "cancelled" and nothing else.
     steps:
       - uses: actions/checkout@v5
 
@@ -481,17 +490,22 @@ jobs:
         # low kills a SUCCEEDING compile near the end and teaches nothing,
         # which is the one outcome worth spending runner minutes to avoid.
         #
-        # THE 30-MINUTE GAP IS THE POINT AND IS PRESERVED. Job 300, step 270.
+        # THE GAP IS THE POINT AND IS PRESERVED. Ceiling 360, step 340.
         # A job timeout is a CANCELLATION and `if: always()` steps do not run;
         # a step timeout is an ordinary failure and they do. So the build's
-        # budget stays strictly under the job's, and the difference is the
+        # budget stays strictly under the PLATFORM's -- the job sets no
+        # timeout of its own any more, because GitHub enforces 360 regardless
+        # and a smaller number could only give time away. The difference is the
         # collector's.
         #
         # NARROW THIS ONCE THERE IS A NUMBER. The first wpewebkit build that
         # completes gives a real figure; set the budget from that plus headroom
         # and leave the gap alone.
-        timeout-minutes: 270      # < the job's 300, and the difference is the
-                                  # collector's. See the note above.
+        timeout-minutes: 340      # < GitHub's 360 ceiling, and the 20-minute
+                                  # difference is the collector's. The job no
+                                  # longer sets one, so this is measured
+                                  # against the platform limit rather than
+                                  # against another number in this file.
         run: |
           set -eu
           cd spikes/stage5
