@@ -1,0 +1,54 @@
+#!/bin/sh
+# Start getty on whatever tty the kernel was told to use.
+#
+# WHY THIS EXISTS. The console service used to name its tty outright, and the
+# name was wrong on two of the three places this system boots:
+#
+#     ttyAMA0   the ARM PL011 UART -- correct on aarch64 under qemu
+#     ttyS0     the x86 serial port -- correct on x86_64 under qemu
+#     tty1      the screen -- correct on real hardware, which has no serial port
+#
+# A hardcoded name does not fail loudly. getty exits 1 because it cannot open
+# the device, dinit's `restart = true` does exactly what it was asked, and the
+# console loops forever:
+#
+#     dinit: Service console process terminated with exit code 1
+#     [STOPPD] console
+#     [  OK  ] console
+#
+# which reads as the absent login this system documents rather than as a
+# service given a device that is not there. The difference is the exit code.
+#
+# THE KERNEL ALREADY KNOWS THE ANSWER. Every boot passes `console=` on its
+# command line -- that is how the kernel decides where to print -- so the tty
+# is not something this file has to guess. Taking it from /proc/cmdline makes
+# one file correct on all three, and it cannot drift from the kernel's own
+# idea of where the console is, because it is reading it.
+#
+# LAST WINS, MATCHING THE KERNEL. Multiple console= arguments are legal and
+# the kernel uses the last one for /dev/console, so this loop does not break
+# early.
+#
+# THE OPTIONS ARE STRIPPED. `console=ttyS0,115200n8` names the device before
+# the comma; getty takes the baud rate as a separate argument.
+TTY=
+for w in $(cat /proc/cmdline 2>/dev/null); do
+    case "$w" in console=*) TTY="${w#console=}"; TTY="${TTY%%,*}" ;; esac
+done
+
+# A DEFAULT THAT IS A REAL DEVICE, NOT A GUESS. With no console= at all the
+# kernel still gives PID 1 a /dev/console, and tty1 is where a bare-metal boot
+# with no arguments ends up. Naming it beats exiting, which would loop.
+[ -n "$TTY" ] || TTY=tty1
+
+# AND IT MUST EXIST. If the named tty is absent, say so ONCE rather than
+# failing and being restarted forever -- the loop is what made the original
+# bug invisible. Sleeping before exit turns a spin into something readable.
+if [ ! -c "/dev/$TTY" ]; then
+    echo "VERON-CONSOLE-FAIL  /dev/$TTY is not a character device" > /dev/console 2>&1
+    echo "  console= named it, and this kernel did not create it." > /dev/console 2>&1
+    sleep 5
+    exit 1
+fi
+
+exec /bin/busybox getty -n -l /etc/dinit.d/scripts/console-shell 115200 "$TTY"

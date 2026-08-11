@@ -1387,6 +1387,166 @@ if [ "$B5" = ok ]; then
     # to see raw frames before an address exists.
     set_cfg VIRTIO_NET y
     set_cfg PACKET y
+
+    # ---------------------------------------------------------------------
+    # REAL HARDWARE. Everything above this line is what a qemu guest needs.
+    #
+    # THE IMAGE BOOTED ON A LAPTOP AND THE LAPTOP IS WHERE THIS LIST CAME
+    # FROM. Run 85313812045 published an x86_64 image that boots, reproduces
+    # and passes 157 guest tests -- under qemu. Written to an NVMe partition
+    # on an HP Laptop 14 and booted through its GRUB, it got as far as:
+    #
+    #     VERON-IMAGE-MOUNT-SKIP  no ext4 block device
+    #     VERON-STAGE5-GUEST-FAIL  no root to test: neither disk nor 9p
+    #     # cat /proc/partitions
+    #     major minor  #blocks  name
+    #                                    <- nothing. not one block device.
+    #
+    # NOT ONE BLOCK DEVICE, because the only storage driver in this kernel was
+    # virtio-blk. And with this kernel's own Image the screen never printed
+    # anything at all -- GRUB's framebuffer stayed on screen, because
+    # DRM_VIRTIO_GPU was the only display driver and it does not attach to an
+    # AMD APU. The boot was alive the whole time; Caps Lock toggled.
+    #
+    # =m IS THE SAME AS =n IN THIS SYSTEM, and that is the whole reason this
+    # block is long. `make modules_install` never runs, no /lib/modules ships,
+    # there is no kmod and no modprobe. A distribution kernel solves all of
+    # this with modules and an initramfs that loads them; this one has two
+    # files in its initramfs and cannot. Every driver is built in or absent.
+    #
+    # THAT MAKES THE ARITHMETIC LOPSIDED, and the comment above about PACKET
+    # already stated it: a kernel symbol costs nothing at runtime, and a chain
+    # rerun to add one costs an hour plus everything downstream. Stage 4 has
+    # no checkpoint. So this errs generously on purpose -- a driver nobody
+    # needs costs bytes in the bzImage; a driver somebody needs costs a run.
+    #
+    # THE HARDWARE WAS MEASURED, NOT ASSUMED. `lspci -k` on that machine names
+    # the driver the running system chose for each device, which is what these
+    # symbols are derived from:
+    #
+    #     Micron 2550 NVMe SSD              nvme
+    #     AMD Lucienne [1002:164c]          amdgpu
+    #     AMD Renoir/Cezanne USB 3.1        xhci_hcd
+    #     Realtek RTL8852AE WiFi 6          rtw89_8852ae
+    #
+    # There is NO ETHERNET CONTROLLER on that machine at all, which is why the
+    # wireless symbols below are not a luxury.
+
+    # STORAGE. NVMe is what the test machine has; AHCI and USB storage are the
+    # other two ways a consumer x86 machine presents a disk, and BLK_DEV_SD is
+    # what turns either into /dev/sda. SCSI_MOD comes with it.
+    set_cfg BLK_DEV_NVME y
+    set_cfg NVME_CORE y
+    set_cfg SATA_AHCI y
+    set_cfg ATA y
+    set_cfg SCSI y
+    set_cfg BLK_DEV_SD y
+    set_cfg USB_STORAGE y
+    # AND THE FILESYSTEM, asserted rather than inherited. EXT4_FS has always
+    # come from x86_64_defconfig and stage 4's own boot never exercised it --
+    # it boots with -kernel and 9p and no -drive. Stage 5 mounts an ext4 image
+    # over virtio-blk, so it has been load-bearing for a while on a symbol
+    # nobody chose. AMD64.md flagged this as a risk before the laptop did.
+    set_cfg EXT4_FS y
+
+    # USB. xHCI is the controller on this machine; HID is the keyboard and
+    # mouse of every external device. EHCI/OHCI cost little and cover older
+    # machines.
+    set_cfg USB y
+    set_cfg USB_PCI y
+    set_cfg USB_XHCI_HCD y
+    set_cfg USB_XHCI_PCI y
+    set_cfg USB_EHCI_HCD y
+    set_cfg USB_EHCI_PCI y
+    set_cfg USB_OHCI_HCD y
+    set_cfg USB_HID y
+    set_cfg HID_GENERIC y
+
+    # THE BUILT-IN KEYBOARD AND TOUCHPAD, which are not USB. A laptop keyboard
+    # is almost always PS/2 behind i8042; the touchpad on an AMD platform is
+    # usually i2c-hid over the Designware controller, and PINCTRL_AMD is what
+    # routes its interrupt. Without that last one the touchpad enumerates and
+    # never reports.
+    set_cfg SERIO y
+    set_cfg SERIO_I8042 y
+    set_cfg KEYBOARD_ATKBD y
+    set_cfg INPUT_MOUSEDEV y
+    set_cfg MOUSE_PS2 y
+    set_cfg I2C y
+    set_cfg I2C_DESIGNWARE_CORE y
+    set_cfg I2C_DESIGNWARE_PLATFORM y
+    set_cfg I2C_HID y
+    set_cfg I2C_HID_ACPI y
+    set_cfg PINCTRL_AMD y
+
+    # DISPLAY, IN TWO LAYERS, AND THE ORDER MATTERS.
+    #
+    # SIMPLEDRM/SYSFB IS THE FIRMWARE-FREE FLOOR. UEFI hands over a linear
+    # framebuffer that GRUB has already been drawing into; simpledrm adopts it
+    # and FRAMEBUFFER_CONSOLE puts text on it. That needs no blobs, no ASIC
+    # knowledge, and works on any UEFI machine -- so a kernel that gets this
+    # far can always SAY what went wrong, which is exactly what the laptop
+    # could not do.
+    #
+    # amdgpu IS THE REAL DRIVER AND IT NEEDS FIRMWARE. It takes over from
+    # simpledrm when it probes. If its blobs are absent it fails and the
+    # console stays on the framebuffer rather than going dark -- which is the
+    # reason to have both rather than only the second.
+    set_cfg SYSFB_SIMPLEFB y
+    set_cfg DRM_SIMPLEDRM y
+    set_cfg FB y
+    set_cfg FRAMEBUFFER_CONSOLE y
+    set_cfg FRAMEBUFFER_CONSOLE_DETECT_PRIMARY y
+    set_cfg VT y
+    set_cfg VT_CONSOLE y
+    set_cfg DRM_AMDGPU y
+    set_cfg DRM_AMD_DC y
+    set_cfg DRM_I915 y
+
+    # WIRELESS. The test machine has no ethernet, so this is its only network.
+    # CFG80211 and MAC80211 are the stack; rtw89 is the driver family and
+    # 8852AE the part.
+    #
+    # THE DRIVER WITHOUT FIRMWARE IS A DRIVER THAT PROBES AND GIVES UP, and
+    # saying so here is better than letting the symbol look like the feature.
+    # dmesg on the test machine:
+    #
+    #     rtw89_8852ae: loaded firmware rtw89/rtw8852a_fw.bin
+    #
+    # That file is not in this image and will not be: it is redistributable
+    # binary nobody in this chain can build, which is the one thing every
+    # other byte here is arranged to avoid. Shipping it is a decision about
+    # what the trust boundary means, not a config line -- see AMD64.md. What
+    # this block does is make the kernel READY for a blob the operator
+    # supplies, which is a different and smaller claim.
+    set_cfg CFG80211 y
+    set_cfg MAC80211 y
+    set_cfg RTW89 y
+    set_cfg RTW89_CORE y
+    set_cfg RTW89_PCI y
+    set_cfg RTW89_8852AE y
+    # AND ETHERNET FOR MACHINES THAT HAVE IT. Neither needs firmware, which is
+    # why they are here and iwlwifi's cousins are not.
+    set_cfg E1000E y
+    set_cfg R8169 y
+
+    # FIRMWARE LOADING, INCLUDING COMPRESSED. Every blob in a modern
+    # distribution's /lib/firmware is zstd-compressed -- `rtw8852a_fw.bin.zst`,
+    # `renoir_dmcub.bin.zst`. Without this symbol the loader sees a file it
+    # cannot decompress, which fails in exactly the same way as a file that is
+    # not there. Enabling it means an operator can copy the blobs across
+    # verbatim rather than having to know to decompress them first.
+    #
+    # FIRMWARE GOES IN THE INITRAMFS, NOT IN THE ROOTFS, and that is the
+    # non-obvious part. These drivers are BUILT IN, so they probe during
+    # kernel init -- before /dev/nvme0n1p5 is mounted and long before anything
+    # in the image is reachable. The kernel populates the initramfs before
+    # driver initcalls run, so /lib/firmware INSIDE the initramfs is the only
+    # place a built-in driver can find a blob at probe time.
+    set_cfg FW_LOADER y
+    set_cfg FW_LOADER_COMPRESS y
+    set_cfg FW_LOADER_COMPRESS_ZSTD y
+
     make ARCH=x86_64 olddefconfig > /dev/null 2>&1
     _bad=0
     [ "$B6" = FAIL ] && _bad=1
@@ -1436,6 +1596,46 @@ if [ "$B5" = ok ]; then
         printf '    9p: CONFIG_%-14s NOT SET -- in-guest gcc test will be skipped\n' "$_sym"
       fi
     done
+
+    # AND EVERY REAL-HARDWARE SYMBOL, BY NAME, FOR THE SAME REASON ONE RUNG UP.
+    #
+    # `olddefconfig` DOES NOT HAVE TO HONOUR set_cfg. A symbol whose
+    # dependencies are unmet is dropped silently -- RTW89_8852AE needs
+    # RTW89_PCI, DRM_SIMPLEDRM needs DRM, I2C_HID_ACPI needs I2C_HID -- and
+    # the .config that results looks exactly like one where the line was never
+    # written. The failure then surfaces four steps later as a laptop that
+    # boots to nothing, and costs a full chain rerun to correct, because stage
+    # 4 has no checkpoint.
+    #
+    # SO THE LOG SAYS WHICH ONES SURVIVED. Reporting rather than failing: a
+    # kernel missing R8169 is still a kernel worth publishing, and which
+    # symbols matter depends on the machine someone boots it on. What must not
+    # happen is finding out from a black screen.
+    say "    real-hardware symbols after olddefconfig:"
+    _missing=
+    for _sym in BLK_DEV_NVME SATA_AHCI BLK_DEV_SD USB_STORAGE EXT4_FS \
+                USB_XHCI_PCI USB_HID SERIO_I8042 KEYBOARD_ATKBD \
+                I2C_HID_ACPI PINCTRL_AMD \
+                SYSFB_SIMPLEFB DRM_SIMPLEDRM FRAMEBUFFER_CONSOLE \
+                DRM_AMDGPU DRM_I915 \
+                CFG80211 MAC80211 RTW89 RTW89_PCI RTW89_8852AE \
+                E1000E R8169 FW_LOADER_COMPRESS_ZSTD; do
+      if grep -q "^CONFIG_$_sym=y" .config; then
+        printf '      %-26s on\n' "$_sym"
+      else
+        printf '      %-26s NOT SET\n' "$_sym"
+        _missing="$_missing $_sym"
+      fi
+    done
+    if [ -n "$_missing" ]; then
+      say "    VERON-KCONFIG-DROPPED --$_missing"
+      say "      olddefconfig did not keep these. Unmet dependency, or the"
+      say "      symbol is spelled differently in this kernel version. A"
+      say "      machine needing one of them will boot to a black screen and"
+      say "      say nothing; check here first."
+    else
+      say "    VERON-KCONFIG-OK  every real-hardware symbol survived"
+    fi
     if [ "$_bad" != 0 ]; then
       grep -E "^(# )?CONFIG_(WERROR|DEVTMPFS)" .config | sed 's/^/      /'; B6=FAIL
     else

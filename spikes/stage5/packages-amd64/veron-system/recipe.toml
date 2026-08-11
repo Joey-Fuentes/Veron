@@ -4,47 +4,63 @@
 # loads this file.
 #
 # WHAT DIFFERS FROM THE BASE RECIPE:
-#   files/etc/dinit.d/console: getty's tty argument, ttyAMA0 -> ttyS0.
-#   Nothing else. Every other file under files/ is byte-identical to the base.
+#   files/etc/dinit.d/console      -- runs a wrapper instead of naming a tty
+#   files/etc/dinit.d/scripts/console-getty  -- NEW; the wrapper
+#   Every other file under files/ is byte-identical to the base.
 #
-# ttyAMA0 IS THE ARM PL011 UART AND DOES NOT EXIST ON x86. The console service
-# ends:
+# THE BASE NAMES A TTY AND THE NAME IS WRONG TWICE. The console service ended:
 #
 #     command = /bin/busybox getty -n -l .../console-shell 115200 ttyAMA0
 #     restart = true
 #
-# On x86_64 the serial console is ttyS0 -- which is what this arm already
-# passes on every kernel command line, `console=ttyS0`. So getty opens a device
-# that is not there, exits 1 immediately, and `restart = true` does exactly
-# what it was asked to:
+# ttyAMA0 is the ARM PL011 UART. There are three places this system boots and
+# that name is right in one of them:
+#
+#     aarch64 under qemu    ttyAMA0
+#     x86_64 under qemu     ttyS0     -- what this arm passes on every cmdline
+#     real hardware         tty1      -- a laptop has no serial port
+#
+# getty cannot open a device that is not there, so it exits 1 immediately and
+# dinit restarts it, forever:
 #
 #     dinit: Service console process terminated with exit code 1
 #     [STOPPD] console
 #     [  OK  ] console
-#     dinit: Service console process terminated with exit code 1
-#     ... forever
 #
-# WHICH IS WHY THE SYSTEM HAS NO USABLE CONSOLE ON THIS ARCHITECTURE. Not a
-# missing login -- STAGE5.md records that there is no login and why, and that
-# is a separate and deliberate state. This is getty failing to open a tty, and
-# it looks like the documented absence of a login until you read the exit code.
+# WHICH READS AS THE ABSENT LOGIN THIS SYSTEM DOCUMENTS. STAGE5.md records that
+# there is no login and why -- `getty -n`, an /etc/passwd naming an /etc/shadow
+# that does not exist -- and that is deliberate. This is a getty that cannot
+# open a tty. From across the room they are identical and the difference is the
+# exit code.
 #
-# THE TESTS NEVER TOUCHED IT. `veron.boot=system` runs the package tests first
-# and they all pass on x86_64 -- 157 of them -- because they run from init
-# before dinit exists. The console service comes after, and nothing in the run
-# asserts that a getty stayed up. A boot can report 157 passes and hand back a
-# machine nobody can type into.
+# NOTHING IN CI COULD CATCH IT. The package tests run from init, before dinit
+# exists, and all 157 pass. The console service starts afterwards and no gate
+# asserts a getty stayed up. A boot can report 157 passes and hand back a
+# machine nobody can type into. It was found by a person booting the image on a
+# laptop, which is the only way it could have been found.
 #
-# NOT FIXED IN THE BASE, THOUGH IT SHOULD BE. The honest fix is for the service
-# to take its tty from `console=` on /proc/cmdline rather than naming one, and
-# that is a change to a file the aarch64 image ships -- it moves veron-system's
-# bytes and every digest downstream. AMD64.md records it. This overlay states
-# the right value for this architecture and nothing more.
+# THE FIX IS TO STOP NAMING IT. Every boot already passes `console=` -- that is
+# how the kernel decides where to print -- so scripts/console-getty reads it
+# from /proc/cmdline and execs getty on it. One file, correct on all three, and
+# it cannot drift from the kernel's own idea of where the console is because it
+# is reading it. The wrapper also refuses ONCE, with a message, if the named
+# tty is absent, rather than exiting into the restart loop that made the
+# original bug invisible.
 #
-# THE SYMLINKS UNDER files/etc/dinit.d/boot.d ARE PRESERVED AS SYMLINKS.
-# boot.d/console points at ../console, so changing the target changes both, and
-# copying the tree with symlinks resolved would silently turn one file into two
-# and break the next edit. Checked with `git ls-files -s`: mode 120000.
+# THIS BELONGS IN THE BASE AND IS NOT THERE YET. It is arch-neutral and fixes
+# aarch64's hardcoded ttyAMA0 too -- but moving it moves veron-system's bytes
+# and every install digest downstream on an arm that is currently green, so it
+# needs its own dispatch and a re-seeding run. AMD64.md records that.
+#
+# THE PIN GATE IS WEAKER HERE THAN FOR ANY OTHER OVERLAY, AND SAYING SO IS
+# BETTER THAN LETTING IT LOOK STRONG. `veron --overlay ... selftest` compares
+# version and every [source] key -- and this package's source is
+# `kind = "local"`, a PATH IN THIS REPOSITORY rather than a hashed tarball. So
+# the keys match while the shipped bytes differ, which is exactly what the gate
+# exists to prevent everywhere else. [source].path deliberately still names the
+# base directory: changing it would fail the gate and would not make the
+# statement truer. What actually pins these files is [installs].digest, which
+# an overlay cannot carry. Read this overlay's files/ diff, not its gate.
 #
 # THE PIN IS NOT ALLOWED TO DIFFER. `veron --overlay ... selftest` compares
 # version and every [source] key against packages/veron-system/recipe.toml and fails
@@ -211,7 +227,22 @@ cwd  = "$B"
 # tidiness: the sandbox binds /packages, /policy and /tools and NOTHING else.
 # A source tree under guest/ would not exist inside the box at all, and the
 # step would fail on a path that looks perfectly reasonable from outside it.
-run  = [["sh", "-c", "mkdir -p \"$D\" && cp -a /packages/veron-system/files/. \"$D/\""]]
+# /packages-amd64/, NOT /packages/, AND THIS LINE IS WHY THE FIRST VERSION OF
+# THIS OVERLAY DID NOTHING AT ALL.
+#
+# The base recipe hardcodes the absolute path `/packages/veron-system/files/.`
+# -- the bind mount of the BASE tree inside the sandbox. An overlay recipe is
+# loaded from packages-amd64/, its recipe-sha changes, the plan changes, the
+# package rebuilds... and the step still copies the base tree's files. The
+# edited console service sat in packages-amd64/ and never reached the image.
+# Nothing fails; the build is green and the fix is absent.
+#
+# THE DRIVER RESOLVES patches/ AND files/ FROM THE RECIPE'S OWN DIRECTORY
+# ALREADY, which is what makes an overlay's patches work. A STEP cannot say
+# that: $P expands to the recipe's patches/ directory and this package has
+# none, so `$P/../files` cannot resolve. A token for the recipe's own
+# directory is the general fix and is recorded as open in AMD64.md.
+run  = [["sh", "-c", "mkdir -p \"$D\" && cp -a /packages-amd64/veron-system/files/. \"$D/\""]]
 
 [installs]
 prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts", "etc/xdg/labwc", "etc/xdg/yambar", "usr/lib/locale", "usr/share/veron"]

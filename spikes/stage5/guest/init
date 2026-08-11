@@ -32,7 +32,29 @@ VIA=none
 # ---- 1. the real image, as a disk -------------------------------------
 # The strongest available claim: this is the artifact, mounted the way a
 # machine would mount it.
-for dev in /dev/vda /dev/sda /dev/vdb; do
+#
+# veron.root= IS TRIED FIRST, AND IT EXISTS BECAUSE THE PROBE LIST CANNOT
+# COVER REAL HARDWARE. /dev/vda, /dev/sda and /dev/vdb are what qemu presents
+# and are enough for every boot this project runs itself. A laptop with an
+# NVMe disk presents /dev/nvme0n1p5, which no list of plausible names will
+# ever contain -- so the only way to boot the image from a partition is for
+# the caller to say which one.
+#
+# WHY NOT root=, WHICH IS THE NAME THE KERNEL ALREADY USES. root= is consumed
+# by the kernel when it mounts a root filesystem itself; this init runs from
+# an initramfs and does the mounting, so the kernel never acts on it and two
+# different things would be reading one parameter. A distinct name says who
+# it is for. `veron.boot=` and `veron.net=` set that pattern already.
+#
+# THE LIST STILL RUNS IF THIS IS ABSENT OR FAILS. Every existing boot passes
+# no veron.root= and behaves exactly as before -- this is one extra iteration
+# of a loop that was already there.
+VERON_ROOT=
+for w in $(cat /proc/cmdline 2>/dev/null); do
+    case "$w" in veron.root=*) VERON_ROOT="${w#veron.root=}" ;; esac
+done
+
+for dev in $VERON_ROOT /dev/vda /dev/sda /dev/vdb; do
     [ -b "$dev" ] || continue
     if mount -t ext4 -o ro "$dev" "$ROOT" 2>/dev/null; then
         VIA="disk($dev)"
@@ -40,6 +62,24 @@ for dev in /dev/vda /dev/sda /dev/vdb; do
         break
     fi
 done
+
+# NAMED AND NOT THERE IS A DIFFERENT FAULT FROM NOT NAMED, and it is worth one
+# line to separate them. A typo, a partition that is not ext4, and a kernel
+# with no driver for the controller all produce the same silence otherwise.
+if [ -n "$VERON_ROOT" ] && [ "$VIA" = none ]; then
+    echo "VERON-ROOT-NAMED-FAIL  veron.root=$VERON_ROOT did not mount"
+    if [ ! -b "$VERON_ROOT" ]; then
+        echo "  it is not a block device in this kernel. Either the name is"
+        echo "  wrong or the driver for its controller is not built in --"
+        echo "  there are no modules in this image and nothing can be loaded."
+    else
+        echo "  it exists but did not mount as ext4 read-only."
+    fi
+    echo "  --- block devices this kernel can see ---"
+    # /proc/partitions rather than lsblk: busybox has no lsblk applet here,
+    # and this file exists whenever the block layer does.
+    sed 's/^/    /' /proc/partitions 2>/dev/null || echo "    (no /proc/partitions)"
+fi
 
 # ---- 2. fall back to the 9p share --------------------------------------
 if [ "$VIA" = none ]; then

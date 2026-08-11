@@ -473,7 +473,10 @@ mkdir -p /tmp/ir && cd /tmp/ir
 zcat ~/Downloads/initramfs.cpio.gz | sudo cpio -idm
 sudo sed -i 's|for dev in /dev/vda|for dev in /dev/nvme0n1p5 /dev/vda|' init
 grep "for dev in" init                          # the new device must be FIRST
-sudo sh -c 'find . | cpio -o -H newc | gzip > ~/Downloads/initramfs-nvme.cpio.gz'
+# AN ABSOLUTE PATH, NOT ~. Inside `sudo sh -c` the tilde expands to ROOT's
+# home -- /root/Downloads -- which does not exist:
+#     sh: 1: cannot create /root/Downloads/...: Directory nonexistent
+sudo sh -c 'find . | cpio -o -H newc | gzip > /home/YOU/Downloads/initramfs-nvme.cpio.gz'
 ```
 
 Prepending rather than replacing keeps every qemu boot working from the same
@@ -523,21 +526,70 @@ can be a laptop OS rather than a VM guest turns on two things nobody has
 measured -- whether the kernel has drivers for real storage, and whether the
 GPU comes up without firmware -- and one boot answers both.
 
+#### Firmware, for graphics and wireless
+
+Drivers built into the kernel probe **during kernel init**, before the rootfs
+is mounted. So firmware on `/lib/firmware` in the image is too late — it has to
+be in the **initramfs**, which the kernel populates before driver initcalls
+run. Copy it from a distribution that already has it, into the unpacked
+initramfs before repacking:
+
+```sh
+cd /tmp/ir
+sudo mkdir -p lib/firmware/amdgpu lib/firmware/rtw89
+
+# graphics: match your ASIC. dmesg on the host names it --
+#   amdgpu: ATOM BIOS: 113-LUCIENNE-019   -> renoir_* (0x164c is RENOIR)
+for f in /lib/firmware/amdgpu/renoir_*.bin.zst \
+         /lib/firmware/amdgpu/green_sardine_*.bin.zst; do
+  [ -e "$f" ] || continue
+  sudo sh -c "zstd -d -c '$f' > lib/firmware/amdgpu/$(basename "${f%.zst}")"
+done
+
+# wireless: dmesg names the exact file --
+#   rtw89_8852ae: loaded firmware rtw89/rtw8852a_fw.bin
+sudo sh -c 'zstd -d -c /lib/firmware/rtw89/rtw8852a_fw.bin.zst \
+            > lib/firmware/rtw89/rtw8852a_fw.bin'
+
+ls -l lib/firmware/amdgpu lib/firmware/rtw89
+```
+
+Decompressing rather than copying the `.zst` files verbatim is belt and braces:
+the kernel is built with `FW_LOADER_COMPRESS_ZSTD`, so either works, and a
+firmware file the loader cannot decompress fails in exactly the same way as one
+that is absent — which is a bad failure to have to distinguish.
+
+Then repack as above. The initramfs grows by roughly the size of what you
+copied; it is unpacked into RAM at boot, so keep it to the ASIC you have rather
+than the whole `amdgpu` directory.
+
+**None of this is in the published image and none of it will be.** Firmware is
+redistributable binary nobody in this chain can build, which is the one thing
+every other byte here is arranged to avoid. The kernel is built ready for
+blobs an operator supplies; supplying them is a local decision. See
+`TRUST-BOUNDARY.md` and `spikes/stage5/AMD64.md`.
+
+**Wireless userspace exists**: `wpa_supplicant`, `iproute2` and `dhcpcd` are all
+in the 122 packages, so a working driver plus firmware is genuinely enough.
+
 #### The proper fixes, which are not these
 
-The three edits above are host-side workarounds for two gaps in the repository,
-and both are small:
+Two of the three edits above are now unnecessary — the repository does them:
 
-- **`guest/init` should accept a root device from the command line.** A
-  `veron.root=` parameter, tried before the existing list, leaves every qemu
-  boot unchanged. `root=` is the wrong name to reuse: the kernel consumes it
-  when it mounts a root itself, and here the initramfs does the mounting.
-- **The console service should read `console=` from `/proc/cmdline`** instead
-  of naming a tty. One wrapper makes the same file correct on aarch64, on
-  x86_64 and on bare metal, and it cannot drift from the kernel's own idea of
-  where the console is, because it is reading it.
+- **`guest/init` accepts `veron.root=`**, tried before the existing
+  `/dev/vda`, `/dev/sda`, `/dev/vdb` list. So the initramfs `sed` is only
+  needed for an initramfs built before that landed. `root=` was the wrong name
+  to reuse: the kernel consumes it when it mounts a root itself, and here the
+  initramfs does the mounting. When a named device fails, init now prints
+  `/proc/partitions`, so "wrong name" and "no driver for this controller" stop
+  producing identical silence.
+- **The console service reads `console=` from `/proc/cmdline`** instead of
+  naming a tty, so the `sed` on `/etc/dinit.d/console` is likewise historical.
+  One wrapper is correct on aarch64, on x86_64 under qemu and on bare metal.
 
-Until those land, an image straight from the release needs the edits above.
+What remains genuinely host-side is the firmware, which is a trust-boundary
+decision rather than an oversight, and copying the kernel and initramfs
+somewhere GRUB can read them.
 
 #### The two `-cpu` values disagree, and that is a finding rather than a nuisance
 

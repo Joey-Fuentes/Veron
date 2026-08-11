@@ -11,10 +11,15 @@
 # management, and saying so here is better than shipping a prompt nobody can
 # satisfy.
 #
-# ttyS0, NOT ttyAMA0 -- SEE THE OVERLAY HEADER IN recipe.toml. ttyAMA0 is the
-# ARM PL011 UART; on x86_64 getty would open nothing, exit 1, and dinit would
-# restart it forever because `restart = true` is correct and the device name
-# is not.
+# THE TTY IS NOT NAMED HERE ANY MORE. It was, and the name was wrong on two of
+# the three places this system boots: ttyAMA0 is the ARM PL011 UART, x86_64
+# under qemu needs ttyS0, and real hardware has no serial port and needs tty1.
+# getty cannot open a device that is not there, exits 1, and `restart = true`
+# loops forever -- correct behaviour, wrong argument.
+#
+# scripts/console-getty reads `console=` from /proc/cmdline, which is the
+# kernel's own answer to the same question, and execs getty on it. See that
+# file. This service now says WHAT to run and not WHERE.
 #
 # `-l` NAMES A WRAPPER, NOT /bin/sh, AND THAT IS NOT A STYLE CHOICE. getty
 # execs the -l program with argv[0] set to the path given, so /bin/sh started
@@ -23,6 +28,6 @@
 # built-in default and the REVERSE of the one /etc/profile sets. See
 # scripts/console-shell for why that ordering matters.
 type = process
-command = /bin/busybox getty -n -l /etc/dinit.d/scripts/console-shell 115200 ttyS0
+command = /etc/dinit.d/scripts/console-getty
 restart = true
 depends-on = early-filesystems

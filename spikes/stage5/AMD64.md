@@ -490,6 +490,113 @@ minutes** — `qemu64` traps, `host` very likely does not — which is the local
 version of the finding above and the clearest demonstration of why the fix was
 to pin libffi rather than raise the emulated CPU.
 
+### The sixth finding: it boots on a laptop, and the kernel was never built for one
+
+The published image was written to an NVMe partition on an HP Laptop 14 and
+booted through the machine's own GRUB. It got this far:
+
+```
+VERON-STAGE5-INIT
+VERON-IMAGE-MOUNT-SKIP  no ext4 block device
+VERON-STAGE5-GUEST-FAIL  no root to test: neither disk nor 9p
+# cat /proc/partitions
+major minor  #blocks  name
+                                   <- nothing. not one block device.
+```
+
+**Not "no NVMe" — no block devices of any kind.** The only storage driver in
+this kernel is virtio-blk. And booted with its own `Image` rather than a
+borrowed one, the screen printed nothing at all: GRUB's framebuffer stayed on
+screen because `DRM_VIRTIO_GPU` is the only display driver and it does not
+attach to an AMD APU. The kernel was alive throughout — Caps Lock toggled.
+
+**Neither Ubuntu's kernel nor ours can boot this image today, for opposite
+reasons.** Ubuntu's has the drivers as modules, and this initramfs has two
+files in it and no modprobe. Ours has no modules at all and never had the
+drivers. `=m` and `=n` are the same thing in this system.
+
+#### What the hardware actually is
+
+Measured with `lspci -k`, which names the driver the running system chose,
+rather than guessed from the model number:
+
+| device | driver |
+|---|---|
+| Micron 2550 NVMe SSD | `nvme` |
+| AMD Lucienne `[1002:164c]` | `amdgpu` |
+| AMD Renoir/Cezanne USB 3.1 | `xhci_hcd` |
+| Realtek RTL8852AE WiFi 6 | `rtw89_8852ae` |
+
+**No ethernet controller at all**, which is why wireless is not a luxury on
+this machine.
+
+`sysroot-amd64.sh` now sets storage (NVMe, AHCI, SCSI disk, USB storage),
+input (xHCI, USB HID, i8042 for the built-in keyboard, i2c-hid plus
+`PINCTRL_AMD` for the touchpad's interrupt), display in two layers, wireless,
+and compressed firmware loading. It errs generously on purpose: **stage 4 has
+no checkpoint**, so a driver nobody needs costs bytes in the bzImage and a
+driver somebody needs costs a full chain rerun.
+
+#### Two layers of display, and the floor is the important one
+
+`SYSFB_SIMPLEFB` + `DRM_SIMPLEDRM` + `FRAMEBUFFER_CONSOLE` adopt the linear
+framebuffer UEFI already handed to GRUB. No blobs, no ASIC knowledge, works on
+any UEFI machine. `DRM_AMDGPU` takes over when it probes, and if its firmware
+is absent it fails back to that floor rather than to darkness.
+
+That distinction is the difference between a kernel that can **say** what went
+wrong and one that cannot, and the laptop demonstrated the second at length.
+
+#### Firmware goes in the initramfs, not the rootfs
+
+The non-obvious part, and the one that would otherwise have cost another
+rebuild. These drivers are **built in**, so they probe during kernel init —
+before `/dev/nvme0n1p5` is mounted and long before anything in the image is
+reachable. The kernel populates the initramfs before driver initcalls run, so
+`/lib/firmware` **inside the initramfs** is the only place a built-in driver
+can find a blob at probe time.
+
+Exact files, from that machine's own dmesg:
+
+```
+rtw89_8852ae: loaded firmware rtw89/rtw8852a_fw.bin
+amdgpu: ATOM BIOS: 113-LUCIENNE-019          [1002:164c]
+```
+
+amdgpu maps `0x1636` and `0x164c` to `AMD_APU_IS_RENOIR`, so Lucienne wants
+the `renoir_*` blobs rather than `green_sardine_*`. And every one of them is
+**zstd-compressed** in a modern distribution, which is why
+`FW_LOADER_COMPRESS_ZSTD` is set: a blob the loader cannot decompress fails
+identically to one that is not there.
+
+**None of this ships.** Firmware is redistributable binary nobody in this
+chain can build, which is the one thing every other byte here is arranged to
+avoid — see `TRUST-BOUNDARY.md`. The kernel is made *ready* for a blob the
+operator supplies, which is a smaller and different claim than shipping one.
+`STAGE5.md` has the copy commands.
+
+#### And a report, because olddefconfig does not have to honour set_cfg
+
+A symbol whose dependencies are unmet is dropped silently, and the resulting
+`.config` looks exactly like one where the line was never written. The failure
+then surfaces as a laptop booting to nothing, and costs a full chain rerun.
+The build now prints every real-hardware symbol and whether it survived, ending
+in `VERON-KCONFIG-OK` or `VERON-KCONFIG-DROPPED` with the list. Reporting, not
+failing: which symbols matter depends on the machine, and a kernel missing
+`R8169` is still worth publishing.
+
+#### The two repository fixes this boot justified
+
+- **`guest/init` now accepts `veron.root=`**, tried before the existing
+  `/dev/vda`, `/dev/sda`, `/dev/vdb` list, which no NVMe partition can ever
+  match. Every qemu boot passes no such argument and behaves exactly as
+  before. It also prints `/proc/partitions` when a named device fails, so
+  "wrong name" and "no driver" stop looking identical.
+- **The console service reads `console=` from `/proc/cmdline`** instead of
+  naming a tty. `ttyAMA0` on aarch64, `ttyS0` on x86_64 under qemu, `tty1` on
+  a laptop — one wrapper is correct on all three, and it cannot drift from the
+  kernel's own idea of where the console is because it is reading it.
+
 ### What is still unknown
 
 Everything now builds and boots. What remains open is one guest test, whether
