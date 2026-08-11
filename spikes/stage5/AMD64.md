@@ -49,6 +49,7 @@ architecture-neutral; only the explanation was not.
 | recipes | `packages/` | `packages/` + `packages-amd64/` overlay |
 | plan | `PLAN.txt` | `PLAN-amd64.txt` |
 | `VERON-INSTALLS` | `--mode fail` | `--mode warn` |
+| partial builds | — | `stop_after`, which publishes nothing |
 | artifacts | `veron-stage5-*` | `veron-stage5-*-amd64` |
 
 Every other step name is byte-identical to its source, so each one diffs
@@ -335,31 +336,66 @@ wpewebkit, wlroots, labwc and the rest of the desktop. So are the merge, the
 image, the boot, the DHCP test and the screenshot. Three runs, three stops,
 none of them on the predicted list; expect more.
 
-### Every run so far has rebuilt from package 1
+### Every run rebuilt from package 1 — `stop_after` is the way out
 
-`Restore a build checkpoint` reports **"no checkpoint published yet — building
-everything"** on all three runs, and it always will: the checkpoint is
-published only when the build SUCCEEDS, and on a new architecture the build is
-exactly what does not succeed yet. So each iteration pays eighty packages of
-CPU to reach one new fact, and the cost rises as the port gets further.
+`Restore a build checkpoint` reported **"no checkpoint published yet — building
+everything"** on all three runs, and left alone it always would: the checkpoint
+is published only when the build SUCCEEDS, and on a new architecture the build
+is exactly what does not succeed yet. Each iteration paid eighty packages of
+CPU to reach one new fact, and the price rises as the port gets further.
 
-The checkpoint is per-package keyed — `{package: key}`, with `--resume`
-keeping the subset whose keys still match — so a checkpoint taken from a
-FAILED run would be discarded correctly for anything whose recipe changed and
-reused for the rest. That is precisely the case here.
+**The fix is to stop deliberately at the last package known to work**, which
+makes that run a success, which publishes a checkpoint:
 
-**It is not a one-line change, which is why it is written down rather than
-made.** `veron build` returns as soon as a step fails and does not remove
-`dest/<pkg>`. A package that fails during its *install* step therefore leaves
-a PARTIAL staged tree, and `veron checkpoint` records any directory it finds
-in `dest/` — so a checkpoint from a failed run can record a half-installed
-package as complete, and the next run will skip it. orc failed at `build`, so
-nothing was staged and this run would have been safe; that is luck, not a
-property. The fix is for the driver to drop a failed package's dest directory
-before returning, which changes shared behaviour on the aarch64 path and is a
-decision rather than a copy.
+```
+gh workflow run stage5-spike-amd64.yml \
+   -f stop_after=orc -f save_checkpoint=true
+```
 
----
+Then every later run dispatches with `use_checkpoint=true` and resumes.
+
+**Why the keys survive the rest of the set being restored.** Checkpoint keys
+are per-package and position-independent —
+`key(p) = sha256(base + policy + recipe_sha(p) + each dep's key)`. That
+replaced a prefix hash precisely because a prefix hash conflated position with
+dependency and threw away a 55-package checkpoint when seven packages were
+inserted at rung 10. So banking 81 and then restoring all 122 keeps all 81,
+and changing one recipe invalidates that package and its dependents and
+nothing else.
+
+**`--upto` is a prefix of the order, not a selection from it**, and that
+distinction is load-bearing. `veron build foo bar` already filters to named
+packages; a list is free to omit something in the middle, which would build a
+package against a dependency that is not there and then blame the package.
+Everything a package declares is earlier in the order, so **every prefix is
+closed under the declared dependencies** and a prefix cannot make that mistake.
+
+**This is a sounder checkpoint than one taken from a failed run**, which was
+the other route and the one proposed before this. `veron build` returns as
+soon as a step fails and does not remove `dest/<pkg>`, so a package failing
+during INSTALL leaves a partial staged tree that `veron checkpoint` would
+record as complete — and the next run would skip it. Under `--upto`, every
+package in `dest/` ran every step. The idea is better than the fix it
+replaced, and no driver failure-path change is needed.
+
+**A partial run cannot publish anything, and that is structural.** `stop_after`
+sets a job-level `PARTIAL` flag, and ten steps — manifest, ledger, merge,
+`VERON-STAGE5-OK`, the image, the initramfs, the boot, the screenshot and its
+upload, and the DHCP test — are gated on it. `Publish the image` carries its
+own explicit check on top, because it is the step that writes to a release
+under names claiming to be the x86_64 stage-5 system and it must never do that
+for 81 packages of 122. One flag decides, in one place: the alternative is
+repeating the condition fourteen times, and the one that gets missed is
+whichever publishes, because it is last.
+
+The build still prints what it did:
+
+```
+VERON-BUILD-UPTO  stopping after orc -- 81 of 122 package(s), NOT a complete system
+```
+
+`--upto` refuses a package not in the plan, and refuses to be combined with a
+package list — both shown failing.
 
 ## How the two trees stay separate without becoming two projects
 
@@ -437,6 +473,8 @@ makes `plan --check` stale for a reason that is not a fault):
 | `veron plan --check` — no overlay | `VERON-PLAN-OK`, `plan-sha256 7799c291…` |
 | `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `10 overlay recipe(s) pin the same source as their base` |
 | `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 05816b85…` |
+| `build --upto orc` | truncates the plan to `[1/81]` and says so; refuses an unknown name and refuses to be combined with a package list |
+| the `PARTIAL` interlock | all ten system-producing steps gated, verified by parsing the rendered conditions |
 | the three new gates | broken on purpose, each confirmed red |
 | the workflow | parses as YAML; every `run:` block passes `sh -n` |
 
@@ -479,6 +517,7 @@ architecture.
   build.
 - **`orc-target=all` should be narrowed to `sse,mmx`** once someone reads
   whether the option is an array or a combo.
-- **No checkpoint can ever be published on an architecture that has not yet
-  had a green build**, so every iteration rebuilds from package 1. See *Every
-  run so far has rebuilt from package 1*.
+- **The base tree still cannot bank a checkpoint from a failed run.**
+  `stop_after` makes that unnecessary here; the aarch64 arm has green runs and
+  does not need it. The partial-`dest/` hazard in `veron build`'s failure path
+  is still real and still unfixed.

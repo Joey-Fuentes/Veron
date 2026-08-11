@@ -1379,6 +1379,44 @@ def cmd_build(a):
     policy = load_policy()
     roots = roots_from_args(a)
     plan = expand(recipes, policy, roots)
+    # --upto: A PREFIX OF THE ORDER, NOT A SELECTION FROM IT.
+    #
+    # `veron build foo bar` already filters to named packages, and it is the
+    # wrong tool for this job: naming eighty packages is unreadable, and a
+    # list is free to omit something in the middle, which would build a
+    # package against a dependency that is not there and blame the package.
+    # A prefix cannot do that -- everything a package declares is earlier in
+    # the order, so every prefix is closed under the declared dependencies.
+    #
+    # WHAT IT IS FOR. On an architecture that has never finished, a checkpoint
+    # can never be published: it is written only when the build SUCCEEDS.
+    # Stopping deliberately at the last package known to work turns that into
+    # a success, banks a checkpoint, and every later run resumes from it
+    # instead of rebuilding eighty packages to reach the next new fact. The
+    # keys are per-package and position-independent -- key(p) = sha256(base +
+    # policy + recipe_sha(p) + each dep's key) -- so the banked subset stays
+    # valid when the remaining packages are restored.
+    #
+    # A CHECKPOINT BANKED THIS WAY IS SOUNDER THAN ONE TAKEN FROM A FAILED
+    # RUN, which was the other way to get one. `veron build` returns as soon
+    # as a step fails and does not remove dest/<pkg>, so a package that fails
+    # during INSTALL leaves a partial tree that a checkpoint would record as
+    # complete. Here every package in dest/ ran every step.
+    #
+    # IT IS A CACHE-SEEDING TOOL AND NOT A WAY TO PASS. A run that stops early
+    # has not built the system, and the caller must not be able to publish one
+    # -- stage5-spike-amd64 refuses to run the image, the boot or the release
+    # steps when this is set. See its `stop_after` input.
+    if a.upto:
+        names = [p["pkg"] for p in plan]
+        if a.upto not in names:
+            die(f"--upto {a.upto!r} is not in the plan")
+        if a.pkg:
+            die("--upto and a package list mean different things; pass one")
+        cut = names.index(a.upto) + 1
+        plan = plan[:cut]
+        print(f"VERON-BUILD-UPTO  stopping after {a.upto} "
+              f"-- {cut} of {len(names)} package(s), NOT a complete system")
     if a.pkg:
         plan = [p for p in plan if p["pkg"] in a.pkg]
         if not plan:
@@ -4932,6 +4970,10 @@ def build_parser():
 
     p = sub.add_parser("build", help="execute exactly the plan")
     p.add_argument("pkg", nargs="*")
+    p.add_argument("--upto", default="",
+                   help="build the plan up to and including this package, "
+                        "then stop. For banking a checkpoint on an "
+                        "architecture that cannot yet finish.")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--resume", action="store_true",
                    help="stage packages a restored checkpoint already built")

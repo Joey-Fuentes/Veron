@@ -1322,6 +1322,14 @@ not pinned, and three found by the runs. They are not edited.
 python3 tools/veron --overlay packages-amd64 --plan PLAN-amd64.txt plan --check
 ```
 
+On an architecture that cannot finish yet, `stop_after=<pkg>` builds the plan
+as a **prefix** — every prefix is closed under the declared dependencies, so
+unlike a package list it cannot omit something in the middle — banks a
+checkpoint from a run where every package ran every step, and is structurally
+barred from publishing an image, a boot or a release. Checkpoint keys are
+per-package and position-independent, so the banked subset stays valid when
+the rest of the set is restored.
+
 `--overlay` **replaces** recipes by name and can do nothing else: a name with
 no base in `packages/` is refused, because the only way to write one is a
 typo. With no `--overlay` every path is the one it was before, so this arm

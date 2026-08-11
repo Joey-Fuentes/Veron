@@ -67,6 +67,11 @@ on:
         type: boolean
         required: false
         default: false
+      stop_after:
+        description: 'stop_after -- build the plan up to and including this package, then stop. Banks a checkpoint on an arch that cannot finish yet. Publishes NOTHING: no image, no boot, no release.'
+        type: string
+        required: false
+        default: ''
       boot_system:
         description: 'boot_system -- switch_root into dinit instead of running the test harness'
         type: boolean
@@ -116,6 +121,15 @@ permissions:
 
 jobs:
   spike:
+    env:
+      # ONE PLACE DECIDES WHAT A PARTIAL RUN IS ALLOWED TO DO.
+      #
+      # Every step below that builds, boots or publishes a SYSTEM is gated on
+      # this rather than on `inputs.stop_after` directly. The alternative --
+      # repeating `inputs.stop_after == ''` in fourteen conditions -- is how
+      # one of them ends up missing it, and the one that would be missed is
+      # whichever publishes, because it is last.
+      PARTIAL: ${{ inputs.stop_after != '' && 'yes' || 'no' }}
     runs-on: ubuntu-24.04          # NATIVE x86_64 -- the sysroot IS x86_64,
                                    # so packages build AND RUN unemulated,
                                    # exactly as the aarch64 arm does on its
@@ -529,7 +543,7 @@ jobs:
               --overlay /packages-amd64 \
               --dl /dl --build-dir /build --dest /dest --logs /logs --out /out \
               --sysroot / \
-              build --clean ${{ inputs.use_checkpoint && format('--resume --base {0}', steps.sysroot.outputs.sysroot_sha) || '' }}
+              build --clean ${{ inputs.use_checkpoint && format('--resume --base {0}', steps.sysroot.outputs.sysroot_sha) || '' }} ${{ inputs.stop_after != '' && format('--upto {0}', inputs.stop_after) || '' }}
 
       # WHAT THE BUILD ACTUALLY LINKED, AGAINST WHAT THE RECIPES CLAIM.
       #
@@ -731,7 +745,7 @@ jobs:
           rm -f dest.tar.zst
 
       - name: 'VERON-MANIFEST-OK'
-        if: ${{ always() && steps.build.outcome == 'success' }}
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
         run: cd spikes/stage5 && python3 tools/veron --overlay packages-amd64 manifest
 
       # MERGE. The sysroot IS the base of the final system, not merely the
@@ -756,7 +770,7 @@ jobs:
       # constant: turning the gate off lowers the claim automatically instead
       # of leaving a 2 behind that nothing checked.
       - name: 'VERON-LEDGER-OK -- records carry what this run proved'
-        if: ${{ always() && steps.build.outcome == 'success' }}
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
         run: |
           set -eu
           cd spikes/stage5
@@ -766,7 +780,7 @@ jobs:
           grep -h '"attestations"' ledger/*.json | sed 's/^/    /'
 
       - name: 'Merge the DESTDIRs into the system'
-        if: ${{ always() && steps.build.outcome == 'success' }}
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
         run: |
           set -eu
           cd spikes/stage5
@@ -844,7 +858,7 @@ jobs:
       # claim the aarch64 arm makes on its own runner, and the reason
       # neither arm needs an emulator to test what it built.
       - name: 'VERON-STAGE5-OK -- hello and pkgconf in the system they belong to'
-        if: ${{ always() && steps.build.outcome == 'success' }}
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
         run: |
           set -eu
           cd spikes/stage5
@@ -857,7 +871,7 @@ jobs:
       # something that VARIES. A first run failing to reproduce is the spike
       # working; the divergence goes on the declared list.
       - name: 'Build the image and probe reproducibility'
-        if: ${{ always() && steps.build.outcome == 'success' }}
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
         env:
           # THIRD TIME. The git-pinned mirror step needed this and lacked it;
           # the checkpoint step got HTTP 403 for want of it; and now a 1.7 GB
@@ -1013,14 +1027,14 @@ jobs:
       # "a booting system". This is also the first small piece of the init
       # work group 2 needs for a login prompt.
       - name: 'Build stage 5 initramfs'
-        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot }}
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot }}
         run: |
           set -eu
           cd spikes/stage5
           python3 guest/mkinitramfs.py sysroot out/initramfs.cpio.gz
 
       - name: 'Boot the stage-5 system and run its own tests'
-        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot }}
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot }}
         run: |
           set -eu
           [ -s boot/Image ] || { echo "VERON-BOOT-SKIP  no kernel artifact"; exit 0; }
@@ -1340,7 +1354,7 @@ jobs:
       # gradient with a centred marker precisely so that a rendered desktop and
       # an untouched framebuffer cannot produce the same number.
       - name: 'Screenshot the desktop'
-        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot && inputs.boot_system }}
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot && inputs.boot_system }}
         run: |
           set -eu
           # RUN FROM THE REPO ROOT, LIKE THE BOOT STEP ABOVE, AND FOR THE SAME
@@ -1504,7 +1518,7 @@ jobs:
           echo "VERON-SHOT-OK  $O/desktop.png"
 
       - name: 'Upload the desktop screenshot'
-        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot && inputs.boot_system }}
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot && inputs.boot_system }}
         uses: actions/upload-artifact@v4
         with:
           name: veron-stage5-desktop-amd64-${{ github.run_id }}
@@ -1514,7 +1528,7 @@ jobs:
           if-no-files-found: warn
 
       - name: 'VERON-DHCP -- two instances, one L2 segment'
-        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot && inputs.net_test }}
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot && inputs.net_test }}
         run: |
           set -eu
           O=spikes/stage5/out
@@ -1662,6 +1676,20 @@ jobs:
         run: |
           set -eu
           cd spikes/stage5/out
+          # TWO GUARDS, AND THE SECOND IS NOT REDUNDANT. `[ -e rootfs.img ]`
+          # already stops a partial run here, because the image step is gated
+          # off when stop_after is set and there is nothing to find. The
+          # explicit check says WHY rather than leaving it to a missing file,
+          # and it keeps working if the image step is ever un-gated: this is
+          # the step that writes to a release under names that claim to be the
+          # x86_64 stage-5 system, and it must never do that for 81 packages
+          # of 122.
+          if [ "${PARTIAL:-no}" = "yes" ]; then
+            echo "VERON-STAGE5-UNPUBLISHED  partial build (stop_after) --"
+            echo "  a run that stopped early has not built a system and"
+            echo "  cannot publish one. The checkpoint above is its output."
+            exit 0
+          fi
           [ -e rootfs.img ] || { echo "  no image was built"; exit 0; }
           R=../../..
           missing=""
