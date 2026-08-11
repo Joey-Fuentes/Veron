@@ -147,6 +147,13 @@ The spike publishes a GitHub release with everything needed to boot the system
 under qemu: `rootfs.img.tar.zst`, the kernel `Image`, `initramfs.cpio.gz`, and
 `IMAGE-SHA256`.
 
+**Two releases, one per architecture.** `stage5/latest` is aarch64;
+`stage5/latest-amd64` is x86_64, published by `stage5-spike-amd64`. The asset
+names are identical in both, which is why they are separate tags rather than
+suffixed filenames on a shared one — see `spikes/stage5/AMD64.md`. Everything
+below is the aarch64 arm; the x86_64 commands are in *Running the x86_64 image*
+after it.
+
 ```sh
 gh release download stage5/latest \
   --pattern 'rootfs.img.tar.zst' --pattern 'IMAGE-SHA256' \
@@ -276,6 +283,75 @@ prompt, and `/etc/passwd` names an `/etc/shadow` that does not exist. That is
 defensible only because there is nothing listening on the network; see
 `AUTHENTICATION.md`, which records this as a condition rather than a state, and
 names the trigger — the day networking lands — that has now fired.
+
+### Running the x86_64 image
+
+Same release layout, different tag, and on an amd64 laptop this is **native**
+rather than the full emulation the aarch64 image needs — so it is quick enough
+to actually use.
+
+```sh
+mkdir -p ~/veron-amd64 && cd ~/veron-amd64
+gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
+  --pattern 'rootfs.img.tar.zst' --pattern 'IMAGE-SHA256' \
+  --pattern 'Image' --pattern 'initramfs.cpio.gz'
+tar --zstd -xf rootfs.img.tar.zst
+sha256sum -c IMAGE-SHA256
+```
+
+`Image` is a **bzImage** and is called `Image` anyway: the stage-4 amd64 spike
+copies `arch/x86/boot/bzImage` to that name so a consumer's download path has
+the same shape on every architecture. Extract before verifying, for the reason
+above — `IMAGE-SHA256` digests the uncompressed `rootfs.img`.
+
+The exact invocation CI uses, which runs the guest test suite and exits:
+
+```sh
+qemu-system-x86_64 \
+  -cpu qemu64 -smp 4 -m 4096 \
+  -nographic -no-reboot -nic none \
+  -drive file=rootfs.img,format=raw,if=virtio \
+  -device virtio-gpu-pci -device virtio-keyboard-pci \
+  -kernel Image -initrd initramfs.cpio.gz \
+  -append "console=ttyS0 earlycon rdinit=/init panic=1 loglevel=7 veron.boot=system"
+```
+
+`-nographic` puts the console in the terminal you launched from. **`Ctrl-A`
+then `X` quits** — `Ctrl-C` goes to the guest. `-no-reboot` makes it halt
+rather than loop.
+
+**Drop `veron.boot=system` to get a system to poke at** instead of a test run;
+that flag is what tells init to run the package tests and exit. For the desktop
+rather than the console, swap `-nographic` for `-display gtk -serial mon:stdio`
+and add `-device virtio-mouse-pci` — the mouse advice under the aarch64 section
+applies unchanged, and so does starting labwc by hand.
+
+**Faster, with KVM**, since the guest is the same architecture as the host:
+
+```sh
+  -enable-kvm -cpu host      # in place of -cpu qemu64
+```
+
+That needs `/dev/kvm` readable — usually membership of the `kvm` group.
+
+#### The two `-cpu` values disagree, and that is a finding rather than a nuisance
+
+At the time of writing the published x86_64 image still contains a `libffi`
+built with `--with-gcc-arch=native`, meaning **it was compiled for the CPU of
+the machine that built it** — a recent Xeon runner. So:
+
+| | |
+|---|---|
+| `-cpu qemu64` | `traps: python3 trap invalid opcode ... in libffi.so.8.2.0` |
+| `-cpu host` | likely passes, if your laptop is new enough |
+
+Two minutes of local reproduction for a defect that took a full CI run to find,
+and a demonstration of why the fix was to pin libffi to the baseline rather
+than to raise the emulated CPU until the image ran. Raising it would have made
+the test green and left an image that only boots on hardware as new as whatever
+built it. `spikes/stage5/AMD64.md` records the whole thing; once a run lands
+with the pinned `libffi`, both `-cpu` values should pass and this table becomes
+history.
 
 ---
 

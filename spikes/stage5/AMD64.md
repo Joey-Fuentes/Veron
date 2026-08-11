@@ -385,6 +385,33 @@ already had by default**. Nothing about the test changes; what changes is that
 the baseline the image is certified against appears in the log, and raising it
 becomes a decision somebody writes down rather than a default nobody chose.
 
+### Booting the published image on your own machine
+
+```sh
+gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
+  --pattern 'rootfs.img.tar.zst' --pattern 'IMAGE-SHA256' \
+  --pattern 'Image' --pattern 'initramfs.cpio.gz'
+tar --zstd -xf rootfs.img.tar.zst && sha256sum -c IMAGE-SHA256
+
+qemu-system-x86_64 \
+  -cpu qemu64 -smp 4 -m 4096 \
+  -nographic -no-reboot -nic none \
+  -drive file=rootfs.img,format=raw,if=virtio \
+  -device virtio-gpu-pci -device virtio-keyboard-pci \
+  -kernel Image -initrd initramfs.cpio.gz \
+  -append "console=ttyS0 earlycon rdinit=/init panic=1 loglevel=7 veron.boot=system"
+```
+
+`Ctrl-A` then `X` quits. Drop `veron.boot=system` for a system to poke at
+rather than a test run, and `-enable-kvm -cpu host` in place of `-cpu qemu64`
+for a native-speed boot. Full notes, including the desktop, are in
+`STAGE5.md` under *Running the x86_64 image*.
+
+**Swapping those two `-cpu` values reproduces the libffi fault in two
+minutes** — `qemu64` traps, `host` very likely does not — which is the local
+version of the finding above and the clearest demonstration of why the fix was
+to pin libffi rather than raise the emulated CPU.
+
 ### What is still unknown
 
 Everything now builds and boots. What remains open is one guest test, whether
