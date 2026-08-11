@@ -82,6 +82,26 @@ env:
   MESCC_SHA: 5adfbf3
   TCC_SHA: 5ec0e6f84b47ebd8c269b581712666313f5edaef
   MUSL_VER: '1.2.5'
+  # FOUR PINS THE amd64 LADDER NEEDS AND stage0-stage4-complete NEVER HAD.
+  #
+  # This workflow's env came from stage0-stage4-complete, whose stage4 job is
+  # the AARCH64 ladder. The stage4 job here is the amd64 arch spike, and its
+  # rungs fetch four things the aarch64 one does not. Run 85544287752 got the
+  # whole cross working, handed an x86_64 tcc to the other runner, and then
+  # stopped in the airlock fetch:
+  #
+  #     M4_BOOT_VER: unbound variable
+  #
+  # A COMPOSITION HAZARD RATHER THAN A TYPO, and worth naming as one: taking a
+  # job body from one workflow and an env block from another leaves exactly
+  # this class of gap, and `set -u` is what turns it into a stop instead of a
+  # fetch for `m4-.tar.xz`. All four values are copied verbatim from
+  # stage4-arch-spike-amd64; every env key the two workflows already shared
+  # was checked and none disagreed.
+  M4_BOOT_VER: '1.4.7'
+  ELFUTILS_VER: '0.195'
+  PKGCONF_VER: '3.0.5'
+  ZLIB_VER: '1.3.2'
   # make 3.82 is live-bootstrap's first make (step #25, built by kaem under
   # tcc, before binutils exists) and is the version known to build this way.
   # They rebuild it later because 3.82 "randomly segfaults while building the
@@ -4122,7 +4142,22 @@ jobs:
             # progress reports rather than fails" contract phase A has always
             # had. If phase A DID complete, phase B was supposed to produce an
             # image and did not, and that is a failure.
-            if [ -f "$BOX/work/lfs/.phase-a-complete" ]; then
+            # ${BOX:-} RATHER THAN $BOX, BECAUSE THIS STEP IS always() AND THE BOX
+          # MAY NOT EXIST. BOX is written to $GITHUB_ENV by "Assemble the box";
+          # if an earlier step fails, that never runs, and this line kills the
+          # step under `set -u` with
+          #
+          #     BOX: unbound variable
+          #
+          # which is what run 85544287752 reported after the real failure --
+          # a missing pin in the airlock fetch, four steps earlier. The
+          # message the reader sees should be the first failure, not the
+          # last one, and an always() step that cannot survive an empty
+          # environment turns every upstream failure into two errors.
+          #
+          # The spike this came from has the same line and gets away with it
+          # because its box assembly runs unconditionally.
+          if [ -f "${BOX:-/nonexistent}/work/lfs/.phase-a-complete" ]; then
               echo "  phase A completed, so phase B was expected to produce one."
               echo "  See the PHASE B step above for the first FAIL."
               exit 1

@@ -546,7 +546,55 @@ adds (`tccelf.c:284`).
 run against six host/target size combinations — every case that worked before
 takes the same branch, and only mc-tcc→x86_64 takes the new one.
 
-**The cross itself has still never run.** `stage3-cross-tcc-probe` established
+#### Run 85544287752: the cross works
+
+```
+VERON-MCTCC-LIBC-OK   an aarch64 musl, built by mc-tcc
+VERON-XTCC-CROSS-OK   an aarch64 binary that emits x86_64
+VERON-XTCC-LIBC-OK    an x86_64 musl, built by the cross compiler
+VERON-XTCC-GEN2-OK    x86_64, static, no host gcc in its history
+
+tcc-x86_64  58aa13592867fc38...
+mc-tcc      4213e5abb65f710b...
+built-by    mc-tcc -> x86_64-tcc -> tcc-x86_64
+```
+
+**An x86_64 tcc exists whose ancestry contains no host compiler**: hand-written
+assembler → stage1 → stage2 → micro-c → mc-tcc → x86_64-tcc → tcc-x86_64. Patch
+0005 was what unblocked it — `x86_64-tcc` compiled `lib/libtcc1.c` (6 objects,
+37 KB) where three runs had stopped.
+
+The handoff crossed to the x86 runner, the substitution took, and the gate
+confirmed static x86_64 before any rung ran. Then the stage4 job stopped in its
+airlock:
+
+```
+M4_BOOT_VER: unbound variable
+```
+
+**A composition hazard, and the fourth of its kind in this file.** This
+workflow's `env` came from `stage0-stage4-complete`, whose stage4 job is the
+*aarch64* ladder; the stage4 job here is the *amd64* spike, and its rungs fetch
+four things the aarch64 one does not — `M4_BOOT_VER`, `ELFUTILS_VER`,
+`PKGCONF_VER`, `ZLIB_VER`. Taking a job body from one workflow and an env block
+from another leaves exactly this gap. All four are copied verbatim from the
+spike, and every key the two already shared was checked for disagreement —
+there were none.
+
+**So the class is now checked rather than discovered.** A sweep over all three
+jobs looks for any `$NAME` a step reads that is neither assigned in that step,
+nor in the workflow or job `env`, nor exported by an earlier step via
+`$GITHUB_ENV`, nor `${NAME:-}`-guarded. It comes back clean, and removing
+`M4_BOOT_VER` again makes it name the three steps that would fail — so it is a
+check that can fail, not a rubber stamp.
+
+The boot step's follow-on `BOX: unbound variable` was a consequence rather than
+a second bug: `BOX` is written to `$GITHUB_ENV` by the box assembly, which
+never ran. It is now `${BOX:-/nonexistent}` — an `always()` step that cannot
+survive an empty environment turns every upstream failure into two errors, and
+the one the reader should see is the first.
+
+**The ladder itself has still never run on this compiler.** `stage3-cross-tcc-probe` established
 that a cross tcc and a target-native tcc can be built — **with the host's
 gcc**. Doing the same
 with mc-tcc is the experiment. The probe named the likely failure before it
