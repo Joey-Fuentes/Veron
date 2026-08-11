@@ -1108,8 +1108,28 @@ jobs:
           # a VERIFIER and contributes no artifact byte, so KVM cannot change
           # what is built -- but it can change what a hang looks like. Turn it
           # on once there is a baseline to compare against.
+          # -cpu qemu64, NAMED RATHER THAN INHERITED, AND NOT RAISED.
+          #
+          # An earlier version of this file passed no -cpu at all and said so
+          # deliberately: x86 has a default where qemu-system-aarch64 has
+          # none. The default is `qemu64`, a conservative model, and run
+          # 85313812045 showed what inheriting it silently costs -- libffi,
+          # built with -march=native on a recent Xeon runner, hit an invalid
+          # opcode the moment ctypes loaded it.
+          #
+          # THE ANSWER TO THAT IS NOT -cpu max. Raising the emulated CPU until
+          # the image runs would make the test pass and leave an image that
+          # only boots on hardware as new as whatever built it -- a green
+          # marker over a real defect in the artifact, which is the one thing
+          # this project treats as worse than a red one. libffi is pinned to
+          # the baseline instead; see packages-amd64/libffi.
+          #
+          # So the model is NAMED at the value it already had. It is now
+          # visible in the log, it is what the image is actually certified
+          # against, and raising it becomes a decision somebody has to write
+          # down rather than a default nobody chose.
           timeout "$HARNESS_TIMEOUT" qemu-system-x86_64 \
-            -smp 4 -m 4096 \
+            -cpu qemu64 -smp 4 -m 4096 \
             -nographic -no-reboot -nic none \
             -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
             -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
@@ -1222,7 +1242,7 @@ jobs:
             # invocation is now backgrounded rather than run in the foreground.
             set +e
             qemu-system-x86_64 \
-              -smp 4 -m 4096 \
+              -cpu qemu64 -smp 4 -m 4096 \
               -nographic -no-reboot -nic none \
               -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
               -device virtio-gpu-pci -device virtio-keyboard-pci \
@@ -1455,7 +1475,7 @@ jobs:
 
           set +e
           qemu-system-x86_64 \
-            -smp 4 -m 4096 \
+            -cpu qemu64 -smp 4 -m 4096 \
             -display none -no-reboot -nic none \
             -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
             -device virtio-gpu-pci -device virtio-keyboard-pci \
@@ -1545,7 +1565,7 @@ jobs:
           echo "=== VM-A: the DHCP server ==="
           set +e
           qemu-system-x86_64 \
-            -smp 2 -m 2048 \
+            -cpu qemu64 -smp 2 -m 2048 \
             -nographic -no-reboot \
             -drive file=$O/rootfs-net-a.img,format=raw,if=virtio \
             -netdev socket,id=n0,listen=127.0.0.1:$PORT \
@@ -1587,7 +1607,7 @@ jobs:
           echo "=== VM-B: the DHCP client ==="
           set +e
           timeout 300 qemu-system-x86_64 \
-            -smp 2 -m 2048 \
+            -cpu qemu64 -smp 2 -m 2048 \
             -nographic -no-reboot \
             -drive file=$O/rootfs-net-b.img,format=raw,if=virtio \
             -netdev socket,id=n0,connect=127.0.0.1:$PORT \

@@ -1313,9 +1313,9 @@ not a matrix over it, for the reason stage 4's arch spikes give about their
 own copies — a failure on one architecture must not make the working arm
 answerable for it, and this workflow is the one that publishes the image.
 
-**Ten recipes need to say something different on x86_64** — a triplet, a NEON
-flag, an LLVM backend, four packages whose x86 assembly needs a `nasm` that is
-not pinned, and three found by the runs. They are not edited.
+**Eleven recipes need to say something different on x86_64** — a triplet, a
+NEON flag, an LLVM backend, four packages whose x86 assembly needs a `nasm`
+that is not pinned, and four found by the runs. They are not edited.
 `packages-amd64/` holds replacements that only that workflow loads:
 
 ```sh
@@ -1341,26 +1341,34 @@ what an overlay exists to change; what is built is not. Without it the two
 trees would eventually compile different upstream source under one package
 name while both looked green.
 
-`PLAN.txt` and `PLAN-amd64.txt` differ in **43 lines** — nine `argv`, ten
+`PLAN.txt` and `PLAN-amd64.txt` differ in **47 lines** — ten `argv`, eleven
 `recipe-sha` and one added step — which is the whole architectural delta and
 the cheapest review of it.
 
-**Three runs — 45, 47, then 81 packages of 122.** The first two stops were one
-defect in the base tree seen from opposite sides. bzip2 builds a shared library at its `build-shared`
-step and never stages it, so only `libbz2.a` ships. `freetype` declares bzip2
-**off**, never passes `--without-bzip2`, and configure autodetects it.
-`libarchive`, `python` and `cmake` declare it **on** and have nothing to link.
-aarch64 accepts non-PIC objects into a shared library and x86_64 refuses — so
-on aarch64 all of them link, and `libfreetype.so`, `libarchive.so` and
-python's `_bz2` carry bzip2's code inside them with **no `DT_NEEDED` entry**,
-which is exactly the field `veron linked` reads. A static archive is that
-detector's blind spot, and bzip2's own recipe comment predicted the failure in
-the words it eventually arrived in. The base recipes are unchanged — the fix
-moves every digest downstream and needs its own dispatch. Run three confirmed
-it: `libarchive` and `python` now report `links bzip2`, read from `DT_NEEDED`,
-where before the archive had been absorbed and the detector saw nothing. The
-third stop was an overlay value written here and wrong — `orc` cannot build
-`sse` without `mmx` on x86. See [`AMD64.md`](./AMD64.md).
+**All 122 packages build on x86_64, the image reproduces byte-for-byte, and it
+boots** — `VERON-IMAGE-REPRO-OK`, ext4 over virtio-blk, dinit up, labwc and
+foot running, `VERON-DHCP-OK` across two VMs. It took four runs, and every stop
+was a defect in the base tree that aarch64 tolerates rather than an
+architecture quirk.
+
+bzip2 builds a shared library at its `build-shared` step and never stages it,
+so only `libbz2.a` ships. `freetype` declares bzip2 **off**, never passes
+`--without-bzip2`, and configure autodetects it; `libarchive`, `python` and
+`cmake` declare it **on** and have nothing to link. aarch64 accepts non-PIC
+objects into a shared library where x86_64 refuses, so on aarch64 all of them
+link — and `libfreetype.so`, `libarchive.so` and python's `_bz2` carry bzip2's
+code inside them with **no `DT_NEEDED` entry**, which is exactly the field
+`veron linked` reads. A static archive is that detector's blind spot, and
+bzip2's own recipe comment predicted the failure in the words it arrived in.
+The fix is confirmed: `libarchive` and `python` now report `links bzip2`.
+
+Then `libffi`, the only package in the set passing `--with-gcc-arch=native`,
+was compiled for the Xeon that built it and hit an invalid opcode under the
+emulator the image actually boots on. **Its own recipe named the mechanism in
+advance** and filed it as a reproducibility risk; it is that, and a portability
+one too. One stop was ours rather than the tree's — `orc` cannot build `sse`
+without `mmx` on x86. The base recipes are unchanged: each fix moves digests
+downstream and needs its own dispatch. See [`AMD64.md`](./AMD64.md).
 
 ---
 

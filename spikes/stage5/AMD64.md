@@ -7,11 +7,12 @@ architecture must not make the working arm answerable for it. `stage5-spike`
 is what currently produces the published image, and a red X on it would read
 as a stage-5 regression when it is an architecture nobody has ported yet.
 
-**It has run three times: 45, 47, then 81 packages of 122.** The first two
-stops were one defect in the base tree seen from opposite sides — bzip2. The
-third was mine: an overlay value I wrote that was wrong. Of the seven faults
-predicted from reading, six were right and one was right about the problem and
-wrong about the fix. See *What the runs found*.
+**All 122 packages build on x86_64, the image reproduces byte-for-byte, and it
+boots.** Run `85313812045` went the whole way: `VERON-IMAGE-REPRO-OK`, ext4
+mounted over virtio-blk, dinit up, labwc and foot running, `VERON-DHCP-OK`
+across two VMs, and the image published to `stage5/latest-amd64`. **156 guest
+tests pass and one fails**, and that one is the most interesting result the
+arm has produced. See *What the runs found*.
 
 ---
 
@@ -89,10 +90,10 @@ diffs anyway — contents differing is expected, but a package installing a
 
 ---
 
-## The ten recipes that differ, and where they live
+## The eleven recipes that differ, and where they live
 
-Ten recipes need to say something different on x86_64 — seven predicted from
-reading, three found by the runs. They are **not edited in place** — `packages/` is the aarch64 arm's tree and stays exactly as it is.
+Eleven recipes need to say something different on x86_64 — seven predicted
+from reading, four found by the runs. They are **not edited in place** — `packages/` is the aarch64 arm's tree and stays exactly as it is.
 Each has a replacement in **`packages-amd64/`**, which only
 `stage5-spike-amd64` loads, via `veron --overlay packages-amd64`.
 
@@ -108,6 +109,7 @@ Each has a replacement in **`packages-amd64/`**, which only
 | 46 | `freetype-bootstrap` | (bzip2 autodetected) | `--without-bzip2` | none — see *What the first run found* |
 | 105 | `freetype` | (bzip2 autodetected) | `--without-bzip2` | none |
 | 1 | `bzip2` | stages only `libbz2.a` | `install-shared` step | none — three packages can finally link it |
+| 33 | `libffi` | `--with-gcc-arch=native` | `x86-64` | none — it is the baseline the image already uses |
 
 **Four of the seven are one fact and one missing tool.** libvpx, dav1d and
 ffmpeg all need `nasm` on x86 where aarch64 needs nothing — its `.S` files go
@@ -328,13 +330,68 @@ rather than linked. **The dependency is now visible to the detector written to
 see it.** cmake, the third declarer, links executables and had been quietly
 absorbing bzip2 all along without failing anywhere.
 
+### The fourth finding: a library built for the machine that built it
+
+Run `85313812045` built all 122 and booted. One guest test failed:
+
+```
+traps: python3[188] trap invalid opcode ip:7f272ffa7580
+       in libffi.so.8.2.0[3580,7f272ffa6000+8000]
+Illegal instruction
+FAIL  python: import zlib,bz2,lzma,ctypes,sqlite3
+VERON-STAGE5-TESTS pass=156 fail=1 none=2
+```
+
+**The recipe named this in advance and filed it under the wrong heading.**
+`libffi`'s deferral note says `--with-gcc-arch=native` is *"a reproducibility
+risk worth naming: it lets the compiler tune for the machine doing the build,
+so two builders with different CPUs could produce different bytes... if G3 ever
+disagrees across machines, this flag is the first thing to remove."*
+
+The mechanism is exactly right and the consequence is larger than the heading.
+`-march=native` does not only make the bytes **depend on** the build machine —
+it makes them **require** it. The GitHub x86_64 runner is a recent Xeon;
+`qemu-system-x86_64`'s default CPU model is `qemu64`, deliberately
+conservative. libffi was compiled for the builder and then asked to run
+somewhere else.
+
+**One package, one test, and it is the only one of the 122 that does this** —
+swept across every recipe, `libffi` is the sole `-march`/`-mtune`/`native`
+user. Nothing in `policy/defaults.toml` sets `-march`, so every other package
+compiles at gcc's baseline. ctypes is simply the first thing to `dlopen` it,
+which is why one test failed rather than forty.
+
+The overlay pins `--with-gcc-arch=x86-64`. That is not lowering libffi to meet
+the emulator — it is lowering it to meet **its own image**, which is built at
+that baseline throughout. Stated explicitly rather than by dropping the flag,
+because relying on what libffi's configure defaults to is the kind of
+assumption this project pins by hand everywhere else.
+
+**The aarch64 arm carries the same flag and has not failed on it.** It builds
+on a Neoverse runner and boots on `-cpu cortex-a57`, which is ARMv8.0, so the
+same gap exists there and nothing has yet executed an instruction that proves
+it. Latent, not absent — and it is also a live G3 hazard on both arms the day
+two runners differ.
+
+#### The emulated CPU is now named, and deliberately not raised
+
+`-cpu max` would have made this test pass. It was not used. Raising the
+emulated CPU until the image runs produces a green marker over a real defect in
+the artifact — an image that only boots on hardware as new as whatever built
+it — which is the failure mode this project treats as worse than a red run.
+
+Instead all five qemu invocations now pass `-cpu qemu64` **at the value they
+already had by default**. Nothing about the test changes; what changes is that
+the baseline the image is certified against appears in the log, and raising it
+becomes a decision somebody writes down rather than a default nobody chose.
+
 ### What is still unknown
 
-The third run reached 81 of 122 — through glib, llvm, mesa, libdrm and python.
-**Packages 82–122 are unbuilt**: gstreamer and its plugin sets, ffmpeg,
-wpewebkit, wlroots, labwc and the rest of the desktop. So are the merge, the
-image, the boot, the DHCP test and the screenshot. Three runs, three stops,
-none of them on the predicted list; expect more.
+Everything now builds and boots. What remains open is one guest test, whether
+the libffi fix closes it, and whether the aarch64 arm is carrying the same
+latent flag. Four runs, four findings, **none of them on the predicted list** —
+the predictions were right about the seven they named and told us nothing about
+the four that actually cost runs.
 
 ### Every run rebuilt from package 1 — `stop_after` is the way out
 
@@ -449,14 +506,14 @@ it does not build.
 
 `PLAN-amd64.txt` is committed beside `PLAN.txt` and checked by
 `veron --overlay packages-amd64 --plan PLAN-amd64.txt plan --check`. The two
-files differ in **43 lines: nine `argv` lines, ten `recipe-sha` lines and one
+files differ in **47 lines: ten `argv` lines, eleven `recipe-sha` lines and one
 whole added step** — which is both the proof that the overlay changes only
 what it claims to and the cheapest available review of what this architecture
 does differently.
 
 ```
 diff PLAN.txt PLAN-amd64.txt | grep -c '^[<>]'
-43
+47
 ```
 
 ---
@@ -471,8 +528,8 @@ makes `plan --check` stale for a reason that is not a fault):
 |---|---|
 | `veron selftest` — no overlay | `VERON-SELFTEST-OK`, output identical to the unmodified driver except three counts that moved because a new workflow file exists |
 | `veron plan --check` — no overlay | `VERON-PLAN-OK`, `plan-sha256 7799c291…` |
-| `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `10 overlay recipe(s) pin the same source as their base` |
-| `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 05816b85…` |
+| `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `11 overlay recipe(s) pin the same source as their base` |
+| `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 be351f2a…` |
 | `build --upto orc` | truncates the plan to `[1/81]` and says so; refuses an unknown name and refuses to be combined with a package list |
 | the `PARTIAL` interlock | all ten system-producing steps gated, verified by parsing the rendered conditions |
 | the three new gates | broken on purpose, each confirmed red |
@@ -513,8 +570,14 @@ architecture.
 - **The base recipes still carry both bzip2 defects.** One flag on each
   freetype and one step on bzip2, plus the re-seeding run on aarch64 they
   imply. See *The two fixes, and why both are needed*.
-- **Packages 82–122 are unbuilt on x86_64**, and so is every step after the
-  build.
+- **`libffi` still says `native` in the base tree**, on both arms. It is a
+  live G3 hazard the day two runners differ, and an unproven portability
+  hazard on aarch64.
+- **The image published despite a failing guest test.** `Publish the image` is
+  `if: always()` and guards only on the image existing — inherited from the
+  aarch64 arm, not introduced here. Whether `VERON-STAGE5-PUBLISHED-AMD64`
+  should be reachable from a run whose own tests failed is a question for both
+  arms.
 - **`orc-target=all` should be narrowed to `sse,mmx`** once someone reads
   whether the option is an array or a combo.
 - **The base tree still cannot bank a checkpoint from a failed run.**

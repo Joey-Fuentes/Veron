@@ -441,7 +441,7 @@ package icu 78.2
 package libffi 3.5.2
   group        build-substrate
   license      MIT
-  recipe-sha   9bf9cc946c36d7dec7b2679b1956cf49fb5caae522cd88b409c853a5f9951046
+  recipe-sha   df1eacca7f08e6b9b371b420deceb8ed0ff024ceffcf0b06860c312a27f86d90
 
   source
     url        https://github.com/libffi/libffi/releases/download/v3.5.2/libffi-3.5.2.tar.gz
@@ -461,7 +461,7 @@ package libffi 3.5.2
          argv ["tar", "-xf", "dl/libffi-3.5.2.tar.gz", "-C", "build/libffi-3.5.2"]
     [02] configure
          cwd  build/libffi-3.5.2/libffi-3.5.2
-         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-gcc-arch=native", "--disable-exec-static-tramp"]
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-gcc-arch=x86-64", "--disable-exec-static-tramp"]
     [03] build
          cwd  build/libffi-3.5.2/libffi-3.5.2
          argv ["make", "-j1"]

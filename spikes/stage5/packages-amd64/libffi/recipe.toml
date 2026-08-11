@@ -1,0 +1,127 @@
+# ============================================================ AMD64 OVERLAY
+# A REPLACEMENT FOR packages/libffi/recipe.toml, USED ONLY BY
+# stage5-spike-amd64 (`veron --overlay packages-amd64`). The aarch64 arm never
+# loads this file.
+#
+# WHAT DIFFERS FROM THE BASE RECIPE:
+#   --with-gcc-arch=native -> --with-gcc-arch=x86-64.
+#
+# THE BASE RECIPE PREDICTED THIS AND FILED IT UNDER THE WRONG HEADING. Its
+# deferral note says:
+#
+#     "--with-gcc-arch=native IS A REPRODUCIBILITY RISK worth naming: it lets
+#      the compiler tune for the machine doing the build, so two builders with
+#      different CPUs could produce different bytes. It is used here because
+#      LFS does and because the runners are uniform; if G3 ever disagrees
+#      across machines, this flag is the first thing to remove."
+#
+# The mechanism is exactly right and the consequence is bigger than
+# reproducibility. -march=native does not only make the bytes depend on the
+# build machine -- it makes them REQUIRE it. The library is emitted for
+# whatever the runner's CPU happens to support, and then has to run somewhere
+# else.
+#
+# WHAT IT COST, IN RUN 85313812045, WHICH BUILT ALL 122 PACKAGES AND BOOTED:
+#
+#     traps: python3[188] trap invalid opcode ip:7f272ffa7580
+#            in libffi.so.8.2.0[3580,7f272ffa6000+8000]
+#     Illegal instruction
+#     FAIL  python: import zlib,bz2,lzma,ctypes,sqlite3
+#     VERON-STAGE5-TESTS pass=156 fail=1 none=2
+#
+# The GitHub x86_64 runner is a recent Xeon; qemu-system-x86_64's default CPU
+# model is `qemu64`, which is deliberately conservative. So libffi was built
+# for the builder and could not execute on the machine the image actually
+# boots on. ctypes is the only package that dlopens it early enough to notice,
+# which is why ONE test failed rather than forty.
+#
+# x86-64 IS THE BASELINE AND IS WHAT THE REST OF THE IMAGE ALREADY USES.
+# Nothing in policy/defaults.toml sets -march, so every other package compiles
+# at gcc's default baseline. libffi was the single package asking for
+# something else. This does not lower it to meet the emulator; it lowers it to
+# meet ITS OWN IMAGE.
+#
+# STATED, NOT DEFAULTED. Dropping the flag entirely would also work if
+# libffi's configure defaults to generic -- and relying on that is the kind of
+# assumption this project pins by hand everywhere else. An explicit value
+# cannot be wrong about what the default is.
+#
+# THE aarch64 ARM HAS THE SAME FLAG AND HAS NOT FAILED ON IT. It builds on a
+# Neoverse runner and boots on -cpu cortex-a57, which is ARMv8.0 -- so the same
+# gap exists there and nothing has executed the instruction that would prove
+# it. Latent, not absent. AMD64.md records it; changing the base recipe moves
+# libffi's bytes on both arms and needs its own dispatch.
+#
+# THE PIN IS NOT ALLOWED TO DIFFER. `veron --overlay ... selftest` compares
+# version and every [source] key against packages/libffi/recipe.toml and fails
+# if they disagree, so this file can change flags and can never change what is
+# built. Bump the version in both files or in neither.
+# ===========================================================================
+
+name    = "libffi"
+version = "3.5.2"
+group   = "build-substrate"
+license = "MIT"
+
+# Version, digest, licence and build system all measured by `probe url`,
+# from the URL the LFS book records. The book supplies a route; the pin is
+# ours.
+
+[source]
+url       = "https://github.com/libffi/libffi/releases/download/v3.5.2/libffi-3.5.2.tar.gz"
+sha256    = "f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc"
+signature = "none -- no .asc or .sig published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = ["exec-static-tramp"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--with-gcc-arch=x86-64", "--disable-exec-static-tramp"]
+# TESTS ARE NOT RUN, BY POLICY. Suites in series do not scale past a handful
+# of packages and the set is heading for 150+. Evidence comes from the guest
+# sanity test below, against the booted image.
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. --with-gcc-arch=native IS A REPRODUCIBILITY RISK \
+worth naming: it lets the compiler tune for the machine doing the build, so \
+two builders with different CPUs could produce different bytes. It is used \
+here because LFS does and because the runners are uniform; if G3 ever \
+disagrees across machines, this flag is the first thing to remove."""
+
+[installs]
+prefixes = ["usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/info", "usr/share/man"]
+# files/digest DELIBERATELY ABSENT. They are a per-file sha256
+# measured on aarch64; the same source compiled for x86_64 cannot
+# match them. prefixes is kept because it is architecture-independent
+# and still enforced.
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libffi-3.5.2.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+# --disable-exec-static-tramp: static trampolines need a writable+executable
+# mapping, which is exactly what a hardened kernel refuses. Off by choice
+# rather than by whatever the build host's kernel happened to allow.
+run  = [["./configure", "--prefix=/usr", "--disable-static",
+         "--with-gcc-arch=x86-64", "--disable-exec-static-tramp"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libffi"]]
+expect = ["3.5.2"]
