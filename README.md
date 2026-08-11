@@ -242,7 +242,15 @@ aarch64 release.
 
 `stage4-arch-spike-riscv64` is green through rung 7 and stops at rung 8, where
 the stage-2 compiler segfaults on `--version` while the stage-1 compiler that
-built it passes every check and compiles cleanly. Both spikes are **copies** of
+built it passes every check and compiles cleanly. Reading the rungs for what
+has actually been measured turns up the variable nobody moved: **every program
+this chain has compiled and run with that stage-1 compiler was built at
+`-O0`**, because no preflight passes an `-O` flag and rung 7 reuses tcc's
+archives rather than rebuilding them. The first optimised code it ever emits is
+gcc's own build at `-g -O2`, at exactly the rung that breaks. Rung 7 now runs
+the same test program at five optimisation levels and prints the resolved crt
+and libgcc paths its static link actually uses -- two seconds, against the
+forty minutes reaching rung 8 costs. Both spikes are **copies** of
 the reference rather than a matrix over it, so a failure on one architecture
 cannot make the working arm answerable for it.
 

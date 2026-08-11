@@ -313,6 +313,70 @@ that cannot survive `--version` looks more like a bad LINK -- crt files, libgcc,
 static against dynamic -- than bad code generation, and the difference between
 the two builds is what they were linked against rather than what compiled them.
 
+#### What the post-mortem did NOT establish, and the cheaper question nobody asked
+
+The post-mortem answers *which binary*, *which call* and *is it deterministic*.
+It cannot answer *why*, because by the time it runs the only evidence left is a
+1.2 MB binary that dies instantly. Reading the rungs for what has actually been
+measured turns up something the log does not say out loud:
+
+**this compiler has never been asked to optimise anything.**
+
+Every `$GCC1` invocation in `rungs-riscv64.sh` -- preflight 1, the `-std`
+ladder, preflight 2 -- passes no `-O` flag, so every program this chain has
+compiled *and run* with the tcc-built gcc was built at `-O0`. Rung 7 then
+**reuses tcc's archives** rather than rebuilding them, so nothing there
+exercises it either. The first optimised code this compiler ever emits is
+gcc's own build at rung 8:
+
+```
+/work/out/bin/gcc -static -g -O2 -DIN_GCC ... -o xgcc
+/work/bld2/./gcc/xgcc -B/work/bld2/./gcc/ -dumpspecs > tmp-specs
+make[2]: *** [Makefile:1868: specs] Segmentation fault
+```
+
+-- and the first binary out of it segfaults before it can print its version.
+That is not proof the optimiser is at fault. It is the observation that the
+one variable nobody has moved is the one that changes at exactly the rung
+where things break, and that testing it costs two seconds where reaching rung
+8 costs forty minutes.
+
+So rung 7 gains two preflights, both **reporting rather than gating**:
+
+- **Preflight 3** compiles and runs the existing `p1b` program at `-O0`,
+  `-O1`, `-O2`, `-Os` and `-g -O2` -- the last a literal, because it is what
+  rung 8 passes, and a ladder that tests everything except the failing
+  combination is a near-miss this chain has paid for before. `p1b` announces
+  each construct before running it and flushes, so a crash names the
+  construct.
+- **Preflight 4** tests the bad-link reading directly instead of letting
+  preflight 3 stand in for it: `-print-libgcc-file-name`, the resolved path of
+  each crt file and `libc.a`, and the actual `collect2` line from `-static -v`.
+  Rung 4.6 merged nineteen soft-float helpers out of `libtcc1.a` **into**
+  `libc.a`, so there are genuinely two sources for some symbols and whichever
+  the linker reaches first wins -- that is visible here and nowhere else.
+
+**Reporting, not gating, and that is a decision rather than caution.** Failing
+rung 7 on a bad `-O2` would save the forty minutes rung 8 costs, but this probe
+has never run, and a gate keyed on an outcome nobody has seen is a guess in a
+measurement's clothes -- the same reasoning the cmake-log check in this chain
+records. Reporting also keeps both the ladder *and* rung 8's post-mortem in one
+log, and the correlation between them is worth more than either alone. It
+becomes a gate once the answer is known.
+
+**Three outcomes, three different next moves:**
+
+| preflight 3 says | what it means | next |
+|---|---|---|
+| crashes at `-O2`, fine at `-O0` | the optimiser, on riscv64 | bisect by flag; a 40-line reproducer replaces a 40-minute build |
+| fine at every level | these constructs are not it | preflight 4's link line becomes the evidence |
+| crashes at every level | rung 6 shipped a broken compiler and rung 7's preflights passed it | the fault is earlier than rung 8 entirely |
+
+One caution on the middle row: `p1b` exercises recursion, structs by value,
+stack arrays, function pointers and 64-bit division. gcc's own sources reach
+well past that. "Fine at every level" rules out those constructs, not
+optimisation.
+
 ### What the other two need that aarch64 does not
 
 Every one of these was measured, and each cost a run to find:

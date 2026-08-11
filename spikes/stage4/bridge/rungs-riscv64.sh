@@ -3641,7 +3641,148 @@ P1BEOF
           head -6 /tmp/p1b.err | sed 's/^/        /'
         fi
       done
+
+      # PREFLIGHT 3: THE SAME PROGRAM, AT THE OPTIMISATION LEVELS gcc's OWN
+      # BUILD USES.
+      #
+      # THIS COMPILER HAS NEVER BEEN ASKED TO OPTIMISE ANYTHING. Every
+      # `$GCC1` invocation in this file -- preflight 1, the loop above,
+      # preflight 2 -- passes no -O flag at all, so every program this chain
+      # has compiled and RUN with the tcc-built gcc was built at -O0. Rung 7
+      # then reuses tcc's archives rather than rebuilding them, so nothing
+      # there exercises it either.
+      #
+      # The first optimised code this compiler ever emits is gcc's own build
+      # at rung 8, which uses `-g -O2`:
+      #
+      #     /work/out/bin/gcc -static -g -O2 -DIN_GCC ... -o xgcc
+      #     /work/bld2/./gcc/xgcc -B/work/bld2/./gcc/ -dumpspecs > tmp-specs
+      #     make[2]: *** [Makefile:1868: specs] Segmentation fault
+      #
+      # -- and the very first binary it produces segfaults before it can print
+      # its own version. The post-mortem at rung 8 established WHICH binary
+      # (stage 2's xgcc), WHICH call (all of them, including --version, so the
+      # crash precedes argument parsing) and that it is DETERMINISTIC, 3 of 3.
+      # What it could not establish is why, because by then the only evidence
+      # left is a 1.2 MB binary that dies instantly.
+      #
+      # SO ASK THE CHEAP QUESTION FIRST. If p1b runs at -O0 and crashes at
+      # -O2, the fault is this compiler's optimiser on riscv64, the reproducer
+      # is a 40-line C file and two seconds, and rung 8 never needed to be
+      # reached to find it. If it runs at every level, optimisation is ruled
+      # out for these constructs and the bad-link reading in the bridge README
+      # gains ground -- which preflight 4 below then tests directly.
+      #
+      # p1b PRINTS EACH CONSTRUCT BEFORE RUNNING IT and flushes, so a crash
+      # names the construct rather than leaving a bare "Segmentation fault"
+      # against the whole program. That property was built for gmp's
+      # generators and costs nothing to reuse here.
+      #
+      # `-g -O2` IS IN THE LIST AS A LITERAL, not because -g plausibly matters
+      # but because it is what rung 8 actually passes, and a ladder that tests
+      # everything except the failing combination is the kind of near-miss
+      # this chain has already paid for once.
+      #
+      # REPORTS, DOES NOT GATE, AND THAT IS DELIBERATE. Failing rung 7 on a
+      # bad -O2 would save the forty minutes rung 8 costs -- but this probe
+      # has never run, and a gate keyed on an outcome nobody has seen yet is a
+      # guess wearing a measurement's clothes. That is the same reasoning the
+      # cmake-log check in this chain records: print the lines, let the run
+      # continue, and turn it into a gate once the actual strings are known.
+      # Both this ladder AND rung 8's post-mortem then appear in ONE log, and
+      # a correlation between them is worth more than either alone.
+      # The last line p1b ITSELF printed -- the shell's crash notice, and
+      # busybox ash's variants of it, are not p1b's output and are dropped.
+      _lastline() {
+        grep -v -e 'Segmentation fault' -e 'Killed' -e 'Aborted' \
+                -e 'Bus error' -e 'Illegal instruction' /tmp/p1b.out \
+          | tail -1
+      }
+      say "      --- preflight 3: does optimisation break what it emits? ---"
+      for _opt in -O0 -O1 -O2 -Os "-g -O2"; do
+        rm -f p1b.bin
+        if "$GCC1" -static $_opt -o p1b.bin p1b.c 2>/tmp/p1b.err; then
+          # `if cmd; then` RATHER THAN `cmd; _rc=$?`, AND THE FIRST VERSION OF
+          # THIS GOT IT WRONG. Under `set -e` -- which IS in force by the time
+          # rung 7 runs -- a bare `./p1b.bin` that segfaults kills the subshell
+          # before `_rc=$?` is ever read. The ladder would then abort at the
+          # first crashing level, never test the ones after it, and surface as
+          # the rung dying rather than as the measurement it exists to be: a
+          # probe that cannot report the thing it was written to find. A
+          # command in an `if` condition is exempt from -e, so this works
+          # whatever the -e state happens to be, which is better than matching
+          # the current one.
+          if ./p1b.bin > /tmp/p1b.out 2>&1; then _rc=0; else _rc=$?; fi
+          # 128+N IS A SIGNAL. Printing the number and the last line the
+          # program managed distinguishes "crashed in the 64-bit divide" from
+          # "exited nonzero", which are different faults.
+          case "$_rc" in
+            0)   printf '        %-8s ok\n' "$_opt" ;;
+            # THE SHELL'S OWN "Segmentation fault" LANDS IN THIS FILE TOO and
+            # is always the last line, which would mask the very thing the
+            # line is for -- the last construct the program announced before
+            # dying. Filtered out by name; what remains is p1b's own output.
+            139) printf '        %-8s SEGFAULT (rc=139) after: %s\n' \
+                        "$_opt" "$(_lastline)" ;;
+            13[0-9]|14[0-9])
+                 printf '        %-8s KILLED BY SIGNAL %s after: %s\n' \
+                        "$_opt" "$((_rc-128))" "$(_lastline)" ;;
+            *)   printf '        %-8s exit=%s after: %s\n' \
+                        "$_opt" "$_rc" "$(_lastline)" ;;
+          esac
+        else
+          printf '        %-8s DID NOT COMPILE: %s\n' \
+                 "$_opt" "$(head -1 /tmp/p1b.err)"
+        fi
+      done
       rm -f p1b.c p1b.bin )
+
+    # PREFLIGHT 4: WHAT THIS COMPILER'S STATIC LINK IS ACTUALLY MADE OF.
+    #
+    # The bridge README reads the rung-8 evidence as a bad LINK rather than
+    # bad code generation, and gives two reasons: stage 2 is 282 KB SMALLER
+    # than stage 1 from identical source and configure, and a driver that
+    # cannot survive --version has died before argument parsing, which is
+    # where startup code lives rather than where optimised code runs.
+    #
+    # THAT READING DESERVES ITS OWN TEST RATHER THAN THE ONE ABOVE STANDING IN
+    # FOR IT. If the crt files, libgcc or libc this compiler reaches for are
+    # not the ones intended -- rung 4.6 merged 19 soft-float helpers out of
+    # libtcc1.a INTO libc.a, so there are genuinely two sources for some
+    # symbols and whichever the linker reaches first wins -- then every binary
+    # it links is suspect regardless of optimisation.
+    #
+    # -print-file-name ECHOES THE NAME BACK when it cannot find the file, so a
+    # bare "crt1.o" in this output means NOT FOUND rather than found in the
+    # current directory. Worth knowing before reading it as success.
+    say "    --- preflight 4: what its static link is made of ---"
+    ( cd /tmp && rm -f p4.c p4.bin
+      printf 'int main(void){return 0;}\n' > p4.c
+      say "      libgcc:      $("$GCC1" -print-libgcc-file-name 2>&1 | head -1)"
+      for _f in crt1.o crti.o crtn.o crtbegin.o crtend.o libc.a; do
+        printf '      %-12s %s\n' "$_f" "$("$GCC1" -print-file-name=$_f 2>&1 | head -1)"
+      done
+      # THE LINK LINE ITSELF. -v prints what the driver hands to collect2:
+      # every object, every archive, in order. It is long and it is the
+      # evidence -- a missing crt or a libgcc from the wrong place is visible
+      # here and nowhere else.
+      if "$GCC1" -static -v -o p4.bin p4.c > /tmp/p4.out 2>&1
+        then _rc=0; else _rc=$?; fi
+      say "      -static -v rc=$_rc"
+      if [ -x p4.bin ]; then
+        # SAME -e TRAP AS ABOVE. This binary is the one under suspicion; if it
+        # crashes, that is the finding, and it must not take the rung with it.
+        if ./p4.bin; then _r4=0; else _r4=$?; fi
+        say "      the linked binary ran: exit=$_r4 (expect 0)"
+      else
+        say "      NO BINARY -- the link itself failed"
+      fi
+      say "      --- what it handed to collect2 ---"
+      grep -E 'collect2|ld ' /tmp/p4.out | tail -2 \
+        | tr ' ' '\n' | grep -E 'crt|libgcc|\.a$|^-' | tr '\n' ' ' \
+        | fold -w 100 2>/dev/null | sed 's/^/        /' \
+        || grep -E 'collect2' /tmp/p4.out | tail -1 | sed 's/^/        /'
+      rm -f p4.c p4.bin )
 
     say "    --- preflight 2: the tcc-built gmp/mpfr/mpc, as configure checks them ---"
     ( cd /tmp && rm -f p2.c p2.bin
