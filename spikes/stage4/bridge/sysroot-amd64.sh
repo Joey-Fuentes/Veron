@@ -1472,6 +1472,28 @@ if [ "$B5" = ok ]; then
     set_cfg KEYBOARD_ATKBD y
     set_cfg INPUT_MOUSEDEV y
     set_cfg MOUSE_PS2 y
+    # COMMON_CLK BEFORE THE I2C CONTROLLER, AND IT IS THE PINCTRL LESSON AGAIN.
+    #
+    # I2C_DESIGNWARE_PLATFORM's Kconfig reads
+    #     depends on (ACPI && COMMON_CLK) || !ACPI
+    # and x86_64_defconfig sets no COMMON_CLK line at all. ACPI is on, so the
+    # first arm applies, is unmet, and olddefconfig discards the symbol in
+    # silence -- the same shape as PINCTRL_AMD needing its PINCTRL parent.
+    #
+    # MEASURED ON THE MACHINE, NOT INFERRED. The first boot with the hardware
+    # kernel had sound and a keyboard and no touchpad, and
+    #     dmesg | grep -iE "i2c|designware|AMDI"
+    # returned only AMD-Vi IOMMU lines: no AMDI0010 bind, no i2c bus, so no
+    # bus for the touchpad to sit on. PINCTRL_AMD may well have been fine --
+    # it had nothing to route an interrupt to. /boot/config-6.8.0-51-generic
+    # on that machine has CONFIG_COMMON_CLK=y.
+    #
+    # AND THE REPORT COULD NOT HAVE SAID SO, which is the worse half. The two
+    # DESIGNWARE symbols were set here and never added to the list the
+    # VERON-KCONFIG report checks, so a run printed VERON-KCONFIG-OK while
+    # being silent about exactly the symbols that had been dropped. Every
+    # symbol this block sets is now in that list.
+    set_cfg COMMON_CLK y
     set_cfg I2C y
     set_cfg I2C_DESIGNWARE_CORE y
     set_cfg I2C_DESIGNWARE_PLATFORM y
@@ -1664,7 +1686,15 @@ if [ "$B5" = ok ]; then
     _missing=
     for _sym in BLK_DEV_NVME SATA_AHCI BLK_DEV_SD USB_STORAGE EXT4_FS \
                 USB_XHCI_PCI USB_HID SERIO_I8042 KEYBOARD_ATKBD \
-                I2C_HID_ACPI I2C_HID_CORE HID_MULTITOUCH \
+                I2C I2C_DESIGNWARE_CORE I2C_DESIGNWARE_PLATFORM \
+                COMMON_CLK I2C_HID I2C_HID_ACPI I2C_HID_CORE HID_MULTITOUCH \
+                SERIO MOUSE_PS2 INPUT_MOUSEDEV \
+                USB USB_PCI USB_XHCI_HCD USB_EHCI_HCD HID_GENERIC \
+                NVME_CORE ATA SCSI DRM DRM_AMD_DC \
+                FB FRAMEBUFFER_CONSOLE_DETECT_PRIMARY VT VT_CONSOLE \
+                USB_EHCI_PCI USB_OHCI_HCD \
+                SND_HDA_CORE SND_HDA_CODEC_HDMI \
+                RTW89_CORE FW_LOADER FW_LOADER_COMPRESS \
                 PINCTRL GPIOLIB GPIOLIB_IRQCHIP PINCTRL_AMD \
                 SND SND_PCI SND_HDA SND_HDA_INTEL SND_HDA_GENERIC \
                 SND_HDA_CODEC_REALTEK \

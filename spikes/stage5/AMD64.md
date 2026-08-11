@@ -696,6 +696,61 @@ It also needs a pinned tarball and a verified sha256, which is work of its own.
 The next boot says whether it is needed: if sound works without it, it is a
 convenience; if the card is silent, it is a blocker.
 
+### The eighth finding: a gate that was silent about the symbols that mattered
+
+The hardware kernel booted the laptop and reported `VERON-KCONFIG-OK`. Sound
+arrived — two cards, HDMI through amdgpu and an ALC236 codec with its HP fixup
+picked for SSID `103c:887c`. The keyboard, the display, wireless and storage
+all held.
+
+**The touchpad still did not work, and the reason is that its bus never
+existed:**
+
+```
+# dmesg | grep -iE "i2c|designware|AMDI"
+[  0.074697] AMD-Vi: ivrs, add hid:AMDI0020 ...
+                                     <- and nothing else. No AMDI0010 bind.
+```
+
+`I2C_DESIGNWARE_PLATFORM` reads `depends on (ACPI && COMMON_CLK) || !ACPI`, and
+`x86_64_defconfig` sets **no `COMMON_CLK` line at all**. ACPI is on, so the
+first arm applies, is unmet, and `olddefconfig` discarded the symbol in
+silence. `PINCTRL_AMD` may have been perfectly fine — it had no bus to route an
+interrupt to. `/boot/config-6.8.0-51-generic` on that machine has
+`CONFIG_COMMON_CLK=y`, which settles it.
+
+**Exactly the `PINCTRL` lesson, one layer down.** A parent symbol nobody set,
+a child silently dropped, and a working distribution config that answers it in
+one `grep`.
+
+#### The gate reported OK about symbols it was not checking
+
+This is the part worth keeping. The `VERON-KCONFIG` report exists so a dropped
+symbol is named before a boot rather than after — and it printed `OK` while
+being silent about the two symbols that had been dropped, because
+`I2C_DESIGNWARE_CORE` and `I2C_DESIGNWARE_PLATFORM` were **set in the config
+block and never added to the list the report iterates**.
+
+A gate that checks a subset of what it appears to check is worse than no gate:
+it converts "we did not look" into "we looked and it was fine."
+
+So the correspondence is now mechanical rather than remembered. Every
+`set_cfg` in the real-hardware block is in the report list — checked by
+extracting both sets and diffing them, which turned up **seven more** symbols
+that had been set and never reported (`DRM_AMD_DC`, `FB`, `VT`, `VT_CONSOLE`,
+`FRAMEBUFFER_CONSOLE_DETECT_PRIMARY`, `USB_EHCI_PCI`, `USB_OHCI_HCD`). 63
+symbols set, 63 reported.
+
+Run against a config with two symbols missing, the extended report prints what
+the last run should have:
+
+```
+COMMON_CLK                   on
+I2C_DESIGNWARE_PLATFORM      NOT SET
+PINCTRL_AMD                  NOT SET
+VERON-KCONFIG-DROPPED -- I2C_DESIGNWARE_PLATFORM PINCTRL_AMD
+```
+
 ### What is still unknown
 
 The image boots on a laptop and does most of what a laptop should. What has
