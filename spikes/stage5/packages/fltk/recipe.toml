@@ -1,0 +1,149 @@
+name    = "fltk"
+version = "1.4.5"
+group   = "desktop"
+license = "LGPL-2.0-only WITH FLTK-exception"
+srcdir  = "fltk-1.4.5"
+
+[source]
+url       = "https://github.com/fltk/fltk/releases/download/release-1.4.5/fltk-1.4.5-source.tar.gz"
+sha256    = "eede1fb2b8e9c2e581e77082e15252145855c79aad30070ee3b24aabe2f926f1"
+signature = "none published beside the release"
+crosschecked_against = ["blfs:x/fltk.html"]
+
+[deps]
+build        = ["pkgconf", "wayland", "wayland-protocols", "libxkbcommon",
+                "pango", "cairo", "fontconfig", "freetype", "mesa",
+                "libpng", "libjpeg-turbo", "zlib"]
+link         = ["wayland", "libxkbcommon", "pango", "cairo", "fontconfig",
+                "freetype", "mesa", "libpng", "libjpeg-turbo", "zlib"]
+runtime      = []
+optional_off = ["xorg", "libxinerama", "libxft", "dbus", "glew", "gtk3",
+                "libdecor", "doxygen"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--enable-shared", "--disable-x11",
+                   "--enable-cairo"]
+verification    = "none -- upstream tests are interactive"
+packaged_as     = ["fltk"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 was \
+checked against the digest published with the release.
+
+A TOOLKIT, NOT AN APPLICATION, AND THE DISTINCTION IS THE POINT. \
+ROADMAP-STAGE5.md names FLTK as "the strategic option ... as a base for a file \
+manager, a graphical editor and an archiver" and is right that those do not \
+exist. What this package buys is the ability to have them; see the veron-edit \
+recipe, which is FLTK's own editor example installed as a program.
+
+BLFS SAYS "Required: Xorg Libraries" AND THAT IS TRUE OF BLFS, NOT OF FLTK. \
+The book builds an X11 library because LFS has Xorg. This set has none, and \
+upstream supports that case outright -- README.Wayland.txt: "On pure Wayland \
+systems without the X11 headers and libraries, FLTK can be built with its \
+Wayland backend only", via "configure argument --disable-x11". Recorded here \
+because a reader comparing this recipe with the book will otherwise conclude \
+the dependency list is wrong.
+
+--disable-x11 IS A REAL OPTION AND WAS CHECKED, not taken from the README. It \
+does not appear in `configure --help`, which lists --disable-wayland but not \
+its counterpart; `enable_x11` is declared at configure:823 and consulted at \
+5010, 5021 and 5397, and at 8601 it is what decides whether `pkg-config --libs \
+x11` is appended. A flag that only the prose mentions is exactly the kind that \
+turns out not to exist.
+
+WHAT --disable-x11 REMOVES FROM THE DEPENDENCY LIST. README.Wayland.txt's \
+Debian list marks libxinerama-dev "except if option FLTK_BACKEND_X11=off is \
+used", and libxft is X11's font path. Neither is in this set and neither is \
+needed.
+
+libdecor IS BUNDLED AND THAT IS ACCEPTED HERE RATHER THAN WORKED AROUND. \
+FLTK's Wayland backend uses libdecor for client-side decorations; \
+README.Wayland.txt: "When libdecor is not available or not recent enough, FLTK \
+uses a copy of libdecor bundled in the FLTK source code." configure:8608 sets \
+LIBDECORDIR=libdecor/build unconditionally on the Wayland path, so the bundled \
+copy is what builds.
+
+THIS SET DECLINES BUNDLED COPIES EVERYWHERE ELSE, so the reason to accept one \
+here is worth stating: labwc uses SERVER-side decorations. \
+README.Wayland.txt: "Mutter and Weston use CSD mode, KWin and Sway use SSD \
+mode" -- labwc is in the second group, so the compositor draws the titlebars \
+and libdecor's client-side path is largely unexercised. Packaging libdecor \
+separately is the correct end state and is a decision of its own; it is not a \
+prerequisite for this package to work on this system.
+
+dbus IS ABSENT AND ONLY COSTS THE CURSOR THEME. README.Wayland.txt marks \
+libdbus-1-dev "recommended to query current cursor theme", and configure:8609 \
+adds -DHAS_DBUS only if pkg-config finds dbus-1. Without it FLTK uses a \
+default cursor. dbus is ruled out for this set on other grounds -- see the \
+notifications entry in ROADMAP-STAGE5.md -- so this is consistent rather than \
+an omission.
+
+glew IS ABSENT AND COSTS OpenGL 3+. README.Wayland.txt: "necessary to use \
+OpenGL version 3 or above". FLTK's own widgets do not need it; only \
+applications asking for a modern GL context would.
+
+gtk3 IS NOT A DEPENDENCY HERE, WHICH IS THE WHOLE REASON FLTK WAS CHOSEN. The \
+Debian list marks libgtk-3-dev "highly recommended if libdecor-0-dev is not \
+installed" -- that is about libdecor's GTK plugin for drawing CSD titlebars, \
+not about FLTK itself, and under SSD it does not arise. Mousepad and every \
+other GTK editor were declined precisely to avoid adopting GTK as a platform.
+
+--enable-cairo TURNS ON Fl_Cairo_Window. The Wayland backend already draws \
+through Cairo and text through Pango whatever this says; the option adds the \
+public API for application code that wants a Cairo context, which is what an \
+editor or a file manager would use.
+
+TESTS ARE NOT RUN AND BLFS SAYS WHY: "The tests for the package are \
+interactive." There is nothing to assert in a headless build.
+
+BLFS CROSS-CHECK: x/fltk.html, version 1.4.4 there against 1.4.5 here. Its \
+command is `./configure --prefix=/usr --enable-shared`, and it removes the \
+static libraries afterwards. Recommended there: hicolor-icon-theme, \
+libjpeg-turbo, libpng -- the last two are in this set and are declared; the \
+icon theme is for desktop integration this system does not have. Optional \
+there: alsa-lib, desktop-file-utils, Doxygen, GLU, Mesa, texlive. alsa-lib and \
+Mesa are in this set.
+"""
+
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/include/FL", "usr/lib",
+            "usr/share/doc", "usr/share/man"]
+
+[[steps]]
+name = "unpack"
+# THE TARBALL IS NAMED -source AND EXTRACTS TO fltk-1.4.5, which BLFS flags in
+# a Note of its own: "The tar extraction directory is fltk-1.4.4 and not
+# fltk-1.4.4-source as indicated by the tarball name." srcdir above says so.
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/fltk-1.4.5-source.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--enable-shared", "--disable-x11",
+         "--enable-cairo"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[[steps]]
+name = "drop-static"
+# BLFS REMOVES THESE TOO -- `rm -vf /usr/lib/libfltk*.a`. --enable-shared does
+# not stop the static libraries being built and installed; nothing here links
+# statically, and five archives of a toolkit are not a small addition to an
+# image measured in files.
+cwd  = "$S"
+run  = [["sh", "-c", "rm -f $D/usr/lib/libfltk*.a; ls $D/usr/lib | head"]]
+
+[guest]
+# fltk-config IS THE ONE BINARY THAT ANSWERS WITHOUT A COMPOSITOR. Every other
+# program this package installs opens a window, and the boot test has no
+# display at the point package tests run.
+test   = [["/usr/bin/fltk-config", "--version"]]
+expect = ["1.4.5"]

@@ -121,28 +121,31 @@ between this file and the recipes fails the run.
   99. llvm
   100. shared-mime-info
   101. utf8proc
-  102. glib-networking
-  103. harfbuzz
-  104. libwebp
-  105. mesa
-  106. freetype
-  107. libepoxy
-  108. libsoup
-  109. wlroots
-  110. fontconfig
-  111. cairo
-  112. fcft
-  113. foot
-  114. fuzzel
-  115. pango
-  116. swaybg
-  117. yambar
-  118. gst-plugins-base
-  119. labwc
-  120. gst-libav
-  121. gst-plugins-bad
-  122. gst-plugins-good
-  123. wpewebkit
+  102. wl-clipboard
+  103. glib-networking
+  104. harfbuzz
+  105. libwebp
+  106. mesa
+  107. freetype
+  108. libepoxy
+  109. libsoup
+  110. wlroots
+  111. fontconfig
+  112. cairo
+  113. fcft
+  114. foot
+  115. fuzzel
+  116. pango
+  117. swaybg
+  118. yambar
+  119. fltk
+  120. gst-plugins-base
+  121. labwc
+  122. gst-libav
+  123. gst-plugins-bad
+  124. gst-plugins-good
+  125. veron-edit
+  126. wpewebkit
 
 ======================================================================
 package bzip2 1.0.8
@@ -731,7 +734,7 @@ package unifdef 2.12
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   d574ff27341b14dd18deefcdf12554509cb371da46e9c1054afb0471ff216a13
+  recipe-sha   ef688461dc77f53af3ca39b16fbf2f139f14b432c13f9761d447a79caa5aac42
 
   source
     url        this repository
@@ -3666,6 +3669,40 @@ package utf8proc 2.11.3
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package wl-clipboard 2.3.0
+  group        desktop
+  license      GPL-3.0-or-later
+  recipe-sha   f6829f45ef02585d081af9891b16aa71ce585f134d976f8d2da942174abe63f3
+
+  source
+    url        https://github.com/bugaevc/wl-clipboard/archive/refs/tags/v2.3.0.tar.gz
+    sha256     b4dc560973f0cd74e02f817ffa2fd44ba645a4f1ea94b7b9614dacc9f895f402
+    signature  none published -- GitHub archive, the digest is ours
+    correspond none
+
+  deps
+    build        meson, ninja, pkgconf, wayland, wayland-protocols
+    link         wayland
+    runtime      -
+    optional_off fish, shared-mime-info, xdg-utils, zsh
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/wl-clipboard-2.3.0
+         argv ["tar", "-xf", "dl/wl-clipboard-v2.3.0.tar.gz", "-C", "build/wl-clipboard-2.3.0"]
+    [02] setup
+         cwd  build/wl-clipboard-2.3.0/wl-clipboard-2.3.0
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "-Dprotocols=enabled", "-Dzshcompletiondir=no", "-Dfishcompletiondir=no", "--wrap-mode=nofallback"]
+    [03] build
+         cwd  build/wl-clipboard-2.3.0/wl-clipboard-2.3.0
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/wl-clipboard-2.3.0/wl-clipboard-2.3.0
+         env  DESTDIR=dest/wl-clipboard
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package glib-networking 2.80.1
   group        browser-substrate
   license      LGPL-2.1-or-later
@@ -4214,6 +4251,41 @@ package yambar 1.11.0
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package fltk 1.4.5
+  group        desktop
+  license      LGPL-2.0-only WITH FLTK-exception
+  recipe-sha   cf9697472fb38cd7adea9588d49d3c9af0efcc81da21088533086edadc6fdb95
+
+  source
+    url        https://github.com/fltk/fltk/releases/download/release-1.4.5/fltk-1.4.5-source.tar.gz
+    sha256     eede1fb2b8e9c2e581e77082e15252145855c79aad30070ee3b24aabe2f926f1
+    signature  none published beside the release
+    correspond none
+
+  deps
+    build        cairo, fontconfig, freetype, libjpeg-turbo, libpng, libxkbcommon, mesa, pango, pkgconf, wayland, wayland-protocols, zlib
+    link         cairo, fontconfig, freetype, libjpeg-turbo, libpng, libxkbcommon, mesa, pango, wayland, zlib
+    runtime      -
+    optional_off dbus, doxygen, glew, gtk3, libdecor, libxft, libxinerama, xorg
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/fltk-1.4.5
+         argv ["tar", "-xf", "dl/fltk-1.4.5-source.tar.gz", "-C", "build/fltk-1.4.5"]
+    [02] configure
+         cwd  build/fltk-1.4.5/fltk-1.4.5
+         argv ["./configure", "--prefix=/usr", "--enable-shared", "--disable-x11", "--enable-cairo"]
+    [03] build
+         cwd  build/fltk-1.4.5/fltk-1.4.5
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/fltk-1.4.5/fltk-1.4.5
+         argv ["make", "install", "DESTDIR=dest/fltk"]
+    [05] drop-static
+         cwd  build/fltk-1.4.5/fltk-1.4.5
+         argv ["sh", "-c", "rm -f dest/fltk/usr/lib/libfltk*.a; ls dest/fltk/usr/lib | head"]
+
+======================================================================
 package gst-plugins-base 1.28.1
   group        media
   license      LGPL-2.1-or-later
@@ -4382,6 +4454,32 @@ package gst-plugins-good 1.28.1
          cwd  build/gst-plugins-good-1.28.1/gst-plugins-good-1.28.1
          env  DESTDIR=dest/gst-plugins-good
          argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package veron-edit 1.4.5
+  group        desktop
+  license      LGPL-2.0-only WITH FLTK-exception
+  recipe-sha   9a7bccc6cbef926c7fceeecb4968944e71c689e2b310ac3921e56f7cfd5eb334
+
+  source
+    url        this repository
+    sha256     n/a -- the program is FLTK's, compiled from the fltk package's own installed source
+    signature  n/a -- provenance is the fltk pin plus the commit that carries this recipe
+    correspond none
+
+  deps
+    build        fltk, pkgconf
+    link         fltk
+    runtime      fltk
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] compile
+         cwd  build/veron-edit-1.4.5
+         argv ["sh", "-c", "test -f /usr/share/doc/fltk/examples/editor.cxx || { echo 'no editor.cxx -- the fltk package did not install its examples'; exit 1; }; c++ -O2 -o veron-edit /usr/share/doc/fltk/examples/editor.cxx $(fltk-config --use-images --cxxflags --ldflags)"]
+    [02] install
+         cwd  build/veron-edit-1.4.5
+         argv ["sh", "-c", "mkdir -p dest/veron-edit/usr/bin dest/veron-edit/usr/share/veron/applications && cp veron-edit dest/veron-edit/usr/bin/veron-edit && chmod 0755 dest/veron-edit/usr/bin/veron-edit && printf '[Desktop Entry]\\nType=Application\\nName=Text Editor\\nComment=Edit a text file\\nExec=/usr/bin/veron-edit\\nTerminal=false\\nCategories=Utility;TextEditor;\\n' > dest/veron-edit/usr/share/veron/applications/veron-edit.desktop"]
 
 ======================================================================
 package wpewebkit 2.52.5

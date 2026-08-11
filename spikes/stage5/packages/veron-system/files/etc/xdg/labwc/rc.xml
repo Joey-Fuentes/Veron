@@ -56,10 +56,146 @@
     </keybind>
   </keyboard>
 
+  <!-- WITHOUT THIS SECTION THE TITLEBAR IS A PICTURE. It drew, with a close,
+       maximise and minimise button on it, and clicking any of them did
+       nothing; windows could not be moved or resized either. The reason is the
+       same one recorded at the top of this file about rc.xml itself: labwc
+       ships its mouse bindings in share/doc/labwc/rc.xml.all as DOCUMENTATION
+       and has no built-in defaults, so a compositor with no distribution
+       config has decorations that respond to nothing.
+
+       MEASURED ON THE MACHINE, NOT COPIED FROM MEMORY. Every context and
+       action name below was read out of /usr/share/doc/labwc/rc.xml.all in a
+       running image. Inventing these is how a config file parses cleanly and
+       silently does nothing: a name labwc does not know is not an error. -->
   <mouse>
     <context name="Root">
       <mousebind button="Right" action="Press">
         <action name="ShowMenu" menu="root-menu" />
+      </mousebind>
+    </context>
+
+    <!-- MOVE AND RESIZE. Title drags the window; the eight frame edges and
+         corners resize it. Frame carries the modifier-drag so a window can be
+         moved without reaching for its titlebar at all. -->
+    <context name="Title">
+      <mousebind button="Left" action="Drag">
+        <action name="Move" />
+      </mousebind>
+    </context>
+    <context name="Frame">
+      <mousebind button="W-Left" action="Press">
+        <action name="Focus" />
+      </mousebind>
+      <mousebind button="W-Left" action="Drag">
+        <action name="Move" />
+      </mousebind>
+      <mousebind button="W-Right" action="Drag">
+        <action name="Resize" />
+      </mousebind>
+    </context>
+    <context name="Top">
+      <mousebind button="Left" action="Drag">
+        <action name="Resize" />
+      </mousebind>
+    </context>
+    <context name="Bottom">
+      <mousebind button="Left" action="Drag">
+        <action name="Resize" />
+      </mousebind>
+    </context>
+    <context name="Left">
+      <mousebind button="Left" action="Drag">
+        <action name="Resize" />
+      </mousebind>
+    </context>
+    <context name="Right">
+      <mousebind button="Left" action="Drag">
+        <action name="Resize" />
+      </mousebind>
+    </context>
+    <context name="TLCorner">
+      <mousebind button="Left" action="Drag">
+        <action name="Resize" />
+      </mousebind>
+    </context>
+    <context name="TRCorner">
+      <mousebind button="Left" action="Drag">
+        <action name="Resize" />
+      </mousebind>
+    </context>
+    <context name="BLCorner">
+      <mousebind button="Left" action="Drag">
+        <action name="Resize" />
+      </mousebind>
+    </context>
+    <context name="BRCorner">
+      <mousebind button="Left" action="Drag">
+        <action name="Resize" />
+      </mousebind>
+    </context>
+
+    <!-- THE TITLEBAR ITSELF. Press-to-focus is separate from the button
+         contexts below, which is why TitleBar and Title are two names: one is
+         the whole bar, the other the text area that drags. -->
+    <context name="TitleBar">
+      <mousebind button="Left" action="Press">
+        <action name="Focus" />
+      </mousebind>
+      <mousebind button="Left" action="DoubleClick">
+        <action name="ToggleMaximize" />
+      </mousebind>
+      <mousebind button="Right" action="Click">
+        <action name="ShowMenu" menu="client-menu" />
+      </mousebind>
+    </context>
+
+    <!-- THE THREE BUTTONS THAT WERE DRAWN AND DEAD. Close, Iconify and
+         Maximize are the decoration buttons; WindowMenu and Icon are the
+         top-left corner. -->
+    <context name="Close">
+      <mousebind button="Left" action="Click">
+        <action name="Close" />
+      </mousebind>
+    </context>
+    <context name="Iconify">
+      <mousebind button="Left" action="Click">
+        <action name="Iconify" />
+      </mousebind>
+    </context>
+    <context name="Maximize">
+      <mousebind button="Left" action="Click">
+        <action name="ToggleMaximize" />
+      </mousebind>
+    </context>
+    <context name="WindowMenu">
+      <mousebind button="Left" action="Click">
+        <action name="ShowMenu" menu="client-menu" atCursor="no" />
+      </mousebind>
+    </context>
+    <context name="Icon">
+      <mousebind button="Left" action="Click">
+        <action name="ShowMenu" menu="client-menu" atCursor="no" />
+      </mousebind>
+    </context>
+    <context name="Shade">
+      <mousebind button="Left" action="Click">
+        <action name="ToggleShade" />
+      </mousebind>
+    </context>
+    <context name="AllDesktops">
+      <mousebind button="Left" action="Click">
+        <action name="ToggleOmnipresent" />
+      </mousebind>
+    </context>
+
+    <!-- THE CLIENT AREA. Press-to-focus, so clicking inside a window raises
+         it. Without this, focus follows nothing and a click into an
+         unfocused terminal is swallowed. -->
+    <context name="Client">
+      <mousebind button="Left" action="Press">
+        <action name="Focus" />
+        <action name="Raise" />
       </mousebind>
     </context>
   </mouse>

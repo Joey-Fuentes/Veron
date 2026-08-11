@@ -1,0 +1,108 @@
+name    = "veron-edit"
+version = "1.4.5"
+group   = "desktop"
+license = "LGPL-2.0-only WITH FLTK-exception"
+srcdir  = "."
+
+[source]
+kind      = "local"
+path      = "packages/veron-edit/files"
+url       = "this repository"
+sha256    = "n/a -- the program is FLTK's, compiled from the fltk package's own installed source"
+signature = "n/a -- provenance is the fltk pin plus the commit that carries this recipe"
+crosschecked_against = []
+
+[deps]
+build        = ["fltk", "pkgconf"]
+link         = ["fltk"]
+runtime      = ["fltk"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "none -- the program is interactive"
+packaged_as     = ["veron-edit"]
+deferral        = """
+THERE IS NO EDITOR IN THIS SYSTEM BUT busybox vi. ROADMAP-STAGE5.md's desktop \
+table lists nano under "free", and that remains the right answer for a \
+terminal. This is the graphical one, and it costs no new source at all: FLTK \
+ships a complete text editor as test/editor.cxx, described in its own \
+Programmer's Guide chapter "Designing a Simple Text Editor". 1,105 lines with \
+TUTORIAL_CHAPTER set to 10 -- the finished version, not a stub -- carrying a \
+menu bar, open/save/save-as, find, replace, cut/copy/paste and multiple \
+windows.
+
+NO NEW UPSTREAM AND NO VENDORED COPY. The source is not duplicated into this \
+repository. fltk's `make install` puts every example under \
+$(datadir)/doc/fltk/examples, so editor.cxx is at \
+/usr/share/doc/fltk/examples/editor.cxx by the time this package builds, and \
+this recipe compiles that file. The provenance is the fltk pin; there is \
+nothing else to hash.
+
+WHY IT IS NOT SIMPLY INSTALLED BY THE fltk PACKAGE. test/Makefile's install \
+target copies example SOURCES to docdir and nothing else -- read it: "for file \
+in *.h *.cxx *.fl demo.menu; do $(INSTALL_DATA) ...". The built binaries stay \
+in the build tree and are deleted with it. Only `install-linux` installs \
+programs, and it installs three games (blocks, checkers, sudoku), not the \
+editor. So a separate step is required whatever shape it takes.
+
+WHY A SEPARATE PACKAGE RATHER THAN A STEP IN fltk. Two reasons. A toolkit and \
+an application have different reasons to change, and `veron why /usr/bin/ \
+veron-edit` should answer "because someone asked for an editor" rather than \
+"because a widget library was built". And an image that wants FLTK for its \
+libraries -- to run something else built against it -- should not be obliged \
+to carry an editor.
+
+THE NAME IS OURS AND THE CODE IS NOT, which is why it is veron-edit rather \
+than editor. `editor` in /usr/bin is a name with no owner; a reader finding it \
+cannot tell where it came from. The licence and copyright stay FLTK's, and are \
+recorded above as such.
+
+fltk-config IS WHAT SUPPLIES THE FLAGS, not a hand-written list. It is \
+installed by the fltk package for exactly this purpose and knows which \
+libraries that build actually needs -- with --disable-x11 the answer differs \
+from a stock FLTK, and hardcoding -lfltk here would produce a link that works \
+on one configuration and not another. --use-images is required because \
+editor.cxx links against LINKFLTKIMG in FLTK's own Makefile (test/Makefile: \
+430).
+
+WHAT IT WILL NOT DO. It has no syntax highlighting -- Fl_Text_Editor supports \
+style buffers and the tutorial version does not use them. It has no clipboard \
+integration beyond FLTK's own Fl::copy/Fl::paste, which talk to the compositor \
+directly; the command-line side is wl-clipboard's job. It is a text editor, \
+not an IDE, and it is the smallest honest way to have one.
+
+THE DESKTOP ENTRY GOES IN /usr/share/veron/applications, NOT \
+/usr/share/applications, and the distinction is deliberate. /etc/profile \
+exports XDG_DATA_HOME=/usr/share/veron, which the spec searches BEFORE \
+XDG_DATA_DIRS -- that directory is where Veron curates what the launcher \
+shows, including NoDisplay=true shadows for entries other packages install \
+and nobody wants in a menu. An entry in the lower-precedence directory would \
+still appear, but from a place with different rules, which is the kind of \
+inconsistency that is only noticed when someone tries to hide it.
+
+UNTESTABLE IN CI. It opens a window; the boot test has no compositor at the \
+point package tests run. The guest test asserts the binary exists and is \
+executable, which is the whole of what can be checked headlessly.
+"""
+
+[installs]
+prefixes = ["usr/bin", "usr/share/veron/applications"]
+
+[[steps]]
+name = "compile"
+# ONE COMMAND, FROM THE SOURCE fltk INSTALLED. $D is this package's staging
+# root; the source path is absolute because it belongs to another package's
+# install, not to this build directory.
+cwd  = "$B"
+run  = [["sh", "-c", "test -f /usr/share/doc/fltk/examples/editor.cxx || { echo 'no editor.cxx -- the fltk package did not install its examples'; exit 1; }; c++ -O2 -o veron-edit /usr/share/doc/fltk/examples/editor.cxx $(fltk-config --use-images --cxxflags --ldflags)"]]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+run  = [["sh", "-c", "mkdir -p $D/usr/bin $D/usr/share/veron/applications && cp veron-edit $D/usr/bin/veron-edit && chmod 0755 $D/usr/bin/veron-edit && printf '[Desktop Entry]\\nType=Application\\nName=Text Editor\\nComment=Edit a text file\\nExec=/usr/bin/veron-edit\\nTerminal=false\\nCategories=Utility;TextEditor;\\n' > $D/usr/share/veron/applications/veron-edit.desktop"]]
+
+[guest]
+# THE BINARY EXISTS AND IS EXECUTABLE. Running it would open a window.
+test   = [["/bin/sh", "-c", "test -x /usr/bin/veron-edit && echo present"]]
+expect = ["present"]

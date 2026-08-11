@@ -1,0 +1,35 @@
+#!/bin/sh
+# A CONFIRMED POWER CHOICE, RATHER THAN A CLICK THAT HALTS THE MACHINE.
+#
+# yambar has no menu widget: yambar-particles(5) gives `on-click`, which runs a
+# command, and there is no popup, submenu or dropdown of any kind. So the bar's
+# Shutdown label used to be left-click=poweroff, right-click=reboot -- two
+# invisible bindings, no confirmation, and a stray click ended the session.
+#
+# fuzzel IS ALREADY THE MENU IN THIS SYSTEM and it has a dmenu mode. Verified
+# against `fuzzel --help` on the machine rather than assumed:
+#
+#     -d,--dmenu           dmenu compatibility mode
+#     -p,--prompt=PROMPT   string to use as input prompt ("> ")
+#
+# In that mode fuzzel reads lines on stdin and prints the chosen one, so three
+# lines in gives a real chooser with the options visible.
+#
+# CANCEL IS FIRST AND IS THE DEFAULT. fuzzel preselects the first entry, so
+# Enter without deliberately moving selects Cancel. Escape also exits non-zero
+# and matches nothing. Both safe outcomes reach the `*)` arm below.
+#
+# THIS SCRIPT EXISTS BECAUSE on-click IS NOT A SHELL. yambar-particles(5):
+# "the string is *not* executed in a shell. Environment variables are not
+# expanded." A pipeline cannot be written inline, so it lives in a file and the
+# bar names the file.
+set -u
+
+choice=$(printf 'Cancel\nShut Down\nRestart\n' \
+         | fuzzel --dmenu --prompt 'Power: ' 2>/dev/null) || exit 0
+
+case "$choice" in
+    "Shut Down") exec poweroff ;;
+    "Restart")   exec reboot ;;
+    *)           exit 0 ;;
+esac

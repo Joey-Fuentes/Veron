@@ -1,0 +1,118 @@
+name    = "wl-clipboard"
+version = "2.3.0"
+group   = "desktop"
+license = "GPL-3.0-or-later"
+srcdir  = "wl-clipboard-2.3.0"
+
+[source]
+url       = "https://github.com/bugaevc/wl-clipboard/archive/refs/tags/v2.3.0.tar.gz"
+sha256    = "b4dc560973f0cd74e02f817ffa2fd44ba645a4f1ea94b7b9614dacc9f895f402"
+signature = "none published -- GitHub archive, the digest is ours"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "wayland", "wayland-protocols"]
+link         = ["wayland"]
+runtime      = []
+optional_off = ["xdg-utils", "shared-mime-info", "zsh", "fish"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--buildtype=release", "--libdir=lib",
+                   "-Dprotocols=enabled", "-Dzshcompletiondir=no",
+                   "-Dfishcompletiondir=no", "--wrap-mode=nofallback"]
+verification    = "none -- upstream ships no test suite"
+packaged_as     = ["wl-clipboard"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball.
+
+WHY THIS IS FIRST ON THE DESKTOP LIST. ROADMAP-STAGE5.md's desktop table calls \
+it "the single most glaring gap": there is no copy/paste at all, so a URL \
+cannot be moved from foot into the browser. Two binaries, wl-copy and \
+wl-paste, and the only mandatory dependency is wayland-client.
+
+-Dprotocols=enabled IS THE DEFAULT AND IS STATED ANYWAY, because what it \
+guards is not optional here. BUILDING.md: "many compositors have dropped \
+support for the wl_shell interface, which means wl-clipboard will not work \
+under them unless built with both wayland-scanner and wayland-protocols. For \
+this reason, you have to explicitly opt into allowing building without these \
+dependencies by specifying -D protocols=auto". labwc is such a compositor. \
+Left at `enabled` the build FAILS if either is missing, which is the outcome \
+worth having -- `auto` would silently produce binaries that do nothing on this \
+system.
+
+EVERY OPTIONAL PROTOCOL IS ENABLED, and that is a property of this set rather \
+than a choice. src/protocol/meson.build gates each one on a version:
+
+    private-code        wayland >= 1.15      have 1.26
+    wp-primary-selection  protocols >= 1.17  have 1.49
+    xdg-activation        protocols >= 1.21  have 1.49
+    ext-data-control      protocols >= 1.39  have 1.49
+
+so nothing is degraded. wayland-scanner is installed by the wayland package; \
+gtk-primary-selection and wlr-data-control are bundled protocol XML and need \
+no package.
+
+THE RUNTIME OPTIONALS ARE DELIBERATELY ABSENT AND UPSTREAM AGREES. xdg-mime, \
+/etc/mime.types and /usr/share/mime/globs2 are used only to INFER a content \
+type; BUILDING.md asks packagers to make them "weak dependencies ... not \
+strictly required". Without them wl-copy still copies and wl-paste still \
+pastes; only automatic MIME detection is coarser.
+
+COMPLETIONS ARE OFF because neither zsh nor fish is in this set, and the \
+options exist precisely so a packager can say so. The bash completion has no \
+option and installs unconditionally, which is harmless: bash is here.
+
+NOT IN BLFS. The book has no wl-clipboard page, so there is no cross-check to \
+record and crosschecked_against is empty rather than claiming one. Everything \
+above was read out of BUILDING.md, meson_options.txt and src/protocol/ \
+meson.build in the pinned tarball.
+
+THE PIN IS THE DIGEST OF THE TARBALL AT THE URL ABOVE, and it is the operator's
+to confirm rather than this file's to assert. Verify it independently before
+trusting it -- there is no detached signature published for a GitHub tag
+archive, so the digest is the whole of what can be checked, and a digest is
+only worth what the route that produced it is worth.
+
+    b4dc560973f0cd74e02f817ffa2fd44ba645a4f1ea94b7b9614dacc9f895f402
+"""
+
+[installs]
+prefixes = ["usr/bin", "usr/share/man", "usr/share/bash-completion"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+# THE FILENAME IS THE MIRROR'S, NOT THE URL'S BASENAME. A GitHub tag archive
+# ends in the TAG -- .../archive/refs/tags/v2.3.0.tar.gz -- so basename gives
+# `v2.3.0.tar.gz`, which names no project. tools/mirror.py's artifact_name
+# reads the project out of the path and produces wl-clipboard-v2.3.0.tar.gz,
+# keeping the tag's leading v, and `veron fetch` looks for exactly that. The
+# selftest named the mismatch before a run could.
+run  = [["tar", "-xf", "$DL/wl-clipboard-v2.3.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--libdir=lib", "-Dprotocols=enabled", "-Dzshcompletiondir=no",
+         "-Dfishcompletiondir=no", "--wrap-mode=nofallback"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+# DESTDIR AS A STEP ENV, WHICH IS HOW EVERY MESON PACKAGE HERE DOES IT --
+# ninja has no --destdir. The selftest caught its absence outright: "wl-clipboard
+# never references $D -- nothing it builds reaches its DESTDIR."
+env  = { DESTDIR = "$D" }
+run  = [["ninja", "-C", "_b", "install"]]
+
+[guest]
+# --version, NOT A ROUND TRIP. wl-copy needs a running compositor and a seat;
+# the boot test has neither at the point package tests run.
+test   = [["/usr/bin/wl-copy", "--version"]]
+expect = ["wl-clipboard 2.3.0"]

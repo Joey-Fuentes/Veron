@@ -10,6 +10,23 @@ set -u
 export PATH=/usr/bin:/usr/sbin:/bin:/sbin
 export XDG_RUNTIME_DIR=/run/user/0
 export XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}
+
+# XDG_DATA_HOME, WHICH IS HOW THE LAUNCHER'S MENU IS CURATED.
+#
+# fuzzel lists .desktop files, and the only ones any package installs are
+# foot, foot-server, footclient and yambar -- three variants of one terminal
+# and something already running. That is not a menu.
+#
+# The spec searches XDG_DATA_HOME BEFORE XDG_DATA_DIRS, and a file found first
+# wins. So /usr/share/veron holds Veron's own entries -- Browser, Files,
+# Volume, Shut Down, Restart -- and also a NoDisplay=true copy of each of the
+# four names above, which is the spec's own way of saying "installed, do not
+# show in a menu" rather than deleting another package's file.
+#
+# THE DEFAULT IS THE SPEC'S, NOT INVENTED: with XDG_DATA_HOME unset the search
+# path is ~/.local/share then /usr/local/share:/usr/share, so naming this
+# directory adds a layer above rather than replacing anything.
+export XDG_DATA_HOME=${XDG_DATA_HOME:-/usr/share/veron}
 # WAYLAND CLIENTS FIND THE COMPOSITOR THROUGH THIS. Without it labwc still
 # creates wayland-0 in XDG_RUNTIME_DIR, but anything launched from autostart
 # inherits whatever the service had -- naming it makes the socket a decision.

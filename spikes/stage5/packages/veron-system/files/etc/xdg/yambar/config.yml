@@ -25,6 +25,60 @@ bar:
   background: 1a1a1aee
 
   left:
+    # LAUNCHERS, BECAUSE THE BAR WAS A READOUT AND NOT A PLACE TO DO ANYTHING.
+    # Every program in this image had to be started from a keybinding or the
+    # right-click root menu -- both of which have to be known before they can
+    # be used. A visible label that runs something is the difference between a
+    # desktop and a status display.
+    #
+    # yambar HAS NO MENU WIDGET AND THIS IS NOT ONE. yambar-particles(5) gives
+    # `on-click`, which runs a command; there is no dropdown, no submenu and no
+    # popup. So "applications" here is a label that launches fuzzel, which IS
+    # the menu -- the same fuzzel already bound to Super+d. A label that opens
+    # the real launcher is honest; a fake menu that lists three programs would
+    # go stale the moment a fourth is installed.
+    #
+    # THE COMMAND IS NOT RUN IN A SHELL, and that governs every line below.
+    # yambar-particles(5): "the string is *not* executed in a shell.
+    # Environment variables are not expanded." So no pipes, no &&, no $VAR --
+    # anything compound is spelled `sh -c '...'` explicitly, which is why the
+    # power labels look different from the launcher ones.
+    - label:
+        content:
+          string:
+            text: " apps "
+            on-click: /usr/bin/fuzzel
+    - label:
+        content:
+          string:
+            text: " Terminal "
+            on-click: /usr/bin/foot
+    - label:
+        content:
+          string:
+            text: " Text Editor "
+            # veron-edit IS FLTK's OWN EDITOR EXAMPLE, INSTALLED AS A PROGRAM.
+            # If that package is not in the image this label does nothing when
+            # clicked -- yambar does not check that a command exists, and a
+            # missing binary fails silently in the child process. That is the
+            # cost of naming programs in a config file, and it is why every
+            # name here is one this set builds.
+            on-click: /usr/bin/veron-edit
+    - label:
+        content:
+          string:
+            text: " Browser "
+            # THE FULL PATH, BECAUSE MiniBrowser IS NOT ON PATH. wpewebkit
+            # installs it to /usr/libexec/wpe-webkit-2.0/, which no profile
+            # adds to PATH -- and yambar does not run the command in a shell,
+            # so a bare name would fail silently in the child process.
+            #
+            # IT IS WPE's DEMO SHELL AND HAS NO URL BAR, which
+            # spikes/stage5/README.md records under what is not done. Pointing
+            # it at the local test page rather than a URL is the honest use of
+            # it until a browser shell exists.
+            on-click: /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html
+
     # THE WINDOW LIST, and the reason the bar is worth having. foreign-toplevel
     # instantiates its template once per open window, over the
     # wlr-foreign-toplevel-management protocol that labwc implements through
@@ -58,7 +112,72 @@ bar:
         poll-interval: 5000
         content:
           - string: {text: "mem {percent_used}%"}
-    # battery AND backlight ARE ENABLED IN THE RECIPE AND ARE NOT LISTED HERE.
-    # Both read from /sys paths a qemu virt machine does not present, so a bar
-    # referencing them would show nothing useful on the only hardware this has
-    # ever run on. They stay compiled in for real machines.
+    # battery AND backlight, WHICH THIS FILE USED TO EXCLUDE AND SHOULD NOT.
+    #
+    # The note that stood here said both "read from /sys paths a qemu virt
+    # machine does not present ... the only hardware this has ever run on".
+    # That stopped being true: the x86_64 image boots an HP laptop, and on it
+    #
+    #     ls /sys/class/power_supply/   ->  ACAD  BAT0
+    #     ls /sys/class/backlight/      ->  amdgpu_bl0
+    #
+    # THE NAMES ARE REQUIRED AND ARE THIS MACHINE'S. yambar-modules-battery(5)
+    # and -backlight(5) both mark `name` as required, with no default and no
+    # autodetection. So these two lines are hardware-specific in a way nothing
+    # else in this file is: on a machine with BAT1, or with intel_backlight,
+    # they render nothing. That is a real limitation of naming a device in a
+    # config, and the alternative -- a script module that globs /sys -- trades
+    # it for a shell-out on every poll.
+    #
+    # THEY WILL NOT UPDATE ON AC PLUG OR UNPLUG. Both modules link libudev to
+    # watch for changes (modules/meson.build:9,12), and the libudev here is
+    # libudev-zero, which implements the API without the event mechanism. So
+    # they fall back to polling: 30s for the battery, and the backlight only
+    # when yambar restarts. Worth knowing before reading a stale percentage as
+    # a driver fault.
+    - battery:
+        name: BAT0
+        poll-interval: 30000
+        content:
+          map:
+            conditions:
+              state == charging:
+                - string: {text: "chg {capacity}%"}
+              state == discharging:
+                - string: {text: "bat {capacity}% {estimate}"}
+              state == full:
+                - string: {text: "bat full"}
+              # unknown IS COMMON AND NOT AN ERROR -- the module's own manual
+              # says batteries "enter the state unknown when charging and the
+              # capacity reaches ~90%". Without this arm the map has no match
+              # and the module renders nothing, which reads as a broken bar.
+              state == unknown:
+                - string: {text: "bat {capacity}%"}
+              state == "not charging":
+                - string: {text: "bat {capacity}%"}
+    - backlight:
+        name: amdgpu_bl0
+        content:
+          - string: {text: "bl {percent}%"}
+
+    # POWER, AND IT ASKS FIRST.
+    #
+    # An earlier version of this label was left-click=poweroff,
+    # right-click=reboot: two invisible bindings and no confirmation, so a
+    # stray click ended the session. yambar has no popup of its own to fix
+    # that with -- yambar-particles(5) gives `on-click`, which runs a command,
+    # and nothing else.
+    #
+    # fuzzel HAS A dmenu MODE AND IS ALREADY THE MENU HERE. Confirmed against
+    # `fuzzel --help` on the machine rather than assumed: `-d,--dmenu` and
+    # `-p,--prompt=PROMPT`. Three lines on stdin become a chooser showing Shut
+    # Down and Restart, with Cancel first and therefore preselected.
+    #
+    # THE SCRIPT EXISTS BECAUSE on-click IS NOT A SHELL -- a pipeline cannot be
+    # written inline here. scripts/power-menu carries it, and the reasoning is
+    # in that file.
+    - label:
+        content:
+          string:
+            text: " Shutdown "
+            on-click: /usr/share/veron/scripts/power-menu
