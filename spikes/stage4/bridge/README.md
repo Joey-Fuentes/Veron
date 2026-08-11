@@ -356,6 +356,38 @@ the tarball's digest is printed and checked. `set -eu` is what turned an
 unbound name into a stop rather than an empty loop and a stranger failure two
 steps later.
 
+**Run 85528747783 reached `CROSS 1` and failed on a second bug in this file** —
+not on the experiment:
+
+```
+VERON-XTCC-CROSS-FAIL  mc-tcc could not compile tcc for x86_64
+  tcc: error: file 'crt1.o' not found
+  tcc.h:28: error: include file 'stdarg.h' not found
+```
+
+That is not a code-generation failure, and the step's own marker read it as
+one. **`x86_64-tcc` is an aarch64 binary that emits x86_64** — it runs on the
+arm runner, links against that machine's libc and needs its headers and crt
+files. `-DTCC_TARGET_X86_64` selects the code generator compiled in; it says
+nothing about the platform the program runs on.
+
+The probe did not make this mistake because it used `make x86_64-tcc`, and
+tcc's Makefile knows a cross compiler is still a host program. The hand-rolled
+invocation dropped all of that to keep the line short. `CROSS 1` now runs
+`./configure --cc=mc-tcc` and `make x86_64-tcc CC=mc-tcc` — the probe's step
+with one thing changed, which is what makes a failure attributable.
+
+Two things the same reading turned up:
+
+- **`config.h` is regenerated.** The tree comes from
+  `tcc-5ec0e6f8-arm64-configured`, whose `config.h` has aarch64 paths baked
+  in — right for mc-tcc, wrong for a cross build. `./configure` is a shell
+  script, so re-running it costs nothing.
+- **`CROSS 2` must *not* pass `CC`.** libtcc1 is the compiler's runtime and
+  must be target code; the Makefile's `x86_64-libtcc1.a` rule already uses the
+  cross compiler, and overriding `CC` would have built an aarch64 runtime that
+  links cleanly and fails at run time.
+
 **The cross itself has still never run.** `stage3-cross-tcc-probe` established
 that a cross tcc and a target-native tcc can be built — **with the host's
 gcc**. Doing the same

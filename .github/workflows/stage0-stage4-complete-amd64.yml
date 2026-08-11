@@ -2432,22 +2432,72 @@ jobs:
           cd xtcc/tcc-src
           MC="$GITHUB_WORKSPACE/handoff/mc-tcc"
           [ -x "$MC" ] || { echo "FAIL: no mc-tcc at $MC"; exit 1; }
-          # ONE COMMAND, NOT make. The Makefile's cross targets would work and
-          # would drag in a configure that probes a compiler; the probe built
-          # its second generation with exactly this single invocation, and a
-          # single command is a single thing to blame.
+
+          # THIS IS A HOSTED PROGRAM BUILT FOR THIS MACHINE, and the first
+          # version of this step forgot it. It compiled tcc.c with
+          # `-DTCC_TARGET_X86_64` and nothing else, and run 85528747783 said:
+          #
+          #     tcc: error: file 'crt1.o' not found
+          #     tcc: error: file 'crti.o' not found
+          #     tcc.h:28: error: include file 'stdarg.h' not found
+          #
+          # WHICH IS NOT A CODE-GENERATION FAILURE AND WAS READ AS ONE BY THE
+          # STEP'S OWN MARKER. x86_64-tcc is an AARCH64 binary that happens to
+          # emit x86_64 -- it runs here, links against this machine's libc,
+          # and needs this machine's headers and crt files. What
+          # `-DTCC_TARGET_X86_64` changes is the code generator selected at
+          # compile time, not the platform the resulting program runs on.
+          #
+          # THE PROBE DID NOT MAKE THIS MISTAKE BECAUSE IT USED THE MAKEFILE.
+          # stage3-cross-tcc-probe builds the same binary with
+          # `make x86_64-tcc`, and tcc's Makefile knows a cross compiler is
+          # still a host program: it supplies the host include paths and links
+          # it normally. My hand-rolled command dropped all of that to keep
+          # the invocation short, which traded a working build for a shorter
+          # line.
+          #
+          # SO THE MAKEFILE IS USED HERE TOO, with CC set to mc-tcc. That is
+          # the whole substitution -- the probe's step with a different
+          # compiler -- and it keeps the failure attributable to the one thing
+          # that changed.
+          #
+          # config.h IS REGENERATED. The tarball this tree comes from is
+          # `tcc-5ec0e6f8-arm64-configured`, and its config.h carries aarch64
+          # paths baked in at configure time. Those are right for the mc-tcc
+          # the seed job built and wrong for a cross build; ./configure is a
+          # shell script and no compilation, so running it again costs
+          # nothing and removes a stale assumption.
           set +e
-          "$MC" -o x86_64-tcc -DONE_SOURCE=1 -DTCC_TARGET_X86_64 \
-                -DCONFIG_TCC_STATIC=1 -I. tcc.c > x1.log 2>&1
+          ./configure --cc="$MC" > cfg.log 2>&1
           rc=$?
           set -e
           if [ "$rc" != 0 ]; then
-            echo "VERON-XTCC-CROSS-FAIL  mc-tcc could not compile tcc for x86_64"
+            echo "  configure failed (rc=$rc):"
+            tail -12 cfg.log | sed 's/^/    /'
+            exit 1
+          fi
+          set +e
+          make x86_64-tcc CC="$MC" > x1.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" != 0 ] || [ ! -s x86_64-tcc ]; then
+            echo "VERON-XTCC-CROSS-FAIL  mc-tcc could not build x86_64-tcc (rc=$rc)"
             grep -aiE "error|undefined|not found" x1.log | head -12 | sed 's/^/    /'
             tail -8 x1.log | sed 's/^/    /'
             exit 1
           fi
+          # AND IT MUST BE AN AARCH64 BINARY. That reads backwards and is the
+          # point: this is a compiler that RUNS here and EMITS x86_64. If it
+          # came out x86_64, the build targeted the wrong thing and the next
+          # step would fail to execute it for a reason that says nothing.
           echo "  $(file -b x86_64-tcc | cut -c1-72)"
+          case "$(file -b x86_64-tcc)" in
+            *aarch64*|*ARM\ aarch64*) : ;;
+            *) echo "  UNEXPECTED: x86_64-tcc should be an aarch64 binary that"
+               echo "  emits x86_64. It is not, so the Makefile built something"
+               echo "  other than a cross compiler."
+               exit 1 ;;
+          esac
           echo "VERON-XTCC-CROSS-OK  an aarch64 binary that emits x86_64"
 
       - name: 'CROSS 2: that compiler builds an x86_64 musl and libtcc1'
@@ -2457,8 +2507,15 @@ jobs:
           X="$PWD/x86_64-tcc"
           # libtcc1.a IS THE COMPILER RUNTIME AND MUST BE TARGET CODE. The
           # Makefile builds it as x86_64-libtcc1.a for exactly this case.
+          # NO CC= HERE, AND THAT IS THE OPPOSITE OF CROSS 1. libtcc1 is the
+          # compiler's runtime and must be TARGET code, so it has to be built
+          # by x86_64-tcc -- which the Makefile already knows, because it
+          # defines the x86_64-libtcc1.a rule to use the x86_64 cross compiler
+          # it just built. Passing CC would override that with the aarch64
+          # host compiler and produce a runtime for the wrong machine, which
+          # links fine and fails at run time.
           set +e
-          make x86_64-libtcc1.a CC="$X" > lt.log 2>&1
+          make x86_64-libtcc1.a > lt.log 2>&1
           rc=$?
           set -e
           if [ "$rc" != 0 ] || [ ! -s x86_64-libtcc1.a ]; then
