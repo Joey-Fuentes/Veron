@@ -394,21 +394,29 @@ gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
 tar --zstd -xf rootfs.img.tar.zst && sha256sum -c IMAGE-SHA256
 
 qemu-system-x86_64 \
-  -cpu qemu64 -smp 4 -m 4096 \
-  -nographic -no-reboot -nic none \
+  -enable-kvm -cpu host -smp 4 -m 4096 \
+  -display gtk -serial mon:stdio \
   -drive file=rootfs.img,format=raw,if=virtio \
-  -device virtio-gpu-pci -device virtio-keyboard-pci \
+  -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci \
+  -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
   -kernel Image -initrd initramfs.cpio.gz \
-  -append "console=ttyS0 earlycon rdinit=/init panic=1 loglevel=7 veron.boot=system"
+  -append "console=ttyS0 rdinit=/init panic=1 loglevel=4"
 ```
 
-`Ctrl-A` then `X` quits. Drop `veron.boot=system` for a system to poke at
-rather than a test run, and `-enable-kvm -cpu host` in place of `-cpu qemu64`
-for a native-speed boot. Full notes, including the desktop, are in
-`STAGE5.md` under *Running the x86_64 image*.
+Then `sh /etc/dinit.d/scripts/labwc-session` in the terminal you launched from;
+the compositor is deliberately not in `boot.d`. `Ctrl-A` then `X` quits. Drop
+`-enable-kvm -cpu host` for `-cpu qemu64` if KVM is unavailable. Full notes,
+including why the mouse must be `virtio-mouse-pci`, are in `STAGE5.md` under
+*Running the x86_64 image*.
 
-**Swapping those two `-cpu` values reproduces the libffi fault in two
-minutes** — `qemu64` traps, `host` very likely does not — which is the local
+**This is not the command CI uses**, and the difference matters if you are
+reading a CI log beside a local boot. CI passes `-nographic -nic none` and
+`veron.boot=system`, which runs the package test suite and exits -- no desktop,
+no network, and the console service respawning behind it, which looks like a
+fault and is the absence of a login `STAGE5.md` already records.
+
+**Swapping `-cpu host` for `-cpu qemu64` reproduces the libffi fault in two
+minutes** -- `qemu64` traps, `host` very likely does not -- which is the local
 version of the finding above and the clearest demonstration of why the fix was
 to pin libffi rather than raise the emulated CPU.
 

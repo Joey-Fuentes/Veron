@@ -287,7 +287,7 @@ names the trigger — the day networking lands — that has now fired.
 ### Running the x86_64 image
 
 Same release layout, different tag, and on an amd64 laptop this is **native**
-rather than the full emulation the aarch64 image needs — so it is quick enough
+rather than the full emulation the aarch64 image needs -- so it is quick enough
 to actually use.
 
 ```sh
@@ -302,13 +302,45 @@ sha256sum -c IMAGE-SHA256
 `Image` is a **bzImage** and is called `Image` anyway: the stage-4 amd64 spike
 copies `arch/x86/boot/bzImage` to that name so a consumer's download path has
 the same shape on every architecture. Extract before verifying, for the reason
-above — `IMAGE-SHA256` digests the uncompressed `rootfs.img`.
-
-The exact invocation CI uses, which runs the guest test suite and exits:
+above -- `IMAGE-SHA256` digests the uncompressed `rootfs.img`.
 
 ```sh
 qemu-system-x86_64 \
-  -cpu qemu64 -smp 4 -m 4096 \
+  -enable-kvm -cpu host -smp 4 -m 4096 \
+  -display gtk -serial mon:stdio \
+  -drive file=rootfs.img,format=raw,if=virtio \
+  -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-mouse-pci \
+  -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
+  -kernel Image -initrd initramfs.cpio.gz \
+  -append "console=ttyS0 rdinit=/init panic=1 loglevel=4"
+```
+
+**This is the aarch64 command above with four substitutions and nothing else**:
+`qemu-system-x86_64` for `qemu-system-aarch64`, `-enable-kvm -cpu host` for
+`-M virt -cpu cortex-a57`, `console=ttyS0` for `console=ttyAMA0`, and a bzImage
+called `Image`. Everything the aarch64 section says about `-display gtk`,
+`-serial mon:stdio`, `Ctrl-A C` for the monitor, `Ctrl-A X` to quit, and **why
+it must be `virtio-mouse-pci` rather than `virtio-tablet-pci`** applies here
+unchanged and is not repeated.
+
+`-enable-kvm -cpu host` is the one real gain: the guest is the same
+architecture as the host, so this runs at native speed where the aarch64 image
+cannot. It needs `/dev/kvm` readable, usually membership of the `kvm` group.
+Without it, drop both flags and use `-cpu qemu64`; TCG works and is slower.
+
+**Then start the compositor by hand**, in the terminal you launched from, for
+the reason given under *the session* -- it is deliberately not in `boot.d`:
+
+```sh
+sh /etc/dinit.d/scripts/labwc-session
+```
+
+#### The CI invocation is a different command, and running it by hand disappoints
+
+`stage5-spike-amd64` boots the same image like this:
+
+```sh
+qemu-system-x86_64 -cpu qemu64 -smp 4 -m 4096 \
   -nographic -no-reboot -nic none \
   -drive file=rootfs.img,format=raw,if=virtio \
   -device virtio-gpu-pci -device virtio-keyboard-pci \
@@ -316,29 +348,21 @@ qemu-system-x86_64 \
   -append "console=ttyS0 earlycon rdinit=/init panic=1 loglevel=7 veron.boot=system"
 ```
 
-`-nographic` puts the console in the terminal you launched from. **`Ctrl-A`
-then `X` quits** — `Ctrl-C` goes to the guest. `-no-reboot` makes it halt
-rather than loop.
+It is here because it is what the published result was measured with, **not
+because it is the one to run by hand**. `veron.boot=system` tells init to run
+the package test suite and exit, `-nographic` means no desktop and no window,
+and `-nic none` means no network. Someone reaching for the CI command expecting
+a system to use gets a test harness that talks to a terminal, and the console
+service respawning behind it looks like a fault rather than the absence of a
+login this file already records.
 
-**Drop `veron.boot=system` to get a system to poke at** instead of a test run;
-that flag is what tells init to run the package tests and exit. For the desktop
-rather than the console, swap `-nographic` for `-display gtk -serial mon:stdio`
-and add `-device virtio-mouse-pci` — the mouse advice under the aarch64 section
-applies unchanged, and so does starting labwc by hand.
-
-**Faster, with KVM**, since the guest is the same architecture as the host:
-
-```sh
-  -enable-kvm -cpu host      # in place of -cpu qemu64
-```
-
-That needs `/dev/kvm` readable — usually membership of the `kvm` group.
+`-cpu qemu64` in that command is also deliberate and is documented below.
 
 #### The two `-cpu` values disagree, and that is a finding rather than a nuisance
 
 At the time of writing the published x86_64 image still contains a `libffi`
 built with `--with-gcc-arch=native`, meaning **it was compiled for the CPU of
-the machine that built it** — a recent Xeon runner. So:
+the machine that built it** -- a recent Xeon runner. So:
 
 | | |
 |---|---|
