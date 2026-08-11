@@ -61,6 +61,11 @@ on:
         type: boolean
         required: false
         default: false
+      stop_after:
+        description: 'stop_after -- run the ladder up to this rung and no further (e.g. 6). rungs-riscv64.sh has always read STOP_AFTER; this exposes it. Leave empty for the whole ladder.'
+        type: string
+        required: false
+        default: ''
   push:
     # BRANCHES ONLY -- NEVER TAGS. Without this a `push:` with only a
     # `paths:` filter still fires on TAG pushes, because a tag carries the
@@ -1247,6 +1252,7 @@ jobs:
             --setenv BISON_VER "$BISON_VER" \
             --setenv FLEX_VER "$FLEX_VER" \
             --setenv BUSYBOX_VER "$BUSYBOX_VER" \
+            --setenv STOP_AFTER "${{ inputs.stop_after }}" \
             --bind "$BOX" / \
             --ro-bind "$PWD/spikes" /src \
             --ro-bind "$PWD/pins" /in \
@@ -1452,6 +1458,106 @@ jobs:
           name: veron-toolchain-riscv64
           path: toolchain/
           retention-days: 30
+          if-no-files-found: ignore
+
+      # THE COMPILER UNDER TEST, SO IT CAN LEAVE THE JOB.
+      #
+      # Rung 8 has failed the same way for five runs, and every one of those
+      # rounds cost a full ladder because the ONLY way to ask the tcc-built gcc
+      # a question was to add a probe to this script and dispatch again. The
+      # binary that is wrong gets destroyed with the runner every time.
+      #
+      # Four artifacts already leave this job -- logs, boot, toolchain,
+      # manifest -- and not one of them contains the compiler the whole
+      # investigation is about. `Collect the final toolchain` above takes
+      # box/work/lfs, which is the LFS sysroot from rung 10 onward; the rung-6
+      # compiler lives in box/work/out and never gets picked up.
+      #
+      # WITH THIS, THE LOOP IS SECONDS RATHER THAN AN HOUR. Download, run under
+      # qemu-user-static on any x86 machine (binfmt makes riscv64 binaries just
+      # work), and ask directly: -S to read the asm, objdump -dr to read the
+      # relocations, bisect the failing construct, try flags. None of that
+      # needs a runner.
+      #
+      # WHAT IS IN IT, AND WHY EACH PART. The compiler alone is not runnable:
+      #
+      #   work/out        the installed stage-1 gcc -- the thing under test
+      #   work/bld/gcc    stage 1's build tree: xgcc and cc1 as built
+      #   work/bld2/gcc   stage 2's, which is the binary that segfaults
+      #   work/prefix     binutils -- as, ld, objdump, readelf, nm
+      #   work/prereq2    gmp/mpfr/mpc, which cc1 links against
+      #   lib usr/lib     musl, without which nothing loads
+      #   usr/include     headers, so the reproducer can be compiled
+      #
+      # BUILD TREES ARE EXCLUDED. work/src and work/bld*/[!g]* are gigabytes of
+      # object files that answer nothing; the slice above is what is needed to
+      # RUN the compiler, not to rebuild it.
+      #
+      # always(), LIKE EVERY OTHER COLLECT STEP HERE, and for the same reason:
+      # the run this matters on is the one that failed. It costs a green run
+      # some upload time, and rung 8 has not been green yet.
+      - name: 'Collect the compiler under test (so it can be debugged off-runner)'
+        if: always()
+        run: |
+          set -u
+          mkdir -p compiler
+          B=box
+          _have=
+          for d in work/out work/prefix work/prereq2 work/bld/gcc work/bld2/gcc \
+                   lib usr/lib usr/include; do
+            [ -e "$B/$d" ] && _have="$_have $d"
+          done
+          if [ -z "$_have" ]; then
+            echo "  nothing to collect -- the box has none of the expected paths"
+            exit 0
+          fi
+          echo "  slicing:$_have"
+          # zstd IF PRESENT, gzip OTHERWISE. The box is musl and the runner is
+          # a RISE machine whose tool set is not something to assume; a missing
+          # compressor must not lose the artifact.
+          if command -v zstd >/dev/null 2>&1; then
+            tar -C "$B" -cf - $_have 2>/dev/null \
+              | zstd -T0 -3 -o compiler/compiler-slice.tar.zst -f 2>/dev/null || true
+          fi
+          if [ ! -s compiler/compiler-slice.tar.zst ]; then
+            tar -C "$B" -cf - $_have 2>/dev/null \
+              | gzip -1 > compiler/compiler-slice.tar.gz || true
+          fi
+          # AND THE REPRODUCER, BESIDE IT. p5.c is what preflight 5 compiles;
+          # shipping it means whoever unpacks this does not have to reconstruct
+          # the failing program from a log.
+          # A NOTE BESIDE IT, so whoever unpacks this does not have to
+          # reconstruct the failing program from a log. printf keeps every
+          # line inside the YAML block scalar -- a heredoc at column 0 breaks
+          # the workflow file itself, which is how the first version of this
+          # step failed to parse.
+          {
+            echo "The stage-1 gcc from rung 6, and the stage-2 xgcc it produced."
+            echo ""
+            echo "  work/out/bin/gcc     the compiler under test"
+            echo "  work/bld/gcc/xgcc    stage 1, runs"
+            echo "  work/bld2/gcc/xgcc   stage 2, segfaults on every invocation"
+            echo ""
+            echo "On an x86_64 machine:"
+            echo "  sudo apt install qemu-user-static binfmt-support"
+            echo "  tar -xf compiler-slice.tar.*"
+            echo ""
+            echo "Reproducer from preflight 5 -- crashes at -O0, passes at -O2:"
+            echo "  static const char *g_str = \"literal\";"
+            echo "  int main(void){ printf(\"%s\\n\", g_str); return 0; }"
+            echo ""
+            echo "Open question: is the wrong code gcc's own (read -S output),"
+            echo "or did tcc miscompile gcc's RISC-V backend (then -S is right"
+            echo "and the fault is further down)?"
+          } > compiler/README-debug.txt
+          du -sh compiler/* 2>/dev/null | sed 's/^/    /'
+
+      - name: 'Upload the compiler under test'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-under-test-riscv64
+          path: compiler/
           if-no-files-found: ignore
 
       - name: 'Collect the sysroot manifest'

@@ -364,6 +364,75 @@ records. Reporting also keeps both the ladder *and* rung 8's post-mortem in one
 log, and the correlation between them is worth more than either alone. It
 becomes a gate once the answer is known.
 
+#### The startup theory is dead, and so is the bad-link reading
+
+Run 85330273671 added `size`, the `__global_pointer$` count and the first
+instructions at `_start` for both binaries. They settle two questions at once:
+
+```
+stage 1 (tcc-built)     text 577272   data  4800   __global_pointer$: 1
+  10498: auipc gp,0x8f
+  1049c: addi  gp,gp,-232
+
+stage 2 (gcc-built)     text 414416   data 11832   __global_pointer$: 1
+  12268: auipc gp,0x68
+  1226c: addi  gp,gp,-1832
+```
+
+**`gp` is set, identically in form, in both.** So the reading that crt1 fails
+to initialise it is wrong, and the `.option norelax` line of enquiry is closed.
+
+**And the size difference is not a link fault.** Stage 2 has 28% less text and
+2.5× more data than stage 1 — which is what a real optimiser looks like beside
+tcc, not a truncated binary. The earlier note that "a driver that cannot
+survive `--version` looks more like a bad LINK" was reasonable and is now
+disproven by the numbers it was inferred from.
+
+#### What preflight 5 actually found
+
+```
+-O0        SEGFAULT (rc=139) after: global pointer to a literal...
+-g -O2     ok (all six)
+--no-relax ok (all six)
+```
+
+**The tcc-built gcc miscompiles global variable access at `-O0`.** That is a
+root cause statement about the compiler, not a symptom of the binary, and it
+comes with a forty-line reproducer. Not relaxation — `--no-relax` passes.
+Backwards from the usual direction, too: wrong at `-O0`, right at `-O2`, which
+points at the addressing sequence `-O0` emits for a global.
+
+**It does not yet explain rung 8**, and saying so matters. `xgcc` is built at
+`-g -O2`, where those six constructs pass. So either gcc's sources reach a
+construct the six do not, or there is a second fault. What has changed is that
+there is now a case small enough to answer in seconds instead of a run.
+
+`crt1.o` reaches `__global_pointer$` through **`R_RISCV_GOT_HI20`** — a
+GOT-based load, where GNU `as` with `.option norelax` emits the PC-relative
+form. That is tcc's assembler output and it is a second thread pointing at the
+same place.
+
+#### The compiler now leaves the job
+
+Five rounds have each cost a full ladder, because the only way to ask the
+tcc-built gcc a question was to add a probe to `rungs-riscv64.sh` and dispatch
+again — the binary under test is destroyed with the runner every time. Four
+artifacts already left this job and **not one contained the compiler the
+investigation is about**: `Collect the final toolchain` takes `box/work/lfs`,
+which is the LFS sysroot from rung 10 onward, while the rung-6 compiler lives
+in `box/work/out`.
+
+`compiler-under-test-riscv64` is a slice of the box — `work/out`, both build
+trees' `gcc` directories, `work/prefix` for binutils, `work/prereq2`, and
+musl plus headers so it runs at all. Build trees are excluded: gigabytes of
+objects that answer nothing.
+
+With `qemu-user-static` and binfmt, riscv64 binaries run on any x86 machine,
+so `-S`, `objdump -dr`, flag bisection and construct narrowing all happen
+locally in seconds. **`STOP_AFTER` is now a dispatch input** as well — the
+script has always read it, and `stop_after=6` reaches the compiler without
+paying for rungs 7 and 8.
+
 #### Both readings lost, on the same run
 
 Run 85320231620 answered both at once:
