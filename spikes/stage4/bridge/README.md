@@ -443,6 +443,52 @@ rung 2 fails, it fails in a rung with its own name and its own error rather
 than as a header error inside a Makefile — and the 32 undefined symbols say
 which direction to look.
 
+#### Run 85534907100: two firsts, and a fourth finding
+
+```
+libc.a  3162530 bytes   crt1.o 1641   crti.o 799   crtn.o 799   headers: 219
+VERON-MCTCC-LIBC-OK  an aarch64 musl, built by mc-tcc
+
+ELF 64-bit LSB executable, ARM aarch64, statically linked
+VERON-XTCC-CROSS-OK  an aarch64 binary that emits x86_64
+```
+
+**Rungs 0–2 pass with mc-tcc as `CC_BIN`** — the substitution that had never
+been made, on the rungs called *"the most proven part of this script"* but
+always with a host-built tcc. And with a libc it can link against, **mc-tcc
+built `x86_64-tcc`**: a cross compiler with no host gcc anywhere in its
+history. Both are firsts.
+
+`CROSS 2` then stopped:
+
+```
+lib/libtcc1.c:624: error: can't cross compile long double constants
+```
+
+**The size crossed with the compiler.** `x86_64-tcc` was built by mc-tcc, so
+it inherited mc-tcc's `LDOUBLE_SIZE` of 8 — micro-c maps float, double and
+long double to one word-sized type, and tcc-microc patch 0001 sets the size to
+say so. x86_64's ABI says 16. tcc's guard fires when the target's long double
+differs from the compiler's own, and here they genuinely do.
+
+The switch already exists and this repository already explains it:
+`stage0-stage4-complete` passes `-D TCC_USING_DOUBLE_FOR_LDOUBLE=1` against
+the same error string and calls it *"honest rather than a workaround -- it
+makes the build say what is true"*.
+
+**Probed, not hardcoded**, which is rung 2's rule for this exact question. It
+refuses to rewrite musl's `float.h` unconditionally because the same file also
+runs under a host-built tcc whose long double really is binary128 — *"Rewriting
+the header unconditionally fixes the second and BREAKS THE FIRST."* A
+compile-only probe answers it and needs nothing linkable, so `CROSS 2` and
+`CROSS 3` each ask their own compiler before deciding.
+
+**One thing to expect.** `stage0-stage4-complete` records that this flag is
+*not sufficient on its own* — more long-double constants follow at
+`tccgen.c:2580`. If the next failure is the same string at a different line,
+that is the real capability gap rather than a missing flag, and the step says
+so in its own error path.
+
 **The cross itself has still never run.** `stage3-cross-tcc-probe` established
 that a cross tcc and a target-native tcc can be built — **with the host's
 gcc**. Doing the same

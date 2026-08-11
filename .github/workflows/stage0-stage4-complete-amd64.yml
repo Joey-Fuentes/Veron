@@ -2691,14 +2691,55 @@ jobs:
           # files are freestanding by design and include none of libc. If that
           # stops being true the compile fails by name, which is what the
           # per-file loop is for.
+          # LONG DOUBLE, AND THE SIZE THAT CROSSED WITH THE COMPILER.
+          #
+          # Run 85534907100 got all the way here and stopped on
+          #
+          #     lib/libtcc1.c:624: error: can't cross compile long double constants
+          #
+          # x86_64-tcc WAS BUILT BY mc-tcc, SO IT INHERITED mc-tcc's IDEA OF
+          # long double. micro-c maps float, double and long double to one
+          # word-sized type, and tcc-microc patch 0001 sets LDOUBLE_SIZE to 8
+          # to say so. x86_64's ABI says 16. tcc's guard fires when the target
+          # long double is not the one the compiler itself was built with, and
+          # here those genuinely differ.
+          #
+          # THE PROJECT ALREADY CARRIES THE SWITCH AND ALREADY EXPLAINS IT.
+          # stage0-stage4-complete passes -D TCC_USING_DOUBLE_FOR_LDOUBLE=1
+          # for the same error string, and calls it "honest rather than a
+          # workaround -- it makes the build say what is true". The same words
+          # apply: this compiler's long double IS eight bytes.
+          #
+          # PROBED, NOT ASSUMED, WHICH IS rungs.sh's RULE FOR EXACTLY THIS
+          # QUESTION. Rung 2 refuses to rewrite musl's float.h unconditionally
+          # because the same file runs under a host-built tcc whose long double
+          # really is binary128 -- "Rewriting the header unconditionally fixes
+          # the second and BREAKS THE FIRST." A compile-only probe answers it,
+          # and needs nothing linkable.
+          printf 'int _ldp[sizeof(long double) == 8 ? 1 : -1];\n' > /tmp/ldp.c
+          if "$X" -c -o /tmp/ldp.o /tmp/ldp.c 2>/dev/null; then
+            LDFLAG="-DTCC_USING_DOUBLE_FOR_LDOUBLE=1"
+            echo "  long double is 8 bytes here -- passing $LDFLAG"
+          else
+            LDFLAG=""
+            echo "  long double is not 8 bytes -- no override needed"
+          fi
+          rm -f /tmp/ldp.c /tmp/ldp.o
+
           rm -f lt_*.o
           _n=0
           for f in libtcc1.c alloca.S alloca-bt.S stdatomic.c atomic.S \
                    builtin.c va_list.c; do
             [ -f "lib/$f" ] || continue
-            "$X" -c "lib/$f" -o "lt_${f%.*}.o" -I. -Iinclude > lt.log 2>&1 \
+            "$X" -c "lib/$f" -o "lt_${f%.*}.o" $LDFLAG -I. -Iinclude > lt.log 2>&1 \
               || { echo "  lib/$f did not compile:"; \
-                   tail -6 lt.log | sed 's/^/    /'; exit 1; }
+                   tail -6 lt.log | sed 's/^/    /'; \
+                   echo "  NOTE: stage0-stage4-complete records that this flag"; \
+                   echo "  is NOT sufficient on its own -- more long-double"; \
+                   echo "  constants follow at tccgen.c:2580. If the next error"; \
+                   echo "  is the same string at a different line, that is the"; \
+                   echo "  real capability gap rather than a missing flag."; \
+                   exit 1; }
             _n=$((_n + 1))
           done
           [ "$_n" -ge 4 ] || { echo "  only $_n libtcc1 objects -- the file list is wrong"; exit 1; }
@@ -2752,7 +2793,21 @@ jobs:
           # default, and a wrong guess here reads as a code-generation
           # failure."
           set +e
-          timeout 900 ./x86_64-tcc -o tcc-x86_64 \
+          # THE SAME long double OVERRIDE AS CROSS 2, PROBED THE SAME WAY.
+          # tcc.c carries long-double constants of its own, so a compiler
+          # whose long double is eight bytes hits the identical guard here.
+          # Probed rather than hardcoded for the reason rungs.sh gives: this
+          # is a property of whichever compiler is doing the work, not a
+          # constant of the workflow.
+          printf 'int _ldp[sizeof(long double) == 8 ? 1 : -1];\n' > /tmp/ldp3.c
+          if ./x86_64-tcc -c -o /tmp/ldp3.o /tmp/ldp3.c 2>/dev/null; then
+            LDFLAG="-DTCC_USING_DOUBLE_FOR_LDOUBLE=1"
+            echo "  long double is 8 bytes here -- passing $LDFLAG"
+          else
+            LDFLAG=""
+          fi
+          rm -f /tmp/ldp3.c /tmp/ldp3.o
+          timeout 900 ./x86_64-tcc -o tcc-x86_64 $LDFLAG \
             -DONE_SOURCE=1 -DTCC_TARGET_X86_64 -DCONFIG_TCC_STATIC=1 \
             -I. -static -nostdinc -nostdlib -I"$S/include" \
             "$S/lib/crt1.o" "$S/lib/crti.o" tcc.c "$S/lib/libc.a" \
