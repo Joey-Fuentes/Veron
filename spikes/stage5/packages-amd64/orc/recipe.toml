@@ -4,13 +4,41 @@
 # loads this file.
 #
 # WHAT DIFFERS FROM THE BASE RECIPE:
-#   -Dorc-target=neon -> -Dorc-target=sse.
+#   -Dorc-target=neon -> -Dorc-target=all.
 #
-# orc COMPILES AT RUNTIME -- it is a JIT, and its backends are code generators
-# inside liborc rather than assembly handed to an external assembler. So
-# unlike dav1d, ffmpeg and libvpx below, choosing the x86 backend costs
-# nothing and needs no nasm. Naming it states the target rather than letting
-# the default decide, which is the base recipe's own argument.
+# THIS WAS -Dorc-target=sse AND THAT WAS WRONG. It was written from the base
+# recipe's reasoning -- name the one backend this machine can execute -- which
+# is correct on aarch64 and does not survive contact with orc's x86 sources.
+# Run 85293418080 stopped at package 81 of 122:
+#
+#     ld: orcx86insn.c.o: in function `orc_x86_output_insns':
+#         undefined reference to `orc_x86_get_regname_mmx'
+#
+# and meson's own summary shows exactly why:  SSE : YES   MMX : NO.
+#
+# SSE IS NOT SEPARABLE FROM MMX ON x86. orcx86insn.c is compiled whenever any
+# x86 backend is on, and it calls the MMX register-name helper unconditionally
+# -- that symbol lives in the MMX backend, which -Dorc-target=sse leaves out.
+# aarch64 has no equivalent because NEON is the only ARM backend, so nothing
+# there depends on a second one being present.
+#
+# WHY all RATHER THAN THE NARROWER sse,mmx. That value would express the
+# intent exactly, and whether meson ACCEPTS it depends on whether orc-target
+# is an array option or a combo -- a combo rejects it at setup. The tarball's
+# meson_options.txt is the only place that answers it and it was not read; a
+# guess costs a full rebuild, because no checkpoint has ever been published on
+# this architecture and every run starts at package 1. `all` is orc's
+# documented default, is what every distribution ships on x86_64, and cannot
+# be rejected under either option type.
+#
+# WHAT all COSTS, STATED RATHER THAN GLOSSED. The base recipe declines `all`
+# on aarch64 because it drags in backends that machine cannot execute, and
+# that argument applies here too: this liborc will contain code generators for
+# mips, altivec and c64x. They are PURE C EMITTERS -- they generate bytes for
+# another architecture rather than executing them -- so they compile and link
+# anywhere, and orc dispatches on runtime CPU detection. The cost is library
+# size, not correctness. NARROWING THIS TO sse,mmx IS THE FOLLOW-UP, and it
+# needs one look at meson_options.txt, not another run.
 #
 # THE PIN IS NOT ALLOWED TO DIFFER. `veron --overlay ... selftest` compares
 # version and every [source] key against packages/orc/recipe.toml and fails
@@ -41,7 +69,7 @@ configure_flags = ["--libdir=lib",
                    "-Dorc-test=disabled", "-Dbenchmarks=disabled",
                    "-Dexamples=disabled", "-Dgtk_doc=disabled",
                    "-Dtests=disabled", "-Dtools=enabled",
-                   "-Dorc-target=sse", "--wrap-mode=nofallback"]
+                   "-Dorc-target=all", "--wrap-mode=nofallback"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["orc"]
 deferral        = """
@@ -76,10 +104,10 @@ much and would break a consumer."""
 
 [installs]
 prefixes = ["usr/bin", "usr/include/orc-0.4", "usr/lib", "usr/lib/pkgconfig"]
-# files/digest DELIBERATELY ABSENT. They are a per-file
-# sha256 measured on aarch64; the same source compiled
-# for x86_64 cannot match them. prefixes is kept because
-# it is architecture-independent and still enforced.
+# files/digest DELIBERATELY ABSENT. They are a per-file sha256
+# measured on aarch64; the same source compiled for x86_64 cannot
+# match them. prefixes is kept because it is architecture-independent
+# and still enforced.
 
 [[steps]]
 name = "unpack"
@@ -93,7 +121,7 @@ run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libd
          "--wrap-mode=nofallback",
          "-Dorc-test=disabled", "-Dbenchmarks=disabled", "-Dexamples=disabled",
          "-Dgtk_doc=disabled", "-Dtests=disabled", "-Dtools=enabled",
-         "-Dorc-target=sse"]]
+         "-Dorc-target=all"]]
 
 [[steps]]
 name = "build"

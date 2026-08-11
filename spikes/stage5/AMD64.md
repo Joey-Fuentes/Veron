@@ -7,12 +7,11 @@ architecture must not make the working arm answerable for it. `stage5-spike`
 is what currently produces the published image, and a red X on it would read
 as a stage-5 regression when it is an architecture nobody has ported yet.
 
-**It has run twice.** Run `85280166724` built 45 packages and stopped at
-`freetype-bootstrap`; run `85286215115` built **47** and stopped at
-`libarchive`. Every one of the seven predicted architecture faults was correct
-and none fired — gmp took the right triple, libvpx built without an assembler.
-Both stops were the same underlying defect, and it is not an architecture
-defect: see *What the runs found* below.
+**It has run three times: 45, 47, then 81 packages of 122.** The first two
+stops were one defect in the base tree seen from opposite sides — bzip2. The
+third was mine: an overlay value I wrote that was wrong. Of the seven faults
+predicted from reading, six were right and one was right about the problem and
+wrong about the fix. See *What the runs found*.
 
 ---
 
@@ -102,7 +101,7 @@ Each has a replacement in **`packages-amd64/`**, which only
 | 37 | `libvpx` | (assembler auto-detected) | `--target=generic-gnu` | **large** — scalar C, no runtime CPU detection |
 | 52 | `nettle` | `--enable-arm-neon` | removed | portable C, no SIMD |
 | 70 | `dav1d` | `-Denable_asm=true` | `false` | **large** — the AV1 decoder without asm |
-| 81 | `orc` | `-Dorc-target=neon` | `-Dorc-target=sse` | none |
+| 81 | `orc` | `-Dorc-target=neon` | `-Dorc-target=all` | library size; `sse` alone does not link |
 | 90 | `ffmpeg` | (probes for nasm) | `--disable-x86asm` | large |
 | 98 | `llvm` | `LLVM_TARGETS_TO_BUILD=AArch64;AMDGPU` | `X86;AMDGPU` | none |
 | 46 | `freetype-bootstrap` | (bzip2 autodetected) | `--without-bzip2` | none — see *What the first run found* |
@@ -277,13 +276,88 @@ recipes — most are genuinely default-off. The narrow, checkable version — *a
 name in `optional_off` that the build system defaults to auto* — needs
 per-package knowledge no sweep has.
 
+### The third stop: my own overlay value, wrong
+
+```
+[81/122] orc 0.4.41
+  ld: orcx86insn.c.o: in function `orc_x86_output_insns':
+      undefined reference to `orc_x86_get_regname_mmx'
+meson summary:  SSE : YES    MMX : NO
+```
+
+The overlay set `-Dorc-target=sse`, reasoning from the base recipe: name the
+one backend this machine can execute. That reasoning is correct on aarch64 and
+does not survive contact with orc's x86 sources. **`orcx86insn.c` is compiled
+whenever any x86 backend is on and calls the MMX register-name helper
+unconditionally**, so SSE is not separable from MMX. aarch64 has no equivalent
+because NEON is the only ARM backend — nothing there depends on a second one
+being present.
+
+The overlay now passes **`-Dorc-target=all`**. The narrower `sse,mmx` says
+exactly what is meant, and whether meson accepts it depends on whether
+`orc-target` is an array option or a combo — a combo rejects it at setup.
+`meson_options.txt` answers that in one line and was not read. `all` is orc's
+documented default, is what every distribution ships on x86_64, and cannot be
+rejected under either type.
+
+It costs what the base recipe declines it for: code generators for mips,
+altivec and c64x compiled in. They are **pure C emitters** — they generate
+bytes for another architecture rather than executing them — so the cost is
+library size, not correctness. Narrowing to `sse,mmx` is a follow-up that
+needs one look at a file, not another run.
+
+**This is worth being blunt about.** The seven predicted faults were derived
+from reading recipes; six were right. This one identified the right package
+and the right option and got the value wrong, and it cost a run of eighty
+packages to find out. Reading a recipe tells you what a flag *means*; it does
+not tell you whether upstream's source can honour it.
+
+### What the bzip2 fix actually did
+
+Confirmed in run three, and it is the cleanest possible evidence:
+
+```
+[48/122] libarchive   links    bzip2 xz zlib zstd
+[60/122] python       links    bzip2 expat libffi ncurses readline sqlite ...
+```
+
+`links` is read from `DT_NEEDED`. Before the fix those packages declared bzip2
+and the ELF could not corroborate it, because the archive had been absorbed
+rather than linked. **The dependency is now visible to the detector written to
+see it.** cmake, the third declarer, links executables and had been quietly
+absorbing bzip2 all along without failing anywhere.
+
 ### What is still unknown
 
-The second run stopped at 48 of 122. **Nothing beyond `libarchive` has been
-compiled for x86_64**, so most of the set — glib, mesa, llvm, wlroots, the
-compositor, wpewebkit — is unmeasured, as are the merge, the image, the boot,
-the DHCP test and the screenshot. Two runs have produced two findings of the
-same kind and neither was on the predicted list; expect more.
+The third run reached 81 of 122 — through glib, llvm, mesa, libdrm and python.
+**Packages 82–122 are unbuilt**: gstreamer and its plugin sets, ffmpeg,
+wpewebkit, wlroots, labwc and the rest of the desktop. So are the merge, the
+image, the boot, the DHCP test and the screenshot. Three runs, three stops,
+none of them on the predicted list; expect more.
+
+### Every run so far has rebuilt from package 1
+
+`Restore a build checkpoint` reports **"no checkpoint published yet — building
+everything"** on all three runs, and it always will: the checkpoint is
+published only when the build SUCCEEDS, and on a new architecture the build is
+exactly what does not succeed yet. So each iteration pays eighty packages of
+CPU to reach one new fact, and the cost rises as the port gets further.
+
+The checkpoint is per-package keyed — `{package: key}`, with `--resume`
+keeping the subset whose keys still match — so a checkpoint taken from a
+FAILED run would be discarded correctly for anything whose recipe changed and
+reused for the rest. That is precisely the case here.
+
+**It is not a one-line change, which is why it is written down rather than
+made.** `veron build` returns as soon as a step fails and does not remove
+`dest/<pkg>`. A package that fails during its *install* step therefore leaves
+a PARTIAL staged tree, and `veron checkpoint` records any directory it finds
+in `dest/` — so a checkpoint from a failed run can record a half-installed
+package as complete, and the next run will skip it. orc failed at `build`, so
+nothing was staged and this run would have been safe; that is luck, not a
+property. The fix is for the driver to drop a failed package's dest directory
+before returning, which changes shared behaviour on the aarch64 path and is a
+decision rather than a copy.
 
 ---
 
@@ -362,7 +436,7 @@ makes `plan --check` stale for a reason that is not a fault):
 | `veron selftest` — no overlay | `VERON-SELFTEST-OK`, output identical to the unmodified driver except three counts that moved because a new workflow file exists |
 | `veron plan --check` — no overlay | `VERON-PLAN-OK`, `plan-sha256 7799c291…` |
 | `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `10 overlay recipe(s) pin the same source as their base` |
-| `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 199119c8…` |
+| `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 05816b85…` |
 | the three new gates | broken on purpose, each confirmed red |
 | the workflow | parses as YAML; every `run:` block passes `sh -n` |
 
@@ -401,5 +475,10 @@ architecture.
 - **The base recipes still carry both bzip2 defects.** One flag on each
   freetype and one step on bzip2, plus the re-seeding run on aarch64 they
   imply. See *The two fixes, and why both are needed*.
-- **Packages 49–122 are unbuilt on x86_64**, and so is every step after the
+- **Packages 82–122 are unbuilt on x86_64**, and so is every step after the
   build.
+- **`orc-target=all` should be narrowed to `sse,mmx`** once someone reads
+  whether the option is an array or a combo.
+- **No checkpoint can ever be published on an architecture that has not yet
+  had a green build**, so every iteration rebuilds from package 1. See *Every
+  run so far has rebuilt from package 1*.

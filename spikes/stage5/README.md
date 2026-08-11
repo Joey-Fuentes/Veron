@@ -1337,8 +1337,8 @@ name while both looked green.
 `recipe-sha` and one added step — which is the whole architectural delta and
 the cheapest review of it.
 
-**Two runs, 45 and then 47 packages, and both stops were the same defect seen
-from opposite sides.** bzip2 builds a shared library at its `build-shared`
+**Three runs — 45, 47, then 81 packages of 122.** The first two stops were one
+defect in the base tree seen from opposite sides. bzip2 builds a shared library at its `build-shared`
 step and never stages it, so only `libbz2.a` ships. `freetype` declares bzip2
 **off**, never passes `--without-bzip2`, and configure autodetects it.
 `libarchive`, `python` and `cmake` declare it **on** and have nothing to link.
@@ -1348,8 +1348,11 @@ python's `_bz2` carry bzip2's code inside them with **no `DT_NEEDED` entry**,
 which is exactly the field `veron linked` reads. A static archive is that
 detector's blind spot, and bzip2's own recipe comment predicted the failure in
 the words it eventually arrived in. The base recipes are unchanged — the fix
-moves every digest downstream and needs its own dispatch. See
-[`AMD64.md`](./AMD64.md).
+moves every digest downstream and needs its own dispatch. Run three confirmed
+it: `libarchive` and `python` now report `links bzip2`, read from `DT_NEEDED`,
+where before the archive had been absorbed and the detector saw nothing. The
+third stop was an overlay value written here and wrong — `orc` cannot build
+`sse` without `mmx` on x86. See [`AMD64.md`](./AMD64.md).
 
 ---
 
