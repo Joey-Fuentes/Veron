@@ -751,6 +751,117 @@ PINCTRL_AMD                  NOT SET
 VERON-KCONFIG-DROPPED -- I2C_DESIGNWARE_PLATFORM PINCTRL_AMD
 ```
 
+### The ninth finding: correct all the way down, and silent
+
+With the HDA stack in the kernel, the laptop played a YouTube video and made no
+sound. The codec dump says why, and it is not a driver fault:
+
+```
+Node 0x02 [Audio Output]  Amp-Out caps: ofs=0x57, nsteps=0x57, mute=0
+                          Amp-Out vals: [0x00 0x00]
+Node 0x03 [Audio Output]  Amp-Out vals: [0x00 0x00]
+```
+
+**Not muted — zero.** Both DACs came up at gain 0 out of 87 steps, which is
+how HDA codecs commonly start, and **nothing in the image could move them.**
+`alsa-lib` is the library; it ships no command that sets a mixer control. The
+image had `aserver` and no `amixer`.
+
+So a correct kernel, a correct codec, a correct playback path and a real video
+produced silence — and from the outside that is indistinguishable from a broken
+one. `packages/alsa-utils` closes it.
+
+**This was predicted and then shipped without twice.** The gap was named three
+findings ago — *"if the card is silent, it is a blocker"* — and two batches went
+out without it. The boot did not discover the problem so much as confirm a
+prediction that should have been acted on when it was written.
+
+**Nothing in CI could have caught it**, which is the part worth keeping.
+`alsa-lib`'s own deferral already says so: *"the boot test runs qemu with no
+audio device at all, so nothing about playback can be exercised."* The guest
+test for `alsa-utils` is the same shape for the same reason — it asks `amixer
+--version`, not for sound.
+
+**The pin is `PENDING` and that is deliberate.** `veron fetch` refuses it and
+prints the one-time human step:
+
+```
+PEND  alsa-utils-1.2.14.tar.bz2
+        gpg --verify alsa-utils-1.2.14.tar.bz2.sig alsa-utils-1.2.14.tar.bz2
+        sha256sum alsa-utils-1.2.14.tar.bz2
+```
+
+A digest is a trust decision and the recipe must not invent one. It also needs
+a `MIRRORS.tsv` row, which `veron selftest` already warns about by name.
+
+**And it still will not be loud on its own.** `alsactl` restores state from
+`/var/lib/alsa/asound.state`, nothing writes that file yet, and no `boot.d`
+service runs it — so a fresh boot starts at zero and `amixer sset Master 80%`
+is something a person types. Making it automatic is a `veron-system` change and
+is deliberately not bundled here.
+
+### The ninth finding: correct all the way down, and silent
+
+The laptop played a YouTube video and made no sound. The codec dump says why,
+and it is not a driver fault:
+
+```
+Node 0x02 [Audio Output]  Amp-Out caps: ofs=0x57, nsteps=0x57, mute=0
+                          Amp-Out vals: [0x00 0x00]
+```
+
+**Not muted — zero.** Both DACs at gain 0 out of 87 steps, and nothing in the
+image could move them. `alsa-lib` is the library; it ships no command that sets
+a mixer control. The image had `aserver` and no `amixer`.
+
+BLFS says the same is true of its own systems, which means this is the normal
+state rather than a fault of this build: *"all channels of your sound card may
+be muted by default. You can use the alsamixer program to change this."*
+
+`packages/alsa-utils` closes it. Three things about how it was written are
+worth keeping.
+
+**The release tarball, not the GitHub tag archive — a difference of three
+packages.** The archive ships `configure.ac` and no `configure`, so the
+autotools must run; `configure.ac:10` is `AM_GNU_GETTEXT([external])`, needing
+gettext, which is not in this set; gettext's own GitHub archive also ships no
+`configure` and its `autogen.sh` refuses without a gnulib checkout. Three new
+packages to generate a script the release tarball already contains.
+
+**`--with-curses=ncursesw` is load-bearing here and is not in BLFS's
+dependency list.** BLFS does not list ncurses at all, because LFS builds it
+with both the wide and non-wide libraries. This set builds `--enable-widec
+--without-normal`, so it installs `ncursesw.pc` and **no `ncurses.pc` and no
+`libncurses`**. Without the flag, configure's `auto` path tries ncursesw only
+when `USE_NLS=yes` (`configure:18524`), then falls through to `ncurses.pc`,
+`ncurses5-config`, `libncurses` and `libcurses` — every one absent — and stops
+with `this packages requires a curses library`. That is a **hard error**, not a
+silent skip: `alsamixer` defaults to true whenever `alsa/mixer.h` is present
+(`configure:18280-18290`) and the curses search inside that branch ends in
+`AC_MSG_ERROR`.
+
+**The flags are BLFS's, and an earlier draft invented four that were not.**
+The book runs `--disable-alsaconf --disable-bat --disable-xmlto
+--with-curses=ncursesw`. The draft added `--disable-nhlt`, `--disable-alsaloop`
+and `--disable-rst2man` on no evidence — BLFS lists `alsaloop` and
+`nhlt-dmic-info` among its installed programs, so it builds them, and
+`rst2man` auto-detects (`configure:18431`) and is skipped when docutils is
+absent. Turning off tools nobody asked to turn off is how a package quietly
+stops being what upstream ships. `--disable-nls` is the one deliberate
+departure, and the recipe says why.
+
+**It still will not be loud on its own.** BLFS gives the sequence — `alsactl
+init`, alsamixer to unmute, `alsactl -L store` to write
+`/var/lib/alsa/asound.state` — and notes that *"the alsactl program is normally
+run from a standard udev rule"*. There is no udev here and no `boot.d` service
+that runs it, so a fresh boot starts at zero and `amixer sset Master 80%` is
+typed. A restore service is a `veron-system` change and is deliberately not
+bundled with the package that makes it possible.
+
+**Nothing in CI could have caught any of this.** `alsa-lib`'s own deferral
+already records that the boot test *"runs qemu with no audio device at all"*.
+The guest test here asks `amixer --version`, not for sound.
+
 ### What is still unknown
 
 The image boots on a laptop and does most of what a laptop should. What has

@@ -1,0 +1,165 @@
+name    = "alsa-utils"
+version = "1.2.16"
+group   = "media"
+license = "GPL-2.0-only"
+srcdir  = "alsa-utils-1.2.16"
+
+[source]
+url       = "https://www.alsa-project.org/files/pub/utils/alsa-utils-1.2.16.tar.bz2"
+sha256    = "092399d5e8749a1d5e188e393157521cec4b75693b60ebb79bbce728cff2232c"
+signature = "https://www.alsa-project.org/files/pub/utils/alsa-utils-1.2.16.tar.bz2.sig"
+crosschecked_against = ["blfs:multimedia/alsa-utils.html"]
+
+[deps]
+build        = ["pkgconf", "alsa-lib", "ncurses"]
+link         = ["alsa-lib", "ncurses"]
+runtime      = ["alsa-lib"]
+optional_off = ["xmlto", "docutils", "fftw", "libsamplerate", "dialog"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-alsaconf", "--disable-bat",
+                   "--disable-xmlto", "--disable-nls",
+                   "--with-curses=ncursesw"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["alsa-utils"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball.
+
+WHY THIS PACKAGE EXISTS. The x86_64 image booted an HP laptop with the ALC236 \
+codec found, two cards enumerated, gstreamer reaching alsasink and a video \
+playing -- and no sound. The codec dump said why:
+
+    Node 0x02 [Audio Output] Amp-Out caps: ofs=0x57, nsteps=0x57, mute=0
+      Amp-Out vals: [0x00 0x00]
+
+NOT MUTED -- ZERO. Both DACs came up at gain 0 out of 87 steps, and nothing in \
+the image could move them. alsa-lib is the LIBRARY and ships no command that \
+sets a mixer control; the image had `aserver` and no `amixer`. A correct \
+kernel, a correct codec and a correct playback path produced silence, which \
+from the outside is indistinguishable from a broken one.
+
+BLFS SAYS THE SAME THING ABOUT ITS OWN SYSTEMS, which is worth recording \
+because it means this is the normal state and not a fault of this build: \
+"Note that all channels of your sound card may be muted by default. You can \
+use the alsamixer program to change this."
+
+THE RELEASE TARBALL, NOT THE GITHUB TAG ARCHIVE, AND THE DIFFERENCE IS THREE \
+PACKAGES. The archive at github.com/alsa-project/alsa-utils/archive/v1.2.16 \
+ships configure.ac and NO configure, so the autotools have to run -- and \
+configure.ac line 10 is AM_GNU_GETTEXT([external]), so that needs gettext, \
+which is not in this set. gettext's own GitHub archive then ships no configure \
+either and its autogen.sh refuses without a gnulib checkout. Three new \
+packages to generate a script that the release tarball already contains. This \
+tarball has configure; nothing above is needed.
+
+THE FLAGS ARE BLFS's, NOT INVENTED. multimedia/alsa-utils.html runs
+
+    ./configure --disable-alsaconf --disable-bat --disable-xmlto \\
+                --with-curses=ncursesw
+
+and an earlier draft of this recipe added --disable-nhlt, --disable-alsaloop \
+and --disable-rst2man on no evidence. BLFS lists alsaloop and nhlt-dmic-info \
+among its installed programs, so it builds them; rst2man auto-detects in \
+configure (line 18431) and is simply skipped when docutils is absent, which \
+is why the book does not mention it. Turning off tools nobody asked to turn \
+off is how a package quietly stops being the thing upstream ships.
+
+--with-curses=ncursesw IS LOAD-BEARING HERE IN A WAY IT IS NOT FOR BLFS, and \
+that difference is the whole reason to state it. BLFS calls it "forces the use \
+of wide-character ncurses libraries" and does not list ncurses as a dependency \
+at all, because LFS builds ncurses with BOTH the wide and non-wide libraries. \
+This set does not: packages/ncurses is --enable-widec --without-normal, so it \
+installs ncursesw.pc and NO ncurses.pc and no libncurses.
+
+Without the flag, configure's default is `auto`, which tries ncursesw only \
+when USE_NLS is yes (configure:18524). With --disable-nls it falls through to \
+a pkg-config lookup for `ncurses`, then ncurses5-config, then \
+AC_CHECK_LIB(ncurses, initscr), then libcurses -- every one of which is absent \
+here -- and stops with
+
+    this packages requires a curses library
+
+That is a HARD ERROR rather than a silent skip: read at configure:18280-18290, \
+alsamixer defaults to true whenever alsa/mixer.h is present, and the curses \
+search inside that branch ends in AC_MSG_ERROR. So the flag is not an \
+optimisation; without it this package does not configure.
+
+--disable-alsaconf: BLFS says it "disables building the alsaconf \
+configuration tool which is incompatible with Udev". The reason here is \
+stronger: alsaconf probes ISA cards and edits /etc/modprobe.d, and this system \
+has no modules at all -- `make modules_install` never runs -- so it could only \
+ever fail.
+
+--disable-bat drops the Basic Audio Tester, which needs fftw. BLFS lists fftw \
+as optional and says to omit the switch if you want BAT; fftw is not in this \
+set.
+
+--disable-xmlto is BLFS's, for the man pages. xmlto is not here.
+
+--disable-nls IS THIS PROJECT'S ADDITION AND IS THE ONE DEPARTURE FROM THE \
+BOOK. USE_NLS defaults to yes (configure:3548), and with it on the build \
+walks po/ and calls msgfmt -- which falls back to `:` when absent \
+(configure:3619), so it would not FAIL, it would silently produce empty \
+catalogues. Every other recipe in this set builds without translations; this \
+matches them rather than shipping forty locale files nobody checked. It does \
+not interact with the curses branch because the curses library is named \
+explicitly.
+
+ncurses IS A LINK DEPENDENCY AND BLFS DOES NOT LIST IT, for the reason above. \
+It is listed here because on THIS system it is a real edge: alsamixer links \
+it, and the library that exists is libncursesw.
+
+WHAT THIS DOES NOT DO, STATED SO IT IS NOT DISCOVERED ON A LAPTOP. It does not \
+make the volume non-zero on its own. BLFS's configuration section is explicit \
+about the sequence -- `alsactl init`, then alsamixer to unmute, then \
+`alsactl -L store` to write /var/lib/alsa/asound.state -- and notes that \
+"the alsactl program is normally run from a standard udev rule". There is no \
+udev here and no boot.d service that runs it, so a fresh boot starts at zero \
+and `amixer sset Master 80%` is something a person types. A restore service is \
+a veron-system change and is deliberately not bundled with the package that \
+makes it possible.
+
+UNTESTABLE IN CI, LIKE alsa-lib, whose recipe already records that the boot \
+test "runs qemu with no audio device at all, so nothing about playback can be \
+exercised". The guest test below is the same shape for the same reason. This \
+gap survived two hardware batches precisely because nothing in CI could find \
+it; a laptop did.
+
+BLFS CROSS-CHECK: multimedia/alsa-utils.html, version 1.2.15.2 there against \
+1.2.16 here. Required dependencies in the book: alsa-lib, and nothing else. \
+Optional: docutils, fftw, libsamplerate, xmlto, Dialog -- all absent from this \
+set and all declared in optional_off.
+"""
+
+[installs]
+prefixes = ["usr/bin", "usr/sbin", "usr/share/alsa", "usr/share/man",
+            "usr/share/sounds", "usr/lib/alsa-topology", "var/lib/alsa"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/alsa-utils-1.2.16.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-alsaconf", "--disable-bat",
+         "--disable-xmlto", "--disable-nls", "--with-curses=ncursesw"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+# A VERSION, NOT SOUND. The boot runs qemu with no audio device, so a playback
+# test would fail for a reason that says nothing about this package. What can
+# be asserted is that the binary the whole package exists for is present and
+# runs.
+test   = [["/usr/bin/amixer", "--version"]]
+expect = ["amixer version 1.2.16"]

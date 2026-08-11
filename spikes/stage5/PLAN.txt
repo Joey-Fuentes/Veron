@@ -62,86 +62,87 @@ between this file and the recipes fails the run.
   40. readline
   41. tzdb
   42. zstd
-  43. automake
-  44. bash
-  45. curl
-  46. freetype-bootstrap
-  47. iproute2
-  48. libarchive
-  49. libgcrypt
-  50. libvorbis
-  51. libxml2
-  52. nettle
-  53. nnn
-  54. ruby
-  55. sqlite
-  56. wpa_supplicant
-  57. git
-  58. libcap
-  59. libhyphen
-  60. python
-  61. ca-certificates
-  62. markupsafe
-  63. meson
-  64. ninja
-  65. packaging
-  66. pyyaml
-  67. veron-cursors
-  68. bubblewrap
-  69. cmake
-  70. dav1d
-  71. fribidi
-  72. glib
-  73. libdisplay-info
-  74. libdrm
-  75. libevdev
-  76. libpsl
-  77. libsfdo
-  78. libxkbcommon
-  79. mako
-  80. opus
-  81. orc
-  82. p11-kit
-  83. pixman
-  84. seatd
-  85. tllist
-  86. wayland
-  87. wayland-protocols
-  88. xkeyboard-config
-  89. brotli
-  90. ffmpeg
-  91. gnutls
-  92. graphene
-  93. graphite2
-  94. gstreamer
-  95. json-c
-  96. libinput
-  97. libjpeg-turbo
-  98. llvm
-  99. shared-mime-info
-  100. utf8proc
-  101. glib-networking
-  102. harfbuzz
-  103. libwebp
-  104. mesa
-  105. freetype
-  106. libepoxy
-  107. libsoup
-  108. wlroots
-  109. fontconfig
-  110. cairo
-  111. fcft
-  112. foot
-  113. fuzzel
-  114. pango
-  115. swaybg
-  116. yambar
-  117. gst-plugins-base
-  118. labwc
-  119. gst-libav
-  120. gst-plugins-bad
-  121. gst-plugins-good
-  122. wpewebkit
+  43. alsa-utils
+  44. automake
+  45. bash
+  46. curl
+  47. freetype-bootstrap
+  48. iproute2
+  49. libarchive
+  50. libgcrypt
+  51. libvorbis
+  52. libxml2
+  53. nettle
+  54. nnn
+  55. ruby
+  56. sqlite
+  57. wpa_supplicant
+  58. git
+  59. libcap
+  60. libhyphen
+  61. python
+  62. ca-certificates
+  63. markupsafe
+  64. meson
+  65. ninja
+  66. packaging
+  67. pyyaml
+  68. veron-cursors
+  69. bubblewrap
+  70. cmake
+  71. dav1d
+  72. fribidi
+  73. glib
+  74. libdisplay-info
+  75. libdrm
+  76. libevdev
+  77. libpsl
+  78. libsfdo
+  79. libxkbcommon
+  80. mako
+  81. opus
+  82. orc
+  83. p11-kit
+  84. pixman
+  85. seatd
+  86. tllist
+  87. wayland
+  88. wayland-protocols
+  89. xkeyboard-config
+  90. brotli
+  91. ffmpeg
+  92. gnutls
+  93. graphene
+  94. graphite2
+  95. gstreamer
+  96. json-c
+  97. libinput
+  98. libjpeg-turbo
+  99. llvm
+  100. shared-mime-info
+  101. utf8proc
+  102. glib-networking
+  103. harfbuzz
+  104. libwebp
+  105. mesa
+  106. freetype
+  107. libepoxy
+  108. libsoup
+  109. wlroots
+  110. fontconfig
+  111. cairo
+  112. fcft
+  113. foot
+  114. fuzzel
+  115. pango
+  116. swaybg
+  117. yambar
+  118. gst-plugins-base
+  119. labwc
+  120. gst-libav
+  121. gst-plugins-bad
+  122. gst-plugins-good
+  123. wpewebkit
 
 ======================================================================
 package bzip2 1.0.8
@@ -1542,6 +1543,38 @@ package zstd 1.5.7
     [03] install
          cwd  build/zstd-1.5.7/zstd-1.5.7
          argv ["make", "PREFIX=/usr", "DESTDIR=dest/zstd", "install"]
+
+======================================================================
+package alsa-utils 1.2.16
+  group        media
+  license      GPL-2.0-only
+  recipe-sha   d189276202755cdea5476ad1f0b565d1782a76d6784b1ac575c6d6cba08fe84a
+
+  source
+    url        https://www.alsa-project.org/files/pub/utils/alsa-utils-1.2.16.tar.bz2
+    sha256     092399d5e8749a1d5e188e393157521cec4b75693b60ebb79bbce728cff2232c
+    signature  https://www.alsa-project.org/files/pub/utils/alsa-utils-1.2.16.tar.bz2.sig
+    correspond none
+
+  deps
+    build        alsa-lib, ncurses, pkgconf
+    link         alsa-lib, ncurses
+    runtime      alsa-lib
+    optional_off dialog, docutils, fftw, libsamplerate, xmlto
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/alsa-utils-1.2.16
+         argv ["tar", "-xf", "dl/alsa-utils-1.2.16.tar.bz2", "-C", "build/alsa-utils-1.2.16"]
+    [02] configure
+         cwd  build/alsa-utils-1.2.16/alsa-utils-1.2.16
+         argv ["./configure", "--prefix=/usr", "--disable-alsaconf", "--disable-bat", "--disable-xmlto", "--disable-nls", "--with-curses=ncursesw"]
+    [03] build
+         cwd  build/alsa-utils-1.2.16/alsa-utils-1.2.16
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/alsa-utils-1.2.16/alsa-utils-1.2.16
+         argv ["make", "install", "DESTDIR=dest/alsa-utils"]
 
 ======================================================================
 package automake 1.18.1
