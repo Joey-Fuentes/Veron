@@ -1477,7 +1477,56 @@ if [ "$B5" = ok ]; then
     set_cfg I2C_DESIGNWARE_PLATFORM y
     set_cfg I2C_HID y
     set_cfg I2C_HID_ACPI y
+    set_cfg I2C_HID_CORE y
+    set_cfg HID_MULTITOUCH y
+    # PINCTRL BEFORE PINCTRL_AMD, AND THE ORDER IS NOT THE POINT -- THE PARENT
+    # IS. Run 85417533147 set PINCTRL_AMD and olddefconfig dropped it, alone
+    # out of 24 symbols. `PINCTRL` is a menuconfig and the AMD driver lives
+    # inside its `if PINCTRL ... endif` block, so the child is invisible unless
+    # the parent is on -- and x86_64_defconfig sets no PINCTRL line at all.
+    # An unsatisfiable value is discarded silently, which is exactly what the
+    # report caught.
+    #
+    # CONFIRMED AGAINST A KERNEL WHERE THE HARDWARE WORKS rather than inferred
+    # from Kconfig: /boot/config-6.8.0-51-generic on the test laptop has
+    # CONFIG_PINCTRL=y, CONFIG_PINCTRL_AMD=y, CONFIG_GPIOLIB=y and
+    # CONFIG_GPIOLIB_IRQCHIP=y. Reading the machine's own working config beat
+    # reasoning about dependencies, and it cost one command instead of one
+    # ladder run.
+    #
+    # GPIOLIB AND GPIOLIB_IRQCHIP ARE `select`ed BY PINCTRL_AMD and do not
+    # need to be written. They are asserted anyway, for the reason the 9p
+    # symbols are: a select that stops happening is a silent change, and the
+    # report below can only name symbols someone asked for.
+    set_cfg PINCTRL y
+    set_cfg GPIOLIB y
+    set_cfg GPIOLIB_IRQCHIP y
     set_cfg PINCTRL_AMD y
+
+    # SOUND. `ls /dev/snd` on the first laptop boot returned `seq` and `timer`
+    # and nothing else -- ALSA core with no card, because no sound driver was
+    # ever enabled. YouTube played silently.
+    #
+    # HDA ONLY, AND NOT SOF, WHICH IS A MEASUREMENT RATHER THAN A PREFERENCE.
+    # The test machine's lsmod shows both stacks loaded -- snd_sof_amd_renoir
+    # beside snd_hda_codec_realtek -- so the obvious reading is that it needs
+    # both. It does not: /usr/lib/firmware/amd/ on that machine contains only
+    # SEV blobs, with no sof/ and no sof-tplg/ directory at all. SOF firmware
+    # was never installed, so the SOF driver loaded and never bound, and the
+    # HDA path is what produces sound. Enabling SOF here would add a driver
+    # that cannot work and blobs nobody has.
+    #
+    # =y THROUGHOUT WHERE UBUNTU HAS =m. SND=m and SND_HDA=m there; a
+    # distribution loads them from an initramfs and this system has no modules
+    # at all.
+    set_cfg SND y
+    set_cfg SND_PCI y
+    set_cfg SND_HDA y
+    set_cfg SND_HDA_CORE y
+    set_cfg SND_HDA_INTEL y
+    set_cfg SND_HDA_GENERIC y
+    set_cfg SND_HDA_CODEC_REALTEK y
+    set_cfg SND_HDA_CODEC_HDMI y
 
     # DISPLAY, IN TWO LAYERS, AND THE ORDER MATTERS.
     #
@@ -1615,7 +1664,10 @@ if [ "$B5" = ok ]; then
     _missing=
     for _sym in BLK_DEV_NVME SATA_AHCI BLK_DEV_SD USB_STORAGE EXT4_FS \
                 USB_XHCI_PCI USB_HID SERIO_I8042 KEYBOARD_ATKBD \
-                I2C_HID_ACPI PINCTRL_AMD \
+                I2C_HID_ACPI I2C_HID_CORE HID_MULTITOUCH \
+                PINCTRL GPIOLIB GPIOLIB_IRQCHIP PINCTRL_AMD \
+                SND SND_PCI SND_HDA SND_HDA_INTEL SND_HDA_GENERIC \
+                SND_HDA_CODEC_REALTEK \
                 SYSFB_SIMPLEFB DRM_SIMPLEDRM FRAMEBUFFER_CONSOLE \
                 DRM_AMDGPU DRM_I915 \
                 CFG80211 MAC80211 RTW89 RTW89_PCI RTW89_8852AE \

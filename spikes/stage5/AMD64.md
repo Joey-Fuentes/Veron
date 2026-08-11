@@ -90,10 +90,10 @@ diffs anyway — contents differing is expected, but a package installing a
 
 ---
 
-## The twelve recipes that differ, and where they live
+## The thirteen recipes that differ, and where they live
 
-Twelve recipes need to say something different on x86_64 — seven predicted
-from reading, four found by the runs, and one found by booting the image on a
+Thirteen recipes need to say something different on x86_64 — seven predicted
+from reading, four found by the runs, and two found by booting the image on a
 laptop. They are **not edited in place** — `packages/` is the aarch64 arm's tree and stays exactly as it is.
 Each has a replacement in **`packages-amd64/`**, which only
 `stage5-spike-amd64` loads, via `veron --overlay packages-amd64`.
@@ -111,6 +111,7 @@ Each has a replacement in **`packages-amd64/`**, which only
 | 105 | `freetype` | (bzip2 autodetected) | `--without-bzip2` | none |
 | 1 | `bzip2` | stages only `libbz2.a` | `install-shared` step | none — three packages can finally link it |
 | 33 | `libffi` | `--with-gcc-arch=native` | `x86-64` | none — it is the baseline the image already uses |
+| 104 | `mesa` | `gallium-drivers` without `radeonsi` | `+radeonsi` | none — GL stops being software |
 | 121 | `veron-system` | console on `ttyAMA0` | `ttyS0` | none — it is the tty this arm already boots on |
 
 **Four of the seven are one fact and one missing tool.** libvpx, dav1d and
@@ -597,13 +598,117 @@ failing: which symbols matter depends on the machine, and a kernel missing
   a laptop — one wrapper is correct on all three, and it cannot drift from the
   kernel's own idea of where the console is because it is reading it.
 
+### The seventh finding, and the first working laptop
+
+The kernel with the hardware block booted. On an HP Laptop 14 with an AMD
+Lucienne APU, from an NVMe partition, through the machine's own GRUB:
+
+| | |
+|---|---|
+| storage | `/dev/nvme0n1p5` mounted, root over ext4 |
+| display | `amdgpu` with `renoir_*` firmware from the initramfs, labwc on it |
+| wireless | `rtw89_8852ae`, firmware loaded, associated, DHCP, `ping 1.1.1.1` at 15 ms |
+| browser | WPE MiniBrowser playing YouTube |
+| keyboard | i8042 |
+
+Every one of those is a first. The firmware-in-the-initramfs reasoning held:
+`rtw89_8852ae: loaded firmware rtw89/rtw8852a_fw.bin`, and the earlier
+`fw-1.bin failed with error -2` is the driver trying a newer file first and
+falling back, not a fault.
+
+**Six things did not work, and every one was measured rather than guessed.**
+
+#### `PINCTRL_AMD` was dropped, and the report is why we knew
+
+`VERON-KCONFIG-DROPPED -- PINCTRL_AMD` on its first run, alone out of 24
+symbols. `PINCTRL` is a **menuconfig**, the AMD driver lives inside its
+`if PINCTRL ... endif` block, and `x86_64_defconfig` sets no `PINCTRL` line at
+all — so the child was unsatisfiable and `olddefconfig` discarded it in
+silence. The gate turned a dead touchpad into a named line before the boot.
+
+**The fix came from the machine, not from reasoning.**
+`/boot/config-6.8.0-51-generic` — a kernel where that touchpad works — has
+`CONFIG_PINCTRL=y`, `CONFIG_PINCTRL_AMD=y`, `CONFIG_GPIOLIB=y`,
+`CONFIG_GPIOLIB_IRQCHIP=y`. One `grep` against a working config beat a chain of
+Kconfig inference, and it cost a command instead of a ladder run. That is worth
+generalising: **when a distribution already runs on the target, its `.config`
+is evidence and everything else is argument.**
+
+`HID_MULTITOUCH` was missing too — never set, and a touchpad without it is a
+bare pointer.
+
+#### No sound card at all
+
+```
+# ls /dev/snd
+seq   timer
+```
+
+ALSA core, no card: no audio driver was ever enabled. YouTube played silently.
+
+**HDA, not SOF, and that is a measurement.** `lsmod` on the machine shows both
+stacks — `snd_sof_amd_renoir` beside `snd_hda_codec_realtek` — so the obvious
+reading is that it needs both. It does not: `/usr/lib/firmware/amd/` on that
+machine holds only SEV blobs, **no `sof/` and no `sof-tplg/`**. SOF firmware
+was never installed, so that driver loaded and never bound. Enabling SOF would
+add a driver that cannot work and blobs nobody has.
+
+#### Everything rendered on the CPU
+
+`/usr/lib/dri/` does not exist, no `*_dri.so` anywhere, and
+`libgallium-26.1.6.so` is the single library mesa 26 links its drivers into.
+The recipe settles it: `-Dgallium-drivers=llvmpipe,softpipe,virgl` — **no
+`radeonsi`**. A Ryzen APU with a working `amdgpu` was software-rasterising a
+video site.
+
+`packages-amd64/mesa` adds it. `libdrm` is already `-Damdgpu=enabled` and
+`llvm` already builds the AMDGPU backend on both arms, so it is one flag.
+**It does not buy hardware video decode** — that needs `gallium-va`,
+`video-codecs` and libva, none of which are here.
+
+#### Hotplugged devices come up unreadable
+
+A USB mouse plugged in after boot enumerated correctly and the desktop ignored
+it:
+
+```
+crw-rw----  root input   event0..event3    (boot)
+crw-------  root root    event4            (hotplug)
+```
+
+`devtmpfs` creates the node with default ownership and **nothing fixes it up**,
+because that fixup is a udev daemon's job and `libudev-zero` is a library with
+no daemon. `chown root:input` plus `chmod 660` made the mouse work
+immediately.
+
+Two distinct gaps behind one symptom: **no permission rule for hotplugged
+nodes**, and **no hotplug at all** — libinput learns about devices by scanning
+at startup, so anything added later is invisible even when readable. busybox
+has `mdev`, which does both jobs and needs no new package.
+
+#### And no mixer
+
+`ls /usr/bin/a*` finds `aserver` and no `amixer` or `alsamixer`. Once the HDA
+drivers land, a card whose master comes up muted has nothing to unmute it with.
+`alsa-utils` is a **new package** rather than a flag, and it goes in the base
+tree, which touches the aarch64 arm — so it is deliberately not in this change.
+It also needs a pinned tarball and a verified sha256, which is work of its own.
+The next boot says whether it is needed: if sound works without it, it is a
+convenience; if the card is silent, it is a blocker.
+
 ### What is still unknown
 
-Everything now builds and boots. What remains open is one guest test, whether
-the libffi fix closes it, and whether the aarch64 arm is carrying the same
-latent flag. Four runs, four findings, **none of them on the predicted list** —
-the predictions were right about the seven they named and told us nothing about
-the four that actually cost runs.
+The image boots on a laptop and does most of what a laptop should. What has
+not been shown: sound producing a sound, the touchpad reporting, hardware GL
+after the mesa change, and whether anything needs a mixer. All four are
+answered by the next boot and none of them need a stage-5 run.
+
+Beyond this machine, **nothing**. One laptop is one data point, and the kernel
+block was written against its `lspci` output. An Intel machine would exercise
+`DRM_I915` and `E1000E`, both enabled and both untested; a SATA machine would
+exercise `SATA_AHCI`, likewise. The generic-kernel design in the architecture
+note is what replaces "we guessed well for one machine" with something that
+works on machines nobody has.
 
 ### Every run rebuilt from package 1 — `stop_after` is the way out
 
@@ -740,7 +845,7 @@ makes `plan --check` stale for a reason that is not a fault):
 |---|---|
 | `veron selftest` — no overlay | `VERON-SELFTEST-OK`, output identical to the unmodified driver except three counts that moved because a new workflow file exists |
 | `veron plan --check` — no overlay | `VERON-PLAN-OK`, `plan-sha256 7799c291…` |
-| `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `12 overlay recipe(s) pin the same source as their base` |
+| `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `13 overlay recipe(s) pin the same source as their base` |
 | `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 59898d1a…` |
 | `build --upto orc` | truncates the plan to `[1/81]` and says so; refuses an unknown name and refuses to be combined with a package list |
 | the `PARTIAL` interlock | all ten system-producing steps gated, verified by parsing the rendered conditions |
@@ -785,6 +890,11 @@ architecture.
 - **`libffi` still says `native` in the base tree**, on both arms. It is a
   live G3 hazard the day two runners differ, and an unproven portability
   hazard on aarch64.
+- **`alsa-utils` is not in the package set**, so there is no `amixer`. A new
+  base package, which touches the aarch64 arm, and a pin to verify.
+- **Nothing manages device nodes.** Hotplugged input devices come up
+  `root:root 600` and libinput never learns they exist. busybox `mdev` does
+  both jobs; adding it is a stage-5 decision, not a kernel one.
 - **`veron-system` names a tty instead of reading `console=`.** Arch-neutral
   is one small script change and is correct on both arms.
 - **No gate asserts the console survives dinit.** 157 passes and an unusable

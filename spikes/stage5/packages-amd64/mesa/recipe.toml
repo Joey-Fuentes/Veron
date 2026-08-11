@@ -1,0 +1,240 @@
+# ============================================================ AMD64 OVERLAY
+# A REPLACEMENT FOR packages/mesa/recipe.toml, USED ONLY BY
+# stage5-spike-amd64 (`veron --overlay packages-amd64`). The aarch64 arm never
+# loads this file.
+#
+# WHAT DIFFERS FROM THE BASE RECIPE:
+#   -Dgallium-drivers: llvmpipe,softpipe,virgl -> +radeonsi.
+#
+# THE FIRST BARE-METAL BOOT RENDERED EVERYTHING ON THE CPU. On a Ryzen APU
+# with a working amdgpu and /dev/dri/card0, WPE played YouTube through
+# llvmpipe -- the software rasteriser -- because radeonsi was never built.
+# Measured rather than assumed:
+#
+#     ls /usr/lib/dri/          -> No such file or directory
+#     find /usr/lib -name '*_dri.so'   -> nothing
+#     find /usr/lib -name 'libgallium*' -> /usr/lib/libgallium-26.1.6.so
+#
+# mesa 26 links its gallium drivers into that one library rather than shipping
+# per-driver _dri.so files, so their absence proves nothing on its own -- the
+# recipe's own flag list is what settles it.
+#
+# THE BASE RECIPE IS RIGHT FOR THE MACHINE IT WAS WRITTEN FOR. llvmpipe,
+# softpipe and virgl are what a qemu guest can use, and virgl is the one that
+# matters there. Nothing about that list was wrong until an image booted on
+# hardware with a real GPU.
+#
+# radeonsi NEEDS TWO THINGS THIS SET ALREADY HAS, which is why this is one
+# flag rather than a project: libdrm is built with `-Damdgpu=enabled`, and
+# llvm is built with AMDGPU in LLVM_TARGETS_TO_BUILD on both arms. The
+# groundwork was laid before anyone needed it.
+#
+# AND IT NEEDS FIRMWARE, WHICH IS NOT SHIPPED. The same renoir_* blobs the
+# kernel's amdgpu wants; an operator supplies them. See AMD64.md.
+#
+# WHAT THIS DOES NOT BUY: hardware VIDEO decode. That needs `-Dgallium-va` and
+# `-Dvideo-codecs`, both deliberately off here, and libva, which is not in the
+# package set. So H.264 and VP9 still decode on the CPU after this change.
+# Worth stating plainly, because "hardware acceleration" reads as though it
+# covers both and this covers one.
+#
+# aarch64 IS NOT GIVEN radeonsi. It could use it -- an ARM board with a Radeon
+# card is a real configuration -- but nothing has measured that, and adding a
+# driver to a green arm on the strength of an x86 finding is the kind of
+# change this project asks to be measured first.
+#
+# THE PIN IS NOT ALLOWED TO DIFFER. `veron --overlay ... selftest` compares
+# version and every [source] key against packages/mesa/recipe.toml and fails
+# if they disagree, so this file can change flags and can never change what is
+# built. Bump the version in both files or in neither.
+# ===========================================================================
+
+name    = "mesa"
+version = "26.1.6"
+group   = "graphics"
+license = "MIT"
+srcdir  = "mesa-26.1.6"
+
+[source]
+url       = "https://archive.mesa3d.org/mesa-26.1.6.tar.xz"
+sha256    = "5296b88a0f1e012e2cb9ada150a2bbadf728ca81e5a4fb2ab43c83a4d2158606"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+# READ OFF meson.build AND meson.options IN THE PINNED TARBALL, not recalled.
+# The digest above was verified against MIRRORS.tsv on both routes before any
+# of this was written.
+#
+# llvm ARRIVES BY A ROUTE NO .pc CAN SEE: `dependency('llvm', method:
+# 'config-tool')`. LLVM ships no pkg-config file, so the name-to-package
+# resolution the static probe is built on has nothing to match -- which is why
+# llvm was absent from MIRRORS.tsv for so long. It is a real, hard dependency
+# of llvmpipe and is declared here because a build order derived from .pc
+# names alone would put it in the wrong place.
+#
+# THE FOUR PYTHON MODULES ARE BUILD DEPENDENCIES AND NO .pc DESCRIBES THEM
+# EITHER. meson.build:1058 onwards runs the interpreter and imports them:
+#   mako >= 0.8.0   hard error, generates most of mesa's C
+#   packaging       used to compare mako's version. The `distutils` fallback
+#                   on meson.build:1067 is dead -- Python 3.12 removed it and
+#                   this set builds 3.14 -- so packaging is required outright.
+#   PyYAML          meson.build:1083. A python without it makes the candidate
+#                   loop `continue`, and the error finally raised is
+#                   "Python not found", which is not what went wrong.
+#   markupsafe      mako's own dependency.
+build        = ["meson", "ninja", "pkgconf", "python", "mako", "markupsafe",
+                "packaging", "pyyaml", "llvm", "libdrm", "wayland",
+                "wayland-protocols", "expat", "zlib", "zstd", "elfutils",
+                "libxml2"]
+link         = ["libdrm", "wayland", "expat", "zlib", "zstd", "elfutils"]
+runtime      = ["libdrm", "wayland", "expat", "zlib", "zstd", "elfutils"]
+# EVERY ONE OF THESE IS auto OR ON BY DEFAULT IN 26.1.6 AND IS TURNED OFF HERE.
+# `platforms`, `gallium-drivers` and `vulkan-drivers` all default to ['auto'],
+# which expands PER ARCHITECTURE -- see the deferral.
+optional_off = ["glx", "gles1", "gallium-rusticl", "gallium-va", "tools",
+                "build-tests", "valgrind", "libunwind", "lmsensors",
+                "html-docs", "perfetto", "video-codecs", "virtgpu_kumquat"]
+
+[declared]
+configure_flags = [
+  "-Dplatforms=wayland", "-Degl-native-platform=drm",
+  "-Dgallium-drivers=llvmpipe,softpipe,virgl,radeonsi", "-Dvulkan-drivers=",
+  "-Dllvm=enabled", "-Dglx=disabled", "-Degl=enabled", "-Dgbm=enabled",
+  "-Dgles1=disabled", "-Dgles2=enabled", "-Dshared-glapi=enabled",
+  "-Dgallium-rusticl=false", "-Dgallium-va=disabled", "-Dvideo-codecs=",
+  "-Dtools=", "-Dbuild-tests=false", "-Dvalgrind=disabled",
+  "-Dlibunwind=disabled", "-Dlmsensors=disabled", "-Dhtml-docs=disabled",
+  "-Dperfetto=false", "-Dcpp_rtti=false", "--wrap-mode=nofallback",
+]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["mesa"]
+deferral        = """
+Internals not reviewed. Every statement below was read out of the pinned \
+tarball whose sha256 matches MIRRORS.tsv on both routes.
+
+FIVE FLAGS THAT NO LONGER EXIST, and any one of them makes meson refuse the \
+WHOLE command line rather than warning: osmesa, gallium-vdpau, gallium-xa, \
+gallium-nine and gallium-opencl are all absent from mesa 26.1.6's \
+meson.options. They are still in the hand-maintained list in \
+.github/workflows/mesa-config.yml, which only survives because that job \
+filters its flags against the declaration at run time. A recipe cannot filter, \
+so this list was checked against the 108 options the tarball declares, one at \
+a time, and every flag above exists.
+
+NO RUST, AND IT IS TRUE BY ACCIDENT RATHER THAN BY POLICY. meson.build:835 is \
+`if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') \
+or with_virtgpu_kumquat` then `add_languages('rust', required: true)`. \
+-Dcpp_rtti=false BECAUSE OUR LLVM HAS NO RTTI, AND MESA REFUSES TO DISAGREE. \
+meson.build:1951 compares mesa's `cpp_rtti` against LLVM's own `has-rtti`, \
+read from llvm-config, and ERRORS on a mismatch in EITHER direction:
+
+    LLVM was built without RTTI, so Mesa must also disable RTTI.
+    Use an LLVM built with LLVM_ENABLE_RTTI or add cpp_rtti=false.
+
+That is a good check -- mixing the two produces link failures far from the \
+cause -- and it names both remedies. Mesa moved rather than LLVM for three \
+reasons: LLVM_ENABLE_RTTI defaults OFF upstream, so this is the ordinary \
+configuration rather than a quirk of ours; mesa is LLVM's ONLY consumer in \
+this set, so nothing else has an opinion; and turning it on in the llvm recipe \
+means a 27-minute rebuild and a moved install digest to satisfy a flag that \
+costs one line here.
+
+FOUND BY BUILDING, NOT BY READING. The first run of this recipe died at \
+glslangValidator; the second got past it, resolved LLVM cleanly -- all twelve \
+modules including mcjit, `-lLLVM-22`, 22.1.8 -- and died here instead. Both \
+were configure errors, which is the cheap end of the build to be wrong at.
+
+NO VULKAN AT ALL, AND THE FIRST VERSION OF THIS RECIPE GOT IT WRONG. \
+-Dvulkan-drivers=swrast was chosen on the correct instinct -- pin it rather \
+than inherit ['auto'] -- and the wrong value. swrast is lavapipe, and \
+meson.build:697 is `with_bvh = with_amd_vk or with_intel_vk or with_swrast_vk \
+or with_freedreno_vk`, which at :705 makes `glslangValidator` REQUIRED. \
+glslang is not in this set and is not pinned, so configure died:
+
+    meson.build:702:15: ERROR: Program 'glslangValidator' not found
+
+Nothing in this stack uses Vulkan. wlroots is pinned to -Drenderers=gles2, \
+labwc renders through wlroots, and the EGL/GBM/GLES2 path mesa exists here to \
+provide needs none of it. The empty value pins the option just as firmly \
+against an upstream default change, costs a large build, and removes a build \
+tool the set does not have. `tools=` and `video-codecs=` are empty for the \
+same reason.
+
+`vulkan-drivers` defaults to ['auto'], and the auto expansion is per \
+architecture: x86 gets ['amd','intel','intel_hasvk','nouveau','swrast'] and \
+WOULD require Rust; aarch64 gets \
+['swrast','intel','panfrost','freedreno','asahi'] and does not. So the \
+no-Rust property currently rests on nouveau being absent from one arm of an \
+upstream if-chain. `vulkan-drivers` is therefore PINNED rather than inherited: \
+upstream adding nouveau to the aarch64 list would otherwise turn the policy \
+off silently on the next version bump.
+
+GALLIUM DRIVERS ARE PINNED FOR THE SAME REASON. llvmpipe is the usable \
+software rasteriser and requires LLVM -- meson.build enforces that with \
+`.enable_if(with_gallium_llvmpipe, error_message: 'LLVMPipe Gallium driver \
+requires LLVM')`, so -Dllvm=enabled is not optional given this driver set. \
+softpipe is upstream's slow reference path. virgl is the virtio-gpu guest \
+driver, which is what this system will actually have under qemu -- the kernel \
+this chain builds has DRM_VIRTIO_GPU=y and presents /dev/dri/card0, measured \
+in the boot probe.
+
+-Dvideo-codecs= AND -Dtools= ARE EMPTY ON PURPOSE. video-codecs defaults to \
+['all_free'] and tools to []; stating both keeps a default change from adding \
+a decoder or a helper binary nobody chose.
+
+--wrap-mode=nofallback IS LOAD-BEARING HERE AND EVERYWHERE IN THIS GROUP. See \
+the wlroots recipe: a missing .pc silently becomes a git clone and a vendored \
+second copy, which inverts the build order. mesa's subprojects/ carries the \
+Rust crate wraps the earlier probe saw; they are the union of every optional \
+feature rather than anything these flags need."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+"module:mako" = "meson.build:1072 -- `import mako`, then a version compare against 0.8.0. A hard error, and no pkg-config name describes it."
+"module:packaging" = "meson.build:1065 -- `from packaging.version import Version`. The distutils fallback on the next line was removed in Python 3.12 and this set builds 3.14, so this is required rather than preferred."
+"module:yaml" = "meson.build:1083 -- `run_command(prog_python, '-c', 'import yaml')`. Failure makes the interpreter-candidate loop continue, so the eventual error names Python rather than yaml."
+"config-tool:llvm" = "dependency('llvm', method: 'config-tool') -- LLVM ships no .pc file, so llvm-config is the only route and no pkg-config name can express it."
+
+[installs]
+prefixes = ["usr/include", "usr/include/EGL", "usr/include/GL", "usr/include/GLES2", "usr/include/GLES3", "usr/include/KHR", "usr/lib", "usr/lib/gbm", "usr/lib/pkgconfig", "usr/share/drirc.d"]
+# files/digest DELIBERATELY ABSENT. They are a per-file sha256
+# measured on aarch64; the same source compiled for x86_64 with an
+# extra gallium driver cannot match them. prefixes is kept because it
+# is architecture-independent and still enforced.
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/mesa-26.1.6.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dplatforms=wayland", "-Degl-native-platform=drm",
+         "-Dgallium-drivers=llvmpipe,softpipe,virgl,radeonsi",
+         "-Dvulkan-drivers=",
+         "-Dllvm=enabled", "-Dglx=disabled", "-Degl=enabled", "-Dgbm=enabled",
+         "-Dgles1=disabled", "-Dgles2=enabled", "-Dshared-glapi=enabled",
+         "-Dgallium-rusticl=false", "-Dgallium-va=disabled",
+         "-Dvideo-codecs=", "-Dtools=", "-Dbuild-tests=false",
+         "-Dvalgrind=disabled", "-Dlibunwind=disabled",
+         "-Dlmsensors=disabled", "-Dhtml-docs=disabled", "-Dperfetto=false",
+         "-Dcpp_rtti=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "gbm"]]
+expect = ["26.1.6"]
