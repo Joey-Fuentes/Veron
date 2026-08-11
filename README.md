@@ -242,15 +242,21 @@ aarch64 release.
 
 `stage4-arch-spike-riscv64` is green through rung 7 and stops at rung 8, where
 the stage-2 compiler segfaults on `--version` while the stage-1 compiler that
-built it passes every check and compiles cleanly. Reading the rungs for what
-has actually been measured turns up the variable nobody moved: **every program
-this chain has compiled and run with that stage-1 compiler was built at
-`-O0`**, because no preflight passes an `-O` flag and rung 7 reuses tcc's
-archives rather than rebuilding them. The first optimised code it ever emits is
-gcc's own build at `-g -O2`, at exactly the rung that breaks. Rung 7 now runs
-the same test program at five optimisation levels and prints the resolved crt
-and libgcc paths its static link actually uses -- two seconds, against the
-forty minutes reaching rung 8 costs. Both spikes are **copies** of
+built it passes every check and compiles cleanly. Two readings of that -- a bad optimiser and a bad
+link -- were each given a two-second test at rung 7, and run 85320231620
+weakened both: every optimisation level from `-O0` to `-g -O2` runs, and the
+static link resolves the crt and libgcc paths it should and produces a working
+binary.
+
+What it leaves is what every test program in this chain has in common. `p1.c`
+is `return 42`; `p1b.c`'s five `static` items are all *functions*. **Not one
+program this chain has compiled and run has a file-scope variable** -- and on
+riscv64 small globals are addressed relative to `gp`, a register set once in
+crt1's startup by a `.la gp, __global_pointer$` guarded with `.option norelax`,
+in a crt1 that came from a musl **tcc** assembled. If `gp` is never set, a
+program with no globals runs fine at every optimisation level and a 1.2 MB
+compiler driver dies before printing its version. That is a hypothesis with a
+six-line reproducer, and rung 7 now runs it. Both spikes are **copies** of
 the reference rather than a matrix over it, so a failure on one architecture
 cannot make the working arm answerable for it.
 

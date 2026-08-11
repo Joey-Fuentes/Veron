@@ -364,18 +364,85 @@ records. Reporting also keeps both the ladder *and* rung 8's post-mortem in one
 log, and the correlation between them is worth more than either alone. It
 becomes a gate once the answer is known.
 
-**Three outcomes, three different next moves:**
+#### Both readings lost, on the same run
 
-| preflight 3 says | what it means | next |
-|---|---|---|
-| crashes at `-O2`, fine at `-O0` | the optimiser, on riscv64 | bisect by flag; a 40-line reproducer replaces a 40-minute build |
-| fine at every level | these constructs are not it | preflight 4's link line becomes the evidence |
-| crashes at every level | rung 6 shipped a broken compiler and rung 7's preflights passed it | the fault is earlier than rung 8 entirely |
+Run 85320231620 answered both at once:
 
-One caution on the middle row: `p1b` exercises recursion, structs by value,
-stack arrays, function pointers and 64-bit division. gcc's own sources reach
-well past that. "Fine at every level" rules out those constructs, not
-optimisation.
+```
+--- preflight 3: does optimisation break what it emits? ---
+  -O0 ok    -O1 ok    -O2 ok    -Os ok    -g -O2 ok
+
+--- preflight 4: what its static link is made of ---
+  libgcc:  /work/out/lib/gcc/riscv64-unknown-linux-gnu/4.6.4/libgcc.a
+  crt1.o /lib/crt1.o    crti.o /lib/crti.o    crtn.o /lib/crtn.o
+  crtbegin.o, crtend.o  from gcc's own directory
+  -static -v rc=0 ... the linked binary ran: exit=0
+  collect2: -melf64lriscv -static crt1.o crti.o crtbeginT.o
+            --start-group -lgcc -lc --end-group crtend.o crtn.o
+```
+
+The optimiser is not at fault for those constructs, and the link resolves the
+paths it should and produces a binary that runs. **Two readings, both
+weakened by one run**, which is the useful kind of result: it leaves one thing.
+
+#### What every test program in this chain has in common
+
+```c
+p1.c   int main(void){return 42;}
+p4.c   int main(void){return 0;}
+p1b.c  five `static` items -- mk, addp, fact, apply, dbl -- ALL FUNCTIONS
+```
+
+**Not one program this chain has compiled and run has a file-scope variable.**
+
+On riscv64 that is not an academic gap. The ABI reserves `x3` as `gp`, and
+small globals are addressed relative to it -- `lw a0,-12(gp)` rather than a
+two-instruction absolute form -- with the linker *relaxing* the long form into
+the short one when the datum falls within ±2 KB of `__global_pointer$`. `gp`
+is set once, in crt1's startup:
+
+```asm
+.option push
+.option norelax
+la gp, __global_pointer$
+.option pop
+```
+
+If `gp` is never set, or set wrong, **every gp-relative access reads from a
+garbage base** -- and the symptom is exactly the one rung 8 reports. A program
+with no globals never makes such an access and runs fine at every optimisation
+level. A 1.2 MB compiler driver makes them constantly and dies before printing
+its own version, deterministically.
+
+The `.option norelax` is there because the instruction computing `gp` must not
+itself be relaxed to be gp-relative. **And this box's crt1 came from a musl
+that tcc assembled** -- the same tcc that rejected `fscsr`, `csrc`, `csrs` and
+`frflags` in musl's fenv, and needed `add`→`addi` and `sll`→`slli` spelled out
+in `tlsdesc.s` where GNU `as` accepted the register form. `.option
+push/norelax/pop` is in that family: a directive tcc may accept, ignore, or
+mis-handle without saying so.
+
+**This is a hypothesis with a six-line reproducer, not a conclusion.**
+Preflight 5 tests it directly: one initialised `int`, one `.sbss` int, a global
+struct, a pointer to a literal, and a 16 KB array that sits *past* the gp
+window so it must be addressed absolutely. Each is announced before it runs.
+Preflight 6 relinks the same program with `-Wl,--no-relax`. And a static check
+asks whether `crt1.o` references `__global_pointer$` at all -- which needs no
+program run, and if the answer is no, nothing sets `gp` in any binary this
+compiler links.
+
+| preflight 5/6 says | what it means |
+|---|---|
+| small globals crash, 16 KB array fine | `gp` specifically -- crt1's startup, or tcc's handling of `.option` |
+| crashes relaxed, runs `--no-relax` | linker relaxation; rung 8 needs one `LDFLAGS` entry |
+| everything crashes including `-O0` | globals generally, not gp -- and rung 6 shipped a compiler rung 7 passed |
+| everything runs | globals are fine; the difference from `xgcc` is something else again |
+
+The rung-8 post-mortem also now prints `size`, the count of
+`__global_pointer$` symbols, and the first fourteen instructions at `_start`
+for **both** xgcc binaries. Stage 1 runs and stage 2 does not; if their startup
+differs, one look settles it, and if it does not, that rules the whole
+direction out without a debugger the box does not have.
 
 ### What the other two need that aarch64 does not
 

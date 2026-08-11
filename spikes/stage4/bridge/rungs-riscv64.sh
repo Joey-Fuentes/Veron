@@ -3737,6 +3737,166 @@ P1BEOF
       done
       rm -f p1b.c p1b.bin )
 
+    # PREFLIGHT 5: GLOBAL VARIABLES, WHICH NOTHING IN THIS CHAIN HAS EVER USED.
+    #
+    # Run 85320231620 ran preflight 3 and every optimisation level passed:
+    #
+    #     -O0 ok   -O1 ok   -O2 ok   -Os ok   -g -O2 ok
+    #
+    # So the optimiser is not it, for those constructs. Preflight 4 then showed
+    # the static link resolving sane paths -- libgcc from gcc's own directory,
+    # crt1/crti/crtn from /lib, --start-group -lgcc -lc --end-group -- and the
+    # binary it produced RAN. Both readings in the bridge README lost ground on
+    # the same run, which is the useful kind of result: it leaves one thing.
+    #
+    # LOOK AT WHAT THE TEST PROGRAMS ACTUALLY CONTAIN. p1.c is
+    # `int main(void){return 42;}`. p4.c is `int main(void){return 0;}`. p1b.c
+    # has five `static` items and every one of them is a FUNCTION -- mk, addp,
+    # fact, apply, dbl -- with its data in locals and on the stack. Not one
+    # program this chain has compiled and run has a FILE-SCOPE VARIABLE.
+    #
+    # ON riscv64 THAT IS NOT AN ACADEMIC GAP. The ABI reserves x3 as `gp` and
+    # addresses small globals as gp-relative -- `lw a0,-12(gp)` rather than a
+    # two-instruction absolute form -- with the linker relaxing the long form
+    # into it when the datum lands within +/-2 KB of `__global_pointer$`. gp
+    # itself is set once, in crt1's startup:
+    #
+    #     .option push
+    #     .option norelax
+    #     la gp, __global_pointer$
+    #     .option pop
+    #
+    # IF gp IS NEVER SET, OR SET WRONG, every gp-relative access reads from a
+    # garbage base. A program with no globals never makes one and runs fine. A
+    # 1.2 MB compiler driver makes them constantly -- and dies before printing
+    # its own version, deterministically, which is exactly the report the
+    # rung-8 post-mortem gives. The `.option norelax` around that sequence
+    # exists because the instruction that computes gp must not itself be
+    # relaxed to be gp-relative; an assembler that ignores those directives
+    # produces a startup that looks right and sets gp to nonsense.
+    #
+    # AND THE crt1 IN THIS BOX CAME FROM A musl THAT tcc ASSEMBLED, which is
+    # the same class of thing rung 2 already found: tcc rejected `fscsr`,
+    # `csrc`, `csrs` and `frflags` in musl's fenv, and needed `add`->`addi` and
+    # `sll`->`slli` spelled out in tlsdesc.s where GNU as accepted the register
+    # form. `.option push/norelax/pop` is in that same family -- a directive
+    # tcc may accept, ignore, or mis-handle without saying so.
+    #
+    # SIX CONSTRUCTS, CHEAPEST FIRST, EACH ANNOUNCED BEFORE IT RUNS. If the
+    # first one -- reading one initialised int -- crashes, the answer is gp and
+    # the reproducer is six lines. The large array is last and deliberate: at
+    # 16 KB it sits PAST the +/-2 KB gp window, so it must be addressed
+    # absolutely. If the small globals crash and the large array does not, that
+    # is gp specifically rather than global data generally, and the two halves
+    # of that answer point at different files.
+    #
+    # C89 DECLARATIONS, for the reason the -std ladder above records: this
+    # compiler is gcc 4.6.4 and defaults to gnu89, and a preflight that will
+    # not compile tests nothing.
+    #
+    # REPORTS, DOES NOT GATE, for the reason preflight 3 gives.
+    say "    --- preflight 5: global variables (gp-relative addressing) ---"
+    ( cd /tmp && rm -f p5.c p5.bin
+      cat > p5.c <<'P5EOF'
+#include <stdio.h>
+/* FILE-SCOPE VARIABLES, WHICH IS THE ENTIRE POINT. Each lands in a different
+   section, and on riscv64 the small ones are reached through gp. */
+static int         g_init = 5;        /* .sdata -- initialised, gp-relative  */
+static int         g_zero;            /* .sbss  -- zero, gp-relative         */
+static const char *g_str = "literal"; /* .sdata -- a pointer to .rodata      */
+struct s { long a; long b; };
+static struct s    g_st = { 1, 2 };   /* .data  -- aggregate                 */
+static long        g_arr[2048];       /* .bss   -- 16 KB, PAST the gp window */
+int main(void)
+{
+  int i; long sum = 0;
+  printf("read initialised global (.sdata)...\n"); fflush(stdout);
+  printf("read ok (%d)\n", g_init); fflush(stdout);
+  printf("write initialised global...\n"); fflush(stdout);
+  g_init = 7;
+  printf("write ok (%d)\n", g_init); fflush(stdout);
+  printf("zero-initialised global (.sbss)...\n"); fflush(stdout);
+  g_zero = 9;
+  printf("zero global ok (%d)\n", g_zero); fflush(stdout);
+  printf("global struct...\n"); fflush(stdout);
+  printf("global struct ok (%ld)\n", g_st.a + g_st.b); fflush(stdout);
+  printf("global pointer to a literal...\n"); fflush(stdout);
+  printf("global pointer ok (%s)\n", g_str); fflush(stdout);
+  printf("16 KB global array (past the gp window)...\n"); fflush(stdout);
+  for (i = 0; i < 2048; i++) g_arr[i] = i;
+  for (i = 0; i < 2048; i++) sum += g_arr[i];
+  printf("large array ok (%ld)\n", sum); fflush(stdout);
+  return 0;
+}
+P5EOF
+      _lastp5() {
+        grep -v -e 'Segmentation fault' -e 'Killed' -e 'Aborted' \
+                -e 'Bus error' -e 'Illegal instruction' /tmp/p5.out | tail -1
+      }
+      for _opt in -O0 "-g -O2"; do
+        rm -f p5.bin
+        if "$GCC1" -static $_opt -o p5.bin p5.c 2>/tmp/p5.err; then
+          if ./p5.bin > /tmp/p5.out 2>&1; then _rc=0; else _rc=$?; fi
+          case "$_rc" in
+            0)   printf '      %-8s ok (all six)\n' "$_opt" ;;
+            139) printf '      %-8s SEGFAULT (rc=139) after: %s\n' \
+                        "$_opt" "$(_lastp5)" ;;
+            *)   printf '      %-8s exit=%s after: %s\n' \
+                        "$_opt" "$_rc" "$(_lastp5)" ;;
+          esac
+        else
+          printf '      %-8s DID NOT COMPILE: %s\n' "$_opt" "$(head -1 /tmp/p5.err)"
+        fi
+      done
+
+      # PREFLIGHT 6: THE SAME PROGRAM WITH LINKER RELAXATION OFF.
+      #
+      # gp-relative addressing is produced by the LINKER relaxing a long form
+      # into a short one. --no-relax turns that off and leaves the absolute
+      # form in place. So:
+      #
+      #   crashes relaxed, runs with --no-relax  -> relaxation, and rung 8 needs
+      #                                             one LDFLAGS entry
+      #   crashes both ways                      -> not relaxation; gp is set
+      #                                             wrong at startup, or the
+      #                                             fault is elsewhere entirely
+      #   runs both ways                         -> globals are fine and the
+      #                                             difference from xgcc is
+      #                                             something else again
+      #
+      # An old ld may not know the flag; that prints as DID NOT LINK rather
+      # than being read as a pass.
+      rm -f p5.bin
+      if "$GCC1" -static -g -O2 -Wl,--no-relax -o p5.bin p5.c 2>/tmp/p5.err; then
+        if ./p5.bin > /tmp/p5.out 2>&1; then _rc=0; else _rc=$?; fi
+        case "$_rc" in
+          0)   say "      --no-relax  ok (all six)" ;;
+          139) say "      --no-relax  SEGFAULT (rc=139) after: $(_lastp5)" ;;
+          *)   say "      --no-relax  exit=$_rc after: $(_lastp5)" ;;
+        esac
+      else
+        say "      --no-relax  DID NOT LINK: $(head -1 /tmp/p5.err)"
+      fi
+
+      # AND WHETHER crt1 SETS gp AT ALL, which is a static question and needs
+      # no program run. If __global_pointer$ is absent from the startup code,
+      # nothing sets gp and every gp-relative access in every binary this
+      # compiler links is reading from whatever x3 happened to hold.
+      _crt=$("$GCC1" -print-file-name=crt1.o 2>/dev/null)
+      if [ -f "$_crt" ] && command -v objdump >/dev/null 2>&1; then
+        say "      --- does $_crt set gp? ---"
+        if objdump -dr "$_crt" 2>/dev/null | grep -qi 'global_pointer'; then
+          objdump -dr "$_crt" 2>/dev/null | grep -i -m3 'global_pointer' \
+            | sed 's/^/        /'
+        else
+          say "        NO REFERENCE TO __global_pointer\$ IN crt1.o --"
+          say "        nothing in startup sets gp. Every gp-relative access"
+          say "        in every binary this compiler links reads from x3 as"
+          say "        the kernel left it."
+        fi
+      fi
+      rm -f p5.c p5.bin )
+
     # PREFLIGHT 4: WHAT THIS COMPILER'S STATIC LINK IS ACTUALLY MADE OF.
     #
     # The bridge README reads the rung-8 evidence as a bad LINK rather than
@@ -4003,6 +4163,37 @@ if [ "$R7" = ok ]; then
           continue
         fi
         say "      $(wc -c < "$_x") bytes"
+        # WHAT THE 282 KB DIFFERENCE IS MADE OF, AND WHETHER gp IS SET.
+        #
+        # Both binaries exist at this point and the box has binutils from rung
+        # 4, so this is free and it is static -- no debugger, which this box
+        # does not have. Three questions the size alone cannot answer:
+        #
+        #   size      WHICH SECTIONS differ. If .text is comparable and the
+        #             difference is elsewhere, the two builds disagree about
+        #             data rather than about code generation.
+        #   _start    THE FIRST INSTRUCTIONS ACTUALLY EXECUTED. A driver that
+        #             dies before --version prints has died at or near here,
+        #             and the two binaries can be compared line by line: stage
+        #             1 runs, stage 2 does not, and the same startup in both
+        #             would rule this out in one look.
+        #   gp        On riscv64 x3 is gp and crt1 sets it from
+        #             __global_pointer$. Absent, every gp-relative access in
+        #             the binary reads from a garbage base -- which is a fault
+        #             that scales with how many globals a program has, and
+        #             xgcc has thousands where the preflights have none.
+        if command -v size >/dev/null 2>&1; then
+          size "$_x" 2>/dev/null | sed 's/^/        /'
+        fi
+        if command -v nm >/dev/null 2>&1; then
+          _gp=$(nm "$_x" 2>/dev/null | grep -c 'global_pointer' || true)
+          say "        __global_pointer\$ symbols: ${_gp:-0}"
+        fi
+        if command -v objdump >/dev/null 2>&1; then
+          say "        --- first instructions at _start ---"
+          objdump -d "$_x" 2>/dev/null \
+            | sed -n '/<_start>:/,/^$/p' | head -14 | sed 's/^/        /'
+        fi
         for _arg in --version -dumpversion -dumpmachine -print-search-dirs -dumpspecs; do
           set +e
           "$_x" -B"$_d/gcc/" "$_arg" > /tmp/pm.out 2>/tmp/pm.err
