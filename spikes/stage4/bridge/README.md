@@ -333,8 +333,32 @@ already runs natively next door, and of mixing two architectures inside one
 job. The artifact boundary here is the one stage 5 already accepts for the
 sysroot.
 
-**This has never run.** `stage3-cross-tcc-probe` established that a cross tcc
-and a target-native tcc can be built — **with the host's gcc**. Doing the same
+**Run 85526581967 got as far as the cross and stopped on a bug in this file.**
+Everything upstream worked: GATE 1 passed byte for byte —
+
+```
+ref-gen1.M1  (host gcc)      2947903  dc38e13e4ceaeecb
+ours-gen1.M1 (our ladder)    2947903  dc38e13e4ceaeecb
+```
+
+— mc-tcc built its own libtcc1 (5 of 5 objects) and was handed forward at
+1,651,925 bytes. Then:
+
+```
+AIRLOCK: musl source for the cross libc
+  MUSL_MIRRORS: unbound variable
+```
+
+The step used `$MUSL_MIRRORS` as though it were a workflow env var. It is a
+**shell local inside the stage4 job's fetch step**, three hundred lines away
+and in another job. The mirror list is now written out where it is used, and
+the tarball's digest is printed and checked. `set -eu` is what turned an
+unbound name into a stop rather than an empty loop and a stranger failure two
+steps later.
+
+**The cross itself has still never run.** `stage3-cross-tcc-probe` established
+that a cross tcc and a target-native tcc can be built — **with the host's
+gcc**. Doing the same
 with mc-tcc is the experiment. The probe named the likely failure before it
 ran: *"linking a hosted program for the target needs the target's libc and crt
 files."* That is why `CROSS 2` builds a musl with the cross compiler before

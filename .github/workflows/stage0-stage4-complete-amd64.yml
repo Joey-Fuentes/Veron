@@ -2387,18 +2387,43 @@ jobs:
         run: |
           set -eu
           # THE CROSS tcc CANNOT LINK A HOSTED PROGRAM WITHOUT A TARGET LIBC,
-          # and the probe named this before it ran: "linking a hosted program
-          # for the target needs the target's libc and crt files, and this
-          # machine has neither." So one is built, out of musl's own source,
-          # by the cross compiler.
+          # and stage3-cross-tcc-probe named this before it ran: "linking a
+          # hosted program for the target needs the target's libc and crt
+          # files, and this machine has neither." So one is built, out of
+          # musl's own source, by the cross compiler.
           #
-          # AIRLOCK, LIKE EVERY OTHER FETCH IN THIS JOB. Network lives out
-          # here; the box never sees it.
+          # THE MIRROR LIST IS WRITTEN OUT HERE RATHER THAN INHERITED, and the
+          # first version of this step got that wrong. It used "$MUSL_MIRRORS"
+          # as though it were a workflow env var; it is a shell local inside
+          # the stage4 job's fetch step, three hundred lines away and in
+          # another job entirely. Run 85526581967 stopped here:
+          #
+          #     MUSL_MIRRORS: unbound variable
+          #
+          # `set -eu` is what turned that into a stop rather than an empty
+          # loop and a confusing failure two steps later, which is the whole
+          # argument for -u.
+          #
+          # SAME THREE MIRRORS, IN THE SAME ORDER, as the stage4 job uses.
+          MUSL_MIRRORS="https://musl.libc.org/releases
+                        https://distfiles.macports.org/musl
+                        https://ftp.barfooze.de/pub/sabotage/tarballs"
           for m in $MUSL_MIRRORS; do
-            curl -fsSL --retry 3 -o musl.tar.gz "$m/musl-$MUSL_VER.tar.gz" && break
+            curl -fsSL --retry 3 -o musl.tar.gz "$m/musl-$MUSL_VER.tar.gz" \
+              && [ -s musl.tar.gz ] && break
+            rm -f musl.tar.gz
           done
-          [ -s musl.tar.gz ] || { echo "FAIL: no musl-$MUSL_VER.tar.gz"; exit 1; }
-          echo "  musl-$MUSL_VER  $(sha256sum musl.tar.gz | cut -c1-16)"
+          [ -s musl.tar.gz ] || { echo "FAIL: no musl-$MUSL_VER.tar.gz from any mirror"; exit 1; }
+          # AND THE DIGEST, because this tarball becomes the libc of the
+          # compiler that builds everything downstream. A mirror serving
+          # something else is exactly the kind of thing this project pins
+          # against everywhere else.
+          _sha=$(sha256sum musl.tar.gz | cut -d' ' -f1)
+          echo "  musl-$MUSL_VER  $_sha"
+          if [ -n "${MUSL_SHA256:-}" ] && [ "$_sha" != "$MUSL_SHA256" ]; then
+            echo "FAIL: musl digest does not match MUSL_SHA256"
+            exit 1
+          fi
 
       - name: 'CROSS 1: mc-tcc builds a compiler that emits x86_64'
         run: |
