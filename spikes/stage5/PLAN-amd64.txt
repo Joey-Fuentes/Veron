@@ -147,7 +147,7 @@ between this file and the recipes fails the run.
 package bzip2 1.0.8
   group        build-substrate
   license      bzip2-1.0.6
-  recipe-sha   0452249699ecbfa7004f5f39f3ecf175d173581fd25c8fbf04f55dd5657c8217
+  recipe-sha   d86fc3fca1e9c58052f400837c2e8af93fae88f1cf28583b6dc19bbef7ea8667
 
   source
     url        https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
@@ -177,7 +177,10 @@ package bzip2 1.0.8
     [05] install
          cwd  build/bzip2-1.0.8/bzip2-1.0.8
          argv ["make", "PREFIX=dest/bzip2/usr", "install"]
-    [06] relative-symlinks
+    [06] install-shared
+         cwd  build/bzip2-1.0.8/bzip2-1.0.8
+         argv ["sh", "-c", "test -f libbz2.so.1.0.8 || { echo 'no libbz2.so.1.0.8 -- Makefile-libbz2_so did not produce it'; exit 1; }; mkdir -p dest/bzip2/usr/lib; cp libbz2.so.1.0.8 dest/bzip2/usr/lib/; ln -sf libbz2.so.1.0.8 dest/bzip2/usr/lib/libbz2.so.1.0; ln -sf libbz2.so.1.0.8 dest/bzip2/usr/lib/libbz2.so; ls -l dest/bzip2/usr/lib"]
+    [07] relative-symlinks
          cwd  dest/bzip2/usr/bin
          SHELL (declared) why=rewriting a set of symlinks in place is a loop over readlink, not an argv
          | for l in *; do [ -L "$l" ] || continue; t=$(readlink "$l"); case "$t" in /*) ln -sf "$(basename "$t")" "$l"; echo "  relinked $l -> $(basename "$t")";; esac; done; ls -l | head -12

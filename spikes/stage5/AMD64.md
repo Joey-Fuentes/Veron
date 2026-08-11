@@ -7,12 +7,12 @@ architecture must not make the working arm answerable for it. `stage5-spike`
 is what currently produces the published image, and a red X on it would read
 as a stage-5 regression when it is an architecture nobody has ported yet.
 
-**It has run once.** Run `85280166724` built **45 of 122 packages** on x86_64
-and stopped at 46, `freetype-bootstrap`. Every one of the seven predicted
-architecture faults was correct and none of them fired — gmp configured with
-the right triple, libvpx built without an assembler. What stopped it was not
-on the list, and is the more interesting finding: see *What the first run
-found* below.
+**It has run twice.** Run `85280166724` built 45 packages and stopped at
+`freetype-bootstrap`; run `85286215115` built **47** and stopped at
+`libarchive`. Every one of the seven predicted architecture faults was correct
+and none fired — gmp took the right triple, libvpx built without an assembler.
+Both stops were the same underlying defect, and it is not an architecture
+defect: see *What the runs found* below.
 
 ---
 
@@ -89,10 +89,10 @@ diffs anyway — contents differing is expected, but a package installing a
 
 ---
 
-## The nine recipes that differ, and where they live
+## The ten recipes that differ, and where they live
 
-Nine recipes need to say something different on x86_64 — seven predicted from
-reading, two found by the first run. They are **not edited in place** — `packages/` is the aarch64 arm's tree and stays exactly as it is.
+Ten recipes need to say something different on x86_64 — seven predicted from
+reading, three found by the runs. They are **not edited in place** — `packages/` is the aarch64 arm's tree and stays exactly as it is.
 Each has a replacement in **`packages-amd64/`**, which only
 `stage5-spike-amd64` loads, via `veron --overlay packages-amd64`.
 
@@ -107,6 +107,7 @@ Each has a replacement in **`packages-amd64/`**, which only
 | 98 | `llvm` | `LLVM_TARGETS_TO_BUILD=AArch64;AMDGPU` | `X86;AMDGPU` | none |
 | 46 | `freetype-bootstrap` | (bzip2 autodetected) | `--without-bzip2` | none — see *What the first run found* |
 | 105 | `freetype` | (bzip2 autodetected) | `--without-bzip2` | none |
+| 1 | `bzip2` | stages only `libbz2.a` | `install-shared` step | none — three packages can finally link it |
 
 **Four of the seven are one fact and one missing tool.** libvpx, dav1d and
 ffmpeg all need `nasm` on x86 where aarch64 needs nothing — its `.S` files go
@@ -128,7 +129,7 @@ naming the x86 case in its own notes.
 
 ---
 
-## What the first run found
+## What the runs found
 
 **The entry contract answered first**, which is what that step exists for:
 
@@ -150,7 +151,7 @@ against `PROVENANCE` rather than merely downloaded.
 their turn were correct: `gmp` configured `--build/--host=x86_64-veron-linux-gnu`,
 `libvpx` built in 186s with `--target=generic-gnu`. No predicted fault fired.
 
-### The stop: a declaration that was never true, on either architecture
+### The first stop: a declaration that was never true, on either architecture
 
 ```
 [46/122] freetype-bootstrap 2.14.1
@@ -197,43 +198,92 @@ x86_64's linker refuses non-PIC objects in a shared object where aarch64
 accepts them, so **the architecture is what surfaced it** — which is the case
 for a second arm stated more sharply than it could have been stated in advance.
 
-### The fix, and the one that was rejected
+### The second stop: the same defect from the other side
 
-`packages-amd64/freetype-bootstrap` and `packages-amd64/freetype` add
-**`--without-bzip2`**. That is not a workaround for the linker; it makes the
-recipe true.
+```
+[48/122] libarchive 3.8.5
+  ld: /usr/lib/libbz2.a(bzlib.o): relocation R_X86_64_PC32 against symbol
+      `BZ2_crc32Table' can not be used when making a shared object
+VERON-BUILD-FAIL  libarchive: step 'build' rc=2
+```
 
-The alternative was to install `libbz2.so` — which bzip2's recipe **already
-builds**, at its `build-shared` step, and then never stages. That would also
-make the link succeed and would give freetype a real runtime dependency on
-bzip2. It was rejected: it contradicts `optional_off`. When a recipe has
-already decided, the fix is to make the build obey it, not to satisfy the
-linker.
+Same archive, same relocation, opposite declaration. freetype declared bzip2
+**off** and silently got it. libarchive declares bzip2 **on** — `deps.build`,
+`deps.link` and `deps.runtime` all name it — and cannot have it, because
+**bzip2 ships no shared library to link.**
 
-**The base recipes are deliberately not changed.** Same gap, same one-flag fix
-— but applying it on aarch64 moves `libfreetype.so`'s bytes and every install
-digest downstream of it, so it needs its own dispatch and a re-seeding run.
-Three things for whoever takes it:
+**bzip2's own recipe predicted this in writing.** Its `build-shared` step
+carries the comment:
+
+> bzip2 builds its shared library from a separate makefile. Skipping this
+> leaves only `libbz2.a`, and every consumer that expects `libbz2.so.1` fails
+> much later with a link error that does not mention bzip2.
+
+The step was added. The library it produces was never staged: `make install`
+runs from the *static* makefile, `Makefile-libbz2_so` has no install target,
+and `libbz2.so.1.0.8` sat in the build directory and was deleted with it. So
+the protection was written, documented, and not delivered — and the comment
+describing it has been false of the shipped result all along. The failure it
+predicted arrived twice, in the exact words it used.
+
+**Three packages declare bzip2 as a link dependency** — `libarchive`, `python`
+and `cmake` — and none of them can have it. libarchive and python build shared
+objects, so x86_64 refuses. cmake links executables, where a non-PIC static
+archive is legal: it would have passed and shipped bzip2 absorbed into a
+binary instead. **On aarch64 all three link**, which is the worse outcome
+rather than the lucky one: `libarchive.so` and python's `_bz2` module carry
+bzip2's code inside them, with no `DT_NEEDED` naming it, under recipes that
+declare the dependency the ELF cannot corroborate.
+
+### The two fixes, and why both are needed
+
+`packages-amd64/bzip2` adds an **`install-shared`** step staging
+`libbz2.so.1.0.8` and its two symlinks. It refuses rather than skips if the
+file is absent, so a future bzip2 that renames it fails *there*, naming bzip2,
+rather than forty packages later against a symbol nobody recognises — which is
+the whole shape of the bug. The soname is `libbz2.so.1.0`, not `libbz2.so.1`,
+so that symlink is load-bearing. `libbz2.a` is kept: `ld` prefers a shared
+library when both are present, so the archive stops being reached without
+being removed, and removing it would be a second decision riding on a fix.
+
+`packages-amd64/freetype-bootstrap` and `packages-amd64/freetype` keep
+**`--without-bzip2`**, and this is the part that looks redundant and is not.
+With `libbz2.so` present, freetype's configure would find bzip2, link it
+cleanly, and the declaration gap would go **silent again on both
+architectures**. `optional_off` says freetype declines bzip2; the flag is what
+makes that true. Fixing bzip2 alone would have re-hidden the first finding.
+
+The alternative for freetype — letting it keep bzip2 now that the shared
+library exists — was rejected: when a recipe has already decided, the fix is
+to make the build obey it, not to satisfy the linker.
+
+**The base recipes are deliberately not changed.** Same gaps, same fixes, and
+applying them on aarch64 moves `libfreetype.so`, `libarchive.so`, python's
+`_bz2` and every install digest downstream. That is a dispatch and a
+re-seeding run of its own, and it belongs to whoever owns that arm. Three
+things for them:
 
 1. `--without-bzip2` on `packages/freetype-bootstrap` and `packages/freetype`.
-2. `bzip2` builds a shared library and throws it away. Either stage it or stop
-   building it; a package that silently offers only a static archive hands the
-   next consumer a static link nobody decided on.
-3. There is a licence edge here too — `bzip2-1.0.6` code sitting inside
-   `libfreetype.so` under a node whose ledger record does not mention it.
+2. The `install-shared` step on `packages/bzip2`, or delete `build-shared` and
+   its comment — building a library and discarding it is the worst of the
+   three options.
+3. A licence edge: `bzip2-1.0.6` code sitting inside `libfreetype.so`,
+   `libarchive.so` and `_bz2` under nodes whose ledger records do not mention
+   it.
 
-**77 recipes name something in `optional_off` without passing any
-corresponding flag**, so this shape is not rare and a gate over it would fire
-on 77 correct recipes. Most are genuinely default-off. The narrow, checkable
-version — *a name in `optional_off` that the build system defaults to auto* —
-needs per-package knowledge no sweep has.
+**77 recipes name something in `optional_off` without passing a corresponding
+flag**, so this shape is not rare and a gate over it would fire on 77 correct
+recipes — most are genuinely default-off. The narrow, checkable version — *a
+name in `optional_off` that the build system defaults to auto* — needs
+per-package knowledge no sweep has.
 
 ### What is still unknown
 
-The run stopped at 46 of 122. **Nothing beyond `curl` has been compiled for
-x86_64**, so the second half of the set — glib, mesa, llvm, wlroots, the
-compositor, wpewebkit — is entirely unmeasured, as are the image, the boot,
-the DHCP test and the screenshot. Expect more findings of exactly this kind.
+The second run stopped at 48 of 122. **Nothing beyond `libarchive` has been
+compiled for x86_64**, so most of the set — glib, mesa, llvm, wlroots, the
+compositor, wpewebkit — is unmeasured, as are the merge, the image, the boot,
+the DHCP test and the screenshot. Two runs have produced two findings of the
+same kind and neither was on the predicted list; expect more.
 
 ---
 
@@ -289,14 +339,14 @@ it does not build.
 
 `PLAN-amd64.txt` is committed beside `PLAN.txt` and checked by
 `veron --overlay packages-amd64 --plan PLAN-amd64.txt plan --check`. The two
-files differ in **36 lines: nine `argv` lines and nine `recipe-sha` lines,
-and nothing else** — which is both the proof that the overlay changes only
+files differ in **43 lines: nine `argv` lines, ten `recipe-sha` lines and one
+whole added step** — which is both the proof that the overlay changes only
 what it claims to and the cheapest available review of what this architecture
 does differently.
 
 ```
 diff PLAN.txt PLAN-amd64.txt | grep -c '^[<>]'
-36
+43
 ```
 
 ---
@@ -311,8 +361,8 @@ makes `plan --check` stale for a reason that is not a fault):
 |---|---|
 | `veron selftest` — no overlay | `VERON-SELFTEST-OK`, output identical to the unmodified driver except three counts that moved because a new workflow file exists |
 | `veron plan --check` — no overlay | `VERON-PLAN-OK`, `plan-sha256 7799c291…` |
-| `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `9 overlay recipe(s) pin the same source as their base` |
-| `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 d652603b…` |
+| `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `10 overlay recipe(s) pin the same source as their base` |
+| `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 199119c8…` |
 | the three new gates | broken on purpose, each confirmed red |
 | the workflow | parses as YAML; every `run:` block passes `sh -n` |
 
@@ -348,10 +398,8 @@ architecture.
   verifier and contributes no artifact byte, so it cannot change what is
   built — but it can change what a hang looks like, and a first run should not
   vary two things at once.
-- **The base freetype recipes still declare bzip2 off while building it on.**
-  One flag, and a re-seeding run on aarch64 to go with it. See *The fix, and
-  the one that was rejected*.
-- **bzip2 builds a shared library and stages only the static one.** Either
-  ship it or stop building it.
-- **Packages 47–122 are unbuilt on x86_64**, and so is every step after the
+- **The base recipes still carry both bzip2 defects.** One flag on each
+  freetype and one step on bzip2, plus the re-seeding run on aarch64 they
+  imply. See *The two fixes, and why both are needed*.
+- **Packages 49–122 are unbuilt on x86_64**, and so is every step after the
   build.

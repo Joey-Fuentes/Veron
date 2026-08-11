@@ -1,0 +1,192 @@
+# ============================================================ AMD64 OVERLAY
+# A REPLACEMENT FOR packages/bzip2/recipe.toml, USED ONLY BY
+# stage5-spike-amd64 (`veron --overlay packages-amd64`). The aarch64 arm never
+# loads this file.
+#
+# WHAT DIFFERS FROM THE BASE RECIPE:
+#   AN install-shared STEP ADDED. libbz2.so.1.0.8 and its two symlinks are
+#   staged into $D/usr/lib. Nothing else changes: the same source, the same
+#   makefiles, the same static libbz2.a beside it.
+#
+# THE RECIPE ALREADY PREDICTED THIS FAILURE AND THEN DID NOT PREVENT IT. The
+# build-shared step above carries the comment
+#
+#     "bzip2 builds its shared library from a separate makefile. Skipping
+#      this leaves only libbz2.a, and every consumer that expects
+#      libbz2.so.1 fails much later with a link error that does not mention
+#      bzip2."
+#
+# -- which is exactly what happened, twice, in runs 85280166724 and
+# 85286215115. The step was added; the library it produces was never staged.
+# `make PREFIX=... install` runs from the STATIC makefile and installs
+# libbz2.a, the binaries, the headers and the man pages. libbz2.so.1.0.8 sat
+# in the build directory and was deleted with it. So the protection was
+# written, documented, and not delivered, and the comment describing it has
+# been false of the shipped result all along.
+#
+# WHAT IT COST, THE SECOND TIME:
+#
+#     [48/122] libarchive 3.8.5
+#     ld: /usr/lib/libbz2.a(bzlib.o): relocation R_X86_64_PC32 against symbol
+#         `BZ2_crc32Table' can not be used when making a shared object;
+#         recompile with -fPIC
+#
+# THREE PACKAGES DECLARE bzip2 AS A LINK DEPENDENCY -- libarchive, python and
+# cmake -- and none of them can have it. libarchive and python build shared
+# objects, so x86_64's linker refuses; cmake links executables, where a
+# non-PIC static archive is legal, so it would have passed and shipped bzip2
+# absorbed into a binary instead.
+#
+# ON aarch64 ALL THREE LINK, and that is the worse outcome rather than the
+# lucky one: libarchive.so and python's _bz2 module carry bzip2's code
+# INSIDE them, with no DT_NEEDED entry naming it. Their recipes declare
+# bzip2 in deps.link and the ELF cannot corroborate it. A static archive is
+# invisible to the DT_NEEDED detector by construction.
+#
+# THE SONAME IS libbz2.so.1.0, NOT libbz2.so.1. Makefile-libbz2_so links with
+# `-Wl,-soname -Wl,libbz2.so.1.0`, so that symlink is load-bearing and not
+# cosmetic: it is the name every consumer's DT_NEEDED will carry. libbz2.so is
+# the link-time name and libbz2.so.1.0.8 the real file.
+#
+# libbz2.a IS KEPT. ld prefers a shared library when both are present, so the
+# archive stops being reached without being removed -- and removing it would
+# be a second decision riding on a fix.
+#
+# THIS DOES NOT MAKE freetype'S --without-bzip2 REDUNDANT, and that is worth
+# stating because it looks redundant. With libbz2.so present, freetype's
+# configure would find bzip2, link it cleanly, and the declaration gap that
+# run 85280166724 exposed would go silent again on BOTH architectures.
+# optional_off says freetype declines bzip2; the flag is what makes that true.
+#
+# THE BASE RECIPE IS NOT CHANGED. It has the same gap, and the fix moves
+# libarchive.so, python's _bz2 and every install digest downstream on aarch64.
+# That is a dispatch and a re-seeding run of its own. AMD64.md records it.
+#
+# THE PIN IS NOT ALLOWED TO DIFFER. `veron --overlay ... selftest` compares
+# version and every [source] key against packages/bzip2/recipe.toml and fails
+# if they disagree, so this file can change flags and can never change what is
+# built. Bump the version in both files or in neither.
+# ===========================================================================
+
+name    = "bzip2"
+version = "1.0.8"
+group   = "build-substrate"
+license = "bzip2-1.0.6"
+
+# EVERY FACT BELOW WAS MEASURED, NOT REMEMBERED. Version, digest, signing key,
+# licence and build system come from `probe url https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz`.
+# Nine versions were probed and all nine differed from what would have been
+# written from memory, so nothing here is typed from recall.
+
+[source]
+url       = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
+sha256    = "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+signature = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz.sig"
+# The key that made that signature, read from the signature itself with an
+# EMPTY keyring -- the probe deliberately does not import a key fetched
+# alongside the artifact it signs, because that proves nothing. Compare this
+# against the project's published fingerprint, then verify locally, before
+# treating the pin as trusted.
+signing_key = "12768A96795990107A0D2FDFFC57E3CCACD99A78"
+crosschecked_against = []   # name the packagers whose digest you compared
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+# NO CONFIGURE AT ALL -- a plain Makefile, so every choice that would normally
+# be a flag is a make variable instead. PREFIX is passed at install time, and
+# the shared library needs a SECOND make with a different makefile, which is
+# bzip2's own arrangement and not something invented here.
+configure_flags = []
+verification    = "none -- upstream suites are not run; see deferral"
+deferral        = """
+Internals not reviewed. UPSTREAM IS EFFECTIVELY UNMAINTAINED: 1.0.8 dates \
+from 2019 and is the current release. Source now lives at \
+gitlab.com/bzip2/bzip2 but that project publishes NO release assets, so the \
+tarball still comes from sourceware -- source home and download home are \
+different places and that is recorded rather than implied. Licence is \
+bzip2-1.0.6, NOT Zlib: the two texts share a clause and a looser matcher \
+reported the wrong one.
+
+UPSTREAM TESTS ARE NOT RUN, BY POLICY, AND THIS IS THE LARGEST VERIFICATION \
+GAP IN THE SET. Running full suites in series does not scale past a handful \
+of packages -- twelve of them already dominated the build, and the plan is \
+150+. They were run once, at twelve packages, and the result is recorded: \
+every suite that ran passed except the exclusions each recipe already names. \
+Evidence now comes from the guest sanity tests, which run against the booted \
+image and check that each package actually works. Re-enable a suite per \
+package when there is a reason to; the step is one block."""
+
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/man/man1"]
+# files/digest DELIBERATELY ABSENT. They are a per-file sha256
+# measured on aarch64; the same source compiled for x86_64 cannot
+# match them, and this overlay stages three paths the base does not.
+# prefixes is kept because it is architecture-independent and still
+# enforced -- the new files land in usr/lib, already declared.
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/bzip2-1.0.8.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "build-shared"
+cwd  = "$S"
+# bzip2 builds its shared library from a separate makefile. Skipping this
+# leaves only libbz2.a, and every consumer that expects libbz2.so.1 fails
+# much later with a link error that does not mention bzip2.
+run  = [["make", "-f", "Makefile-libbz2_so"]]
+
+[[steps]]
+name = "clean-objects"
+cwd  = "$S"
+# The shared build leaves PIC objects behind; the static build reuses object
+# names and would silently link the wrong ones.
+run  = [["make", "clean"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "PREFIX=$D/usr", "install"]]
+
+[[steps]]
+name = "install-shared"
+cwd  = "$S"
+# THE STEP THE BASE RECIPE IS MISSING. `make install` runs from the STATIC
+# makefile; Makefile-libbz2_so has no install target at all, so the shared
+# library it built at build-shared has to be staged by hand. It survives
+# `make clean` -- that target removes *.o, libbz2.a and the binaries and
+# names no .so -- which is why build-shared can run first.
+#
+# IT REFUSES RATHER THAN SKIPS. `[ -f ]` first, so a future bzip2 that
+# renames or stops producing the file fails HERE, naming bzip2, instead of
+# forty packages later as a linker error against a symbol nobody recognises.
+# That is the whole shape of the bug this step exists to close.
+run  = [["sh", "-c", "test -f libbz2.so.1.0.8 || { echo 'no libbz2.so.1.0.8 -- Makefile-libbz2_so did not produce it'; exit 1; }; mkdir -p $D/usr/lib; cp libbz2.so.1.0.8 $D/usr/lib/; ln -sf libbz2.so.1.0.8 $D/usr/lib/libbz2.so.1.0; ln -sf libbz2.so.1.0.8 $D/usr/lib/libbz2.so; ls -l $D/usr/lib"]]
+
+[[steps]]
+# ABSOLUTE SYMLINKS INTO THE DESTDIR ARE A TRAP. bzip2's Makefile creates its
+# aliases with `ln -s -f $(PREFIX)/bin/bzip2`, and PREFIX is the DESTDIR here,
+# so bunzip2 and bzcat end up pointing at /dest/bzip2/usr/bin/bzip2 -- a path
+# that exists during the build and nowhere else. Relative links point at the
+# right file in the DESTDIR, in the staged build root, and in the final image
+# alike.
+name = "relative-symlinks"
+cwd  = "$D/usr/bin"
+timeout = 60
+why = "rewriting a set of symlinks in place is a loop over readlink, not an argv"
+shell = "for l in *; do [ -L \"$l\" ] || continue; t=$(readlink \"$l\"); case \"$t\" in /*) ln -sf \"$(basename \"$t\")\" \"$l\"; echo \"  relinked $l -> $(basename \"$t\")\";; esac; done; ls -l | head -12"
+
+[guest]
+test   = [["/usr/bin/bzip2", "--help"]]
+expect = ["1.0.8"]
