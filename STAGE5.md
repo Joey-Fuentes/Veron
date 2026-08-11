@@ -407,6 +407,138 @@ test harness talking to a terminal.
 
 `-cpu qemu64` in both is deliberate and is documented below.
 
+### Booting it on real hardware, from a partition
+
+Everything above runs the image under qemu. It also boots on a laptop, from a
+partition, through the machine's existing GRUB -- **with three edits made by
+hand on the host**, because the published image and initramfs are built for
+qemu and do not yet know how to be anything else.
+
+**This is written from a first attempt and has not been through CI.** Treat
+every claim below as reported rather than established, and correct it from what
+your own boot says.
+
+#### What has to change, and why each one
+
+| | |
+|---|---|
+| the root device | `guest/init` probes `/dev/vda`, `/dev/sda`, `/dev/vdb` and **ignores `root=`**. An NVMe partition is `/dev/nvme0n1p5` and no list of plausible names reaches it |
+| the console tty | the console service names a tty. A laptop has no serial port, so `ttyS0` and `ttyAMA0` are both wrong and only `tty1` works |
+| where the kernel lives | GRUB reads the kernel before any of this exists, so `Image` and the initramfs have to be on a filesystem the host already mounts |
+
+**A USB stick needs none of the first two** -- it enumerates as `/dev/sda`,
+which init already probes -- and is the safer first attempt if you have one.
+A partition is what follows.
+
+#### The steps
+
+Confirm the target first. This erases it, and the partition next to it is
+probably your operating system:
+
+```sh
+lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS
+```
+
+Look for the right size, an **empty mountpoint**, and that it is not `/`,
+`/home`, `/boot` or `/boot/efi`. Then:
+
+```sh
+sudo dd if=rootfs.img of=/dev/nvme0n1p5 bs=4M status=progress conv=fsync
+```
+
+The image is a bare ext4 filesystem, not a partitioned disk, so it goes to the
+partition. **A 4.7 GiB filesystem written into a larger partition stays 4.7
+GiB** -- the remainder is unused, not corrupt. `resize2fs` will claim it, and
+it buys nothing today: init mounts root read-only under a tmpfs overlay, so
+nothing persists across a reboot whatever the size.
+
+The console, in place:
+
+```sh
+sudo mkdir -p /mnt/veron
+sudo mount /dev/nvme0n1p5 /mnt/veron
+sudo sed -i 's/115200 ttyAMA0/115200 tty1/' /mnt/veron/etc/dinit.d/console
+grep 115200 /mnt/veron/etc/dinit.d/console      # expect: ... 115200 tty1
+sudo umount /mnt/veron
+```
+
+**Check the grep.** A `sed` that matched nothing is silent, and the symptom is
+the respawn loop this document describes elsewhere -- which reads as the absent
+login rather than as a wrong device name.
+
+The initramfs, unpacked, edited, repacked:
+
+```sh
+mkdir -p /tmp/ir && cd /tmp/ir
+zcat ~/Downloads/initramfs.cpio.gz | sudo cpio -idm
+sudo sed -i 's|for dev in /dev/vda|for dev in /dev/nvme0n1p5 /dev/vda|' init
+grep "for dev in" init                          # the new device must be FIRST
+sudo sh -c 'find . | cpio -o -H newc | gzip > ~/Downloads/initramfs-nvme.cpio.gz'
+```
+
+Prepending rather than replacing keeps every qemu boot working from the same
+file.
+
+Then where GRUB can read them -- `/boot` on the host, not the EFI partition:
+
+```sh
+sudo mkdir -p /boot/veron
+sudo cp ~/Downloads/Image ~/Downloads/initramfs-nvme.cpio.gz /boot/veron/
+```
+
+`/etc/grub.d/40_custom`:
+
+```
+menuentry "Veron" {
+    linux  /boot/veron/Image console=tty0 rdinit=/init panic=1 loglevel=4 veron.boot=system
+    initrd /boot/veron/initramfs-nvme.cpio.gz
+}
+```
+
+```sh
+sudo cp /boot/grub/grub.cfg ~/grub.cfg.bak
+sudo chmod +x /etc/grub.d/40_custom
+sudo grub-script-check /etc/grub.d/40_custom
+sudo update-grub
+```
+
+`console=tty0`, not `ttyS0`: the console is the screen. `veron.boot=system` is
+required for the same reason as under qemu -- without it init runs the test
+suite and powers off.
+
+#### What is likely to go wrong, and what each failure tells you
+
+**Nothing here can write to your disks.** init mounts `-o ro` and puts a tmpfs
+overlay on top. A failed boot costs a reboot.
+
+| symptom | what it means |
+|---|---|
+| `no root to test: neither disk nor 9p` | the kernel has no driver for the NVMe controller. There are **no modules in this image** -- `make modules_install` never runs -- so nothing can be loaded later, and the fix is a `set_cfg` line in `sysroot-amd64.sh` |
+| kernel messages then a black screen | `i915`/`amdgpu` attached and could not load firmware. `/lib/firmware` is not shipped |
+| the console respawn loop | the `sed` did not match -- check `/etc/dinit.d/console` |
+| GRUB drops to a rescue prompt | the menuentry did not parse; restore `~/grub.cfg.bak` |
+
+**The last kernel line before it stops is the finding.** Whether this system
+can be a laptop OS rather than a VM guest turns on two things nobody has
+measured -- whether the kernel has drivers for real storage, and whether the
+GPU comes up without firmware -- and one boot answers both.
+
+#### The proper fixes, which are not these
+
+The three edits above are host-side workarounds for two gaps in the repository,
+and both are small:
+
+- **`guest/init` should accept a root device from the command line.** A
+  `veron.root=` parameter, tried before the existing list, leaves every qemu
+  boot unchanged. `root=` is the wrong name to reuse: the kernel consumes it
+  when it mounts a root itself, and here the initramfs does the mounting.
+- **The console service should read `console=` from `/proc/cmdline`** instead
+  of naming a tty. One wrapper makes the same file correct on aarch64, on
+  x86_64 and on bare metal, and it cannot drift from the kernel's own idea of
+  where the console is, because it is reading it.
+
+Until those land, an image straight from the release needs the edits above.
+
 #### The two `-cpu` values disagree, and that is a finding rather than a nuisance
 
 At the time of writing the published x86_64 image still contains a `libffi`
