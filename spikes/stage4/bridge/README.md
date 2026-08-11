@@ -287,6 +287,65 @@ publishes to **`stage4/latest-amd64`** -- its own tag, so a botched run cannot
 reach the aarch64 release. Separate tags rather than suffixed filenames on a
 shared one: the isolation is structural rather than conventional.
 
+### The declared hole, closed on x86_64
+
+`stage0-stage4-complete-amd64` is the amd64 ladder with **no host compiler in
+its history**. Three jobs, and the split is forced by architecture rather than
+chosen:
+
+| job | runner | what it does |
+|---|---|---|
+| `oracle` | arm | upstream's reference compiler, for GATE 1 |
+| `seed` | arm | hand-written assembler → stage1 → stage2 → micro-c → mc-tcc, **then the cross** |
+| `stage4` | x86 | twenty rungs and a boot, natively, on what the seed job handed it |
+
+The first two are the jobs from `stage0-stage4-complete`, unchanged. Only the
+seed job gains anything, and only at its end.
+
+**What it closes.** `stage4-arch-spike-amd64` builds its tcc with the runner's
+`musl-gcc` and says so — *"DOES NOT PROVE: anything about the seed. This tcc
+was built by the host's compiler."* `stage4-complete.yml` calls it **"the one
+declared hole"**, and `stage3-cross-tcc-probe` records that the arch spikes
+*"inherited it: their tcc comes from the runner's gcc, so the x86_64 and
+riscv64 ladders each begin with a compiler whose ancestry runs through
+Ubuntu."*
+
+**One binary crosses, and nothing else.** Cross-building the rungs *"would
+make every rung above a cross build and trade one problem for a worse one"* —
+the probe's words. So three steps sit between mc-tcc and the x86 runner:
+
+```
+mc-tcc          aarch64, from the seed
+  -> x86_64-tcc      an AARCH64 binary that EMITS x86_64
+  -> x86_64 musl + x86_64-libtcc1.a, built by that
+  -> tcc-x86_64      an X86_64 binary, static, that emits x86_64
+```
+
+Every rung above it is native. The handoff carries a `PROVENANCE` file naming
+each digest and the chain that produced it, and the `stage4` job checks the
+binary is x86_64 **and** static before a single rung runs — a cross build that
+silently emitted the wrong target would otherwise surface twenty rungs later,
+on a different machine, an hour away.
+
+**Why not emulate stages 0–3 on the x86 runner instead.** It would keep one
+job and one unbroken chain, at the cost of running under TCG a chain that
+already runs natively next door, and of mixing two architectures inside one
+job. The artifact boundary here is the one stage 5 already accepts for the
+sysroot.
+
+**This has never run.** `stage3-cross-tcc-probe` established that a cross tcc
+and a target-native tcc can be built — **with the host's gcc**. Doing the same
+with mc-tcc is the experiment. The probe named the likely failure before it
+ran: *"linking a hosted program for the target needs the target's libc and crt
+files."* That is why `CROSS 2` builds a musl with the cross compiler before
+`CROSS 3` builds the native tcc, and why each step reports what it produced.
+If mc-tcc cannot compile `tcc.c` for another target, `CROSS 1` says so in one
+command rather than forty rungs later.
+
+It publishes to **`stage4/hermetic-amd64`**, its own tag, so it cannot
+overwrite the spike's release — the same argument the spike makes about the
+aarch64 one.
+
 **riscv64 stops at rung 8**, and the post-mortem there says exactly where.
 
 ```
