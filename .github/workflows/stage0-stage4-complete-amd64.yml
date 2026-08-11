@@ -2383,28 +2383,24 @@ jobs:
       # what makes this worth attempting; it is not what makes it work. Step 1
       # here is the substitution that has never been made, and if mc-tcc
       # cannot compile tcc.c for another target this is where it says so.
-      - name: 'AIRLOCK: musl source for the cross libc'
+      - name: 'AIRLOCK: musl source, for two libcs'
         run: |
           set -eu
-          # THE CROSS tcc CANNOT LINK A HOSTED PROGRAM WITHOUT A TARGET LIBC,
-          # and stage3-cross-tcc-probe named this before it ran: "linking a
-          # hosted program for the target needs the target's libc and crt
-          # files, and this machine has neither." So one is built, out of
-          # musl's own source, by the cross compiler.
+          # TWO LIBCS COME OUT OF THIS ONE TARBALL, and the reason is the whole
+          # shape of the cross.
+          #
+          #   aarch64 musl   so mc-tcc can LINK A HOSTED PROGRAM AT ALL, which
+          #                  is what building x86_64-tcc requires -- that
+          #                  binary runs on this arm runner.
+          #   x86_64 musl    so the second-generation tcc can link for the
+          #                  machine it will actually run on.
           #
           # THE MIRROR LIST IS WRITTEN OUT HERE RATHER THAN INHERITED, and the
           # first version of this step got that wrong. It used "$MUSL_MIRRORS"
           # as though it were a workflow env var; it is a shell local inside
           # the stage4 job's fetch step, three hundred lines away and in
-          # another job entirely. Run 85526581967 stopped here:
-          #
-          #     MUSL_MIRRORS: unbound variable
-          #
-          # `set -eu` is what turned that into a stop rather than an empty
-          # loop and a confusing failure two steps later, which is the whole
-          # argument for -u.
-          #
-          # SAME THREE MIRRORS, IN THE SAME ORDER, as the stage4 job uses.
+          # another job. Run 85526581967 stopped on `MUSL_MIRRORS: unbound
+          # variable`, which is `set -u` doing its job.
           MUSL_MIRRORS="https://musl.libc.org/releases
                         https://distfiles.macports.org/musl
                         https://ftp.barfooze.de/pub/sabotage/tarballs"
@@ -2414,16 +2410,200 @@ jobs:
             rm -f musl.tar.gz
           done
           [ -s musl.tar.gz ] || { echo "FAIL: no musl-$MUSL_VER.tar.gz from any mirror"; exit 1; }
-          # AND THE DIGEST, because this tarball becomes the libc of the
-          # compiler that builds everything downstream. A mirror serving
-          # something else is exactly the kind of thing this project pins
-          # against everywhere else.
           _sha=$(sha256sum musl.tar.gz | cut -d' ' -f1)
           echo "  musl-$MUSL_VER  $_sha"
           if [ -n "${MUSL_SHA256:-}" ] && [ "$_sha" != "$MUSL_SHA256" ]; then
-            echo "FAIL: musl digest does not match MUSL_SHA256"
+            echo "FAIL: musl digest does not match MUSL_SHA256"; exit 1
+          fi
+          # INTO pins/, WHICH IS WHAT rungs.sh EXPECTS. It opens
+          # /in/musl-*.tar.gz, and /in is the read-only bind of pins/.
+          cp musl.tar.gz "pins/musl-$MUSL_VER.tar.gz"
+
+      # ================= AN aarch64 LIBC, BUILT BY mc-tcc =================
+      #
+      # WHY THIS STEP EXISTS, AND WHAT THREE RUNS TAUGHT.
+      #
+      # Run 85530802574 ran `make x86_64-tcc CC=mc-tcc` and stopped on
+      #
+      #     tcc: error: file 'crt1.o' not found
+      #     /usr/include/stdio.h:28: error: include file
+      #         'bits/libc-header-start.h' not found
+      #
+      # compiling conftest.c -- the Makefile's first, trivial host program.
+      # That is not a cross-compilation problem and not a code-generation one:
+      # MC-TCC CANNOT LINK A HOSTED PROGRAM AT ALL. The runner's libc is
+      # glibc, whose headers tcc does not parse, and the box has never asked
+      # mc-tcc for anything but `-c`.
+      #
+      # THE SEED JOB'S OWN LOG HAS BEEN SAYING SO ALL ALONG, in the step above
+      # this one:
+      #
+      #     step A: gen1 COMPILES tcc.c -- 873506 byte object
+      #     step B: gen2 will not link, rc=1
+      #       undefined: 32 total -- 0 from tcc's own lib/, 32 from a libc
+      #
+      # Compilation was never the gap. A libc was.
+      #
+      # AND THE PROBE DID NOT SHOW OTHERWISE. stage3-cross-tcc-probe installs
+      # `gcc` from apt and runs `make x86_64-tcc` with no CC= -- so the cross
+      # compiler it built came from the HOST's gcc. Its header describes the
+      # mc-tcc substitution as the question it is aimed at, not as something
+      # it performed. Reading its success as evidence for this step was my
+      # mistake and it cost two runs.
+      #
+      # SO: GIVE mc-tcc A LIBC IT CAN USE, WITH THE CODE THAT ALREADY DOES IT.
+      # rungs.sh rung 2 builds musl with a tcc, hand-driven, no make -- the
+      # include order, `-nostdinc -D_XOPEN_SOURCE=700`, the nine aarch64 .s
+      # files that fall back to portable C, `-DCRT` for the crt objects, and
+      # a comment warning not to delete arch assembly before it has actually
+      # refused. Every one of those was earned by a failed run.
+      #
+      # REUSED, NOT REWRITTEN, AND THE FILE ITSELF ARGUES FOR THAT. Its
+      # STOP_AFTER comment: tool-probe "runs THIS FILE with STOP_AFTER=5
+      # rather than growing a second musl build that would drift from this
+      # one." Every bug I have shipped into this workflow came from
+      # hand-rolling something that already existed, so this drives the
+      # existing file rather than retyping its contents.
+      #
+      # STOP_AFTER=2 IS RUNGS 0, 1 AND 2: the compiler runs and builds
+      # libtcc1.a, the headers land, musl is built and installed to /usr
+      # inside the box. Nothing above that -- make and binutils are the
+      # stage4 job's business, on the other runner.
+      #
+      # A SECOND BOX, NOT THE FIRST ONE REUSED. The seed box was sealed for
+      # the seed ladder and its budget was enforced against that inventory;
+      # binding rungs.sh into it after the fact would quietly widen what that
+      # SEAL certified. This one is assembled the same way, with the same
+      # empty tier-1 budget, and declared separately.
+      - name: 'Assemble a second box, for the libc rung'
+        run: |
+          set -eu
+          MBOX="$PWD/mbox"; echo "MBOX=$MBOX" >> "$GITHUB_ENV"
+          rm -rf "$MBOX"
+          mkdir -p "$MBOX"/bin "$MBOX"/lib "$MBOX"/work "$MBOX"/out \
+                   "$MBOX"/src "$MBOX"/in "$MBOX"/tmp "$MBOX"/proc "$MBOX"/dev \
+                   "$MBOX"/usr/lib "$MBOX"/usr/include
+          # THE SAME ASSEMBLY AS THE SEED BOX, which is above in this job:
+          # BUDGET_PATH is empty, so no compiler, assembler, linker or
+          # archiver from the host enters. busybox drives; tcc is the only
+          # thing that compiles.
+          for t in $BUDGET_PATH; do
+            cp -L "$(command -v "$t")" "$MBOX/bin/$t"
+          done
+          cp -L /bin/busybox "$MBOX/bin/busybox"
+          for b in "$MBOX"/bin/*; do
+            ldd "$b" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}'
+          done | sort -u > /tmp/mneeded
+          while read -r l; do [ -f "$l" ] && cp -L "$l" "$MBOX/lib/" || true; done < /tmp/mneeded
+          cp -a "$MBOX"/lib/. "$MBOX"/usr/lib/ 2>/dev/null || true
+          # THE APPLET LIST IS rungs.sh's, NOT THE SEED SCRIPT'S. Rung 2
+          # spells musl's build out in shell -- find, xargs, wc, expr -- and a
+          # missing applet fails loudly rather than reaching for a host binary,
+          # because PATH inside the box is /bin only.
+          for a in sh cat cmp sha256sum wc printf mkdir cp rm mv ln chmod sed \
+                   head tail tr ls sort comm grep cut awk timeout od dd env date \
+                   find xargs expr basename dirname tar gzip touch test true false \
+                   uname readlink seq; do
+            ln -sf busybox "$MBOX/bin/$a"
+          done
+          # mc-tcc AND ITS SOURCE TREE, at the paths rungs.sh names through
+          # CC_BIN and TCCDIR. libtcc1.a is removed for the reason the stage4
+          # job removes it: rung 0 builds the runtime with the compiler under
+          # test, and shipping a prebuilt one would substitute an artifact
+          # nobody audited.
+          tar -xf handoff/tcc-src.tar -C "$MBOX/work"
+          mv "$MBOX/work/tcc-src" "$MBOX/work/tccsrc"
+          rm -f "$MBOX/work/tccsrc/libtcc1.a"
+          cp handoff/mc-tcc "$MBOX/work/mc-tcc"
+          chmod 0755 "$MBOX/work/mc-tcc"
+          echo "  box laid out: $(du -sh "$MBOX" | cut -f1)"
+
+      - name: 'SEAL: the libc box carries no host compiler'
+        run: |
+          set -eu
+          # THE SAME CLAIM THE SEED BOX MAKES, MADE AGAIN HERE because this is
+          # a different box and an unchecked one proves nothing. Anything that
+          # could compile, assemble, link or archive is a finding.
+          _bad=0
+          for b in "$MBOX"/bin/* "$MBOX/work/mc-tcc"; do
+            n=$(basename "$b")
+            case "$n" in
+              gcc|cc|clang|as|ld|ar|ranlib|musl-gcc|tcc)
+                echo "  FOUND ON THE PATH: $n"; _bad=1 ;;
+            esac
+          done
+          echo "  tier 1 (build path): ${BUDGET_PATH:-<empty>}"
+          echo "  tier 2 (driver)    : $BUDGET_DRIVER"
+          echo "  compiler under test: mc-tcc, at /work/mc-tcc"
+          [ "$_bad" = 0 ] || { echo "SEAL FAILED"; exit 1; }
+          echo "VERON-MBOX-SEAL-OK"
+
+      - name: 'RUNGS 0-2 with mc-tcc: libtcc1, headers, and an aarch64 musl'
+        run: |
+          set -eu
+          # THE INVOCATION IS tool-probe's, WITH TWO THINGS CHANGED: CC_BIN is
+          # mc-tcc rather than a host-built ref-tcc, and STOP_AFTER is 2 rather
+          # than 5. Everything else -- the namespaces, the binds, the
+          # environment -- is copied, because tool-probe's own comment records
+          # three failed attempts at being clever with these flags and ends
+          # "NO MORE VARIANTS. Copy what works."
+          #
+          # THIS IS THE EXPERIMENT. Rungs 0-5 are called "the most proven part
+          # of this script", but always with a tcc the host's gcc built. Asking
+          # mc-tcc for them is the substitution nobody has made, and if rung 2
+          # fails this is where it says so -- in a rung with its own name and
+          # its own error, rather than as a header error inside a Makefile.
+          set +e
+          bwrap \
+            --unshare-all --die-with-parent --new-session --clearenv \
+            --setenv PATH /bin \
+            --setenv HOME /work \
+            --setenv LC_ALL POSIX \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --setenv LD_LIBRARY_PATH /lib \
+            --setenv CC_BIN /work/mc-tcc \
+            --setenv TCCDIR /work/tccsrc \
+            --setenv ARM mc-tcc-libc \
+            --setenv STOP_AFTER 2 \
+            --setenv MUSL_VER "$MUSL_VER" \
+            --bind "$MBOX" / \
+            --ro-bind "$PWD/spikes" /src \
+            --ro-bind "$PWD/pins" /in \
+            --bind "$MBOX/out" /out \
+            --proc /proc --dev /dev --tmpfs /tmp \
+            --chdir /work \
+            /bin/sh /src/stage4/bridge/rungs.sh
+          rc=$?
+          set -e
+          echo "  rungs.sh exited $rc"
+          # THE ARTIFACTS DECIDE, NOT THE EXIT CODE. rungs.sh reports per-rung
+          # and its exit status covers the whole run; what matters here is
+          # whether a usable libc exists.
+          _miss=
+          for f in usr/lib/libc.a usr/lib/crt1.o usr/lib/crti.o usr/lib/crtn.o; do
+            [ -s "$MBOX/$f" ] || _miss="$_miss $f"
+          done
+          if [ -n "$_miss" ]; then
+            echo "VERON-MCTCC-LIBC-FAIL  missing:$_miss"
+            echo "  mc-tcc cannot build a libc it can link against, which is"
+            echo "  the gap the seed job's step B already reported as 32"
+            echo "  undefined libc symbols. That is a finding about mc-tcc,"
+            echo "  not about the cross."
             exit 1
           fi
+          printf '  libc.a  %s bytes\n' "$(wc -c < "$MBOX/usr/lib/libc.a")"
+          for c in crt1 crti crtn; do
+            printf '  %-6s  %s bytes\n' "$c.o" "$(wc -c < "$MBOX/usr/lib/$c.o")"
+          done
+          [ -d "$MBOX/usr/include" ] && \
+            echo "  headers: $(find "$MBOX/usr/include" -name '*.h' | wc -l) files"
+          echo "VERON-MCTCC-LIBC-OK  an aarch64 musl, built by mc-tcc"
+
+          # OUT OF THE BOX, so the cross steps below can point at it.
+          rm -rf sys-aarch64 && mkdir -p sys-aarch64
+          cp -a "$MBOX/usr/lib" "$MBOX/usr/include" sys-aarch64/ 2>/dev/null || true
+          echo "  staged at $PWD/sys-aarch64"
 
       - name: 'CROSS 1: mc-tcc builds a compiler that emits x86_64'
         run: |
@@ -2431,71 +2611,59 @@ jobs:
           rm -rf xtcc && mkdir xtcc && tar -xf handoff/tcc-src.tar -C xtcc
           cd xtcc/tcc-src
           MC="$GITHUB_WORKSPACE/handoff/mc-tcc"
+          A="$GITHUB_WORKSPACE/sys-aarch64"
           [ -x "$MC" ] || { echo "FAIL: no mc-tcc at $MC"; exit 1; }
+          [ -s "$A/lib/libc.a" ] || { echo "FAIL: no aarch64 libc at $A"; exit 1; }
 
-          # THIS IS A HOSTED PROGRAM BUILT FOR THIS MACHINE, and the first
-          # version of this step forgot it. It compiled tcc.c with
-          # `-DTCC_TARGET_X86_64` and nothing else, and run 85528747783 said:
+          # x86_64-tcc IS AN AARCH64 BINARY THAT EMITS x86_64, and two runs
+          # went wrong because I kept forgetting the first half of that.
           #
-          #     tcc: error: file 'crt1.o' not found
-          #     tcc: error: file 'crti.o' not found
+          # It runs HERE, on the arm runner, so it is an ordinary hosted
+          # program and needs a libc, headers and crt files for THIS machine.
+          # `-DTCC_TARGET_X86_64` selects the code generator compiled into it;
+          # it says nothing about the platform the program runs on.
+          #
+          # Run 85528747783 built it with no headers at all:
           #     tcc.h:28: error: include file 'stdarg.h' not found
+          # Run 85530802574 let the Makefile supply the HOST's, which are
+          # glibc's and which tcc cannot parse:
+          #     /usr/include/stdio.h:28: error: include file
+          #         'bits/libc-header-start.h' not found
           #
-          # WHICH IS NOT A CODE-GENERATION FAILURE AND WAS READ AS ONE BY THE
-          # STEP'S OWN MARKER. x86_64-tcc is an AARCH64 binary that happens to
-          # emit x86_64 -- it runs here, links against this machine's libc,
-          # and needs this machine's headers and crt files. What
-          # `-DTCC_TARGET_X86_64` changes is the code generator selected at
-          # compile time, not the platform the resulting program runs on.
+          # THE ANSWER IS THE musl THE RUNG ABOVE JUST BUILT. -nostdinc and
+          # -nostdlib take the host out entirely, and everything comes from
+          # sys-aarch64 -- which mc-tcc produced, so nothing in this binary's
+          # ancestry runs through Ubuntu.
           #
-          # THE PROBE DID NOT MAKE THIS MISTAKE BECAUSE IT USED THE MAKEFILE.
-          # stage3-cross-tcc-probe builds the same binary with
-          # `make x86_64-tcc`, and tcc's Makefile knows a cross compiler is
-          # still a host program: it supplies the host include paths and links
-          # it normally. My hand-rolled command dropped all of that to keep
-          # the invocation short, which traded a working build for a shorter
-          # line.
-          #
-          # SO THE MAKEFILE IS USED HERE TOO, with CC set to mc-tcc. That is
-          # the whole substitution -- the probe's step with a different
-          # compiler -- and it keeps the failure attributable to the one thing
-          # that changed.
-          #
-          # config.h IS REGENERATED. The tarball this tree comes from is
-          # `tcc-5ec0e6f8-arm64-configured`, and its config.h carries aarch64
-          # paths baked in at configure time. Those are right for the mc-tcc
-          # the seed job built and wrong for a cross build; ./configure is a
-          # shell script and no compilation, so running it again costs
-          # nothing and removes a stale assumption.
+          # NO MAKE, AND THIS TIME THAT IS DELIBERATE RATHER THAN LAZY. The
+          # Makefile's first act is to build conftest.c as a host program with
+          # the host's headers, which is precisely what fails. One invocation
+          # of ONE_SOURCE compiles the whole of tcc, so there is nothing the
+          # Makefile is needed for here -- and it is the same single command
+          # CROSS 3 uses below, which the probe proved out.
           set +e
-          ./configure --cc="$MC" > cfg.log 2>&1
-          rc=$?
-          set -e
-          if [ "$rc" != 0 ]; then
-            echo "  configure failed (rc=$rc):"
-            tail -12 cfg.log | sed 's/^/    /'
-            exit 1
-          fi
-          set +e
-          make x86_64-tcc CC="$MC" > x1.log 2>&1
+          "$MC" -o x86_64-tcc \
+            -DONE_SOURCE=1 -DTCC_TARGET_X86_64 -DCONFIG_TCC_STATIC=1 \
+            -I. -static -nostdinc -nostdlib -I"$A/include" \
+            "$A/lib/crt1.o" "$A/lib/crti.o" tcc.c "$A/lib/libc.a" \
+            "$GITHUB_WORKSPACE/mbox/work/tccsrc/libtcc1.a" \
+            "$A/lib/crtn.o" > x1.log 2>&1
           rc=$?
           set -e
           if [ "$rc" != 0 ] || [ ! -s x86_64-tcc ]; then
             echo "VERON-XTCC-CROSS-FAIL  mc-tcc could not build x86_64-tcc (rc=$rc)"
-            grep -aiE "error|undefined|not found" x1.log | head -12 | sed 's/^/    /'
+            grep -aiE "error|undefined|not found" x1.log | head -14 | sed 's/^/    /'
             tail -8 x1.log | sed 's/^/    /'
             exit 1
           fi
-          # AND IT MUST BE AN AARCH64 BINARY. That reads backwards and is the
-          # point: this is a compiler that RUNS here and EMITS x86_64. If it
-          # came out x86_64, the build targeted the wrong thing and the next
+          # AN AARCH64 BINARY, WHICH READS BACKWARDS AND IS THE POINT. If this
+          # came out x86_64 the build targeted the wrong thing, and the next
           # step would fail to execute it for a reason that says nothing.
           echo "  $(file -b x86_64-tcc | cut -c1-72)"
           case "$(file -b x86_64-tcc)" in
-            *aarch64*|*ARM\ aarch64*) : ;;
-            *) echo "  UNEXPECTED: x86_64-tcc should be an aarch64 binary that"
-               echo "  emits x86_64. It is not, so the Makefile built something"
-               echo "  other than a cross compiler."
+            *aarch64*|*"ARM aarch64"*) : ;;
+            *) echo "  UNEXPECTED: x86_64-tcc must be an aarch64 binary that"
+               echo "  emits x86_64. It is not."
                exit 1 ;;
           esac
           echo "VERON-XTCC-CROSS-OK  an aarch64 binary that emits x86_64"
@@ -2507,32 +2675,36 @@ jobs:
           X="$PWD/x86_64-tcc"
           # libtcc1.a IS THE COMPILER RUNTIME AND MUST BE TARGET CODE. The
           # Makefile builds it as x86_64-libtcc1.a for exactly this case.
-          # NO CC= HERE, AND THAT IS THE OPPOSITE OF CROSS 1. libtcc1 is the
-          # compiler's runtime and must be TARGET code, so it has to be built
-          # by x86_64-tcc -- which the Makefile already knows, because it
-          # defines the x86_64-libtcc1.a rule to use the x86_64 cross compiler
-          # it just built. Passing CC would override that with the aarch64
-          # host compiler and produce a runtime for the wrong machine, which
-          # links fine and fails at run time.
-          set +e
-          make x86_64-libtcc1.a > lt.log 2>&1
-          rc=$?
-          set -e
-          if [ "$rc" != 0 ] || [ ! -s x86_64-libtcc1.a ]; then
-            echo "  x86_64-libtcc1.a via make failed (rc=$rc) -- building it by hand"
-            # BY HAND IS NOT A WORKAROUND HERE, it is the same file list the
-            # Makefile uses for this target, and it removes make from a step
-            # that only has to compile eight files and archive them.
-            rm -f lt_*.o
-            for f in libtcc1.c alloca.S alloca-bt.S stdatomic.c atomic.S \
-                     builtin.c va_list.c; do
-              [ -f "lib/$f" ] || continue
-              "$X" -c "lib/$f" -o "lt_${f%.*}.o" -I. -Iinclude >> lt.log 2>&1 \
-                || { echo "    $f did not compile:"; tail -4 lt.log | sed 's/^/      /'; exit 1; }
-            done
-            "$X" -ar rcs x86_64-libtcc1.a lt_*.o >> lt.log 2>&1 \
-              || { echo "    ar failed"; tail -4 lt.log | sed 's/^/      /'; exit 1; }
-          fi
+          # libtcc1 BY HAND, NOT BY make, FOR THE REASON CROSS 1 GIVES.
+          # tcc's Makefile builds a host conftest before anything else and
+          # that is what has failed twice; the x86_64-libtcc1.a rule is a
+          # short list of files compiled with the cross compiler, so running
+          # that list directly removes the Makefile from a step it is not
+          # needed for.
+          #
+          # THESE OBJECTS ARE TARGET CODE. They must be compiled by
+          # x86_64-tcc, never by mc-tcc -- libtcc1 is the compiler's runtime
+          # and an aarch64 one would link cleanly into an x86_64 binary and
+          # fail at run time, which is a horrible thing to debug.
+          #
+          # -nostdinc AND THE TARGET HEADERS ARE ABSENT ON PURPOSE HERE: these
+          # files are freestanding by design and include none of libc. If that
+          # stops being true the compile fails by name, which is what the
+          # per-file loop is for.
+          rm -f lt_*.o
+          _n=0
+          for f in libtcc1.c alloca.S alloca-bt.S stdatomic.c atomic.S \
+                   builtin.c va_list.c; do
+            [ -f "lib/$f" ] || continue
+            "$X" -c "lib/$f" -o "lt_${f%.*}.o" -I. -Iinclude > lt.log 2>&1 \
+              || { echo "  lib/$f did not compile:"; \
+                   tail -6 lt.log | sed 's/^/    /'; exit 1; }
+            _n=$((_n + 1))
+          done
+          [ "$_n" -ge 4 ] || { echo "  only $_n libtcc1 objects -- the file list is wrong"; exit 1; }
+          "$X" -ar rcs x86_64-libtcc1.a lt_*.o >> lt.log 2>&1 \
+            || { echo "  ar failed:"; tail -6 lt.log | sed 's/^/    /'; exit 1; }
+          echo "  $_n objects, all built by x86_64-tcc"
           printf '  x86_64-libtcc1.a %s bytes\n' "$(wc -c < x86_64-libtcc1.a)"
 
           cd "$GITHUB_WORKSPACE"

@@ -388,6 +388,61 @@ Two things the same reading turned up:
   cross compiler, and overriding `CC` would have built an aarch64 runtime that
   links cleanly and fails at run time.
 
+**Run 85530802574 found the real gap, and it was not the cross.** `CROSS 1`
+stopped compiling `conftest.c` — the Makefile's first, trivial host program:
+
+```
+tcc: error: file 'crt1.o' not found
+/usr/include/stdio.h:28: error: include file 'bits/libc-header-start.h' not found
+```
+
+**mc-tcc cannot link a hosted program at all.** The runner's libc is glibc,
+whose headers tcc does not parse, and the box has only ever asked mc-tcc for
+`-c`. The seed job's own step B has been saying so all along:
+
+```
+step A: gen1 COMPILES tcc.c -- 873506 byte object
+step B: gen2 will not link, rc=1
+  undefined: 32 total -- 0 from tcc's own lib/, 32 from a libc
+```
+
+Compilation was never the gap. A libc was.
+
+**And `stage3-cross-tcc-probe` never showed otherwise.** It installs `gcc` from
+apt and runs `make x86_64-tcc` with no `CC=`, so the cross compiler it built
+came from the *host's* gcc. Its header describes the mc-tcc substitution as the
+question it is aimed at — *"can a compiler with no host gcc in its history emit
+a working tcc for another architecture"* — not as something it performed.
+Reading its success as evidence for that step cost two runs.
+
+#### The libc rung, reused rather than rewritten
+
+`rungs.sh` rung 2 already builds musl with a tcc, hand-driven, no make: the
+include order, `-nostdinc -D_XOPEN_SOURCE=700`, the nine aarch64 `.s` files
+that fall back to portable C, `-DCRT` for the crt objects, and a comment
+warning not to delete arch assembly before it has actually refused. Every one
+of those was earned by a failed run.
+
+So the seed job now assembles a **second box** — same empty tier-1 budget,
+separately sealed, because widening the first box after its SEAL would quietly
+change what that SEAL certified — and runs `rungs.sh` in it with
+`CC_BIN=/work/mc-tcc` and `STOP_AFTER=2`. That is tool-probe's invocation with
+two things changed, and the file itself argues for the approach: tool-probe
+*"runs THIS FILE with STOP_AFTER=5 rather than growing a second musl build that
+would drift from this one."*
+
+Out comes an aarch64 `libc.a` and crt files built by mc-tcc, and `CROSS 1` then
+builds `x86_64-tcc` with `-nostdinc -nostdlib` against them — no host headers
+anywhere in it. `CROSS 2` builds libtcc1 from the file list directly rather
+than through the Makefile, for the same reason: the Makefile's first act is the
+host `conftest.c` that has now failed twice.
+
+**Rungs 0–2 with mc-tcc is itself the experiment.** They are called *"the most
+proven part of this script"*, but always with a tcc the host's gcc built. If
+rung 2 fails, it fails in a rung with its own name and its own error rather
+than as a header error inside a Makefile — and the 32 undefined symbols say
+which direction to look.
+
 **The cross itself has still never run.** `stage3-cross-tcc-probe` established
 that a cross tcc and a target-native tcc can be built — **with the host's
 gcc**. Doing the same
