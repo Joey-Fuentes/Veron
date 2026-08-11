@@ -1,0 +1,64 @@
+# Veron's status bar.
+#
+# THE autostart LINE GUARDED ON THIS FILE AND THE FILE DID NOT EXIST, so
+# yambar was built, configured with ten plugins enabled, and never started --
+# silently, because the guard made it silent. Same shape as labwc installing
+# its own config to share/doc: a package present and inert for want of one
+# file nobody wrote.
+#
+# EVERY MODULE HERE IS ONE THE RECIPE ENABLED. alsa, pulse, pipewire, mpd, i3,
+# river, dwl, removables and the xkb family are all -Dplugin-*=disabled, so
+# naming any of them would fail at parse rather than degrade.
+#
+# THE FONT IS THE ONE FONT THIS IMAGE HAS. dejavu-fonts installs DejaVu Sans;
+# fontconfig resolves the family name through it. Naming anything else gives a
+# bar of missing glyphs, which looks like a broken compositor rather than a
+# missing font.
+
+bar:
+  height: 26
+  location: top
+  spacing: 5
+  margin: 7
+  font: DejaVu Sans:pixelsize=12
+  foreground: ffffffff
+  background: 1a1a1aee
+
+  left:
+    # THE WINDOW LIST, and the reason the bar is worth having. foreign-toplevel
+    # instantiates its template once per open window, over the
+    # wlr-foreign-toplevel-management protocol that labwc implements through
+    # wlroots. Opening a terminal makes an entry appear here, which is the
+    # cheapest end-to-end proof that the compositor, the protocol and the bar
+    # are all talking.
+    - foreign-toplevel:
+        content:
+          map:
+            conditions:
+              ~activated:
+                - string: {text: "{app-id}", foreground: 909090ff}
+              activated:
+                - string: {text: "{app-id}", foreground: ffffffff}
+
+  center:
+    - clock:
+        time-format: "%H:%M:%S"
+        content:
+          - string: {text: "{time}"}
+
+  right:
+    - cpu:
+        poll-interval: 2000
+        content:
+          map:
+            conditions:
+              id < 0:
+                - string: {text: "cpu {cpu}%"}
+    - mem:
+        poll-interval: 5000
+        content:
+          - string: {text: "mem {percent_used}%"}
+    # battery AND backlight ARE ENABLED IN THE RECIPE AND ARE NOT LISTED HERE.
+    # Both read from /sys paths a qemu virt machine does not present, so a bar
+    # referencing them would show nothing useful on the only hardware this has
+    # ever run on. They stay compiled in for real machines.

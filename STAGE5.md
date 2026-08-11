@@ -328,6 +328,21 @@ architecture as the host, so this runs at native speed where the aarch64 image
 cannot. It needs `/dev/kvm` readable, usually membership of the `kvm` group.
 Without it, drop both flags and use `-cpu qemu64`; TCG works and is slower.
 
+**On x86_64 the console service was pointed at the wrong tty** until now: it
+named `ttyAMA0`, the ARM UART, so `getty` exited 1 on every start and dinit
+restarted it forever. If you are booting an image published before that fix,
+the loop below is that bug and not the absent login this file describes
+further down — the difference is the exit code:
+
+```
+dinit: Service console process terminated with exit code 1
+[STOPPD] console
+[  OK  ] console
+```
+
+`packages-amd64/veron-system` states `ttyS0`. `spikes/stage5/AMD64.md` has the
+whole account, including why 157 passing tests did not catch it.
+
 **Then start the compositor by hand**, in the terminal you launched from, for
 the reason given under *the session* -- it is deliberately not in `boot.d`:
 

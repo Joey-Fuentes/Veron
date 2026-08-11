@@ -1,0 +1,34 @@
+#!/bin/busybox sh
+# Create XDG_RUNTIME_DIR. See ../xdg-runtime for why this is a service.
+#
+# EXITS NON-ZERO ONLY IF IT GENUINELY FAILED. dinit treats a scripted
+# service's non-zero exit as a failed start, and a failed start here takes
+# `boot` and the console down with it -- the mount -a lesson from
+# early-filesystems. So: already correct is success, not an error.
+set -u
+
+DIR=/run/user/0
+
+if [ -d "$DIR" ]; then
+    # Already there. Re-assert the mode anyway: the value of this directory
+    # is that it is private, and "it exists" is not the same claim.
+    /bin/busybox chmod 0700 "$DIR" 2>/dev/null
+    echo "xdg-runtime: $DIR already present"
+    exit 0
+fi
+
+if ! /bin/busybox mkdir -p "$DIR" 2>/dev/null; then
+    # NAME WHAT WENT WRONG. The likeliest cause is that /run is not writable,
+    # which means the tmpfs guest/init mounts did not land -- a different
+    # fault from this script being broken, and worth saying so.
+    echo "xdg-runtime: could not create $DIR"
+    if ! /bin/busybox grep -q " /run " /proc/mounts 2>/dev/null; then
+        echo "  /run is not a mount point; the root is read-only, so there is"
+        echo "  nowhere to create it. guest/init mounts a tmpfs there before"
+        echo "  exec'ing dinit -- see VERON-RUN-WARN in that script."
+    fi
+    exit 1
+fi
+
+/bin/busybox chmod 0700 "$DIR"
+echo "xdg-runtime: $DIR ready (mode 0700, uid 0)"

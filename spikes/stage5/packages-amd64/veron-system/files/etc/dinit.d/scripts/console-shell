@@ -1,0 +1,30 @@
+#!/bin/busybox sh
+# The console's login shell. Sources /etc/profile, then becomes the shell.
+#
+# WHY THIS EXISTS AT ALL, WHEN `getty -l /bin/sh` LOOKS LIKE IT WOULD DO.
+# It does not, and the difference was measured on the real kernel:
+#
+#   PATH=[/sbin:/usr/sbin:/bin:/usr/bin]     <- busybox's built-in default
+#   PS1=[\w \$ ]                             <- busybox's built-in default
+#   argv0=[/bin/sh]
+#
+# A shell sources /etc/profile only when it is a LOGIN shell, and a shell is a
+# login shell only when its argv[0] begins with `-`. busybox getty execs the
+# program named by -l with argv[0] set to the path it was given, so `/bin/sh`
+# starts as a plain interactive shell and /etc/profile is never read. The file
+# was shipped, was correct, and had no reader.
+#
+# AND THE DEFAULT IS NOT MERELY COSMETIC. busybox's PATH puts /sbin and /bin
+# FIRST; /etc/profile puts /usr/bin first, deliberately, because that is the
+# build's PATH. Reversed, every busybox applet in /bin shadows the real binary
+# in /usr/bin -- so the booted system would resolve busybox's `sh`, `ls` and
+# `grep` in preference to the packages this project spent sixty-two builds
+# producing, and `veron compare` would be describing files nothing runs.
+#
+# WHY NOT `exec -a -sh /bin/sh`. That is a bashism; busybox ash does not
+# accept it, and a login path that depends on which shell implements which
+# extension is the sort of thing that works until the shell is swapped. A
+# script that sources the file itself needs no argv[0] trick and works under
+# any POSIX shell.
+[ -r /etc/profile ] && . /etc/profile
+exec /bin/busybox sh -i

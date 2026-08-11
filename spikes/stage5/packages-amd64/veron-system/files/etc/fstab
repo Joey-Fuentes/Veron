@@ -1,0 +1,80 @@
+# /etc/fstab -- what dinit's early-filesystems service mounts.
+#
+# The root is mounted by the kernel from the rdinit handoff and is NOT listed
+# here: listing it would mean re-mounting a filesystem that is already the one
+# this file was read from.
+proc            /proc     proc      nosuid,noexec,nodev   0 0
+sysfs           /sys      sysfs     nosuid,noexec,nodev   0 0
+devtmpfs        /dev      devtmpfs  mode=0755,nosuid      0 0
+devpts          /dev/pts  devpts    gid=5,mode=620        0 0
+# /dev/shm IS WHERE glibc PUTS POSIX SHARED MEMORY, AND WITHOUT IT NO WAYLAND
+# COMPOSITOR STARTS. shm_open(3) is implemented as open(2) under /dev/shm; with
+# nothing mounted there the call fails and wlroots reports
+#
+#     [types/wlr_linux_dmabuf_v1.c:537] Failed to allocate shm file for format table
+#     [types/wlr_keyboard.c:212] Failed to allocate shm file for keymap
+#     Segmentation fault
+#
+# -- and the segfault is wlroots dereferencing the failed keymap. That read as
+# a graphics bug for three runs: the visible errors were EGL and DRI2, and
+# /dev/dri/card0, /dev/dri/renderD128, both input nodes and a healthy
+# /run/seatd.sock were all present and correct.
+#
+# mode=1777 IS NOT DECORATION. /dev/shm is world-writable with the sticky bit
+# exactly like /tmp, because every user's client library creates files there
+# and none may delete another's.
+#
+# nosuid,nodev FOR THE SAME REASON /tmp CARRIES THEM: it is a world-writable
+# directory and neither a setuid binary nor a device node has any business
+# being created in one.
+tmpfs           /dev/shm  tmpfs     nosuid,nodev,mode=1777  0 0
+tmpfs           /run      tmpfs     nosuid,nodev,mode=755 0 0
+tmpfs           /tmp      tmpfs     nosuid,nodev          0 0
+
+# FIRMWARE IS A SEPARATE IMAGE, AND VERON SHIPS NONE.
+#
+# Nearly every WiFi chipset needs a vendor firmware blob loaded at runtime.
+# It is redistributable and it is not source: it cannot be built, only copied,
+# so it does not trace to the seed and it does not belong in an image whose
+# whole claim is that everything in it does. The same argument that moved the
+# selfrebuild payload out of the image applies here and is stronger, because
+# this is someone else's binary rather than our own build tree.
+#
+# So Veron provides the MECHANISM and the PLACE, and nothing else. The kernel
+# already has the firmware loader; this line is the mount point. A user who
+# wants firmware builds an ext4 image whose ROOT IS THE FIRMWARE TREE -- so
+# ath10k/, regulatory.db and so on sit at the top level, NOT under a nested
+# lib/firmware, because this image is mounted AT /lib/firmware and a nested
+# copy would land at /lib/firmware/lib/firmware. linux-firmware unpacks
+# straight into one, with any distro's tools, needing nothing Veron-specific.
+# A user who does not want firmware gets a silent skip.
+#
+#     mke2fs -t ext4 -L veron-firmware -d <tree> firmware.img 256M
+#
+# MEASURED, BOTH WAYS, ON THE REAL KERNEL:
+#   attached  ->  early-filesystems: mounted /dev/vda on /lib/firmware   rc=0
+#   absent    ->  /lib/firmware not mounted, no device ... (nofail)      rc=0
+#
+# THIS IS WHY A SEPARATE IMAGE RATHER THAN A WRITABLE DIRECTORY. The root is
+# read-only with a tmpfs overlay, so a blob dropped into /lib/firmware would
+# live in RAM and vanish on reboot. Mounting a second read-only image needs no
+# persistence, no writable root, and no change to the overlay -- and it keeps
+# the firmware out of files.tsv and IMAGE-SHA256, so a user swapping their
+# blobs does not invalidate the system's own integrity.
+#
+# LABEL RATHER THAN /dev/vdb. Device names are enumeration order: vdb under
+# qemu is whatever happens to attach second, and on real hardware it is
+# whatever the kernel probes second. A label is a property of the filesystem
+# the user made.
+#
+# nofail IS LOAD-BEARING -- see scripts/early-filesystems. Without it the
+# common case, no such device, would fail the service and take the console
+# down with it.
+#
+# WHAT THIS IS NOT: a claim that Veron supports any particular hardware.
+# ath9k is the interesting counter-case and is worth stating precisely rather
+# than loosely: most ath9k PCI parts need no firmware at all, while ath9k_htc
+# (USB) does. "Needs no firmware" and "has free firmware" are different
+# properties and only some hardware has the first. Which parts, exactly, is
+# research nobody has done here yet.
+LABEL=veron-firmware  /lib/firmware  ext4  ro,nosuid,nodev,nofail  0 0

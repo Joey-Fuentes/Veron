@@ -1,0 +1,38 @@
+# /run/user/0, without which a compositor exits before it starts.
+#
+# labwc's src/main.c:242 is:
+#
+#     if (!getenv("XDG_RUNTIME_DIR")) {
+#         wlr_log(WLR_ERROR, "XDG_RUNTIME_DIR is unset");
+#         exit(EXIT_FAILURE);
+#     }
+#
+# -- a hard exit before server_init(), so a compositor that is built, linked
+# and installed correctly still fails immediately. Nothing in Veron created
+# the directory or exported the variable; /etc/profile set PATH, PS1 and TERM
+# and stopped there.
+#
+# A SERVICE RATHER THAN THE LOGIN SHELL. Doing it in scripts/console-shell
+# would work for an interactive login and for nothing else -- a compositor
+# started from a dinit service, from ssh later, or by hand would find no
+# runtime directory. This is one action with a defined end, which is what
+# `type = scripted` is for, and it is the same shape as early-filesystems.
+#
+# AND AUTHENTICATION.md ALREADY WANTS THIS HOOK. Its FIDO2 design records the
+# same need: "you can just `mkdir -p /run/user/$UID` mode 700 and export the
+# variable", as the PAM-free replacement for what logind does elsewhere.
+# Writing it once here means the login work later extends a service rather
+# than inventing one.
+#
+# DEPENDS ON early-filesystems BECAUSE /run MUST BE A tmpfs FIRST. The image
+# root is read-only; /run is mounted by guest/init before dinit starts so
+# that dinit's own control socket survives, and this directory goes on the
+# same filesystem.
+#
+# uid 0 IS THE ONLY USER THERE IS. /etc/passwd names root, _dhcpcd and
+# nobody, autologin runs as root, and there is no user management yet. When
+# there is, this becomes per-uid and the login helper owns it.
+type = scripted
+command = /bin/busybox sh /etc/dinit.d/scripts/xdg-runtime
+restart = false
+depends-on = early-filesystems

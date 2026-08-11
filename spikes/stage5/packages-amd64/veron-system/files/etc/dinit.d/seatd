@@ -1,0 +1,42 @@
+# The seat daemon, without which a compositor cannot open the DRM device.
+#
+# WHY IT IS A SERVICE AND NOT A LIBRARY CALL. wlroots' session backend needs
+# libseat AND a running seatd: backend/session/meson.build:11 refuses to build
+# session support without `udev.found() and libseat.found()`, and libseat's
+# default backend then connects to a daemon on /run/seatd.sock. The package was
+# built and installed -- /usr/bin/seatd and /usr/bin/seatd-launch are both in
+# its [installs] listing -- and NOTHING STARTED IT. So labwc would have failed
+# to acquire a session even once it was launched, and the error would have
+# named DRM rather than seatd.
+#
+# type = process BECAUSE IT MUST KEEP RUNNING. This is the dinit lesson from
+# the two-VM DHCP test: a daemon whose job is to stay up cannot be modelled as
+# a step that completes. seatd holds the socket for the life of the session.
+#
+# -g video PUTS THE SOCKET IN A GROUP RATHER THAN LEAVING IT ROOT-ONLY. Today
+# every process here runs as root and it makes no difference; when there is a
+# real user, this is the line that lets them run a compositor without being
+# root.
+#
+# AND THE GROUP HAD TO EXIST, WHICH IT DID NOT. This service named `video`
+# while /etc/group held only root, tty, nogroup and _dhcpcd, so seatd could
+# not resolve it and exited:
+#
+#     dinit: Service seatd process terminated with exit code 1
+#     dinit: Service seatd restarting too quickly; stopping.
+#
+# labwc then started, found no seat, and exited 1 in turn -- so the whole
+# desktop failed on a group name. video:x:39 is now in /etc/group; 39 is the
+# conventional GID and any free number would have done.
+#
+# The first screenshot run is what surfaced this: the frame was black and the
+# session console said exactly why, which is the argument for capturing the
+# console alongside the image rather than the image alone.
+#
+# depends-on early-filesystems BECAUSE /run MUST BE A tmpfs FIRST. The image
+# root is read-only; guest/init mounts /run before exec'ing dinit and the
+# socket goes there.
+type = process
+command = /usr/bin/seatd -g video
+restart = true
+depends-on = early-filesystems

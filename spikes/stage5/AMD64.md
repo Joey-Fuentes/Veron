@@ -90,10 +90,11 @@ diffs anyway — contents differing is expected, but a package installing a
 
 ---
 
-## The eleven recipes that differ, and where they live
+## The twelve recipes that differ, and where they live
 
-Eleven recipes need to say something different on x86_64 — seven predicted
-from reading, four found by the runs. They are **not edited in place** — `packages/` is the aarch64 arm's tree and stays exactly as it is.
+Twelve recipes need to say something different on x86_64 — seven predicted
+from reading, four found by the runs, and one found by booting the image on a
+laptop. They are **not edited in place** — `packages/` is the aarch64 arm's tree and stays exactly as it is.
 Each has a replacement in **`packages-amd64/`**, which only
 `stage5-spike-amd64` loads, via `veron --overlay packages-amd64`.
 
@@ -110,6 +111,7 @@ Each has a replacement in **`packages-amd64/`**, which only
 | 105 | `freetype` | (bzip2 autodetected) | `--without-bzip2` | none |
 | 1 | `bzip2` | stages only `libbz2.a` | `install-shared` step | none — three packages can finally link it |
 | 33 | `libffi` | `--with-gcc-arch=native` | `x86-64` | none — it is the baseline the image already uses |
+| 121 | `veron-system` | console on `ttyAMA0` | `ttyS0` | none — it is the tty this arm already boots on |
 
 **Four of the seven are one fact and one missing tool.** libvpx, dav1d and
 ffmpeg all need `nasm` on x86 where aarch64 needs nothing — its `.S` files go
@@ -385,6 +387,62 @@ already had by default**. Nothing about the test changes; what changes is that
 the baseline the image is certified against appears in the log, and raising it
 becomes a decision somebody writes down rather than a default nobody chose.
 
+### The fifth finding: 157 tests pass and nobody can type into it
+
+Booting the published image by hand, with `-cpu host` so libffi runs, gives
+`pass=157 fail=0` and then a console that does this forever:
+
+```
+dinit: Service console process terminated with exit code 1
+[STOPPD] console
+[  OK  ] console
+dinit: Service console process terminated with exit code 1
+...
+```
+
+`veron-system`'s console service ends:
+
+```
+command = /bin/busybox getty -n -l .../console-shell 115200 ttyAMA0
+restart = true
+```
+
+**`ttyAMA0` is the ARM PL011 UART and does not exist on x86.** This arm passes
+`console=ttyS0` on every kernel command line it writes, and then ships a
+service that opens `ttyAMA0`. getty exits 1 immediately, `restart = true` does
+exactly what it was asked, and the loop is the correct behaviour of a service
+given a wrong device name.
+
+**It reads as the documented absence of a login, and it is not that.**
+`STAGE5.md` records that there is no login — `getty -n`, and an `/etc/passwd`
+naming a `/etc/shadow` that does not exist — and that is a deliberate state.
+This is a getty that cannot open a tty. The two look identical from across the
+room and the difference is the exit code.
+
+**Nothing in the run could have caught it.** The package tests run from init,
+before dinit exists, and all 157 pass. The console service starts afterwards,
+and no gate asserts that a getty stayed up. **A boot can report 157 passes and
+hand back a machine nobody can type into** — which is the exact shape of green
+marker this project treats as worse than a red one, and it survived four runs
+of an arm that was otherwise finding a defect per run.
+
+It was found by a person booting the image by hand on a laptop. That is worth
+recording on its own: every other finding here came out of CI, and this one
+could not have.
+
+The overlay states `ttyS0`. **The base is not changed, though it should be** —
+the honest fix is for the service to take its tty from `console=` on
+`/proc/cmdline` rather than naming one, which makes the file arch-neutral and
+correct on both arms. That moves `veron-system`'s bytes and every digest
+downstream, so it needs its own dispatch.
+
+**A gate is missing and is not added here.** Something should assert that the
+console service is still running some seconds after dinit comes up — the boot
+already greps the log for markers, so this is within reach. It is not written
+yet because the right assertion is not obvious: `restart = true` means the
+service is always about to be "up" again, so counting restarts is closer to
+the truth than checking liveness once.
+
 ### Booting the published image on your own machine
 
 ```sh
@@ -541,14 +599,14 @@ it does not build.
 
 `PLAN-amd64.txt` is committed beside `PLAN.txt` and checked by
 `veron --overlay packages-amd64 --plan PLAN-amd64.txt plan --check`. The two
-files differ in **47 lines: ten `argv` lines, eleven `recipe-sha` lines and one
+files differ in **49 lines: ten `argv` lines, twelve `recipe-sha` lines and one
 whole added step** — which is both the proof that the overlay changes only
 what it claims to and the cheapest available review of what this architecture
 does differently.
 
 ```
 diff PLAN.txt PLAN-amd64.txt | grep -c '^[<>]'
-47
+49
 ```
 
 ---
@@ -563,8 +621,8 @@ makes `plan --check` stale for a reason that is not a fault):
 |---|---|
 | `veron selftest` — no overlay | `VERON-SELFTEST-OK`, output identical to the unmodified driver except three counts that moved because a new workflow file exists |
 | `veron plan --check` — no overlay | `VERON-PLAN-OK`, `plan-sha256 7799c291…` |
-| `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `11 overlay recipe(s) pin the same source as their base` |
-| `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 be351f2a…` |
+| `veron --overlay packages-amd64 selftest` | `VERON-SELFTEST-OK`, `12 overlay recipe(s) pin the same source as their base` |
+| `veron --overlay … --plan PLAN-amd64.txt plan --check` | `VERON-PLAN-OK`, `plan-sha256 59898d1a…` |
 | `build --upto orc` | truncates the plan to `[1/81]` and says so; refuses an unknown name and refuses to be combined with a package list |
 | the `PARTIAL` interlock | all ten system-producing steps gated, verified by parsing the rendered conditions |
 | the three new gates | broken on purpose, each confirmed red |
@@ -608,6 +666,10 @@ architecture.
 - **`libffi` still says `native` in the base tree**, on both arms. It is a
   live G3 hazard the day two runners differ, and an unproven portability
   hazard on aarch64.
+- **`veron-system` names a tty instead of reading `console=`.** Arch-neutral
+  is one small script change and is correct on both arms.
+- **No gate asserts the console survives dinit.** 157 passes and an unusable
+  machine is currently a green run.
 - **The image published despite a failing guest test.** `Publish the image` is
   `if: always()` and guards only on the image existing — inherited from the
   aarch64 arm, not introduced here. Whether `VERON-STAGE5-PUBLISHED-AMD64`

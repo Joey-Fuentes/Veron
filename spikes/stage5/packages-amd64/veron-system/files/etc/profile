@@ -1,0 +1,68 @@
+# Minimal login environment. PATH mirrors policy/defaults.toml's build PATH so
+# a shell in the booted image resolves the same binaries the build did.
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export PS1='veron# '
+export TERM=${TERM:-linux}
+
+# XDG_RUNTIME_DIR, CREATED BY THE xdg-runtime SERVICE AND EXPORTED HERE.
+#
+# A Wayland compositor will not start without it: labwc's src/main.c:242
+# exits EXIT_FAILURE outright if the variable is unset, before it touches a
+# DRM device or reads a config file. So this is the difference between
+# "labwc is installed" and "labwc runs".
+#
+# THE DIRECTORY IS NOT CREATED HERE. Creating it in the login shell would
+# make it exist only for interactive logins, and a compositor launched any
+# other way would still fail. The service owns the directory; this exports
+# where it is. If the service failed, the variable points at nothing and
+# labwc says so -- which is better than this script silently making one.
+export XDG_RUNTIME_DIR=/run/user/0
+
+# XDG_CONFIG_DIRS, BECAUSE labwc INSTALLS ITS CONFIG AS DOCUMENTATION.
+#
+# meson.build:27 puts rc.xml, menu.xml and themerc in
+# share/doc/labwc/ -- they are examples, not defaults, and nothing lands in
+# /etc/xdg. labwc's src/common/dir.c:28 searches XDG_CONFIG_HOME then
+# XDG_CONFIG_DIRS, so Veron's own copies go in /etc/xdg and this names it.
+# Stated rather than left to the spec default for the same reason PATH is:
+# a default that happens to be right is not a decision.
+export XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}
+
+# THE LOCALE, WITHOUT WHICH A TERMINAL IS ASCII-ONLY.
+#
+# glibc defaults to "C" when nothing is set, and C is not a UTF-8 locale. foot
+# says so in its own window -- "'C' is not a UTF-8 locale, and failed to find a
+# fallback" -- which is how this was noticed: the first working screenshot
+# showed a rendered desktop with an error banner in the terminal.
+#
+# C.UTF-8 is generated at build time by veron-system's locale step; glibc's
+# localedef and the C locale source are both in the stage-4 sysroot, so this
+# needed no new package.
+#
+# LANG RATHER THAN LC_ALL. LC_ALL is an override that a user cannot then
+# adjust per-category; LANG is the default that LC_* variables refine, which
+# is what a system-wide setting should be.
+export LANG=C.UTF-8
+
+# NO GPU, SO SKIA PAINTS ON THE CPU. SkiaPaintingEngine.cpp:55: "If
+# WEBKIT_SKIA_ENABLE_CPU_RENDERING is unset, we will allocate a GPU-ONLY
+# worker pool". mesa here is llvmpipe, so that pool reaches the same CPU by a
+# longer route.
+#
+# IT IS SET IN TWO PLACES ON PURPOSE. labwc-session sets it for everything the
+# compositor autostarts; this sets it for anything launched from a LOGIN
+# SHELL, which is how the screenshot test starts MiniBrowser and how a user
+# would start it by hand. dinit does not source /etc/profile, so neither
+# location covers the other.
+export WEBKIT_SKIA_ENABLE_CPU_RENDERING=1
+# AND THE VARIABLE THAT ACTUALLY REMOVES THE GPU BUFFER PATH.
+# WPEDisplay.cpp:632 reads LIBGL_ALWAYS_SOFTWARE and makes
+# wpe_display_get_drm_device() return nullptr, which makes
+# WebProcessPoolGLib.cpp:200 skip RendererBufferTransportMode::Hardware and
+# leaves only SharedMemory -- so the web process presents through wl_shm and
+# never asks Mesa for a GBM buffer it cannot allocate.
+#
+# Set here as well as in labwc-session because dinit does not source this
+# file: labwc-session covers what the compositor autostarts, this covers a
+# login shell, and neither covers the other.
+export LIBGL_ALWAYS_SOFTWARE=1

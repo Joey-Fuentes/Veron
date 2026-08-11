@@ -1,0 +1,51 @@
+# Run when labwc starts.
+#
+# UPSTREAM SHIPS AN autostart EXAMPLE TO share/doc/labwc/ AND INSTALLS NOTHING.
+# Without this file the session starts with a bare compositor: no wallpaper, no
+# status bar, nothing but whatever the user launches by hand.
+#
+# EACH LINE IS GUARDED because this file runs on every start and a missing
+# binary would print a shell error into the session log on every boot. The
+# guard makes an absent package silent rather than noisy -- and the packages
+# ARE optional: labwc runs without any of them.
+
+# A background. swaybg reads PNG ONLY here: gdk-pixbuf is declined in its
+# recipe, so background-image.c:41 goes straight to
+# cairo_image_surface_create_from_png and any other format fails to load.
+#
+# THE IMAGE IS A GRADIENT WITH A CENTRED MARKER, NOT A FLAT COLOUR, AND THAT IS
+# FOR THE SCREENSHOT. A screenshot of a solid field looks identical whether the
+# compositor rendered it or the framebuffer was never written at all. A
+# gradient proves per-pixel output; the marker block proves geometry and
+# orientation. -c is kept as the fallback so a missing file still gives a
+# desktop rather than a black screen.
+if [ -x /usr/bin/swaybg ]; then
+    if [ -f /usr/share/veron/wallpaper.png ]; then
+        /usr/bin/swaybg -m fill -i /usr/share/veron/wallpaper.png &
+    else
+        /usr/bin/swaybg -c '#1a1a1a' &
+    fi
+fi
+
+# The status bar. THE config.yml GUARD USED TO BE TRUE OF A FILE THAT DID NOT
+# EXIST, so yambar was built with ten plugins enabled and never started, and
+# the guard is what made that silent. The file is now shipped beside this one.
+#
+# Its foreign-toplevel module is what shows the window list: labwc implements
+# wlr-foreign-toplevel-management through wlroots, so opening a terminal makes
+# an entry appear in the bar. That is the cheapest end-to-end proof that
+# compositor, protocol and bar are all talking.
+#
+# -c IS REQUIRED: yambar DOES NOT SEARCH XDG_CONFIG_DIRS. main.c's
+# get_config_path checks $HOME/.config/yambar/config.yml and then
+# $XDG_CONFIG_HOME/yambar/config.yml, and stops. /etc/xdg is in
+# XDG_CONFIG_DIRS, which it never consults -- so the file shipped beside this
+# one was invisible and yambar died with
+#
+#     err: main.c:316: could not find a configuration (see man 5 yambar)
+#
+# labwc reads /etc/xdg through XDG_CONFIG_DIRS and yambar does not; assuming
+# one spec-adjacent behaviour implies the other is what cost this. -c names
+# the path outright (main.c:220, which stats it before accepting).
+[ -x /usr/bin/yambar ] && [ -f /etc/xdg/yambar/config.yml ] && \
+    /usr/bin/yambar -c /etc/xdg/yambar/config.yml &

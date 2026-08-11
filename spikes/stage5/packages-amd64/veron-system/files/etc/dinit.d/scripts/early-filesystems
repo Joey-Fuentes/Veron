@@ -1,0 +1,179 @@
+#!/bin/busybox sh
+# Mount everything in /etc/fstab that is NOT ALREADY MOUNTED.
+#
+# `mount -a` was here and it failed the boot:
+#
+#   dinit: Service early-filesystems command failed with exit code 1
+#
+# The service's own comment claimed "mount is a no-op on an existing mount
+# rather than an error -- which is why this does not need to know how it was
+# booted." That was an assumption, and it was wrong: busybox `mount -a`
+# returns non-zero when an entry is already mounted, and dinit treats a
+# scripted service's non-zero exit as a failed start.
+#
+# AND THE SYSTEM DOES NOT NEED TO KNOW HOW IT WAS BOOTED -- that part of the
+# claim is worth keeping, which is why this checks rather than branching.
+# guest/init mounts /proc, /sys and /dev before switch_root and MOVES them
+# into the new root, because they are already correct and remounting them
+# would be work for nothing. A direct boot with no initramfs would arrive
+# with none of them. Both are handled by asking.
+#
+# /proc must exist before /proc/mounts can be read, so its absence is the
+# first thing tested and the grep failing IS the answer.
+set -u
+rc=0
+# RESOLVE LABEL= AND UUID= OURSELVES, BECAUSE NOTHING ELSE HERE CAN.
+#
+# Measured in the guest, not assumed:
+#
+#   # mount -L veron-firmware /mnt/fw
+#   mount: invalid option -- 'L'
+#   # ls /dev/disk
+#   ls: /dev/disk: No such file or directory
+#
+# busybox mount has no LABEL=/UUID= support in this build, and /dev/disk/by-*
+# is populated by udev -- which this system does not have. libudev-zero is a
+# library with no daemon, and mdev creates device nodes without the by-label
+# symlink farm. So an fstab entry naming a label would be handed to mount as
+# a literal device name and fail.
+#
+# busybox blkid DOES work and prints exactly what is needed:
+#
+#   /dev/vda: LABEL="veron-firmware" UUID="12cf..." TYPE="ext4"
+#
+# WHY NOT JUST WRITE /dev/vdb. Because that is enumeration order, not
+# identity: vdb is whatever attaches second under qemu and whatever the kernel
+# probes second on real hardware. A label is a property of the filesystem the
+# user made, and it is the only thing here that stays true when the hardware
+# changes.
+resolve_dev() {
+    case "$1" in
+        LABEL=*) _k=LABEL; _v=${1#LABEL=} ;;
+        UUID=*)  _k=UUID;  _v=${1#UUID=} ;;
+        *)       echo "$1"; return 0 ;;
+    esac
+    # No pipe: a `while read` in a pipeline runs in a subshell, so anything it
+    # sets is lost and an early return does not reach the caller.
+    _out=$(/bin/busybox blkid 2>/dev/null)
+    for _dev in $(echo "$_out" | /bin/busybox sed -n \
+            "s|^\\([^:]*\\):.*$_k=\"$_v\".*|\\1|p"); do
+        echo "$_dev"
+        return 0
+    done
+    return 1
+}
+
+while read -r src dst type opts rest; do
+    case "$src" in ''|'#'*) continue ;; esac
+    case "$dst" in ''|/) continue ;; esac
+    if [ -e /proc/mounts ] && /bin/busybox grep -q " $dst " /proc/mounts; then
+        continue
+    fi
+    # nofail MEANS ABSENT IS NORMAL, NOT BROKEN.
+    #
+    # /lib/firmware is the case this exists for: Veron ships no firmware, and
+    # a user who attaches a firmware image gets it mounted while a user who
+    # does not gets a silent skip. Without this, the overwhelmingly common
+    # case -- no such device -- would print an error, set rc=1, and dinit
+    # would treat early-filesystems as a FAILED START, taking `boot` and the
+    # console down with it.
+    #
+    # That is the `mount -a` bug again, one entry over: this script was
+    # written because busybox `mount -a` returns non-zero for an already
+    # mounted entry and dinit refuses to start a scripted service that exits
+    # non-zero. Adding an optional device without adding this would have
+    # reintroduced the identical failure by a different route.
+    #
+    # THE DEVICE IS CHECKED BEFORE MOUNTING RATHER THAN AFTER FAILING,
+    # because `mount` cannot distinguish "no such device" from "the
+    # filesystem is corrupt", and those want different answers.
+    case ",$opts," in
+        *,nofail,*)
+            _d=$(resolve_dev "$src") || _d=""
+            if [ -z "$_d" ] || [ ! -e "$_d" ]; then
+                echo "early-filesystems: $dst not mounted, no device for $src (nofail)"
+                continue
+            fi
+            /bin/busybox mkdir -p "$dst" 2>/dev/null
+            # THE DEVICE AND TYPE ARE PASSED EXPLICITLY. `mount "$dst"` makes
+            # busybox re-read fstab and hand it the unresolved LABEL= again,
+            # which is the thing this branch exists to avoid.
+            if ! /bin/busybox mount -t "$type" -o "${opts%,nofail}" \
+                    "$_d" "$dst" 2>/dev/null; then
+                echo "early-filesystems: $_d present but would not mount on $dst (nofail)"
+            else
+                echo "early-filesystems: mounted $_d on $dst"
+            fi
+            continue
+            ;;
+    esac
+    /bin/busybox mkdir -p "$dst" 2>/dev/null
+    if ! /bin/busybox mount "$dst" 2>/dev/null; then
+        echo "early-filesystems: could not mount $dst"
+        rc=1
+    fi
+done < /etc/fstab
+
+# THE HOSTNAME, BECAUSE /etc/hostname HAD NO READER EITHER.
+#
+# Measured on the booted system: /etc/hostname contains `veron` and
+# `hostname` answered `(none)`. The file was shipped, was correct, and
+# nothing applied it -- the same shape as /etc/profile one service over.
+#
+# IT LIVES HERE RATHER THAN IN ITS OWN SERVICE because it is one syscall with
+# no dependencies and no failure mode worth supervising, and a service per
+# line would make boot.d a list of trivia. If it grows a second concern it
+# should move.
+if [ -r /etc/hostname ]; then
+    read -r hn < /etc/hostname
+    [ -n "$hn" ] && /bin/busybox hostname "$hn"
+fi
+
+# DEVICE PERMISSIONS, BECAUSE devtmpfs MAKES EVERY NODE root:root 0600 AND
+# THERE IS NO udev TO FIX THEM.
+#
+# On an ordinary system udev applies rules putting /dev/dri/* in the video
+# group and /dev/input/* in input. This system has libudev-zero, which
+# provides the LIBRARY so clients can enumerate devices -- it runs no daemon
+# and applies no rules. So nothing had ever set an owner or a mode:
+#
+#     crw-------  root root  226,   0  /dev/dri/card0
+#     crw-------  root root  226, 128  /dev/dri/renderD128
+#
+# IT WENT UNNOTICED UNTIL THE BROWSER, because labwc runs as root and root
+# ignores permissions. wpewebkit does not: its web process is spawned into a
+# bubblewrap sandbox, and the first thing ever to ask for a device as a
+# non-root, non-DRM-master process was told no:
+#
+#     KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+#     Failed to create GBM buffer of size 1024x768: Permission denied
+#
+# The captured frame was wallpaper, bar and terminal -- correct, and with no
+# browser window in it.
+#
+# renderD128 IS THE ONE THAT MATTERS. Render nodes exist precisely so an
+# unprivileged client can allocate buffers WITHOUT being DRM master; card0
+# stays master-only and labwc holds it. Putting the render node in the video
+# group is what a udev rule would do, and is the minimum that unblocks the
+# web process.
+#
+# /dev/input FOLLOWS THE SAME LOGIC AND IS NOT NEEDED YET -- labwc opens those
+# through seatd, as root. It is set anyway so that the day there is a real
+# unprivileged user, one thing is already true rather than a fresh mystery.
+#
+# BUSYBOX chgrp/chmod, NOT A RULES ENGINE. Two loops that state an intent,
+# where mdevd would be a package and a daemon for the same result. If device
+# HOTPLUG ever matters -- a USB keyboard after boot -- this is the thing that
+# has to be replaced rather than extended.
+for _d in /dev/dri/renderD*; do
+    [ -e "$_d" ] || continue
+    /bin/busybox chgrp video "$_d" 2>/dev/null
+    /bin/busybox chmod 0660  "$_d" 2>/dev/null
+done
+for _d in /dev/input/event*; do
+    [ -e "$_d" ] || continue
+    /bin/busybox chgrp input "$_d" 2>/dev/null
+    /bin/busybox chmod 0660  "$_d" 2>/dev/null
+done
+
+exit $rc

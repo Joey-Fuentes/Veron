@@ -1,0 +1,171 @@
+#!/bin/busybox sh
+# Start labwc with an environment dinit does not provide.
+#
+# dinit does NOT source /etc/profile -- that is a login shell's job -- so a
+# service started at boot inherits PID 1's environment. That has no PATH worth
+# using and, critically, no XDG_RUNTIME_DIR, which labwc treats as fatal at
+# src/main.c:242 before it touches a DRM device.
+set -u
+
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export XDG_RUNTIME_DIR=/run/user/0
+export XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}
+# WAYLAND CLIENTS FIND THE COMPOSITOR THROUGH THIS. Without it labwc still
+# creates wayland-0 in XDG_RUNTIME_DIR, but anything launched from autostart
+# inherits whatever the service had -- naming it makes the socket a decision.
+export XDG_SESSION_TYPE=wayland
+# WLR_RENDERER=pixman, AND IT IS THE COMPOSITOR SETTING THAT MAKES THE BROWSER
+# RENDER. This is the least obvious line in the file, so:
+#
+# wpewebkit's web process picked the DMA-BUF buffer transport and could not
+# allocate:
+#
+#     KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied
+#     Failed to create GBM buffer of size 1024x768: Permission denied
+#
+# THE FIRST LINE IS MESA, NOT WEBKIT -- it does not appear anywhere in the
+# wpewebkit tree. With no GPU, Mesa resolves the GBM device to kms_swrast,
+# whose buffers are backed by KMS DUMB BUFFERS. CREATE_DUMB is a modeset
+# ioctl: the kernel gates it on DRM MASTER and deliberately does not mark it
+# DRM_RENDER_ALLOW, so it cannot be issued on a render node at all.
+#
+# WHICH IS WHY chmod DID NOT FIX IT. /dev/dri/renderD128 was set to
+# root:video 0660 by early-filesystems and the error did not change by one
+# character -- the ioctl was never going to the render node. DRM master is
+# exclusive per device and labwc holds it; a second process cannot have it,
+# root or not. This is not a permissions problem and no uid or mode fixes it.
+#
+# THE TRANSPORT IS CHOSEN BECAUSE THE COMPOSITOR OFFERS IT. WebProcessGLib.cpp
+# :153 creates a GBM display whenever RendererBufferTransportMode::Hardware is
+# set, and that is set because labwc advertises zwp_linux_dmabuf_v1. The
+# escape hatch next to it, WEBKIT_DMABUF_RENDERER_DISABLE_GBM, is wrapped in
+# `#if PLATFORM(GTK)` -- checked in our own tarball -- so it does NOTHING on
+# the WPE port. There is no client-side variable to force shared memory.
+#
+# SO THE LEVER IS HERE. wlroots reads WLR_RENDERER at
+# render/wlr_renderer.c:228; `pixman` selects the software renderer, which
+# does not advertise dmabuf. WPE then negotiates wl_shm and presents through
+# createWaylandBufferSHM in WPEViewWayland.cpp -- a path that needs no GPU and
+# touches no DRM node.
+#
+# AND IT COSTS NOTHING WE HAVE. There is no GPU: mesa is already llvmpipe and
+# labwc is already compositing on the CPU. This states that rather than
+# routing it through a GBM allocator that cannot work.
+export WLR_RENDERER=pixman
+# AND THE SAME TRUTH ON THE CLIENT SIDE. WebProcessGLib.cpp:197 reads this and
+# SkiaPaintingEngine.cpp:55 says what happens without it: "If
+# WEBKIT_SKIA_ENABLE_CPU_RENDERING is unset, we will allocate a GPU-ONLY
+# worker pool". There is no GPU, so that pool paints through llvmpipe by a
+# longer route.
+#
+# THIS IS NOT THE FIX FOR THE GBM FAILURE -- painting and buffer transport are
+# separate, and CPU painting still creates the GBM display. WLR_RENDERER above
+# is what removes the allocation. This is here because it is CORRECT for a
+# machine with no GPU, and because leaving the browser to discover that at
+# runtime is the same class of omission as letting ninja pick its own -j.
+export WEBKIT_SKIA_ENABLE_CPU_RENDERING=1
+# LIBGL_ALWAYS_SOFTWARE=1 IS THE ONE THAT ACTUALLY STOPS THE GBM ALLOCATION,
+# AND IT IS WPE'S OWN SWITCH RATHER THAN A MESA SIDE EFFECT.
+#
+# WPEDisplay.cpp:632 defines isSotfwareRast() -- upstream's typo -- which reads
+# LIBGL_ALWAYS_SOFTWARE and accepts 1/y/yes/t/true. wpe_display_get_drm_device
+# opens with:
+#
+#     if (isSotfwareRast())
+#         return nullptr;
+#
+# and that nullptr is the whole mechanism. WebProcessPoolGLib.cpp:200 is
+#
+#     if (!parameters.drmDevice.isNull())
+#         parameters.rendererBufferTransportMode.add(...Hardware);
+#     ...
+#     parameters.rendererBufferTransportMode.add(...SharedMemory);
+#
+# so a null device means Hardware is never added, SharedMemory is added
+# unconditionally, and WebProcessGLib.cpp:153 never builds a GBM display.
+#
+# WHY THE EARLIER GUESS WAS WRONG. Hardware is NOT chosen because the
+# compositor advertises zwp_linux_dmabuf_v1 -- it is chosen because
+# drmMainDevice() returned something. DRMMainDevice.cpp:195 takes an EARLY
+# RETURN under WPEPlatform, straight from wpe_display_get_drm_device(), so
+# WEBKIT_WEB_RENDER_DEVICE_FILE below it is unreachable here too. Setting
+# WLR_RENDERER=pixman changed labwc's renderer -- visible as new
+# "libEGL: failed to create dri2 screen" lines -- and did not change the web
+# process's device at all, which is why the CREATE_DUMB errors survived it.
+#
+# THE COMMENT IN DRMMainDevice.cpp:214 SAYS THIS IS EXPECTED: "If we can get
+# the render node from EGL we should use that even if it's nullptr (WHICH IS
+# THE CASE WITH SOFTWARE RASTERIZATION)". Software rasterisation having no DRM
+# device is the designed state; this variable is how you declare it.
+export LIBGL_ALWAYS_SOFTWARE=1
+# THE CURSOR THEME, NAMED RATHER THAN GUESSED AT.
+#
+# wlroots/xcursor/xcursor.c:515 reads XCURSOR_PATH first, then falls back to
+# XDG_DATA_HOME and a built-in directory. Naming the path means the lookup
+# does not depend on XDG_DATA_HOME being set the way a desktop would set it,
+# and naming the theme means we are not relying on a fallback to a theme
+# called `default` -- which is precisely the lookup that failed:
+#
+#     Could not create cursor theme for 'default'
+#     Could not load cursor theme, disabling named cursors support
+#
+# veron-cursors ships `default` as a symlink to left_ptr, so both the theme
+# name and the cursor name now resolve.
+# WLR_NO_HARDWARE_CURSORS=1, AND THIS IS THE ONE THAT MADE A CURSOR APPEAR.
+#
+# wlroots puts the cursor on a KMS HARDWARE CURSOR PLANE by default. On
+# virtualised DRM drivers that plane needs a hotspot the old ioctls did not
+# carry, so the kernel hides it from clients that have not opted in with
+# DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT -- and the result is a compositor that
+# tracks the pointer perfectly and draws nothing. Measured here: the theme
+# loaded ("Loaded cursor theme 'Veron'"), the pointer moved, and the screen was
+# bare until this was set.
+#
+# IT IS NOT IMPLIED BY WLR_RENDERER=pixman. The renderer decides how the SCENE
+# is composited; the cursor can still be routed to a separate plane
+# independently. Two different decisions, and both have to be made.
+#
+# WITH IT, wlroots COMPOSITES THE CURSOR INTO THE FRAMEBUFFER it is already
+# drawing -- the path this system uses for everything else, and the one it is
+# known to do correctly here.
+export WLR_NO_HARDWARE_CURSORS=1
+export XCURSOR_PATH=/usr/share/icons
+export XCURSOR_THEME=Veron
+export XCURSOR_SIZE=24
+# LANG IS SET HERE TOO BECAUSE dinit DOES NOT SOURCE /etc/profile. A service
+# started at boot gets PID 1's environment, so the export in /etc/profile
+# reaches a login shell and nothing else -- and everything labwc autostarts
+# inherits from here.
+export LANG=C.UTF-8
+
+# FAIL WITH A REASON, NOT A STACK TRACE. Each of these is a distinct fault with
+# a distinct fix, and labwc's own error for the first two is about DRM rather
+# than about what is actually missing.
+if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    echo "labwc-session: $XDG_RUNTIME_DIR missing -- the xdg-runtime service"
+    echo "  did not run or could not create it. dinitctl status xdg-runtime"
+    exit 1
+fi
+if [ ! -S /run/seatd.sock ]; then
+    echo "labwc-session: no /run/seatd.sock -- seatd is not running, so"
+    echo "  wlroots cannot acquire a session and will report no DRM device."
+    echo "  dinitctl status seatd"
+    exit 1
+fi
+if [ ! -e /dev/dri/card0 ]; then
+    # NOT A HARD EXIT. wlroots can fall back to other backends, and saying so
+    # is more useful than refusing to start -- but the cause is worth naming
+    # because the kernel side of it is recorded in KERNEL-CHANGES.md.
+    echo "labwc-session: no /dev/dri/card0 -- DRM or virtio-gpu is absent from"
+    echo "  this kernel. labwc -Dbackends=drm has nothing to open."
+fi
+if [ ! -x /usr/bin/labwc ]; then
+    echo "labwc-session: no /usr/bin/labwc in this image"
+    exit 1
+fi
+
+echo "labwc-session: starting labwc (runtime=$XDG_RUNTIME_DIR config=$XDG_CONFIG_DIRS)"
+# exec SO dinit SUPERVISES labwc ITSELF rather than this wrapper. Without it
+# dinit would watch a shell that had already finished its work, and killing
+# the service would kill the wrapper and orphan the compositor.
+exec /usr/bin/labwc

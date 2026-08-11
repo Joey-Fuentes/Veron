@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The root menu, shown on right-click.
+
+  WITHOUT THIS FILE RIGHT-CLICK DOES NOTHING. labwc ships an example menu.xml
+  to share/doc/labwc/ as documentation and installs nothing to /etc/xdg, so a
+  compositor with no distribution-supplied menu has an empty desktop with no
+  visible way to launch anything.
+
+  EVERY ENTRY NAMES A BINARY THIS SET BUILDS. A menu item pointing at a
+  program that is not installed is worse than no item: it looks like a
+  feature and fails silently on click.
+-->
+<openbox_menu>
+  <menu id="root-menu" label="Veron">
+    <item label="Terminal">
+      <action name="Execute" command="/usr/bin/foot" />
+    </item>
+    <item label="Run...">
+      <action name="Execute" command="/usr/bin/fuzzel" />
+    </item>
+    <item label="Files">
+      <!-- nnn IS A CURSES PROGRAM AND HAS NO WINDOW OF ITS OWN. It has to be
+           launched inside a terminal, which is why foot's terminfo entry
+           matters: without it curses cannot describe the terminal it is
+           drawing to. -->
+      <action name="Execute" command="/usr/bin/foot /usr/bin/nnn" />
+    </item>
+    <separator />
+    <item label="Reconfigure">
+      <action name="Reconfigure" />
+    </item>
+    <item label="Exit">
+      <action name="Exit" />
+    </item>
+  </menu>
+</openbox_menu>

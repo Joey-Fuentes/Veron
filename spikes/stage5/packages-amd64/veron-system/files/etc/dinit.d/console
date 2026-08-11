@@ -1,0 +1,28 @@
+# An autologin root shell on the console.
+#
+# WHY busybox getty AND NOT agetty. agetty is util-linux, which is not in this
+# set and is not planned for it. busybox is in the sysroot, statically linked,
+# and already PID 1's shell in the initramfs -- so this adds no package.
+#
+# `-n` skips the login prompt. There is no password database worth
+# authenticating against yet: /etc/passwd names root with an `x` and there is
+# no /etc/shadow, so a real login would fail closed and leave an unusable
+# console. Autologin is the honest state of a system that has no user
+# management, and saying so here is better than shipping a prompt nobody can
+# satisfy.
+#
+# ttyS0, NOT ttyAMA0 -- SEE THE OVERLAY HEADER IN recipe.toml. ttyAMA0 is the
+# ARM PL011 UART; on x86_64 getty would open nothing, exit 1, and dinit would
+# restart it forever because `restart = true` is correct and the device name
+# is not.
+#
+# `-l` NAMES A WRAPPER, NOT /bin/sh, AND THAT IS NOT A STYLE CHOICE. getty
+# execs the -l program with argv[0] set to the path given, so /bin/sh started
+# as a NON-login shell and /etc/profile was never sourced -- measured on the
+# real kernel as PATH=/sbin:/usr/sbin:/bin:/usr/bin, which is busybox's
+# built-in default and the REVERSE of the one /etc/profile sets. See
+# scripts/console-shell for why that ordering matters.
+type = process
+command = /bin/busybox getty -n -l /etc/dinit.d/scripts/console-shell 115200 ttyS0
+restart = true
+depends-on = early-filesystems
