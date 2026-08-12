@@ -851,6 +851,80 @@ and the run that was supposed to confirm it changed nothing because the fix was
 in a directory this arm never reads. A patch series is not a place a change
 belongs by subject; it is a place a change belongs by *consumer*.
 
+#### The hermetic amd64 ladder: tcc-x86_64 could not run, and the reason is one byte
+
+Run 85548937922 got a cross compiler onto an x86_64 runner and then stopped at
+rung 0:
+
+```
+=== RUNG 0 -- the compiler runs, and libtcc1.a for it to link against ===
+Segmentation fault (core dumped)
+  soft float did NOT build -- tcc -run tcc.c will not link
+  libtcc1.a FAILED -- tcc -ar is the only archiver in this box
+```
+
+Every gate before it passed -- `VERON-XTCC-CROSS-OK`, `VERON-XTCC-LIBC-OK`,
+`VERON-XTCC-GEN2-OK`. The artifact is a valid static x86_64 ELF with a sane
+`_start`. It simply cannot run, and it does so on an ordinary x86_64 machine,
+which is what made this tractable: the binary was traced under ptrace rather
+than reasoned about.
+
+**The fault is at `0x4752e7`, in musl's `__copy_tls`**, storing through a
+pointer whose value is `-12` — `-ENOMEM`, a raw mmap error return being
+dereferenced. musl does that deliberately: `__init_tls` does not check the
+mmap result, and its comment says *"-4095...-1 cast to void * will crash on
+dereference anyway, so don't bloat the init code"*. So the question is why the
+mmap failed, and reading the libc struct out of the stopped process answers
+it:
+
+```
+libc.tls_size  = 0xffffffffffffffe0   (-32)
+libc.tls_align = 8
+```
+
+A negative length. **One instruction produced it:**
+
+```
+4755f0:  48 83 c0 d8      add $0xffffffffffffffd8,%rax
+```
+
+`0x83` is the imm8 form of ADD, and the immediate is **sign-extended** — so
+`0xd8` means `-40`. The constant should be `+216`: `2*sizeof(void *) +
+sizeof(struct pthread)`, 16 + 200, which does not fit in a signed byte at all.
+
+**The test that chose the short form is the bug**, `x86_64-gen.c:1714`:
+
+```c
+if (c == (char)c) {
+    orex(ll, r, 0, 0x83);   /* imm8, sign-extended */
+    g(c);
+} else {
+    orex(ll, r, 0, 0x81);   /* imm32 */
+}
+```
+
+`c == (char)c` means "fits in a signed byte" only where plain `char` is
+signed. It is not here — `arm64-gen.c:50` defines `CHAR_IS_UNSIGNED`, and
+`libtcc.c:895` acts on it — so when tcc compiles **itself** on aarch64, which
+is exactly what this ladder does, every value from 128 to 255 passes a test it
+should fail. Demonstrated rather than argued:
+
+```
+gcc                   ->  c == (char)c is 0
+gcc -funsigned-char   ->  c == (char)c is 1
+                          c == (signed char)c is 0 in both
+```
+
+**Ten sites**, five in `x86_64-gen.c` and five in `i386-gen.c`.
+`riscv64-gen.c` and `arm64-gen.c` have none, which is why the riscv64 arm
+never showed this and its own failure was a different bug entirely.
+`patches/tcc-arm64-asm/0009` fixes them.
+
+**Why nobody else hits this.** An ordinary tcc is built by a compiler with
+signed `char`, on the machine it targets. This needs a build host whose plain
+`char` is unsigned — aarch64, or any arm — producing a compiler for x86. That
+is this project's hermetic path and almost nobody else's.
+
 #### The compiler now leaves the job
 
 Five rounds have each cost a full ladder, because the only way to ask the

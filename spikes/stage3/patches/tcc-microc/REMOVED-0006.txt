@@ -1,0 +1,14 @@
+0006-la-does-not-go-through-the-got-for-a-static-link.patch was removed from
+this series and lives in tcc-arm64-asm/0008 instead.
+
+WHY IT MOVED. The riscv64 arm applies tcc-arm64-asm, not this series --
+stage4-arch-spike-riscv64.yml:353 -- so the fix in here never reached the tcc
+that builds that ladder, and run 85603600334 failed at rung 8 exactly as
+before with gp still landing on _GLOBAL_OFFSET_TABLE_+0x20.
+
+WHY IT COULD NOT SIMPLY BE IN BOTH. stage0-stage4-complete-amd64.yml applies
+BOTH series to the same tree, tcc-arm64-asm first and this one second, and a
+patch that does not apply is `exit 1`. Two copies of one change is a conflict
+by construction, and the hermetic ladder would abort at the patch step.
+
+So: one copy, in the series both arms read.

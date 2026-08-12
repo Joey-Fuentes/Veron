@@ -1,0 +1,177 @@
+From: Veron <spikes/stage3/patches>
+Subject: [PATCH] x86_64/i386-gen: (char) is not a signed-byte range test
+
+WHAT STOPS WITHOUT THIS. Rung 0 of the hermetic amd64 ladder, immediately:
+the cross-built tcc-x86_64 segfaults on every invocation, so nothing after it
+runs.
+
+    === RUNG 0 -- the compiler runs, and libtcc1.a for it to link against ===
+    Segmentation fault (core dumped)
+      soft float did NOT build -- tcc -run tcc.c will not link
+      libtcc1.a FAILED -- tcc -ar is the only archiver in this box
+
+Every gate before it passed: VERON-XTCC-CROSS-OK, VERON-XTCC-LIBC-OK,
+VERON-XTCC-GEN2-OK. The binary is a valid static x86_64 ELF with a sane
+_start. It just cannot run.
+
+TRACED, NOT GUESSED. Under ptrace on an x86_64 host the fault is at 0x4752e7,
+in musl's __copy_tls, storing through a pointer whose value is -12 -- that is
+-ENOMEM, a raw mmap error return being dereferenced. musl does that ON
+PURPOSE: __init_tls does not check the mmap result, and its comment says
+"-4095...-1 cast to void * will crash on dereference anyway, so don't bloat
+the init code". So the question is why the mmap failed, and reading the libc
+struct out of the stopped process answers it:
+
+    libc.tls_size  = 0xffffffffffffffe0   (-32)
+    libc.tls_align = 8
+
+A negative length. mmap returns -ENOMEM, and musl walks into it.
+
+ONE INSTRUCTION IS WRONG, and it is in the tls_size arithmetic:
+
+    4755f0:  48 83 c0 d8      add $0xffffffffffffffd8,%rax
+
+0x83 is the imm8 form of ADD and the immediate is SIGN-EXTENDED, so 0xd8
+means -40. The constant should be +216 -- 2*sizeof(void *) +
+sizeof(struct pthread), 16 + 200 -- which does not fit in a signed byte at
+all. The correct encoding is 0x81 with an imm32.
+
+THE TEST THAT CHOSE THE SHORT FORM IS THE BUG:
+
+    if (c == (char)c) {
+        orex(ll, r, 0, 0x83);       /* imm8, sign-extended */
+        g(c);
+    } else {
+        orex(ll, r, 0, 0x81);       /* imm32 */
+        oad(0xc0 | (opc << 3) | REG_VALUE(r), c);
+    }
+
+`c == (char)c` is meant to ask "does this fit in a signed byte". It only does
+that where plain char is SIGNED. It is not, here:
+
+    arm64-gen.c:50:  #define CHAR_IS_UNSIGNED
+    libtcc.c:895:    #ifdef CHAR_IS_UNSIGNED
+    libtcc.c:896:        s->char_is_unsigned = 1;
+
+so when tcc compiles ITSELF on aarch64 -- which is exactly what this ladder
+does, mc-tcc -> x86_64-tcc -> tcc-x86_64 -- every value from 128 to 255
+passes a test it should fail, and each is emitted as a negative imm8.
+Demonstrated rather than argued:
+
+    $ gcc               -o p p.c && ./p    ->  c == (char)c is 0
+    $ gcc -funsigned-char -o p p.c && ./p  ->  c == (char)c is 1
+      c == (signed char)c is 0 in both
+
+WHY NOBODY HAS HIT THIS. An ordinary tcc is built by a compiler with signed
+char, on the machine it targets. This bug needs a build host whose plain char
+is unsigned -- aarch64, or any arm -- producing a compiler for x86. That is
+this project's whole hermetic path and almost nobody else's.
+
+TEN SITES, NOT ONE. Five in x86_64-gen.c (325, 759, 1062, 1645, 1714) and
+five in i386-gen.c. riscv64-gen.c and arm64-gen.c have none, which is why the
+riscv64 arm never showed this and its own failure was a different bug
+entirely -- see 0008.
+
+The ones that are not the tls_size add are the same class and are equally
+wrong: a stack offset, a frame reference, gadd_sp, and a short jump
+displacement. A short jump encoded with 0xd8 jumps 40 bytes BACKWARD instead
+of 216 forward, which is a fault that would be far harder to read than this
+one.
+
+WHAT IS NOT ESTABLISHED. That this is the only thing wrong with tcc-x86_64.
+It is the reason rung 0 fails, verified at every link; whether the ladder
+then completes is what the next run answers.
+--- a/x86_64-gen.c
++++ b/x86_64-gen.c
+@@ -322,7 +322,7 @@
+ 	}
+     } else if ((r & VT_VALMASK) == VT_LOCAL) {
+         /* currently, we use only ebp as base */
+-        if (c == (char)c) {
++        if (c == (signed char)c) {
+             /* short reference */
+             o(0x45 | op_reg);
+             g(c);
+@@ -756,7 +756,7 @@
+ static void gen_offs_sp(int b, int r, int d)
+ {
+     orex(1,0,r & 0x100 ? 0 : r, b);
+-    if (d == (char)d) {
++    if (d == (signed char)d) {
+         o(0x2444 | (REG_VALUE(r) << 3));
+         g(d);
+     } else {
+@@ -1059,7 +1059,7 @@
+ 
+ static void gadd_sp(int val)
+ {
+-    if (val == (char)val) {
++    if (val == (signed char)val) {
+         o(0xc48348);
+         g(val);
+     } else {
+@@ -1642,7 +1642,7 @@
+ {
+     int r;
+     r = a - ind - 2;
+-    if (r == (char)r) {
++    if (r == (signed char)r) {
+         g(0xeb);
+         g(r);
+     } else {
+@@ -1711,7 +1711,7 @@
+             r = gv(RC_INT);
+             vswap();
+             c = vtop->c.i;
+-            if (c == (char)c) {
++            if (c == (signed char)c) {
+                 /* XXX: generate inc and dec for smaller code ? */
+                 orex(ll, r, 0, 0x83);
+                 o(0xc0 | (opc << 3) | REG_VALUE(r));
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -271,7 +271,7 @@
+     } else if ((r & VT_VALMASK) == VT_LOCAL) {
+ 	o(opc);
+         /* currently, we use only ebp as base */
+-        if (c == (char)c) {
++        if (c == (signed char)c) {
+             /* short reference */
+             o(0x45 | op_reg);
+             g(c);
+@@ -439,7 +439,7 @@
+ 
+ static void gadd_sp(int val)
+ {
+-    if (val == (char)val) {
++    if (val == (signed char)val) {
+         o(0xc483);
+         g(val);
+     } else {
+@@ -774,7 +774,7 @@
+ {
+     int r;
+     r = a - ind - 2;
+-    if (r == (char)r) {
++    if (r == (signed char)r) {
+         g(0xeb);
+         g(r);
+     } else {
+@@ -787,7 +787,7 @@
+ ST_FUNC void gjmp_cond_addr(int a, int op)
+ {
+     int r = a - ind - 2;
+-    if (r == (char)r)
++    if (r == (signed char)r)
+         g(op - 32), g(r);
+     else
+         g(0x0f), gjmp2(op - 16, r - 4);
+@@ -830,7 +830,7 @@
+             r = gv(RC_INT);
+             vswap();
+             c = vtop->c.i;
+-            if (c == (char)c) {
++            if (c == (signed char)c) {
+                 /* generate inc and dec for smaller code */
+                 if ((c == 1 || c == -1) && (op == '+' || op == '-')) {
+                     opc = (c == 1) ^ (op == '+');
