@@ -733,6 +733,97 @@ GOT-based load, where GNU `as` with `.option norelax` emits the PC-relative
 form. That is tcc's assembler output and it is a second thread pointing at the
 same place.
 
+#### Rung 8, answered: gp is garbage, and tcc put it there
+
+The artifact worked. `compiler-under-test-riscv64` unpacked on a machine with
+`qemu-riscv64`, and the question five rounds of probes could not settle took
+four commands.
+
+**`crt1.o` carries the wrong relocation on `__global_pointer$`:**
+
+```
+R_RISCV_GOT_HI20       __global_pointer$ + 0      <- wrong
+R_RISCV_PCREL_LO12_I   <no name> + 0
+...
+R_RISCV_PCREL_HI20     _start_c + 0               <- what it should be
+```
+
+`GOT_HI20` names the address of the symbol's **GOT slot**, and is correct only
+when the next instruction loads from that slot. The next instruction is
+`addi`. So `gp` receives `&GOT[n]` rather than the value of
+`__global_pointer$`:
+
+| | gp set by `_start` | `__global_pointer$` | off by |
+|---|---|---|---|
+| stage 1 | `0x9f3a0` | `0xa0e08` | `0x1a68` |
+| stage 2 | `0x79b30` | `0x7a420` | `0x8f0` |
+
+In both, `gp` lands exactly on `_GLOBAL_OFFSET_TABLE_ + 0x18` and `+ 0x20`.
+
+**Why only stage 2 dies**, counted out of `.text`:
+
+```
+stage 1 (built by tcc)         0 gp-relative loads/stores of 92156 insns
+stage 2 (built by gcc 4.6.4) 660                            of 51603
+```
+
+tcc emits no gp-relative addressing at all, so a wrong `gp` costs it nothing.
+gcc addresses small globals through `gp`, as the ABI intends, so stage 2 reads
+from a garbage base on its first global access — before it can print its own
+version. **Same broken `gp` in both binaries; only one ever looks at it.**
+
+This is what the rung-2 comment in `rungs-riscv64.sh` predicted in as many
+words: *"IF gp IS NEVER SET, OR SET WRONG, every gp-relative access reads from
+a garbage base. A program with no globals never makes one and runs fine. A 1.2
+MB compiler driver makes them constantly."*
+
+#### The cause is in tcc, and its own comment gives it away
+
+`riscv64-asm.c`, `parse_operand`:
+
+```c
+/* use the medium PIC model: GOT, auipc, lw */
+if (op->e.sym->type.t & VT_STATIC)
+    greloca(..., R_RISCV_PCREL_HI20, 0);
+else
+    greloca(..., R_RISCV_GOT_HI20, 0);
+```
+
+The choice is made on **symbol binding and never on output type**, so every
+non-static symbol takes the GOT path whether or not anything is being built
+position-independent. `__global_pointer$` is `WEAK HIDDEN UND` — not
+`VT_STATIC` — so it takes the `else`. And the code does not do what the
+comment says: it emits `addi`, not `lw`, so it does not implement the model it
+names.
+
+**Reproduced against GNU `as` from this chain**, under `qemu-riscv64`, with
+the binutils 2.30 built at rung 4:
+
+```
+la  gp, __global_pointer$                     -> R_RISCV_PCREL_HI20
+lla gp, __global_pointer$                     -> R_RISCV_PCREL_HI20
+la  gp, __global_pointer$  under .option pic  -> R_RISCV_GOT_HI20
+```
+
+The third is byte-for-byte what tcc produced — same relocation type, same
+`PCREL_LO12_I` pairing. So tcc behaves as though `.option pic` were always in
+force.
+
+**`.option norelax` is not the issue**, which is worth stating because the
+sequence exists to be protected by it. That directive suppresses linker
+*relaxation*; it says nothing about pic. What it prevents — the instruction
+computing `gp` being itself turned into a gp-relative access — works.
+
+`patches/tcc-microc/0006` makes the choice on output type: a DLL keeps the
+GOT, an executable or object gets the direct form. Verified at every case, and
+it applies and stacks on the existing series.
+
+**What is not established:** that this is the only thing wrong at rung 8. It
+explains the segfault completely, but preflight 5's other result — a program
+with a global crashing at `-O0` and passing at `-O2` — is unaccounted for. Both
+symptoms are gp-relative addressing over a bad base, so it may fall out of the
+fix; if it survives, it is a second question.
+
 #### The compiler now leaves the job
 
 Five rounds have each cost a full ladder, because the only way to ask the
