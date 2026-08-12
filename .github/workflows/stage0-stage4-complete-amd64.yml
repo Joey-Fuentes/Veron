@@ -2843,6 +2843,24 @@ jobs:
           # substitution is the same shape as stage0-stage4-complete's: a
           # source tree and a binary to drop into it.
           cp handoff/tcc-src.tar handoff-x86_64/tcc-src.tar
+          # THE TWO aarch64 COMPILERS TRAVEL WITH IT, and this is why.
+          #
+          # Run 85781077891 produced a cc1 with a wrong double constant baked
+          # in -- M_LOG10_2 came out 1.266209359584991e-12 instead of
+          # 0.30102999566398119521 -- and the investigation ruled out
+          # everything reachable from the x86_64 side: musl's strtod returns
+          # the correct bits, tcc built from this exact patched source by a
+          # host gcc emits the constant correctly, and so does a tcc built by
+          # THAT tcc. x86_64 self-hosting is clean.
+          #
+          # So the defect enters on the aarch64 leg, mc-tcc -> x86_64-tcc, and
+          # neither of those binaries left the runner. They do now. They are
+          # aarch64, so reading them needs qemu-aarch64-static rather than an
+          # ordinary machine -- which is the cost of the fault being on that
+          # side, not a reason to leave them behind.
+          cp handoff/mc-tcc handoff-x86_64/mc-tcc 2>/dev/null || true
+          cp xtcc/tcc-src/x86_64-tcc handoff-x86_64/x86_64-tcc 2>/dev/null || true
+          chmod 0755 handoff-x86_64/mc-tcc handoff-x86_64/x86_64-tcc 2>/dev/null || true
           # AND A PROVENANCE RECORD, because this artifact crosses a job
           # boundary and a binary with no record of where it came from is the
           # thing this whole workflow exists to avoid.
@@ -3941,7 +3959,15 @@ jobs:
           mkdir -p compiler
           B=box
           _have=
-          for d in work/out work/prefix work/bld/gcc work/bld2/gcc \
+          # THE COMPILER THAT DID THE COMPILING, NOT JUST THE ONE IT BUILT.
+          # The first version of this step collected work/out and work/bld and
+          # left out ref-tcc, which is the thing under suspicion whenever the
+          # gcc it produces misbehaves. Run 85781077891: cc1 had a wrong double
+          # constant baked into it -- M_LOG10_2 came out 1.266209359584991e-12
+          # instead of 0.30102999566398119521 -- and answering "which tcc code
+          # path wrote those bytes" needs the tcc, not the cc1.
+          for d in work/ref-tcc work/tccsrc work/tcc-src \
+                   work/out work/prefix work/bld/gcc work/bld2/gcc \
                    work/lfs/usr/bin work/lfs/usr/lib \
                    lib usr/lib usr/include; do
             [ -e "$B/$d" ] && _have="$_have $d"
@@ -3972,6 +3998,7 @@ jobs:
             echo "  work/bld/gcc/xgcc       rung 6 stage 1"
             echo "  work/bld2/gcc/xgcc      rung 8 stage 2, if it got that far"
             echo "  work/prefix/bin         binutils, built at rung 4"
+            echo "  work/ref-tcc            THE COMPILER THAT BUILT ALL OF IT"
             echo ""
             echo "These are x86_64. On an x86_64 machine they run directly:"
             echo "  tar -xf compiler-slice.tar.*"
