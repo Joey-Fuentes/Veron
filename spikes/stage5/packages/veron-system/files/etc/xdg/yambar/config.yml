@@ -67,6 +67,14 @@ bar:
     - label:
         content:
           string:
+            text: " Wi-Fi "
+            # THE ONE THING A PERSON DOES BY HAND, and it is a click. A machine
+            # with a saved network never needs it; a fresh one needs it once,
+            # and after that /persist carries the network across reboots.
+            on-click: /etc/dinit.d/scripts/wifi-connect
+    - label:
+        content:
+          string:
             text: " Browser "
             # THE FULL PATH, BECAUSE MiniBrowser IS NOT ON PATH. wpewebkit
             # installs it to /usr/libexec/wpe-webkit-2.0/, which no profile
@@ -144,7 +152,25 @@ bar:
               state == charging:
                 - string: {text: "chg {capacity}%"}
               state == discharging:
-                - string: {text: "bat {capacity}% {estimate}"}
+                # NO {estimate}, AND THE REASON IS IN /sys RATHER THAN IN
+                # yambar. The tag is "estimated time left ... formatted as
+                # HH:MM", computed from the charge remaining divided by the
+                # instantaneous draw. This battery reports no draw:
+                #
+                #     $ cat /sys/class/power_supply/BAT0/energy_full   34494000
+                #     $ cat /sys/class/power_supply/BAT0/energy_now    19390000
+                #     $ cat /sys/class/power_supply/BAT0/power_now     (empty)
+                #
+                # so the divisor is missing and the estimate clamps at its
+                # ceiling. The bar read `bat 61% 99:00` while discharging,
+                # which is worse than showing nothing: it looks like a working
+                # readout.
+                #
+                # battery-scale DOES NOT FIX IT. The manual offers that option
+                # for batteries that "report too high resulting in bad
+                # discharge estimates", which scales the CHARGE -- and the
+                # charge here is fine. Nothing scales a divisor that is absent.
+                - string: {text: "bat {capacity}%"}
               state == full:
                 - string: {text: "bat full"}
               # unknown IS COMMON AND NOT AN ERROR -- the module's own manual
@@ -155,10 +181,47 @@ bar:
                 - string: {text: "bat {capacity}%"}
               state == "not charging":
                 - string: {text: "bat {capacity}%"}
-    - backlight:
-        name: amdgpu_bl0
+    # THE ESTIMATE, COMPUTED HERE BECAUSE THE BATTERY MODULE CANNOT.
+    #
+    # Its {estimate} tag divides the charge by power_now, and on this machine
+    # that file is empty -- so it clamped at 99:00 and the bar showed a number
+    # that was never true. energy_now does fall between reads, so the drain is
+    # measurable by differencing; scripts/battery-estimate does that and emits
+    # an `estimate` tag in the script module's name|type|value protocol.
+    #
+    # IT SHOWS NOTHING UNTIL IT HAS SOMETHING. Blank on AC, blank for the first
+    # minute of a discharge, and blank if the rate implies more than a day. A
+    # missing estimate is honest; 99:00 was not.
+    - script:
+        path: /etc/dinit.d/scripts/battery-estimate
+        args: []
         content:
-          - string: {text: "bl {percent}%"}
+          string: {text: "{estimate}"}
+
+    # THE BACKLIGHT, AS A SCRIPT RATHER THAN THE MODULE THAT EXISTS FOR IT.
+    #
+    # yambar's backlight module reads the value once and then waits on a udev
+    # netlink socket for change events -- modules/backlight.c:165. The libudev
+    # here is libudev-zero, which has the API and not the event mechanism, so
+    # no event arrives and the number never moves. Measured: writing to
+    # /sys/class/backlight/amdgpu_bl0/brightness dimmed the screen and the bar
+    # still read `bl 100%`.
+    #
+    # AND THE MODULE HAS NO poll-interval to fall back on --
+    # yambar-modules-backlight(5) takes one option, `name`. The battery module
+    # has one; this does not. So it is replaced rather than configured.
+    #
+    # CLICKS STILL DO THE WORK. scripts/backlight steps the value; this only
+    # reports it.
+    - script:
+        path: /etc/dinit.d/scripts/backlight-report
+        args: []
+        content:
+          string:
+            text: "bl {percent}%"
+            on-click:
+              left: /etc/dinit.d/scripts/backlight up
+              right: /etc/dinit.d/scripts/backlight down
 
     # POWER, AND IT ASKS FIRST.
     #

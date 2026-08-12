@@ -1,0 +1,28 @@
+# A usable default sound card, and the volume from last time.
+#
+# WITHOUT THIS THE MACHINE IS SILENT AND NOTHING SAYS WHY. Two things go wrong
+# on any laptop with an HDMI-capable GPU, and both were measured:
+#
+#   1. `default` resolves to card 0, which is the HDMI codec. Opening it fails
+#      with "Playback open error on device 'default': Invalid argument", and
+#      WPE reports nothing at all -- a video plays silently. speaker-test
+#      -D hw:1,0 works the whole time, which is what makes it confusing.
+#   2. The DACs come up at gain 0 of 87. Not muted -- zero. BLFS says the same
+#      of its own systems, so this is normal rather than a fault.
+#
+# scripts/sound-setup writes /etc/asound.conf naming a card that can actually
+# play, then restores the mixer from /persist if a state file is there.
+#
+# stop-command SAVES THE MIXER ON THE WAY DOWN, which is the other half of
+# persistence and is easy to forget. alsactl store writes the current levels to
+# /var/lib/alsa/asound.state, which is a symlink into /persist -- so the volume
+# set by hand once is the volume on the next boot. Without this the restore
+# above would only ever find a file nobody wrote.
+#
+# `|| true` BECAUSE A MACHINE WITH NO PERSIST PARTITION HAS NOWHERE TO WRITE,
+# and failing to save state must not fail a shutdown.
+type = scripted
+command = /etc/dinit.d/scripts/sound-setup
+stop-command = /bin/sh -c "alsactl store 2>/dev/null || true"
+restart = false
+depends-on = early-filesystems

@@ -310,6 +310,63 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
             -o "lowerdir=$ROOT,upperdir=$OVL/upper,workdir=$OVL/work" \
             "$OVL/merged" 2>/dev/null; then
         echo "  VERON-OVERLAY-OK    lower=$VIA (ro)  upper=tmpfs"
+
+        # ---- /persist: THE ONE THING THAT SURVIVES A REBOOT -------------
+        #
+        # THE COMMENT ABOVE SAID "nothing needs to survive a reboot" AND
+        # PREDICTED ITS OWN EXPIRY: "The first thing that will need
+        # persistence is FIDO2 credential enrollment, and a second partition
+        # can be added then." A wifi password arrived first. The shape is the
+        # one that comment describes -- a second partition, not a writable
+        # root -- so the central claim survives: the image on disk is still
+        # byte-identical to the one that was built, and `veron compare`
+        # against files.tsv still works on a running system.
+        #
+        # BY LABEL, NOT BY NUMBER. The partition is whatever the operator made
+        # it -- on the test machine parted assigned p7, because p6 was already
+        # an HP diagnostic partition even though the free space sat physically
+        # between 5 and 6. A label is immune to that and to any later
+        # repartitioning.
+        #
+        # ABSENT IS NOT AN ERROR. A machine with no persist partition boots
+        # exactly as before and forgets everything at power-off, which is the
+        # documented behaviour of every image built before this. The symlinks
+        # below are made either way: they land on the tmpfs overlay when there
+        # is nowhere else, so the same paths work and the writes are simply
+        # not kept.
+        PERSIST="$OVL/merged/persist"
+        mkdir -p "$PERSIST"
+        # THE LABEL IS READ OUT OF THE SUPERBLOCK RATHER THAN ASKED FOR.
+        # findfs and blkid are both util-linux, and this busybox comes from
+        # the stage-4 sysroot whose applet set is decided there -- neither is
+        # guaranteed. An ext4 label lives at byte 0x478 of the superblock,
+        # which starts at 1024, so it is 16 bytes at offset 1144 and dd can
+        # read it.
+        _pdev=
+        for _c in /dev/nvme?n?p* /dev/sd?? /dev/vd??; do
+            [ -b "$_c" ] || continue
+            _lbl=$(dd if="$_c" bs=1 skip=1144 count=16 2>/dev/null | tr -d '\0')
+            [ "$_lbl" = "veron-persist" ] && { _pdev=$_c; break; }
+        done
+        if [ -n "$_pdev" ] && mount -t ext4 "$_pdev" "$PERSIST" 2>/dev/null; then
+            echo "  VERON-PERSIST-OK    $_pdev at /persist"
+            mkdir -p "$PERSIST/alsa"
+        else
+            echo "  VERON-PERSIST-NONE  no LABEL=veron-persist -- state is not kept"
+        fi
+
+        # THE SYMLINKS ARE MADE HERE AND NOT SHIPPED IN THE IMAGE, because a
+        # symlink in the image would point into an empty directory on any
+        # machine without the partition, and programs would create files there
+        # that silently vanish. Made after the mount, they point at whatever
+        # /persist actually is.
+        #
+        # -f BECAUSE THE OVERLAY MAY ALREADY CARRY A REAL FILE at either path
+        # from the image, and a symlink is what is wanted.
+        ln -sf /persist/wpa_supplicant.conf "$OVL/merged/etc/wpa_supplicant.conf"
+        mkdir -p "$OVL/merged/var/lib/alsa"
+        ln -sf /persist/alsa/asound.state "$OVL/merged/var/lib/alsa/asound.state"
+
         # THE LOADABILITY CHECK COMES BEFORE THE MOUNTS ARE MOVED.
         #
         # Ordering matters and got this wrong once already. The move loop

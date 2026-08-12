@@ -1,0 +1,83 @@
+#!/bin/busybox sh
+# Pick a network, type the password once, and be connected on every boot after.
+#
+# THIS IS THE ONE THING A PERSON DOES BY HAND, and it is a click rather than a
+# dialog that appears unbidden: the launcher has a Wi-Fi entry, and this is
+# what it runs. A machine that already has a network never sees it.
+#
+# fuzzel IS THE UI BECAUSE IT IS ALREADY THE MENU. Its dmenu mode reads lines
+# on stdin and prints the chosen one -- `-d,--dmenu` and `-p,--prompt`,
+# confirmed against fuzzel --help on the machine. The same mechanism the power
+# menu uses. Nothing new is packaged for this.
+#
+# THE PASSWORD IS HASHED, NOT STORED. wpa_passphrase turns an SSID and a
+# passphrase into a 64-hex-digit PSK, and that is what lands in the config. It
+# is password-equivalent for joining that one network, which is unavoidable,
+# but it is not the string that might be reused elsewhere and it never appears
+# in a file or a process listing.
+#
+# IT WRITES TO /persist, WHICH IS THE POINT. /etc/wpa_supplicant.conf is a
+# symlink into the persistent partition, so a network entered once is there
+# after a reboot. Without that partition the write still works -- onto the
+# tmpfs overlay -- and is simply forgotten at power-off, which is the honest
+# behaviour for a machine with nowhere to keep it.
+set -u
+
+die() { fuzzel --dmenu --prompt "$1  " </dev/null >/dev/null 2>&1; exit 1; }
+
+IFACE=
+for d in /sys/class/net/*; do
+    [ -d "$d/wireless" ] && { IFACE=$(basename "$d"); break; }
+done
+[ -n "$IFACE" ] || die "No wireless device"
+
+mkdir -p /run/wpa_supplicant
+
+# THE SUPPLICANT MUST BE RUNNING TO SCAN, and on a first boot it is not --
+# wpa-start exits when there is no config. Start one against an empty config
+# so wpa_cli has something to talk to; it will be replaced by the real service
+# once a network is saved.
+if ! /usr/sbin/wpa_cli -i "$IFACE" ping >/dev/null 2>&1; then
+    [ -s /etc/wpa_supplicant.conf ] || {
+        printf 'ctrl_interface=/run/wpa_supplicant\nupdate_config=1\n' \
+            > /etc/wpa_supplicant.conf
+    }
+    ip link set "$IFACE" up 2>/dev/null || true
+    /usr/sbin/wpa_supplicant -B -i "$IFACE" -c /etc/wpa_supplicant.conf \
+        >/dev/null 2>&1 || die "wpa_supplicant would not start"
+    sleep 2
+fi
+
+/usr/sbin/wpa_cli -i "$IFACE" scan >/dev/null 2>&1
+sleep 3
+
+# ONE LINE PER SSID, STRONGEST FIRST, DUPLICATES REMOVED. scan_results is
+# tab-separated: bssid / frequency / signal / flags / ssid. A network with no
+# SSID is hidden and cannot be joined from a list.
+SSID=$(/usr/sbin/wpa_cli -i "$IFACE" scan_results 2>/dev/null \
+       | awk -F'\t' 'NR>2 && $5 != "" { if (!seen[$5]++) print $5 }' \
+       | fuzzel --dmenu --prompt 'Wi-Fi: ' 2>/dev/null) || exit 0
+[ -n "$SSID" ] || exit 0
+
+# fuzzel HAS NO PASSWORD FIELD, and pretending otherwise would be worse than
+# saying so. The passphrase is typed into a normal dmenu prompt, which means it
+# is visible on screen while being typed. That is a real limitation of building
+# a UI out of a launcher, and the alternative -- a toolkit dialog -- is now
+# possible since fltk is in the set, and is the right fix.
+PASS=$(printf '' | fuzzel --dmenu --prompt "Password for $SSID: " 2>/dev/null) || exit 0
+[ -n "$PASS" ] || exit 0
+
+BLOCK=$(/usr/sbin/wpa_passphrase "$SSID" "$PASS" 2>/dev/null) || die "Bad passphrase"
+case "$BLOCK" in *psk=*) : ;; *) die "Bad passphrase" ;; esac
+
+# THE PLAINTEXT LINE IS STRIPPED. wpa_passphrase emits the passphrase as a
+# comment beside the hash, which would put it in the file this exists to avoid
+# putting it in.
+printf 'ctrl_interface=/run/wpa_supplicant\nupdate_config=1\n\n' > /etc/wpa_supplicant.conf
+echo "$BLOCK" | grep -v '^[[:space:]]*#psk=' >> /etc/wpa_supplicant.conf
+
+/usr/sbin/wpa_cli -i "$IFACE" reconfigure >/dev/null 2>&1
+sleep 4
+/usr/sbin/dhcpcd "$IFACE" >/dev/null 2>&1 &
+
+exit 0

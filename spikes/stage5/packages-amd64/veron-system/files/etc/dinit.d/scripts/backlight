@@ -1,0 +1,46 @@
+#!/bin/busybox sh
+# Step the screen brightness. $1 is up or down.
+#
+# THE BAR SHOWED bl 100% AND NOTHING COULD CHANGE IT. yambar's backlight
+# module reads /sys/class/backlight/<name>/brightness and reports a percentage;
+# it has no way to write one. A readout nobody can act on is bar clutter, so
+# this is what the label's clicks run.
+#
+# THERE ARE NO BRIGHTNESS KEYS EITHER. The function keys emit KEY_BRIGHTNESSUP
+# and KEY_BRIGHTNESSDOWN, and labwc's rc.xml could bind them to this script --
+# that is the better UI and is not done here, because binding a key that this
+# machine may or may not emit is a claim worth measuring first.
+#
+# THE DEVICE IS FOUND, NOT NAMED. amdgpu_bl0 is what the test machine calls it;
+# intel_backlight and acpi_video0 are what others do. The first entry in
+# /sys/class/backlight is the one to drive.
+set -u
+
+BL=
+for d in /sys/class/backlight/*; do
+    [ -d "$d" ] && { BL=$d; break; }
+done
+[ -n "$BL" ] || exit 0
+
+MAX=$(cat "$BL/max_brightness" 2>/dev/null) || exit 0
+CUR=$(cat "$BL/brightness" 2>/dev/null) || exit 0
+STEP=$(( MAX / 10 ))
+[ "$STEP" -gt 0 ] || STEP=1
+
+case "${1:-up}" in
+    up)   NEW=$(( CUR + STEP )) ;;
+    down) NEW=$(( CUR - STEP )) ;;
+    *)    exit 0 ;;
+esac
+
+# A FLOOR ABOVE ZERO. Writing 0 turns the panel off on most hardware, and a
+# black screen reached by clicking a bar label is indistinguishable from a
+# crash. One step is the minimum.
+[ "$NEW" -gt "$MAX" ] && NEW=$MAX
+[ "$NEW" -lt "$STEP" ] && NEW=$STEP
+
+echo "$NEW" > "$BL/brightness" 2>/dev/null || {
+    echo "VERON-BACKLIGHT-DENIED  $BL/brightness is not writable"
+    exit 1
+}
+exit 0

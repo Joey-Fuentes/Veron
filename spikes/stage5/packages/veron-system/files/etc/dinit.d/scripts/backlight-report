@@ -1,0 +1,61 @@
+#!/bin/busybox sh
+# Report the screen brightness as a percentage, on a timer.
+#
+# WHY NOT yambar's OWN backlight MODULE. It reads the value once and then waits
+# on a udev netlink socket -- modules/backlight.c:165,
+# udev_monitor_new_from_netlink(udev, "udev") -- for a change event. The
+# libudev here is libudev-zero, which implements the API without the event
+# mechanism, so no event ever arrives and the number never moves. Measured:
+# writing to /sys/class/backlight/amdgpu_bl0/brightness dimmed the screen and
+# the bar still read `bl 100%`.
+#
+# AND THAT MODULE HAS NO poll-interval. yambar-modules-backlight(5) takes one
+# option, `name`, so there is no knob to turn. The battery module has one and
+# the backlight module does not, which is why only this one had to be replaced
+# rather than configured.
+#
+# THE SAME GAP IS BEHIND FOUR SYMPTOMS by now: this, the battery not noticing
+# AC, hotplugged input devices being invisible to libinput, and their device
+# nodes coming up root-owned. busybox mdev covers the last two and is the real
+# fix; see ROADMAP-STAGE5.md.
+#
+# THE DEVICE IS FOUND, NOT NAMED, for the same reason scripts/backlight does
+# it: amdgpu_bl0 is this machine's, intel_backlight and acpi_video0 are other
+# machines'.
+set -u
+
+BL=
+for d in /sys/class/backlight/*; do
+    [ -d "$d" ] && { BL=$d; break; }
+done
+
+if [ -z "$BL" ]; then
+    echo "percent|string|"
+    echo ""
+    exit 0
+fi
+
+# THREE SECONDS, NOT THIRTY. A brightness change is something a person just
+# did and is watching for; a battery percentage is not. Reading two small
+# sysfs files is cheap enough that the interval is chosen for how it feels
+# rather than for cost.
+INTERVAL=3
+LAST=
+
+while true; do
+    MAX=$(cat "$BL/max_brightness" 2>/dev/null)
+    CUR=$(cat "$BL/brightness" 2>/dev/null)
+    OUT=
+    if [ -n "$MAX" ] && [ -n "$CUR" ] && [ "$MAX" -gt 0 ]; then
+        OUT=$(( CUR * 100 / MAX ))
+    fi
+    # ONLY EMIT ON A CHANGE. yambar redraws the bar for every line it reads, so
+    # printing the same percentage every three seconds forever would repaint
+    # continuously for no reason.
+    if [ "$OUT" != "$LAST" ]; then
+        echo "percent|string|$OUT"
+        echo ""
+        LAST=$OUT
+    fi
+    sleep "$INTERVAL"
+done

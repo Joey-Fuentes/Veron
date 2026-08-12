@@ -1,0 +1,32 @@
+# An address, once something is associated.
+#
+# depends-on wpa BECAUSE THERE IS NOTHING TO GET AN ADDRESS ON OTHERWISE. On a
+# machine with ethernet this would be wrong -- dhcpcd should run regardless --
+# but the test machine has no ethernet controller at all, and a service that
+# waits for wifi on a machine with none would be a bug worth having rather than
+# a silent misconfiguration.
+#
+# dhcpcd DAEMONISES ITSELF and dinit is told so. -B would keep it in the
+# foreground; type = bgprocess with pid-file is the shape dinit documents for
+# a process that backgrounds and leaves a pid behind.
+#
+# THE resolv.conf HOOK ALREADY WORKS and needs nothing here. Measured on the
+# laptop: dhcpcd's 20-resolv hook writes /etc/resolv.conf with the nameservers
+# the lease carried, because /etc is on the tmpfs overlay and is writable. An
+# earlier draft of this round assumed DNS was broken and planned a fix for it;
+# it was not broken.
+# NO INTERFACE IS NAMED. An earlier draft said `dhcpcd wlan0`, which is what
+# the test machine calls it and is not a fact about any other machine --
+# wpa-start finds the interface by looking for /sys/class/net/*/wireless, and
+# naming it here would have been the one place that disagreed. With no argument
+# dhcpcd manages every interface it finds, which is also correct on a machine
+# that has ethernet as well.
+#
+# type = scripted, NOT bgprocess. dhcpcd daemonises and writes a pid file per
+# interface -- /run/dhcpcd/wlan0.pid -- so there is no single path dinit can
+# watch when the interface name is not known in advance. Running it as a step
+# that completes is accurate: `dhcpcd` without -B forks and returns.
+type = scripted
+command = /usr/sbin/dhcpcd
+restart = false
+depends-on = wpa

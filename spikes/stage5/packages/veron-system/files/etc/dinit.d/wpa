@@ -1,0 +1,20 @@
+# The wifi supplicant, if a network has been saved.
+#
+# READS /persist, NOT /etc. The config lives on the persistent partition so a
+# network entered once survives a reboot; scripts/wifi-connect writes it there.
+# /etc/wpa_supplicant.conf is a symlink into /persist, made by guest/init when
+# the partition is present.
+#
+# -B IS ABSENT ON PURPOSE. dinit wants a process it can supervise, and a daemon
+# that forks away leaves it supervising nothing -- the same lesson seatd's
+# comment records from the two-VM DHCP test: "a daemon whose job is to stay up
+# cannot be modelled as a step that completes."
+#
+# IT EXITS IMMEDIATELY WHEN THERE IS NO CONFIG, which is the first-boot case
+# and is not an error. restart = false means dinit notes it and moves on rather
+# than looping; the Wi-Fi entry in the launcher is what a person clicks to
+# create the config, and it starts this service afterwards.
+type = process
+command = /etc/dinit.d/scripts/wpa-start
+restart = false
+depends-on = early-filesystems

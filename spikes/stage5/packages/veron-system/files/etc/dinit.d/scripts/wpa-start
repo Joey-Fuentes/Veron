@@ -1,0 +1,34 @@
+#!/bin/busybox sh
+# Start the supplicant, if a network has been saved.
+#
+# NO CONFIG IS THE FIRST-BOOT CASE AND IS NOT AN ERROR. /etc/wpa_supplicant.conf
+# is a symlink into /persist, made by guest/init; on a machine with no persist
+# partition, or before any network has been entered, it points at nothing. This
+# says so once and exits 0 rather than letting dinit report a failed service on
+# every boot of a machine that simply has no wifi configured yet.
+#
+# THE INTERFACE IS FOUND, NOT ASSUMED. wlan0 is what the test machine calls it,
+# but the name depends on the driver and on whether anything renames it. The
+# first wireless interface in /sys/class/net is the one with a `wireless`
+# directory.
+set -u
+
+CONF=/etc/wpa_supplicant.conf
+if [ ! -s "$CONF" ]; then
+    echo "VERON-WIFI-UNCONFIGURED  no saved network -- use the Wi-Fi entry in the launcher"
+    exit 0
+fi
+
+IFACE=
+for d in /sys/class/net/*; do
+    [ -d "$d/wireless" ] && { IFACE=$(basename "$d"); break; }
+done
+[ -n "$IFACE" ] || {
+    echo "VERON-WIFI-NO-INTERFACE  no wireless device present"
+    exit 0
+}
+
+mkdir -p /run/wpa_supplicant
+ip link set "$IFACE" up 2>/dev/null || true
+echo "VERON-WIFI-STARTING  $IFACE"
+exec /usr/sbin/wpa_supplicant -i "$IFACE" -c "$CONF"

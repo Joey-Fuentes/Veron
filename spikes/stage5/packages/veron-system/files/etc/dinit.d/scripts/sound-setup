@@ -1,0 +1,111 @@
+#!/bin/busybox sh
+# Pick a sound card that can actually play, and restore the volume.
+#
+# THE PROBLEM THIS SOLVES WAS MEASURED ON A LAPTOP, not anticipated. With two
+# cards present -- an HDMI codec and an analogue one -- alsa's `default`
+# resolves to card 0, and on that machine card 0 is HDMI:
+#
+#     $ cat /proc/asound/cards
+#     0 [Generic   ]: HDA-Intel - HD-Audio Generic
+#     1 [Generic_1 ]: HDA-Intel - HD-Audio Generic
+#
+# Opening it fails with "Playback open error on device 'default': Invalid
+# argument", gstreamer's autoaudiosink reports a warning nobody sees, and a
+# browser plays video in silence. `speaker-test -D hw:1,0` works throughout,
+# which is exactly what makes the fault hard to read.
+#
+# THE CARDS CANNOT BE TOLD APART BY NAME. Both report "HDA-Intel - HD-Audio
+# Generic". So a shipped asound.conf naming card 1 would be right for that
+# machine and wrong for any machine where the analogue codec enumerates first.
+# The card has to be chosen at boot, on this machine, by asking which one has
+# a playback device that is not HDMI.
+#
+# THE TEST IS THE PCM's OWN NAME. Each playback device advertises itself in
+# /proc/asound/card*/pcm*p/info, and an HDMI one says so:
+#
+#     name: HDMI 0
+#     name: ALC236 Analog
+#
+# so a card with a playback PCM whose name contains neither HDMI nor Display
+# is the one with speakers attached to it. That is a heuristic and is stated as
+# one: a machine with only HDMI audio has no better answer, and this falls back
+# to the first card with any playback device at all rather than writing nothing.
+set -u
+
+pick_card() {
+    _fallback=
+    for _d in /proc/asound/card*/pcm*p; do
+        [ -d "$_d" ] || continue
+        _card=$(echo "$_d" | sed 's|/proc/asound/card||; s|/pcm.*||')
+        _name=$(sed -n 's/^name: //p' "$_d/info" 2>/dev/null)
+        [ -n "$_fallback" ] || _fallback=$_card
+        case "$_name" in
+            *HDMI*|*Display*|*DP*) continue ;;
+        esac
+        echo "$_card"
+        return 0
+    done
+    [ -n "$_fallback" ] && { echo "$_fallback"; return 0; }
+    return 1
+}
+
+CARD=$(pick_card) || {
+    echo "VERON-SOUND-NONE  no playback device on any card"
+    exit 0
+}
+echo "VERON-SOUND-CARD  $CARD  $(sed -n "s/^name: //p" /proc/asound/card$CARD/pcm0p/info 2>/dev/null)"
+
+# dmix, NOT type hw, AND THAT DISTINCTION WAS MEASURED TOO. `type hw` gives one
+# process exclusive access. WPE runs media in a process per origin, so the
+# first site played and navigating to a second one was silent -- the new
+# process could not open a card the old one still held. dmix mixes in
+# userspace and lets them share.
+#
+# `plug` in front handles rate and format conversion, so a stream at any rate
+# reaches a slave fixed at 48000.
+cat > /etc/asound.conf <<CONF
+pcm.!default {
+    type plug
+    slave.pcm "dmixer"
+}
+
+pcm.dmixer {
+    type dmix
+    ipc_key 1024
+    slave {
+        pcm "hw:$CARD,0"
+        rate 48000
+        channels 2
+        period_size 1024
+        buffer_size 8192
+    }
+}
+
+ctl.!default {
+    type hw
+    card $CARD
+}
+CONF
+
+# THE VOLUME, FROM LAST TIME IF THERE IS A LAST TIME.
+#
+# alsactl restore reads /var/lib/alsa/asound.state, which guest/init has
+# symlinked into /persist when that partition exists. On a first boot the file
+# is absent and restore fails; that is not an error and the message says so.
+#
+# WITHOUT A STATE FILE THE DACS ARE AT ZERO, so a first boot would still be
+# silent even with the right card. `alsactl init` applies a sane default from
+# alsa's own per-codec rules, which is what a distribution does at first boot,
+# and unmuting the common controls afterwards covers codecs it does not know.
+if [ -f /var/lib/alsa/asound.state ]; then
+    alsactl restore "$CARD" 2>/dev/null \
+        && echo "VERON-SOUND-RESTORED  from /var/lib/alsa/asound.state" \
+        || echo "VERON-SOUND-RESTORE-FAILED  state file present but not applied"
+else
+    alsactl init "$CARD" 2>/dev/null || true
+    for c in Master Speaker Headphone PCM Front; do
+        amixer -c "$CARD" sset "$c" 70% unmute >/dev/null 2>&1 || true
+    done
+    echo "VERON-SOUND-DEFAULTED  no saved state; set 70% and unmuted"
+fi
+exit 0

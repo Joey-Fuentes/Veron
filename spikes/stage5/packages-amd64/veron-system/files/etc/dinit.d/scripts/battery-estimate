@@ -1,0 +1,141 @@
+#!/bin/busybox sh
+# Time left on the battery, computed by differencing energy_now.
+#
+# WHY THIS EXISTS. yambar's battery module offers an {estimate} tag -- "time
+# left ... formatted as HH:MM" -- computed from the charge remaining divided by
+# the instantaneous draw in power_now. On the test machine that file is EMPTY:
+#
+#     $ cat /sys/class/power_supply/BAT0/power_now
+#     $ cat /sys/class/power_supply/BAT0/energy_now
+#     19390000
+#
+# so the divisor is missing and the estimate clamped at its ceiling. The bar
+# read `bat 61% 99:00` while discharging, which is worse than showing nothing
+# because it looks like a working readout.
+#
+# THE DATA IS THERE, JUST NOT WHERE YAMBAR LOOKS. energy_now falls visibly
+# between reads -- 19390000, then 18487000, then 18442000 over a few minutes --
+# so the drain is measurable by differencing even though no file reports it
+# directly. That is what this does.
+#
+# smoothing-secs DOES NOT HELP. It smooths power_now over a window, and
+# smoothing an empty file yields an empty result.
+#
+# THE FIRST SAMPLE SHOWS NOTHING, and that is deliberate. One reading has
+# nothing to difference against, so anything printed then would be invented.
+# The tag is empty until there are two.
+#
+# A SINGLE INTERVAL IS NOISY. Those three readings imply very different rates
+# depending which pair is taken -- the middle gap is a 45000 uWh drop and the
+# first is 903000 -- because ACPI updates the figure in steps rather than
+# continuously. Two things follow, and both were arrived at by simulating a
+# steady 11.4 W drain against stepwise updates rather than by reasoning:
+#
+#   the rate is measured from the last CHANGE, not the last sample, because
+#   differencing consecutive samples halves the answer; and
+#
+#   the result is a decaying average, each new rate contributing half, so the
+#   display settles within a few minutes instead of jumping by an hour.
+set -u
+
+BAT=
+for d in /sys/class/power_supply/*; do
+    [ -f "$d/energy_now" ] && [ -f "$d/status" ] && { BAT=$d; break; }
+done
+[ -n "$BAT" ] || { echo "estimate|string|"; echo ""; exit 0; }
+
+INTERVAL=30
+LAST_E=
+LAST_T=
+LAST_STATE=
+AVG=
+
+while true; do
+    NOW_E=$(cat "$BAT/energy_now" 2>/dev/null) || NOW_E=
+    FULL=$(cat "$BAT/energy_full" 2>/dev/null) || FULL=
+    STATE=$(cat "$BAT/status" 2>/dev/null) || STATE=Unknown
+    NOW_T=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+
+    OUT=
+
+    # A CHANGE OF STATE THROWS EVERYTHING AWAY, and this happens BEFORE the
+    # arithmetic rather than after it. A rate measured while discharging says
+    # nothing about the charge that follows, and a LAST_E from the other
+    # direction produces a difference with the wrong sign.
+    if [ "$STATE" != "$LAST_STATE" ]; then
+        AVG=
+        LAST_E=
+        LAST_T=
+        LAST_STATE=$STATE
+    fi
+
+    # BOTH DIRECTIONS, AND THE ONLY DIFFERENCE IS WHICH WAY THE ENERGY MOVES
+    # AND WHAT IS LEFT TO GO. Discharging counts down to empty from energy_now;
+    # charging counts up to energy_full, so the remaining figure is the gap
+    # rather than the level. The rate is measured the same way in both.
+    case "$STATE" in
+      Discharging|Charging) ;;
+      *) NOW_E= ;;      # Full, Unknown, Not charging -- nothing to estimate
+    esac
+
+    if [ -n "$NOW_E" ] && [ -n "$NOW_T" ]; then
+        if [ -z "$LAST_E" ]; then
+            LAST_E=$NOW_E
+            LAST_T=$NOW_T
+        else
+            # MEASURED FROM THE LAST CHANGE, NOT THE LAST SAMPLE, AND THAT
+            # DISTINCTION IS THE WHOLE ACCURACY OF THIS SCRIPT.
+            #
+            # ACPI updates energy_now in steps, not continuously: at a 30s
+            # poll the value typically moves every other read. Differencing
+            # consecutive SAMPLES then attributes 60 seconds of drain to a
+            # 30-second interval and reports half the true time -- simulated
+            # against a steady 11.4 W drain, that read 0:48 where the answer
+            # was 1:37. Differencing from the last reading that actually
+            # CHANGED gives 11400000 uW exactly.
+            if [ "$STATE" = "Discharging" ]; then
+                DE=$(( LAST_E - NOW_E ))
+            else
+                DE=$(( NOW_E - LAST_E ))
+            fi
+            DT=$(( NOW_T - LAST_T ))
+            if [ "$DE" -gt 0 ] && [ "$DT" -gt 0 ]; then
+                RATE=$(( DE * 3600 / DT ))
+                if [ -z "$AVG" ]; then
+                    AVG=$RATE
+                else
+                    AVG=$(( (AVG + RATE) / 2 ))
+                fi
+                LAST_E=$NOW_E
+                LAST_T=$NOW_T
+            fi
+        fi
+
+        if [ -n "$AVG" ] && [ "$AVG" -gt 0 ]; then
+            if [ "$STATE" = "Discharging" ]; then
+                GAP=$NOW_E
+                WORD="remaining"
+            else
+                GAP=$(( ${FULL:-0} - NOW_E ))
+                WORD="until full"
+            fi
+            if [ "$GAP" -gt 0 ]; then
+                MINS=$(( GAP * 60 / AVG ))
+                # A CEILING, BECAUSE A TINY SAMPLED RATE PRODUCES A SILLY
+                # NUMBER. Anything past a day is not an estimate, it is an
+                # artefact of ACPI having barely moved between two reads.
+                if [ "$MINS" -lt 1440 ]; then
+                    # %02d ON THE MINUTES, SO THE WIDTH DOES NOT JUMP. Without
+                    # it the bar reads 1h3m then 1h15m and everything to the
+                    # left of it shifts by a character every few minutes.
+                    OUT=$(printf '%dh%02dm %s' $(( MINS / 60 )) $(( MINS % 60 )) "$WORD")
+                fi
+            fi
+        fi
+    fi
+
+    echo "estimate|string|$OUT"
+    echo ""
+
+    sleep "$INTERVAL"
+done

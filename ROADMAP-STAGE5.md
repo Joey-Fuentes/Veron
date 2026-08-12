@@ -192,6 +192,42 @@ is one line, but it hides the mismatch rather than resolving it.
 
 ---
 
+## libudev-zero has the API and not the events, and four things depend on it
+
+`libudev-zero` is a reimplementation of libudev's interface with no daemon
+behind it. That is the right choice for this system — the alternative is
+systemd's udev or eudev, both of which bring far more than device enumeration —
+but it means **nothing in this image learns that a device appeared, changed or
+went away.** Enumeration works; monitoring does not.
+
+Four separate symptoms, all measured on hardware, all the same cause:
+
+| what is seen | why |
+|---|---|
+| the bar's brightness never changes | `modules/backlight.c:165` opens a udev netlink monitor and waits. No event ever arrives |
+| the battery does not notice AC | `modules/battery.c` does the same, and falls back to a 60 s poll, so it lags rather than stops |
+| a hotplugged mouse is invisible to the desktop | libinput enumerates at startup and learns of new devices through udev. There is no hotplug |
+| and its device node is `root:root 0600` | `devtmpfs` creates the node with default ownership; correcting it is a udev rule's job |
+
+**Two have been worked around and two have not.** yambar's backlight and
+battery readouts are now scripts that poll `/sys` directly — see
+`veron-system/files/etc/dinit.d/scripts/backlight-report` and
+`battery-estimate`, both of which record why they exist. The input ones have
+no workaround: `chown root:input` by hand after plugging something in, and
+restart the compositor.
+
+**busybox `mdev` is the answer to the input half**, and needs no new package.
+It reads `mdev.conf` for ownership and mode rules, and `mdev -s` coldplugs at
+boot; running it as a hotplug helper via `/proc/sys/kernel/hotplug` covers
+devices added later. That is the small, honest version of what udev does, and
+it is the next thing to do in this area.
+
+**What it does not fix** is libinput being told. libinput asks libudev for a
+device list at startup; a node appearing later is not communicated to it
+however correctly it is created. Solving that properly means either a real
+udev or a compositor restart, and the first is a decision about what this
+system is.
+
 ## Internationalisation — four independent gaps
 
 An appliance can ship English-only. A distribution cannot, so this moved from

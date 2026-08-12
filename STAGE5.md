@@ -374,12 +374,12 @@ VERON-CONSOLE-FAIL  /dev/ttyXX is not a character device
 `spikes/stage5/AMD64.md` has the whole account, including why 157 passing tests
 did not catch the hardcoded version.
 
-**Then start the compositor by hand**, in the terminal you launched from, for
-the reason given under *the session* -- it is deliberately not in `boot.d`:
-
-```sh
-sh /etc/dinit.d/scripts/labwc-session
-```
+**The compositor starts itself.** It used to be typed here, and the reason
+recorded was that a compositor failing during a package test would look like a
+broken system. That stopped being true when `veron.boot=system` arrived: the
+test path never reaches dinit at all, so a `boot.d` service cannot be reached
+by a package test. `labwc` is now one, with `restart = false` so a failure
+leaves a shell rather than a flickering screen.
 
 #### The CI invocations are two commands, and neither is the one to run by hand
 
@@ -616,75 +616,156 @@ or the user disabling it, and Veron has neither.
 | GRUB's background stays on screen, nothing prints | the kernel is alive and has no display driver it can use. Caps Lock still toggles. This was the state before `DRM_SIMPLEDRM` and `DRM_AMDGPU` were enabled |
 | `no root to test: neither disk nor 9p` then an immediate power-off | init found no root. `veron.root=` is missing or names the wrong device |
 | `/proc/partitions` shows a header and nothing else | the kernel has no driver for the storage controller. Nothing to do with naming |
-| a desktop, but no sound | expected. The DACs come up at gain 0 -- `amixer sset Master 80%` |
+| a desktop, but no sound | check `VERON-SOUND-CARD` on the console. The `sound` service picks a card and unmutes it; if it chose the HDMI one, its heuristic failed and the PCM names in `/proc/asound/card*/pcm*p/info` say why |
 | a desktop, but no touchpad | `COMMON_CLK` or the i2c stack was dropped. `dmesg \| grep -i AMDI0010` -- no bind means no bus |
 
 #### After it boots
 
-The console lands at a shell. The desktop is not automatic:
+**Nothing is typed.** The compositor starts, the sound card is chosen and
+unmuted, and a saved wifi network reconnects. The one exception is the first
+boot on a machine that has never seen your network: click **Wi-Fi** in the bar
+or the launcher, pick an SSID, type the password once.
+
+That is a change from every image before this one, which needed
+`labwc-session`, `amixer`, `wpa_supplicant`, `dhcpcd` and an `asound.conf`
+typed by hand every boot. What follows records what each of those became, and
+what to do when one of them does not work.
+
+| service | what it does |
+|---|---|
+| `labwc` | the compositor, after `seatd` and `xdg-runtime` |
+| `sound` | picks a card that can play, writes `/etc/asound.conf`, restores the mixer |
+| `wpa` | the supplicant, if `/persist` holds a network |
+| `dhcp` | an address, after `wpa` |
+
+**`restart = false` on labwc, and it is deliberate.** `seatd` restarts because
+a seat daemon that dies should come back. A compositor that cannot start on
+this machine should not be restarted forever -- that produces a flickering
+screen and no way in. Failing once leaves the console on tty1, which is a
+shell, which is a machine you can fix.
+
+#### /persist, and what is kept
+
+One partition, labelled `veron-persist`, mounted at `/persist`. It holds the
+wifi network and the mixer levels, and nothing else yet.
+
+**The read-only root is unchanged, which is the point.** `guest/init`'s own
+comment predicted this: *"nothing needs to survive a reboot ... The first
+thing that will need persistence is FIDO2 credential enrollment, and a second
+partition can be added then."* A wifi password arrived first. A second
+partition keeps the image byte-identical to the one CI built, so
+`veron compare` against `files.tsv` still works on a running system.
+
+**Found by label, not by number**, and read out of the ext4 superblock rather
+than with `findfs` -- that is util-linux, and this initramfs carries the
+stage-4 busybox whose applet set is decided elsewhere. The label lives at
+offset 1144, sixteen bytes.
+
+**A machine without it boots exactly as before** and forgets everything at
+power-off. `VERON-PERSIST-NONE` says so once. The symlinks are made either
+way, landing on the tmpfs overlay when there is nowhere else, so the same
+paths work and the writes are simply not kept.
+
+To make one, from the host, with Veron not booted:
 
 ```sh
-sh /etc/dinit.d/scripts/labwc-session
+sudo parted /dev/nvme0n1 unit GiB print       # note p5's start
+sudo parted /dev/nvme0n1
+  (parted) resizepart 5 <START+16>GiB
+  (parted) mkpart primary ext4 <START+16>GiB <next_start>GiB
+  (parted) quit
+sudo partprobe /dev/nvme0n1
+lsblk /dev/nvme0n1                            # confirm the number
+sudo mkfs.ext4 -L veron-persist /dev/nvme0n1pN
 ```
 
-Ten to thirty seconds, no progress output, then the first frame paints.
-**Win+Return** for a terminal, **Win+d** for the launcher.
+**The new partition may not be p6.** On the test machine parted assigned p7,
+because p6 was already an HP diagnostic partition even though the free space
+sat physically between 5 and 6. `lsblk` before `mkfs`.
 
-**Sound.** The ALC236 comes up muted at gain 0 -- BLFS says the same of its own
-systems -- so nothing is wrong when a video plays silently:
+**Shrinking p5 destroys it**, which does not matter -- the image is rewritten
+with `dd` on every update anyway, so there is no filesystem to preserve and no
+`resize2fs` step. Rewrite the image and put `Image` and the initramfs back
+afterwards.
 
-```sh
-amixer sset Master 80% unmute
-amixer sset Speaker 80% unmute
-```
+#### Sound, and why a card has to be chosen at boot
 
-There is no service that restores mixer state at boot, so this is typed each
-time. `alsactl store` writes `/var/lib/alsa/asound.state` but nothing reads it
-back yet.
+Two things go wrong on any laptop with an HDMI-capable GPU, and both were
+measured rather than anticipated:
 
-**Wireless.**
+**`default` resolves to card 0, which is the HDMI codec.** Opening it fails
+with `Playback open error on device 'default': Invalid argument`, gstreamer's
+`autoaudiosink` warns where nobody sees it, and a browser plays video in
+silence. `speaker-test -D hw:1,0` works the whole time, which is what makes
+the fault hard to read.
 
-```sh
-mkdir -p /run/wpa_supplicant /var/db/dhcpcd
-ip link set wlan0 up
-cat > /tmp/wpa.conf <<'EOF'
-ctrl_interface=/run/wpa_supplicant
-network={
-    ssid="YOUR_SSID"
-    psk="YOUR_PASSWORD"
-}
-EOF
-wpa_supplicant -B -i wlan0 -c /tmp/wpa.conf
-dhcpcd wlan0
-echo "nameserver 1.1.1.1" > /etc/resolv.conf
-```
+**The DACs come up at gain 0 of 87.** Not muted -- zero. BLFS says the same of
+its own systems, so this is normal rather than a fault.
 
-`ip addr show wlan0` for an address. DHCP supplies no resolver here, so the
-last line is needed for names as well as addresses.
-
-**The browser.** Not on PATH:
-
-```sh
-/usr/libexec/wpe-webkit-2.0/MiniBrowser https://example.com
-```
-
-**A hotplugged USB mouse needs its device node fixed.** Nothing manages device
-nodes -- `libudev-zero` is a library with no daemon -- so `devtmpfs` creates
-the node with default ownership and nothing corrects it:
+**The cards cannot be told apart by name:**
 
 ```
-crw-rw----  root input   event0..event3    (present at boot)
-crw-------  root root    event4            (hotplugged)
+0 [Generic   ]: HDA-Intel - HD-Audio Generic
+1 [Generic_1 ]: HDA-Intel - HD-Audio Generic
 ```
+
+so a shipped `asound.conf` naming card 1 would be right for that machine and
+wrong for any machine where the analogue codec enumerates first. The card is
+chosen at boot instead, by reading each playback device's own name out of
+`/proc/asound/card*/pcm*p/info` and taking the first that is not `HDMI`,
+`Display` or `DP`. That is a heuristic, and it falls back to the first card
+with any playback device rather than writing nothing.
+
+**dmix, not `type hw`, and that distinction was also measured.** `type hw`
+gives one process exclusive access. WPE runs media in a process per origin, so
+the first site played and navigating to a second was silent -- the new process
+could not open a card the old one still held.
+
+The mixer is saved on shutdown by the service's `stop-command` and restored on
+boot. Set the volume once.
+
+#### Wi-Fi
+
+Click **Wi-Fi**, pick an SSID from the list, type the password. That is the
+whole of it, once, per network.
+
+The password is hashed by `wpa_passphrase` before it is written, and the
+plaintext line that tool emits beside the hash is stripped. What lands in
+`/persist` is password-equivalent for joining that one network -- unavoidable
+-- but is not the string that might be reused elsewhere.
+
+**The password is visible while being typed.** fuzzel has no password field,
+and building a UI out of a launcher is what that costs. A toolkit dialog is
+the right fix and is now possible, since `fltk` is in the set.
+
+**DNS needs nothing.** dhcpcd's `20-resolv` hook writes `/etc/resolv.conf`
+from the lease, because `/etc` is on the tmpfs overlay and is writable. An
+earlier draft of this section assumed DNS was broken and planned a fix; it was
+not broken.
+
+#### When something does not start
+
+`dinitctl list` shows every service and its state. The four above report
+markers on the console as they run:
+
+| | |
+|---|---|
+| `VERON-SOUND-CARD n` | the card chosen, and its PCM name |
+| `VERON-SOUND-DEFAULTED` | no saved state; levels set to 70% |
+| `VERON-PERSIST-NONE` | no persist partition; nothing will be kept |
+| `VERON-WIFI-UNCONFIGURED` | no saved network -- use the Wi-Fi entry |
+
+**A hotplugged USB mouse still needs its device node fixed.** Nothing manages
+device nodes -- `libudev-zero` is a library with no daemon -- so `devtmpfs`
+creates the node with default ownership and nothing corrects it:
 
 ```sh
 chown root:input /dev/input/event4 && chmod 660 /dev/input/event4
 ```
 
 then restart labwc. Two gaps behind one symptom: no permission rule for
-hotplugged nodes, and no hotplug at all -- libinput enumerates at startup, so a
-device added later is invisible even once readable. busybox `mdev` does both
-jobs and is the fix when someone gets to it.
+hotplugged nodes, and no hotplug at all. busybox `mdev` does both jobs and is
+the fix when someone gets to it.
 
 #### What this boot has established
 
@@ -980,7 +1061,7 @@ NetworkManager and therefore dbus.
 
 ```
 wpa_passphrase MYSSID 'my password' >> /etc/wpa_supplicant/wpa_supplicant.conf
-wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf
+wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf   # the wpa service does this
 dhcpcd wlan0
 ```
 

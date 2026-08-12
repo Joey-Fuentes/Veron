@@ -23,13 +23,26 @@
 # gets PID 1's environment, which has neither XDG_RUNTIME_DIR nor a usable
 # PATH. The wrapper script sets both.
 #
-# NOT IN boot.d, DELIBERATELY. Adding the symlink would start a compositor on
-# every boot, including the harness boots that exist to run package tests, and
-# a failure there would look like a broken system rather than a machine with no
-# display. Start it with `dinitctl start labwc`, or add the symlink once the
-# session is known to work.
+# IN boot.d NOW, AND THE NOTE THAT SAID OTHERWISE IS WORTH KEEPING IN VIEW.
+# It read: "Adding the symlink would start a compositor on every boot,
+# including the harness boots that exist to run package tests, and a failure
+# there would look like a broken system rather than a machine with no display.
+# Start it with `dinitctl start labwc`, or add the symlink once the session is
+# known to work."
+#
+# BOTH OF ITS CONDITIONS ARE NOW MET. A harness boot never reaches dinit at
+# all -- guest/init runs the suite under the default `veron.boot=test` and
+# powers off, and only `veron.boot=system` switch_roots -- so nothing here can
+# be reached by a package test. And the session is known to work: it has been
+# started by hand on a laptop, repeatedly, since.
+#
+# THE FALLBACK IS WHAT MAKES IT SAFE, and it is the paragraph above rather
+# than anything added here. restart = false plus a console service that runs
+# independently means a compositor that cannot start costs one error message
+# and leaves a shell.
 type = process
 command = /bin/busybox sh /etc/dinit.d/scripts/labwc-session
 restart = false
 depends-on = seatd
 depends-on = xdg-runtime
+depends-on = early-filesystems
