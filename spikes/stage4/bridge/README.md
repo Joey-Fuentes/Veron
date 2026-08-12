@@ -824,6 +824,33 @@ with a global crashing at `-O0` and passing at `-O2` — is unaccounted for. Bot
 symptoms are gp-relative addressing over a bad base, so it may fall out of the
 fix; if it survives, it is a second question.
 
+#### The fix was written into the series the riscv arm does not apply
+
+Run 85603600334 carried `tcc-microc/0006` and rung 8 failed exactly as before:
+
+```
+12268: auipc gp,0x68
+1226c: addi  gp,gp,-1840 # 79b38 <_GLOBAL_OFFSET_TABLE_+0x20>
+--version   SEGFAULT (rc=139)
+```
+
+Same `gp`, same offset, same crash. **The patch was never applied to the tcc
+that builds this ladder.** `stage4-arch-spike-riscv64.yml:353` runs
+`patches/tcc-arm64-asm/apply-series.sh`, and the log names the seven patches it
+applied -- none of them mine.
+
+**Two series patch the same tree for different consumers.** `tcc-microc` is the
+tcc that mc-tcc *is*, built from micro-c in the seed job. `tcc-arm64-asm` is the
+reference tcc the arch spikes build with. The `la` bug is in `riscv64-asm.c` and
+reaches every tcc built from that tree, so it belongs in both --
+`tcc-arm64-asm/0008` is the same change, and its preamble says why it is
+duplicated rather than shared.
+
+That is worth stating plainly: the diagnosis was right, verified at every link,
+and the run that was supposed to confirm it changed nothing because the fix was
+in a directory this arm never reads. A patch series is not a place a change
+belongs by subject; it is a place a change belongs by *consumer*.
+
 #### The compiler now leaves the job
 
 Five rounds have each cost a full ladder, because the only way to ask the
