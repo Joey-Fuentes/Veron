@@ -22,7 +22,7 @@ optional_off = ["xorg", "libxinerama", "libxft", "dbus", "glew", "gtk3",
 
 [declared]
 configure_flags = ["--prefix=/usr", "--enable-shared", "--disable-x11",
-                   "--enable-cairo"]
+                   "--disable-gl", "--enable-cairo"]
 verification    = "none -- upstream tests are interactive"
 packaged_as     = ["fltk"]
 deferral        = """
@@ -87,6 +87,42 @@ installed" -- that is about libdecor's GTK plugin for drawing CSD titlebars, \
 not about FLTK itself, and under SSD it does not arise. Mousepad and every \
 other GTK editor were declined precisely to avoid adopting GTK as a platform.
 
+--disable-gl, AND IT IS NOT AN OPTIMISATION -- THE LINK FAILS WITHOUT IT. \
+FLTK builds a glut compatibility layer as part of GL support, and that layer \
+is written against fixed-function OpenGL:
+
+    freeglut_geometry.cxx: undefined reference to `glBegin'
+    freeglut_geometry.cxx: undefined reference to `glVertex3dv'
+    freeglut_teapot.cxx:   undefined reference to `glPushAttrib'
+
+Those are desktop GL 1.x entry points and this set has none of them. mesa here \
+builds libEGL, libGLESv2 and libgbm and NO libGL -- measured on the laptop:
+
+    ls /usr/lib/libGL*   ->  nothing
+    ls /usr/lib/libEGL*  ->  libEGL.so, libEGL.so.1, libEGL.so.1.0.0
+
+which is right for a Wayland-only system where EGL is the entry point, and \
+fatal for a library that wants glBegin. Run 85592115674 stopped here, at \
+[119/124], after the other 118 packages built.
+
+THERE IS NO --disable-glut. The glut layer is not separable: configure's GL \
+branch sets GLLIBNAME, LINKFLTKGL and GLDEMOS together, and the else arm \
+clears all three. So the choice is GL with glut or neither, and neither is \
+what this system can link.
+
+WHAT IS LOST IS Fl_Gl_Window, and it is worth being plain that this is a real \
+capability. An FLTK application here cannot open an OpenGL context through \
+FLTK's own wrapper. It could still reach EGL directly, as WPE does, but not \
+through the toolkit. For the reason this package is in the set -- a text \
+editor, and eventually a file manager -- that costs nothing: neither draws \
+with GL, and FLTK's own widgets render through Cairo and Pango, which is what \
+--enable-cairo below is about.
+
+BLFS DOES NOT HIT THIS because it builds FLTK against Xorg, where libGL is \
+present as a matter of course. Its optional dependency list even names GLU. \
+This is the second place where the book's answer does not transfer to a \
+Wayland-only system, and the first was --disable-x11.
+
 --enable-cairo TURNS ON Fl_Cairo_Window. The Wayland backend already draws \
 through Cairo and text through Pango whatever this says; the option adds the \
 public API for application code that wants a Cairo context, which is what an \
@@ -120,7 +156,7 @@ run  = [["tar", "-xf", "$DL/fltk-1.4.5-source.tar.gz", "-C", "$B"]]
 name = "configure"
 cwd  = "$S"
 run  = [["./configure", "--prefix=/usr", "--enable-shared", "--disable-x11",
-         "--enable-cairo"]]
+         "--disable-gl", "--enable-cairo"]]
 
 [[steps]]
 name = "build"

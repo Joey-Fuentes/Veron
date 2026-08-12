@@ -4254,7 +4254,7 @@ package yambar 1.11.0
 package fltk 1.4.5
   group        desktop
   license      LGPL-2.0-only WITH FLTK-exception
-  recipe-sha   cf9697472fb38cd7adea9588d49d3c9af0efcc81da21088533086edadc6fdb95
+  recipe-sha   7547e07a74b11ac47c99205f50891f2c4234ebc74197109ba3a52ff6ae7e7079
 
   source
     url        https://github.com/fltk/fltk/releases/download/release-1.4.5/fltk-1.4.5-source.tar.gz
@@ -4274,7 +4274,7 @@ package fltk 1.4.5
          argv ["tar", "-xf", "dl/fltk-1.4.5-source.tar.gz", "-C", "build/fltk-1.4.5"]
     [02] configure
          cwd  build/fltk-1.4.5/fltk-1.4.5
-         argv ["./configure", "--prefix=/usr", "--enable-shared", "--disable-x11", "--enable-cairo"]
+         argv ["./configure", "--prefix=/usr", "--enable-shared", "--disable-x11", "--disable-gl", "--enable-cairo"]
     [03] build
          cwd  build/fltk-1.4.5/fltk-1.4.5
          argv ["make", "-j1"]
