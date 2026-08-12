@@ -355,24 +355,24 @@ dinit: Service console process terminated with exit code 1
 [  OK  ] console
 ```
 
-`packages-amd64/veron-system` states `ttyS0`. `spikes/stage5/AMD64.md` has the
-whole account, including why 157 passing tests did not catch it.
+**THE CONSOLE SERVICE NO LONGER NAMES A TTY AT ALL**, which is the fix that
+replaced the account above. `scripts/console-getty` reads `console=` from
+`/proc/cmdline` and execs getty on whatever it finds, defaulting to `tty1`. One
+file is then correct in all three places this system boots -- `ttyAMA0` on
+aarch64, `ttyS0` on x86_64 under qemu, `tty1` on a laptop -- and it cannot
+drift from the kernel's own idea of where the console is, because it is reading
+it.
 
-**If your image predates the `ttyS0` fix, patch it before booting.** Images
-published before that change ship a console service naming `ttyAMA0`, so there
-is no shell to start labwc from. One word, in a copy:
+So no image patching is needed and none is described here any more. If a
+console fails to start, the wrapper says why rather than looping silently:
 
-```sh
-cp rootfs.img rootfs-patched.img          # keep the published one intact
-sudo mkdir -p /mnt/veron
-sudo mount -o loop rootfs-patched.img /mnt/veron
-sudo sed -i 's/115200 ttyAMA0/115200 ttyS0/' /mnt/veron/etc/dinit.d/console
-sudo umount /mnt/veron
+```
+VERON-CONSOLE-FAIL  /dev/ttyXX is not a character device
+  console= named it, and this kernel did not create it.
 ```
 
-Boot `rootfs-patched.img`. It will no longer match `IMAGE-SHA256`, which is
-why the copy: the published image stays verifiable and the patched one is
-plainly a local artefact.
+`spikes/stage5/AMD64.md` has the whole account, including why 157 passing tests
+did not catch the hardcoded version.
 
 **Then start the compositor by hand**, in the terminal you launched from, for
 the reason given under *the session* -- it is deliberately not in `boot.d`:
@@ -410,186 +410,293 @@ test harness talking to a terminal.
 ### Booting it on real hardware, from a partition
 
 Everything above runs the image under qemu. It also boots on a laptop, from a
-partition, through the machine's existing GRUB -- **with three edits made by
-hand on the host**, because the published image and initramfs are built for
-qemu and do not yet know how to be anything else.
+partition, through the machine's existing GRUB.
 
-**This is written from a first attempt and has not been through CI.** Treat
-every claim below as reported rather than established, and correct it from what
-your own boot says.
+**This is written from one machine and describes it exactly.** An HP Laptop 14
+with an AMD Lucienne APU, Micron NVMe, Realtek RTL8852AE wifi, dual-booting
+Xubuntu. Device names, firmware blobs and the partition number below are that
+machine's, not a general recipe -- but the shape is general and the reasons are
+recorded, so adapting it is a matter of substituting names rather than
+reconstructing the argument.
 
-#### What has to change, and why each one
+**Only one thing is still done by hand, and it is not a bug.** The kernel takes
+`veron.root=` and the console service reads `console=`, so both of the old
+`sed` edits are gone. What remains is FIRMWARE, which is a trust-boundary
+decision rather than an oversight -- see below -- and copying the kernel and
+initramfs somewhere GRUB can read them, which it must be since GRUB reads them
+before the image exists.
 
-| | |
-|---|---|
-| the root device | `guest/init` probes `/dev/vda`, `/dev/sda`, `/dev/vdb` and **ignores `root=`**. An NVMe partition is `/dev/nvme0n1p5` and no list of plausible names reaches it |
-| the console tty | the console service names a tty. A laptop has no serial port, so `ttyS0` and `ttyAMA0` are both wrong and only `tty1` works |
-| where the kernel lives | GRUB reads the kernel before any of this exists, so `Image` and the initramfs have to be on a filesystem the host already mounts |
+#### What the hardware is, and how that was established
 
-**A USB stick needs none of the first two** -- it enumerates as `/dev/sda`,
-which init already probes -- and is the safer first attempt if you have one.
-A partition is what follows.
+Measured with `lspci -k`, which names the driver the RUNNING system chose for
+each device, rather than guessed from a model number:
+
+| device | driver | what it needed |
+|---|---|---|
+| Micron 2550 NVMe SSD | `nvme` | `BLK_DEV_NVME` |
+| AMD Lucienne `[1002:164c]` | `amdgpu` | `DRM_AMDGPU` + `renoir_*` firmware |
+| AMD Renoir/Cezanne USB 3.1 | `xhci_hcd` | `USB_XHCI_PCI` |
+| Realtek RTL8852AE WiFi 6 | `rtw89_8852ae` | `RTW89_8852AE` + `rtw8852a_fw.bin` |
+| ALC236 codec | `snd_hda_codec_realtek` | the HDA stack, and `alsa-utils` |
+| touchpad | `i2c_hid` over `AMDI0010` | `I2C_DESIGNWARE_PLATFORM`, which needs `COMMON_CLK` |
+
+**There is no ethernet controller on this machine at all**, which is why
+wireless is not a luxury here.
+
+`spikes/stage5/AMD64.md` records how each of those was found, and every one of
+them was found the same way: by booting, reading `dmesg`, and comparing against
+the distribution config on the same disk. `/boot/config-6.8.0-51-generic` is a
+kernel that demonstrably drives this hardware, and grepping it settled
+`COMMON_CLK`, `PINCTRL` and the sound stack in one command each -- faster and
+more reliably than reasoning about Kconfig dependencies.
+
+#### The partition
+
+`/dev/nvme0n1p5`, 40 GiB, ext4, unmounted. The rest of that disk is Xubuntu on
+p4, Windows on p3, and the EFI system partition on p1. **Nothing below writes
+to any of them**, and Veron itself mounts its root read-only with a tmpfs
+overlay, so a boot changes nothing on disk.
 
 #### The steps
 
-Confirm the target first. This erases it, and the partition next to it is
-probably your operating system:
+Everything here runs from Xubuntu.
+
+**1. Fetch the published image, kernel and initramfs.**
 
 ```sh
-lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS
+cd ~/Downloads
+gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
+  --pattern 'rootfs.img.tar.zst' --pattern 'Image' \
+  --pattern 'initramfs.cpio.gz' --clobber
+tar --zstd -xf rootfs.img.tar.zst
 ```
 
-Look for the right size, an **empty mountpoint**, and that it is not `/`,
-`/home`, `/boot` or `/boot/efi`. Then:
+**2. Write the image to the partition.**
 
 ```sh
 sudo dd if=rootfs.img of=/dev/nvme0n1p5 bs=4M status=progress conv=fsync
 ```
 
-The image is a bare ext4 filesystem, not a partitioned disk, so it goes to the
-partition. **A 4.7 GiB filesystem written into a larger partition stays 4.7
-GiB** -- the remainder is unused, not corrupt. `resize2fs` will claim it, and
-it buys nothing today: init mounts root read-only under a tmpfs overlay, so
-nothing persists across a reboot whatever the size.
+This overwrites p5 entirely. `conv=fsync` because `dd` returning is not the
+same as the bytes being on the disk, and the next thing done is a reboot.
 
-The console, in place:
+**3. Put the firmware in the initramfs.**
+
+Not in the image -- **in the initramfs** -- and that is the part that is not
+obvious. The drivers are built INTO the kernel, so they probe during kernel
+init, before `/dev/nvme0n1p5` is mounted and long before anything in the image
+is reachable. The kernel unpacks the initramfs before driver initcalls run, so
+`/lib/firmware` inside the initramfs is the only place a built-in driver can
+find a blob at probe time.
 
 ```sh
-sudo mkdir -p /mnt/veron
+rm -rf /tmp/ir && mkdir -p /tmp/ir && cd /tmp/ir
+zcat ~/Downloads/initramfs.cpio.gz | sudo cpio -idm
+sudo mkdir -p lib/firmware/amdgpu lib/firmware/rtw89
+
+# graphics. dmesg names the ASIC:
+#   amdgpu: ATOM BIOS: 113-LUCIENNE-019
+# and amdgpu maps 0x164c to AMD_APU_IS_RENOIR, so Lucienne wants renoir_*.
+for f in /lib/firmware/amdgpu/renoir_*.bin.zst; do
+  sudo sh -c "zstd -d -f -c '$f' > lib/firmware/amdgpu/$(basename ${f%.zst})"
+done
+
+# wireless. dmesg names the exact file:
+#   rtw89_8852ae: loaded firmware rtw89/rtw8852a_fw.bin
+sudo sh -c 'zstd -d -f -c /lib/firmware/rtw89/rtw8852a_fw.bin.zst \
+            > lib/firmware/rtw89/rtw8852a_fw.bin'
+
+ls -l lib/firmware/amdgpu | head -3
+sudo sh -c 'find . | cpio -o -H newc | gzip > /home/aiden/Downloads/initramfs-fw.cpio.gz'
+```
+
+**`-f` is load-bearing.** Those files are symlinks on Ubuntu, and plain
+`zstd -d` refuses a symlink with a warning rather than an error -- so without
+it the loop reports success and copies seven fewer files than it should.
+`renoir_dmcub.bin` is the display microcode and is one of them. Expect roughly
+twelve files in `amdgpu/`, all non-zero.
+
+Decompressing rather than copying the `.zst` verbatim is belt and braces: the
+kernel is built with `FW_LOADER_COMPRESS_ZSTD`, so either works, and a
+firmware file the loader cannot decompress fails identically to one that is
+absent -- a bad failure to have to tell apart.
+
+**AN ABSOLUTE PATH, NOT `~`.** Inside `sudo sh -c` the tilde expands to root's
+home, and `/root/Downloads` does not exist:
+
+    sh: 1: cannot create /root/Downloads/...: Directory nonexistent
+
+**4. Copy the kernel and initramfs onto the partition.**
+
+GRUB reads these before Veron exists, so they have to be somewhere GRUB can
+already reach. The root of p5 works because GRUB can read ext4.
+
+```sh
 sudo mount /dev/nvme0n1p5 /mnt/veron
-sudo sed -i 's/115200 ttyAMA0/115200 tty1/' /mnt/veron/etc/dinit.d/console
-grep 115200 /mnt/veron/etc/dinit.d/console      # expect: ... 115200 tty1
+sudo cp ~/Downloads/Image ~/Downloads/initramfs-fw.cpio.gz /mnt/veron/
+ls -l /mnt/veron/Image /mnt/veron/initramfs-fw.cpio.gz
 sudo umount /mnt/veron
 ```
 
-**Check the grep.** A `sed` that matched nothing is silent, and the symptom is
-the respawn loop this document describes elsewhere -- which reads as the absent
-login rather than as a wrong device name.
+**5. Add a GRUB entry.**
 
-The initramfs, unpacked, edited, repacked:
-
-```sh
-mkdir -p /tmp/ir && cd /tmp/ir
-zcat ~/Downloads/initramfs.cpio.gz | sudo cpio -idm
-sudo sed -i 's|for dev in /dev/vda|for dev in /dev/nvme0n1p5 /dev/vda|' init
-grep "for dev in" init                          # the new device must be FIRST
-# AN ABSOLUTE PATH, NOT ~. Inside `sudo sh -c` the tilde expands to ROOT's
-# home -- /root/Downloads -- which does not exist:
-#     sh: 1: cannot create /root/Downloads/...: Directory nonexistent
-sudo sh -c 'find . | cpio -o -H newc | gzip > /home/YOU/Downloads/initramfs-nvme.cpio.gz'
-```
-
-Prepending rather than replacing keeps every qemu boot working from the same
-file.
-
-Then where GRUB can read them -- `/boot` on the host, not the EFI partition:
-
-```sh
-sudo mkdir -p /boot/veron
-sudo cp ~/Downloads/Image ~/Downloads/initramfs-nvme.cpio.gz /boot/veron/
-```
-
-`/etc/grub.d/40_custom`:
+`sudo nano /etc/grub.d/40_custom`:
 
 ```
-menuentry "Veron" {
-    linux  /boot/veron/Image console=tty0 rdinit=/init panic=1 loglevel=4 veron.boot=system
-    initrd /boot/veron/initramfs-nvme.cpio.gz
+menuentry 'Veron' --class unknown {
+    insmod part_gpt
+    insmod ext2
+    search --no-floppy --fs-uuid --set=root 00000000-0000-4000-8000-000000000001
+    linux  /Image console=tty0 rdinit=/init panic=1 loglevel=4 \
+           veron.boot=system veron.root=/dev/nvme0n1p5
+    initrd /initramfs-fw.cpio.gz
 }
 ```
 
 ```sh
-sudo cp /boot/grub/grub.cfg ~/grub.cfg.bak
-sudo chmod +x /etc/grub.d/40_custom
 sudo grub-script-check /etc/grub.d/40_custom
+sudo cp /boot/grub/grub.cfg ~/grub.cfg.bak
 sudo update-grub
+sudo grep -A6 "menuentry 'Veron'" /boot/grub/grub.cfg
 ```
 
-`console=tty0`, not `ttyS0`: the console is the screen. `veron.boot=system` is
-required for the same reason as under qemu -- without it init runs the test
-suite and powers off.
+That last line is worth the two seconds: it proves the entry reached
+`grub.cfg` with the kernel arguments intact, rather than finding out at the
+boot menu. `grub.cfg` needs `sudo` to read.
+
+**That UUID is real, not a failed read.** CI builds the image with a FIXED
+filesystem UUID so two builds produce identical bytes -- a random one would
+break `VERON-IMAGE-REPRO-OK`. It survives `dd`, so it does not change when the
+image is rewritten. Confirm with `sudo blkid /dev/nvme0n1p5` anyway.
+
+The consequence worth knowing: **every Veron image ever built carries that
+UUID.** Write a second one to another partition and `search --fs-uuid` finds
+whichever GRUB hits first. `--part-uuid` with the PARTUUID from `blkid` is the
+alternative if that ever matters.
+
+**Each kernel argument, and why:**
+
+| | |
+|---|---|
+| `veron.boot=system` | **required for a usable machine.** Without it `guest/init` runs the test suite and powers off -- correct for CI, useless on a laptop. With it, init switch_roots into dinit and the desktop starts |
+| `veron.root=/dev/nvme0n1p5` | tried before the `/dev/vda`, `/dev/sda`, `/dev/vdb` probe list, which no NVMe partition can ever match. When a named device fails, init prints `/proc/partitions`, so "wrong name" and "no driver" stop looking identical |
+| `console=tty0` | read by `scripts/console-getty`, which execs getty on whatever `console=` names. No `sed` on `/etc/dinit.d/console` any more -- that file used to hardcode `ttyAMA0` |
+| `panic=1` | reboot rather than hang on a kernel panic |
+| `rdinit=/init` | the initramfs init, not the image's |
+
+#### Secure Boot has to be off
+
+The first attempt did not reach the kernel:
+
+```
+error: bad shim signature.
+error: you need to load the kernel first.
+```
+
+**shim refused it because Veron's kernel is not signed by a key the firmware
+trusts, and never will be.** The second line is fallout: `linux` failed, so
+`initrd` had nothing to attach to. Ubuntu boots because Canonical signs their
+kernels; that is passing the check, not bypassing it.
+
+So: firmware setup, Security → Secure Boot → Disabled. **Check BitLocker
+first** if Windows is on the disk -- changing Secure Boot alters the TPM
+measurements BitLocker keys itself to. From an admin PowerShell,
+`manage-bde -status C:` catches device encryption even when the BitLocker
+control panel does not mention it.
+
+This is a real distribution question rather than a quirk of one laptop: any
+system wanting to boot on stock consumer hardware needs either a signed shim
+or the user disabling it, and Veron has neither.
 
 #### What is likely to go wrong, and what each failure tells you
 
-**Nothing here can write to your disks.** init mounts `-o ro` and puts a tmpfs
-overlay on top. A failed boot costs a reboot.
-
-| symptom | what it means |
+| what you see | what it means |
 |---|---|
-| `no root to test: neither disk nor 9p` | the kernel has no driver for the NVMe controller. There are **no modules in this image** -- `make modules_install` never runs -- so nothing can be loaded later, and the fix is a `set_cfg` line in `sysroot-amd64.sh` |
-| kernel messages then a black screen | `i915`/`amdgpu` attached and could not load firmware. `/lib/firmware` is not shipped |
-| the console respawn loop | the `sed` did not match -- check `/etc/dinit.d/console` |
-| GRUB drops to a rescue prompt | the menuentry did not parse; restore `~/grub.cfg.bak` |
+| `bad shim signature` | Secure Boot is on. See above |
+| GRUB's background stays on screen, nothing prints | the kernel is alive and has no display driver it can use. Caps Lock still toggles. This was the state before `DRM_SIMPLEDRM` and `DRM_AMDGPU` were enabled |
+| `no root to test: neither disk nor 9p` then an immediate power-off | init found no root. `veron.root=` is missing or names the wrong device |
+| `/proc/partitions` shows a header and nothing else | the kernel has no driver for the storage controller. Nothing to do with naming |
+| a desktop, but no sound | expected. The DACs come up at gain 0 -- `amixer sset Master 80%` |
+| a desktop, but no touchpad | `COMMON_CLK` or the i2c stack was dropped. `dmesg \| grep -i AMDI0010` -- no bind means no bus |
 
-**The last kernel line before it stops is the finding.** Whether this system
-can be a laptop OS rather than a VM guest turns on two things nobody has
-measured -- whether the kernel has drivers for real storage, and whether the
-GPU comes up without firmware -- and one boot answers both.
+#### After it boots
 
-#### Firmware, for graphics and wireless
-
-Drivers built into the kernel probe **during kernel init**, before the rootfs
-is mounted. So firmware on `/lib/firmware` in the image is too late — it has to
-be in the **initramfs**, which the kernel populates before driver initcalls
-run. Copy it from a distribution that already has it, into the unpacked
-initramfs before repacking:
+The console lands at a shell. The desktop is not automatic:
 
 ```sh
-cd /tmp/ir
-sudo mkdir -p lib/firmware/amdgpu lib/firmware/rtw89
-
-# graphics: match your ASIC. dmesg on the host names it --
-#   amdgpu: ATOM BIOS: 113-LUCIENNE-019   -> renoir_* (0x164c is RENOIR)
-for f in /lib/firmware/amdgpu/renoir_*.bin.zst \
-         /lib/firmware/amdgpu/green_sardine_*.bin.zst; do
-  [ -e "$f" ] || continue
-  sudo sh -c "zstd -d -c '$f' > lib/firmware/amdgpu/$(basename "${f%.zst}")"
-done
-
-# wireless: dmesg names the exact file --
-#   rtw89_8852ae: loaded firmware rtw89/rtw8852a_fw.bin
-sudo sh -c 'zstd -d -c /lib/firmware/rtw89/rtw8852a_fw.bin.zst \
-            > lib/firmware/rtw89/rtw8852a_fw.bin'
-
-ls -l lib/firmware/amdgpu lib/firmware/rtw89
+sh /etc/dinit.d/scripts/labwc-session
 ```
 
-Decompressing rather than copying the `.zst` files verbatim is belt and braces:
-the kernel is built with `FW_LOADER_COMPRESS_ZSTD`, so either works, and a
-firmware file the loader cannot decompress fails in exactly the same way as one
-that is absent — which is a bad failure to have to distinguish.
+Ten to thirty seconds, no progress output, then the first frame paints.
+**Win+Return** for a terminal, **Win+d** for the launcher.
 
-Then repack as above. The initramfs grows by roughly the size of what you
-copied; it is unpacked into RAM at boot, so keep it to the ASIC you have rather
-than the whole `amdgpu` directory.
+**Sound.** The ALC236 comes up muted at gain 0 -- BLFS says the same of its own
+systems -- so nothing is wrong when a video plays silently:
 
-**None of this is in the published image and none of it will be.** Firmware is
-redistributable binary nobody in this chain can build, which is the one thing
-every other byte here is arranged to avoid. The kernel is built ready for
-blobs an operator supplies; supplying them is a local decision. See
-`TRUST-BOUNDARY.md` and `spikes/stage5/AMD64.md`.
+```sh
+amixer sset Master 80% unmute
+amixer sset Speaker 80% unmute
+```
 
-**Wireless userspace exists**: `wpa_supplicant`, `iproute2` and `dhcpcd` are all
-in the 122 packages, so a working driver plus firmware is genuinely enough.
+There is no service that restores mixer state at boot, so this is typed each
+time. `alsactl store` writes `/var/lib/alsa/asound.state` but nothing reads it
+back yet.
 
-#### The proper fixes, which are not these
+**Wireless.**
 
-Two of the three edits above are now unnecessary — the repository does them:
+```sh
+mkdir -p /run/wpa_supplicant /var/db/dhcpcd
+ip link set wlan0 up
+cat > /tmp/wpa.conf <<'EOF'
+ctrl_interface=/run/wpa_supplicant
+network={
+    ssid="YOUR_SSID"
+    psk="YOUR_PASSWORD"
+}
+EOF
+wpa_supplicant -B -i wlan0 -c /tmp/wpa.conf
+dhcpcd wlan0
+echo "nameserver 1.1.1.1" > /etc/resolv.conf
+```
 
-- **`guest/init` accepts `veron.root=`**, tried before the existing
-  `/dev/vda`, `/dev/sda`, `/dev/vdb` list. So the initramfs `sed` is only
-  needed for an initramfs built before that landed. `root=` was the wrong name
-  to reuse: the kernel consumes it when it mounts a root itself, and here the
-  initramfs does the mounting. When a named device fails, init now prints
-  `/proc/partitions`, so "wrong name" and "no driver for this controller" stop
-  producing identical silence.
-- **The console service reads `console=` from `/proc/cmdline`** instead of
-  naming a tty, so the `sed` on `/etc/dinit.d/console` is likewise historical.
-  One wrapper is correct on aarch64, on x86_64 under qemu and on bare metal.
+`ip addr show wlan0` for an address. DHCP supplies no resolver here, so the
+last line is needed for names as well as addresses.
 
-What remains genuinely host-side is the firmware, which is a trust-boundary
-decision rather than an oversight, and copying the kernel and initramfs
-somewhere GRUB can read them.
+**The browser.** Not on PATH:
+
+```sh
+/usr/libexec/wpe-webkit-2.0/MiniBrowser https://example.com
+```
+
+**A hotplugged USB mouse needs its device node fixed.** Nothing manages device
+nodes -- `libudev-zero` is a library with no daemon -- so `devtmpfs` creates
+the node with default ownership and nothing corrects it:
+
+```
+crw-rw----  root input   event0..event3    (present at boot)
+crw-------  root root    event4            (hotplugged)
+```
+
+```sh
+chown root:input /dev/input/event4 && chmod 660 /dev/input/event4
+```
+
+then restart labwc. Two gaps behind one symptom: no permission rule for
+hotplugged nodes, and no hotplug at all -- libinput enumerates at startup, so a
+device added later is invisible even once readable. busybox `mdev` does both
+jobs and is the fix when someone gets to it.
+
+#### What this boot has established
+
+Everything below was measured on the machine described above, not inferred:
+
+- NVMe root, ext4, mounted read-only with a tmpfs overlay
+- `amdgpu` with `renoir_*` firmware from the initramfs, labwc rendering on it
+- `rtw89_8852ae` associated, DHCP, `ping 1.1.1.1` at 15 ms
+- WPE MiniBrowser playing YouTube
+- the built-in keyboard through i8042, the touchpad through i2c-hid
+- two sound cards, HDMI through amdgpu and the ALC236 codec
+
 
 #### The two `-cpu` values disagree, and that is a finding rather than a nuisance
 
