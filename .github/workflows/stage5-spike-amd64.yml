@@ -477,9 +477,9 @@ jobs:
                 #
                 # The guard exists because a package compiled against one libc
                 # is not valid against another, and the comment above records
-                # what it already caught once. Rewriting the marker's base
-                # tells that guard the packages belong to this sysroot when
-                # nobody has checked that they do.
+                # what it already caught once. Re-keying the checkpoint tells
+                # that guard the packages belong to this sysroot when nobody
+                # has checked that they do.
                 #
                 # THE ONLY CASE IT IS DEFENSIBLE IN is one where the operator
                 # knows what changed between the two sysroots and knows it
@@ -500,20 +500,36 @@ jobs:
                 # named in the run log, and recorded in the image's provenance
                 # below rather than silently applied.
                 #
-                # IF YOU ARE UNSURE, DO NOT USE IT. Rebuilding 121 packages
-                # costs a few hours; a subtly stale libc dependency costs a
-                # result nobody can trust and a week finding out.
-                echo "  VERON-CHECKPOINT-ADOPTED  base rewritten by operator request"
+                # THE MARKER IS RE-KEYED, NOT EDITED, AND THE FIRST VERSION OF
+                # THIS GOT THAT WRONG. It rewrote the marker's `base` field
+                # with python and left the per-package keys alone, which
+                # passed this check and then failed the next one:
+                #
+                #     checkpoint: 0 package(s) reusable, 121 stale and discarded
+                #
+                # because the base is an INPUT to every package key --
+                # `package_keys(recipes, policy, base)` in tools/veron -- not
+                # merely a header beside them. Changing the base changes all
+                # 121 keys, so a marker with the new base and the old keys
+                # describes nothing.
+                #
+                # `veron checkpoint --base <new>` recomputes every key for what
+                # dest/ currently holds, which is exactly the operation wanted
+                # and one the tool already performs. Editing JSON by hand to
+                # imitate a command that exists is how the first attempt cost a
+                # run.
+                echo "  VERON-CHECKPOINT-ADOPTED  re-keying by operator request"
                 echo "    was  $_m"
                 echo "    now  $_want"
                 echo "    the packages in this checkpoint were compiled against"
                 echo "    the FORMER sysroot. Nothing here has verified they are"
                 echo "    valid against this one."
-                # python -c, NOT A HEREDOC. A heredoc body sits at column 0
-                # and a YAML block scalar cannot contain it -- the same trap
-                # that has broken two other workflows in this repository, and
-                # that broke the first draft of this step.
-                python3 -c 'import json,sys; p="dest/.veron-checkpoint"; m=json.load(open(p)); m["base_adopted_from"]=m.get("base",""); m["base"]=sys.argv[1]; json.dump(m,open(p,"w"),indent=1,sort_keys=True); print("    marker rewritten: %d package(s) kept" % len(m.get("keys",{})))' "$_want"
+                # THE OLD BASE IS RECORDED BEFORE IT IS OVERWRITTEN, in a file
+                # rather than the marker, because `veron checkpoint` writes the
+                # marker from scratch and would drop any field added to it.
+                echo "$_m" > .adopted-from
+                python3 tools/veron --overlay packages-amd64 --dest dest \
+                  checkpoint --base "$_want"
               else
                 echo "  discarding it: every package is stale on a new sysroot"
                 echo "  (adopt_checkpoint=true reuses it anyway -- read that"
@@ -1809,9 +1825,20 @@ jobs:
             # made only in a run log is a claim nobody finds later. If this
             # run reused packages compiled against a different sysroot, the
             # release says so beside the bytes it published.
-            if [ -f dest/.veron-checkpoint ] \
-               && python3 -c 'import json,sys; sys.exit(0 if json.load(open("dest/.veron-checkpoint")).get("base_adopted_from") else 1)' 2>/dev/null; then
-              python3 -c 'import json; m=json.load(open("dest/.veron-checkpoint")); print("VERON-CHECKPOINT-ADOPTED"); print("  packages in this image were compiled against sysroot"); print("  " + m["base_adopted_from"]); print("  and adopted onto"); print("  " + m["base"]); print("  by operator request. Nothing verified they are valid"); print("  against the second one.")' > ADOPTED-CHECKPOINT
+            #
+            # THE MARKER CANNOT CARRY THIS. `veron checkpoint` writes it from
+            # scratch -- {base, keys} and nothing else -- so a field added to
+            # it is dropped by the very command that does the adopting. The
+            # restore step writes .adopted-from instead.
+            if [ -s .adopted-from ]; then
+              { echo "VERON-CHECKPOINT-ADOPTED"
+                echo "  packages in this image were compiled against sysroot"
+                echo "    $(cat .adopted-from)"
+                echo "  and re-keyed onto"
+                echo "    $(cat dl-sysroot/SYSROOT-SHA256 | awk '{print $1}')"
+                echo "  by operator request. Nothing verified they are valid"
+                echo "  against the second one."
+              } > ADOPTED-CHECKPOINT
               echo "  recording an adopted checkpoint in the release"
               sed 's/^/    /' ADOPTED-CHECKPOINT
             fi
