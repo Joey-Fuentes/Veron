@@ -860,15 +860,15 @@ package zlib 1.3.2
          argv ["make", "DESTDIR=dest/zlib", "install"]
 
 ======================================================================
-package alsa-lib 1.2.14
+package alsa-lib 1.2.16.1
   group        media
   license      LGPL-2.1-or-later
-  recipe-sha   a2053de2a942e3558f2ca4d3ba5843cd607dce8719200aa795a5f080823d12f6
+  recipe-sha   54dff3efdbfebe22b4319d3c2227d5b513ab44c3eb2e01f03948a18110738631
 
   source
-    url        https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.14.tar.bz2
-    sha256     be9c88a0b3604367dd74167a2b754a35e142f670292ae47a2fdef27a2ee97a32
-    signature  none -- no detached signature published beside the release
+    url        https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2
+    sha256     f740db7f488255944ffd4428416ee3390a96742856916433df468c281436480e
+    signature  https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2.sig
     correspond none
 
   deps
@@ -879,16 +879,16 @@ package alsa-lib 1.2.14
 
   commands (literal; this is exactly what runs)
     [01] unpack
-         cwd  build/alsa-lib-1.2.14
-         argv ["tar", "-xf", "dl/alsa-lib-1.2.14.tar.bz2", "-C", "build/alsa-lib-1.2.14"]
+         cwd  build/alsa-lib-1.2.16.1
+         argv ["tar", "-xf", "dl/alsa-lib-1.2.16.1.tar.bz2", "-C", "build/alsa-lib-1.2.16.1"]
     [02] configure
-         cwd  build/alsa-lib-1.2.14/alsa-lib-1.2.14
+         cwd  build/alsa-lib-1.2.16.1/alsa-lib-1.2.16.1
          argv ["./configure", "--prefix=/usr", "--disable-python", "--disable-topology", "--disable-ucm"]
     [03] build
-         cwd  build/alsa-lib-1.2.14/alsa-lib-1.2.14
+         cwd  build/alsa-lib-1.2.16.1/alsa-lib-1.2.16.1
          argv ["make", "-j1"]
     [04] install
-         cwd  build/alsa-lib-1.2.14/alsa-lib-1.2.14
+         cwd  build/alsa-lib-1.2.16.1/alsa-lib-1.2.16.1
          argv ["make", "install", "DESTDIR=dest/alsa-lib"]
 
 ======================================================================

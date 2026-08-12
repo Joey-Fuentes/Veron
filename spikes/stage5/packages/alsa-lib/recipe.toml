@@ -1,13 +1,13 @@
 name    = "alsa-lib"
-version = "1.2.14"
+version = "1.2.16.1"
 group   = "media"
 license = "LGPL-2.1-or-later"
-srcdir  = "alsa-lib-1.2.14"
+srcdir  = "alsa-lib-1.2.16.1"
 
 [source]
-url       = "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.14.tar.bz2"
-sha256    = "be9c88a0b3604367dd74167a2b754a35e142f670292ae47a2fdef27a2ee97a32"
-signature = "none -- no detached signature published beside the release"
+url       = "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2"
+sha256    = "f740db7f488255944ffd4428416ee3390a96742856916433df468c281436480e"
+signature = "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2.sig"
 crosschecked_against = []
 
 [deps]
@@ -54,6 +54,41 @@ shared-only, unlike every other autotools package in this set. It also passed \
 --help instead of assuming the autotools shape. autotools ignores unknown \
 --disable-* silently, so they would have looked like decisions and been \
 nothing.
+
+THE VERSION MOVED BECAUSE alsa-utils WOULD NOT COMPILE AGAINST 1.2.14, and \
+the source says so precisely. alsactl/alsactl.c:462 reads
+
+    #if SND_LIB_VER(1, 2, 15) < SND_LIB_VERSION
+            snd_lib_error_set_handler(error_handler);
+    #else
+            snd_lib_log_set_handler(log_handler);
+    #endif
+
+so alsa-utils 1.2.16 takes the second branch against any alsa-lib at or below \
+1.2.15 and calls a function that version does not export:
+
+    alsactl.c:465:9: error: implicit declaration of function \
+      'snd_lib_log_set_handler'; did you mean 'snd_lib_error_set_handler'?
+
+VERIFIED AGAINST THE HEADERS OF THIS TARBALL RATHER THAN INFERRED FROM THE \
+VERSION NUMBERS, and the result is stronger than the arithmetic suggested. \
+include/version.h defines SND_LIB_VERSION as SND_LIB_VER(1,2,16), so \
+alsa-utils' test is true and it takes the FIRST branch -- \
+snd_lib_error_set_handler. And include/error.h:93 declares \
+snd_lib_log_set_handler as well, so the other branch would also have linked. \
+The pairing holds either way.
+
+1.2.14 WAS LATEST STABLE WHEN IT WAS PINNED, on 5 August. alsa shipped \
+1.2.15.x and then 1.2.16.1 within the week, and the BLFS book vendored in \
+this repository already says 1.2.15.3 -- which is the tell that was there to \
+be read when the alsa-utils recipe was written against that same page and \
+was not. Nothing in this repository flags a pin going stale; that is a real \
+gap and this is what it costs.
+
+alsa-lib IS PACKAGE 22, so this bump invalidates the checkpoint key of every \
+package built after it. That is the price of the pairing and it is worth \
+paying once rather than pinning alsa-utils backwards to match a library that \
+was going to be bumped anyway.
 
 BLFS CROSS-CHECK: multimedia/alsa-lib.html runs a BARE `./configure` with no \
 --prefix at all, which works because alsa-lib overrides autoconf's default -- \
@@ -111,13 +146,17 @@ would leave the package built and unused."""
 
 [installs]
 prefixes = ["usr/bin", "usr/include", "usr/include/alsa", "usr/include/sys", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/alsa"]
-files    = 134
-digest   = "30abbc036845dcbdced8ac109f4add07f6050dd94c1134af8c2195a9297f9b34"
+# files/digest DELIBERATELY ABSENT UNTIL THE FIRST RUN ON THIS VERSION.
+# They were 134 files and 30abbc03 for 1.2.14, and a version bump changes
+# both -- a pin carried across would report INSTALL-SET-CHANGED on every run
+# and mean nothing. The run prints the new pair; paste them back here.
+# prefixes stays: it is the shape of the install, not its contents, and it
+# is still enforced.
 
 [[steps]]
 name = "unpack"
 cwd  = "$B"
-run  = [["tar", "-xf", "$DL/alsa-lib-1.2.14.tar.bz2", "-C", "$B"]]
+run  = [["tar", "-xf", "$DL/alsa-lib-1.2.16.1.tar.bz2", "-C", "$B"]]
 
 [[steps]]
 name = "configure"
@@ -138,4 +177,4 @@ run  = [["make", "install", "DESTDIR=$D"]]
 
 [guest]
 test   = [["/usr/bin/pkgconf", "--modversion", "alsa"]]
-expect = ["1.2.14"]
+expect = ["1.2.16.1"]
