@@ -57,6 +57,11 @@ on:
         type: boolean
         required: false
         default: false
+      adopt_checkpoint:
+        description: 'adopt_checkpoint -- reuse a checkpoint built against a DIFFERENT sysroot, rewriting its base to this run''s. Weakens a correctness guard: only for a sysroot known to differ in ways that cannot reach the packages. Read the step comment before using.'
+        type: boolean
+        required: false
+        default: false
       use_checkpoint:
         description: 'use_checkpoint -- restore a prior build checkpoint instead of building everything. NEVER for a reproducibility claim'
         type: boolean
@@ -466,8 +471,55 @@ jobs:
             _m=$(python3 -c 'import json;print(json.load(open("dest/.veron-checkpoint")).get("base",""))' 2>/dev/null || echo "")
             if [ "$_m" != "$_want" ]; then
               echo "  checkpoint base $(echo "$_m" | cut -c1-12) != sysroot $(echo "$_want" | cut -c1-12)"
-              echo "  discarding it: every package is stale on a new sysroot"
-              rm -rf dest && mkdir -p dest
+              if [ '${{ inputs.adopt_checkpoint }}' = 'true' ]; then
+                # ADOPTING A CHECKPOINT ACROSS A SYSROOT CHANGE, DELIBERATELY,
+                # AND THIS IS THE WEAKEST THING IN THIS FILE.
+                #
+                # The guard exists because a package compiled against one libc
+                # is not valid against another, and the comment above records
+                # what it already caught once. Rewriting the marker's base
+                # tells that guard the packages belong to this sysroot when
+                # nobody has checked that they do.
+                #
+                # THE ONLY CASE IT IS DEFENSIBLE IN is one where the operator
+                # knows what changed between the two sysroots and knows it
+                # cannot reach the packages. The case it was written for: stage
+                # 4 republished after a KERNEL CONFIG change -- COMMON_CLK and
+                # the i2c symbols, so a laptop touchpad would work -- which
+                # alters arch/x86/boot/bzImage and nothing a userspace package
+                # links against. glibc, gcc and binutils were the same versions
+                # built the same way; the digest moved because stage 4 makes no
+                # byte-reproducibility claim across runs, not because anything
+                # a package can see was different.
+                #
+                # THAT REASONING IS NOT CHECKED HERE AND CANNOT BE. The old
+                # sysroot is already gone -- stage4/latest-amd64 is a mutable
+                # tag with one asset -- so there is nothing left to diff
+                # against. This flag is the operator asserting the comparison
+                # they can no longer make, which is why it is off by default,
+                # named in the run log, and recorded in the image's provenance
+                # below rather than silently applied.
+                #
+                # IF YOU ARE UNSURE, DO NOT USE IT. Rebuilding 121 packages
+                # costs a few hours; a subtly stale libc dependency costs a
+                # result nobody can trust and a week finding out.
+                echo "  VERON-CHECKPOINT-ADOPTED  base rewritten by operator request"
+                echo "    was  $_m"
+                echo "    now  $_want"
+                echo "    the packages in this checkpoint were compiled against"
+                echo "    the FORMER sysroot. Nothing here has verified they are"
+                echo "    valid against this one."
+                # python -c, NOT A HEREDOC. A heredoc body sits at column 0
+                # and a YAML block scalar cannot contain it -- the same trap
+                # that has broken two other workflows in this repository, and
+                # that broke the first draft of this step.
+                python3 -c 'import json,sys; p="dest/.veron-checkpoint"; m=json.load(open(p)); m["base_adopted_from"]=m.get("base",""); m["base"]=sys.argv[1]; json.dump(m,open(p,"w"),indent=1,sort_keys=True); print("    marker rewritten: %d package(s) kept" % len(m.get("keys",{})))' "$_want"
+              else
+                echo "  discarding it: every package is stale on a new sysroot"
+                echo "  (adopt_checkpoint=true reuses it anyway -- read that"
+                echo "   step's comment first; it weakens a real guard)"
+                rm -rf dest && mkdir -p dest
+              fi
             fi
           else
             echo "  no checkpoint published yet -- building everything"
@@ -1753,7 +1805,18 @@ jobs:
             gh release create stage5/latest-amd64 --title 'Veron stage 5 (x86_64)' \
               --notes 'The stage-5 system image for x86_64, and the kernel and initramfs that boot it. Separate from stage5/latest, which is aarch64. Open with the zstd in toolbox/latest.' \
               2>/dev/null || true
+            # AN ADOPTED CHECKPOINT TRAVELS WITH THE IMAGE, because a claim
+            # made only in a run log is a claim nobody finds later. If this
+            # run reused packages compiled against a different sysroot, the
+            # release says so beside the bytes it published.
+            if [ -f dest/.veron-checkpoint ] \
+               && python3 -c 'import json,sys; sys.exit(0 if json.load(open("dest/.veron-checkpoint")).get("base_adopted_from") else 1)' 2>/dev/null; then
+              python3 -c 'import json; m=json.load(open("dest/.veron-checkpoint")); print("VERON-CHECKPOINT-ADOPTED"); print("  packages in this image were compiled against sysroot"); print("  " + m["base_adopted_from"]); print("  and adopted onto"); print("  " + m["base"]); print("  by operator request. Nothing verified they are valid"); print("  against the second one.")' > ADOPTED-CHECKPOINT
+              echo "  recording an adopted checkpoint in the release"
+              sed 's/^/    /' ADOPTED-CHECKPOINT
+            fi
             assets="rootfs.img.tar.zst IMAGE-SHA256"
+            [ -f ADOPTED-CHECKPOINT ] && assets="$assets ADOPTED-CHECKPOINT"
             for f in "$R/boot/Image" files.tsv initramfs.cpio.gz; do
               [ "$f" = "${f#$R/}" ] || cp "$f" .
               assets="$assets $(basename "$f")"
