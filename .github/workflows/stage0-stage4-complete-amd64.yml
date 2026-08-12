@@ -3923,6 +3923,78 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+      - name: 'Collect the compiler under test (so it can be debugged off-runner)'
+        if: always()
+        run: |
+          set -u
+          # WHY THIS EXISTS. Run 85548937922 stopped at rung 0 with a
+          # tcc-x86_64 that segfaulted, and the answer took four commands once
+          # the binary was off the runner: ptrace to the faulting rip, read
+          # libc.tls_size out of the stopped process, disassemble one
+          # instruction, name the (char) cast that produced it. Five probes
+          # across five runs had not got there. The riscv64 arm learned the
+          # same lesson at its rung 8 and grew the same step.
+          #
+          # AND THIS TARGET IS EASIER THAN THAT ONE. These are x86_64 binaries,
+          # so anyone with an ordinary machine can run them directly -- no
+          # qemu-user, and objdump understands them, which riscv64's did not.
+          mkdir -p compiler
+          B=box
+          _have=
+          for d in work/out work/prefix work/bld/gcc work/bld2/gcc \
+                   work/lfs/usr/bin work/lfs/usr/lib \
+                   lib usr/lib usr/include; do
+            [ -e "$B/$d" ] && _have="$_have $d"
+          done
+          if [ -z "$_have" ]; then
+            echo "  nothing to collect -- the box has none of the expected paths"
+            exit 0
+          fi
+          echo "  slicing:$_have"
+          # zstd IF PRESENT, gzip OTHERWISE. A missing compressor must not lose
+          # the artifact, and the compressor on a runner is not something to
+          # assume.
+          if command -v zstd >/dev/null 2>&1; then
+            tar -C "$B" -cf - $_have 2>/dev/null \
+              | zstd -T0 -3 -o compiler/compiler-slice.tar.zst -f 2>/dev/null || true
+          fi
+          if [ ! -s compiler/compiler-slice.tar.zst ]; then
+            tar -C "$B" -cf - $_have 2>/dev/null \
+              | gzip -1 > compiler/compiler-slice.tar.gz || true
+          fi
+          # A NOTE BESIDE IT. printf and echo rather than a heredoc: a heredoc
+          # body sits at column 0 and a YAML block scalar cannot contain one,
+          # which is the trap this repository has hit three times.
+          {
+            echo "The compiler this ladder built, and the one that built it."
+            echo ""
+            echo "  work/out/bin/gcc        the gcc tcc built at rung 6"
+            echo "  work/bld/gcc/xgcc       rung 6 stage 1"
+            echo "  work/bld2/gcc/xgcc      rung 8 stage 2, if it got that far"
+            echo "  work/prefix/bin         binutils, built at rung 4"
+            echo ""
+            echo "These are x86_64. On an x86_64 machine they run directly:"
+            echo "  tar -xf compiler-slice.tar.*"
+            echo "  ./work/out/bin/gcc --version"
+            echo ""
+            echo "Rung 6 failed with, among other things:"
+            echo "  <built-in>:0:0: internal compiler error: in ?, at real.c:1724"
+            echo "  xgcc: internal compiler error: Segmentation fault (cc1plus)"
+            echo ""
+            echo "real.c is gcc's own soft-float arithmetic and <built-in> means"
+            echo "it fails converting a built-in float macro at startup, so the"
+            echo "reproducer is small: any compile at all should show it."
+          } > compiler/README-debug.txt
+          ls -l compiler/ | sed 's/^/    /'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compiler-under-test-amd64-hermetic
+          path: compiler/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: 'Collect the final toolchain'
         if: always()
         run: |
