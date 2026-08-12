@@ -802,12 +802,33 @@ jobs:
       # did not happen there is nothing to cache, and if a later gate disliked
       # the result the compiles are still valid.
       - name: 'Publish a build checkpoint'
-        if: ${{ always() && steps.build.outcome == 'success' && inputs.save_checkpoint }}
+        if: ${{ always() && inputs.save_checkpoint }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           cd spikes/stage5
+          # A FAILED BUILD BANKS WHAT IT BUILT. This step used to require
+          # steps.build.outcome == 'success', and run 85592115674 is what that
+          # cost: 118 of 124 packages built, fltk failed at [119/124], and all
+          # 118 went into the bin with the runner. The next run started at 1.
+          #
+          # THE GATE MADE NO SENSE AGAINST HOW A CHECKPOINT WORKS. `veron
+          # checkpoint` records a key for every package dest/ CURRENTLY HOLDS,
+          # and `--resume` keeps the subset whose keys still match -- the
+          # marker's own docstring says it carries {package: key} "so a
+          # checkpoint was all-or-nothing" no longer. A partial tree is exactly
+          # what the per-package design supports; it is how stop_after already
+          # works, and a build that stopped at 119 is not different in kind
+          # from one told to stop at 118.
+          #
+          # NOTHING HERE ASSERTS COMPLETENESS. The release notes call it a
+          # cache, the count is printed, and the restore step re-keys and
+          # discards anything stale. A checkpoint holding 118 packages is a
+          # true statement about 118 packages.
+          if [ "${{ steps.build.outcome }}" != "success" ]; then
+            echo "  the build did not finish -- banking what it did build"
+          fi
           BASE='${{ steps.sysroot.outputs.sysroot_sha }}'
           python3 tools/veron --overlay packages-amd64 --dest dest checkpoint --base "$BASE"
           tar --zstd -cf dest.tar.zst dest
