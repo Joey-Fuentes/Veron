@@ -204,3 +204,47 @@ plumbing is genuinely disposable. Layer count mostly is not — each rung is sma
 enough to audit, and that is the point of a bootstrap. Where this track removes
 a layer, it must replace the lost gate with a self-validating one (self-compile
 fixpoint, 3-stage compare) rather than with an assurance.
+
+## The bootstrap compiler miscompiles one assignment, and both ladders stop there
+
+`patches/tcc-arm64-asm/0010` works around it. The defect itself is not fixed and
+this is the record of what is known.
+
+**The symptom.** rung 6 of the hermetic amd64 ladder fails with
+
+    <built-in>:0:0: internal compiler error: in ?, at real.c:1724
+
+reproducible with `cc1 -E -dM /dev/null`, which is what configure runs. gcc's
+`M_LOG10_2` is compiled in as `1.266209359584991e-12` instead of
+`0.30102999566398119521`, so every decimal exponent real.c estimates is nonsense.
+
+**Reproduced directly.** `work/ref-tcc` from the compiler-under-test artifact --
+the tcc that built that gcc -- gets decimal float literals wrong on demand:
+`0.5` becomes `0x1.9796cp-35`, `123456789.0` becomes `0x1.4af7p-10`. But `0.0`,
+`1.0`, `2.0`, `3.0`, `10.0` and `1024.0` are right, and so is the HEX spelling
+of the same number: `0x1p-1` gives exactly `0.5`.
+
+**What was ruled out, each by test rather than by reading:**
+
+| suspect | how it was cleared |
+|---|---|
+| musl's `strtod` | `floatscan.o` lifted from the ladder's own `libc.a` and linked into a gcc-built musl in place of its own -- every value correct, including 0.5, 0.1 and 123456789.0 |
+| x87 long double arithmetic | divide, multiply, an accumulating loop and `(long double)unsigned` all bit-identical between ref-tcc and gcc |
+| the target model | `sizeof(long double)` is 16, and musl's own configure agrees the compiler's definition matches float.h |
+| the tcc source | a tcc built from this exact patched tree by a host gcc emits the constant correctly, and so does a tcc built by THAT tcc -- x86_64 self-hosting is clean |
+
+**What is at fault.** The two literal paths in `tccpp.c` differ in one way:
+
+    hex      d = strtod(hbuf, 0);  ...  tokc.d = (double)d;   via a local, works
+    decimal  tokc.d = strtod(token_buf, NULL);                direct, broken
+
+Same working strtod. Only the direct assignment of a returned double into the
+`CValue` union is mishandled, and the mishandling is in the ref-tcc BINARY --
+put there by **x86_64-tcc**, which runs on aarch64 and is itself built by
+mc-tcc. That is the same leg the `signed char` imm8 bug came from.
+
+**What is still open.** x86_64-tcc's code generation is still wrong for this
+construct, and anything else assigning a floating return value straight into a
+struct or union member will hit it. Finding it needs mc-tcc and x86_64-tcc run
+under qemu-aarch64; both now travel with the seed handoff and neither has been
+examined.

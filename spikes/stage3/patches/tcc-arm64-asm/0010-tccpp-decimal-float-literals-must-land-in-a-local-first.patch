@@ -1,0 +1,87 @@
+From: Veron <veron@localhost>
+Subject: [PATCH] tccpp: decimal float literals must land in a local first
+
+WHAT BREAKS. A tcc produced by this bootstrap chain parses decimal floating
+literals into the wrong value. Measured with the compiler the hermetic amd64
+ladder actually built (work/ref-tcc, from the compiler-under-test artifact),
+compiling `double x = 0.5;`:
+
+    literal 0.5    ->  0x1.9796cp-35     wrong
+    literal 1.5    ->  0x1.40d178p-33    wrong
+    literal 0.1    ->  0x1.39ad08p-34    wrong
+    literal 123456789.0 -> 0x1.4af7p-10  wrong
+
+while 0.0, 1.0, 2.0, 3.0, 4.0, 10.0 and 1024.0 come out right, and so does the
+HEX spelling of the same numbers: 0x1p-1 gives exactly 0.5.
+
+WHY IT MATTERS. gcc's real.c has
+
+    #define M_LOG10_2 0.30102999566398119521
+
+and a gcc built by such a tcc carries 1.266209359584991e-12 in its .rodata
+instead. Every decimal exponent it estimates is then nonsense, and cc1 dies at
+real.c:1724 on the first float constant it is asked to print -- which is what
+`cc1 -E -dM /dev/null` does, and therefore what configure does, and therefore
+where rung 6 has been failing.
+
+WHAT IS NOT AT FAULT, each ruled out by test rather than by reading:
+
+  * musl's strtod. floatscan.o was lifted out of the ladder's own libc.a and
+    linked into a gcc-built musl in its place; every value came back correct,
+    including 0.5, 0.1 and 123456789.0.
+  * x87 long double arithmetic. divide, multiply, an accumulating loop and
+    (long double)unsigned all produce bit-identical results under ref-tcc and
+    under gcc.
+  * the target model. sizeof(long double) is 16, and musl's own configure
+    agrees the compiler's definition matches float.h.
+  * the tcc source. A tcc built from this exact patched tree by a host gcc
+    emits 0.30102999566398119521 correctly, and so does a tcc built by THAT
+    tcc. x86_64 self-hosting is clean.
+
+WHAT IS AT FAULT. The bug is in the ref-tcc BINARY, put there by the compiler
+that built it -- x86_64-tcc, which runs on aarch64 and is itself built by
+mc-tcc. The two literal paths differ in exactly one way:
+
+  hex      d = strtod(hbuf, 0);  ...  tokc.d = (double)d;   via a local, works
+  decimal  tokc.d = strtod(token_buf, NULL);                direct, broken
+
+Both call the same working strtod. Only the direct assignment of the returned
+double into the CValue union is mishandled.
+
+WHAT THIS PATCH DOES, AND WHAT IT DOES NOT. It routes every decimal literal
+through a local of the right type before the union assignment, which is what
+the hex path already does and what already works. It is a WORKAROUND: the
+defect is in x86_64-tcc's code generation and is still there, waiting for
+anything else that assigns a floating return value straight into a struct or
+union member. Finding that is tracked separately; this exists so the ladder can
+get past rung 6 while it is found.
+
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -2514,18 +2514,22 @@
+             if (t == 'F') {
+                 ch = *p++;
+                 tok = TOK_CFLOAT;
+-                tokc.f = strtof(token_buf, NULL);
++                /* THROUGH A LOCAL. Assigning a floating return value straight
++                   into the CValue union is miscompiled by the compiler that
++                   builds this one; the hex path above already stores into a
++                   local first and is correct. See the patch header. */
++                { float fv = strtof(token_buf, NULL); tokc.f = fv; }
+             } else if (t == 'L') {
+                 ch = *p++;
+                 tok = TOK_CLDOUBLE;
+ #ifdef TCC_USING_DOUBLE_FOR_LDOUBLE
+-                tokc.d = strtod(token_buf, NULL);
++                { double dv = strtod(token_buf, NULL); tokc.d = dv; }
+ #else
+-                tokc.ld = strtold(token_buf, NULL);
++                { long double lv = strtold(token_buf, NULL); tokc.ld = lv; }
+ #endif
+             } else {
+                 tok = TOK_CDOUBLE;
+-                tokc.d = strtod(token_buf, NULL);
++                { double dv = strtod(token_buf, NULL); tokc.d = dv; }
+             }
+         }
+     } else {

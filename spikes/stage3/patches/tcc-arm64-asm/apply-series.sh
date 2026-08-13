@@ -39,7 +39,11 @@ say() { printf '%s\n' "$*"; }
 # ---------------------------------------------------------------- pre-images
 # "<path> <blob>" for the first patch in the series that touches each path.
 declare -A PRE
-for p in "$P"/000*.patch; do
+# [0-9][0-9][0-9][0-9], NOT 000*. The glob was 000* and stopped matching the
+# moment the series reached ten patches -- 0010 would have been skipped in
+# silence, with the ladder failing exactly as it did before and nothing saying
+# a patch had been ignored. Four digits is what the names actually use.
+for p in "$P"/[0-9][0-9][0-9][0-9]-*.patch; do
     while read -r f blob; do
         [ -z "${f:-}" ] && continue
         [ "${blob:0:7}" = "0000000" ] && continue      # newly created file
@@ -103,7 +107,11 @@ say "  blobs matching: $ok   drifted: $bad"
 git -C "$T" checkout -q "$BASE"
 
 # ----------------------------------------------------------------- apply
-for p in "$P"/000*.patch; do
+# [0-9][0-9][0-9][0-9], NOT 000*. The glob was 000* and stopped matching the
+# moment the series reached ten patches -- 0010 would have been skipped in
+# silence, with the ladder failing exactly as it did before and nothing saying
+# a patch had been ignored. Four digits is what the names actually use.
+for p in "$P"/[0-9][0-9][0-9][0-9]-*.patch; do
     say "  applying $(basename "$p")"
     # Capture rather than pipe: `git apply | sed` would report sed's status.
     # --ignore-whitespace is REQUIRED, not defensive. The mailing-list archive
