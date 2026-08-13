@@ -3709,7 +3709,7 @@ package wl-clipboard 2.3.0
 package chrony 4.8
   group        network
   license      GPL-2.0-only
-  recipe-sha   43355de86a73bfd0ee3bffe415b31c5b8f55584cb4e93f221a91ee564250d139
+  recipe-sha   f02bfc5752c72d21d96343b6fbf762c136b0c418d297762ce44f66bd90554e8e
 
   source
     url        https://chrony-project.org/releases/chrony-4.8.tar.gz
@@ -3724,17 +3724,20 @@ package chrony 4.8
     optional_off libnss, nss, openssl, readline
 
   commands (literal; this is exactly what runs)
-    [01] configure
+    [01] unpack
          cwd  build/chrony-4.8
-         argv ["sh", "-c", "build/chrony-4.8/chrony-4.8/configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --with-user=_chrony --enable-scfilter --without-nss --without-tomcrypt --disable-readline"]
-    [02] build
-         cwd  build/chrony-4.8
+         argv ["tar", "-xf", "dl/chrony-4.8.tar.gz", "-C", "build/chrony-4.8"]
+    [02] configure
+         cwd  build/chrony-4.8/chrony-4.8
+         argv ["./configure", "--prefix=/usr", "--sysconfdir=/etc", "--localstatedir=/var", "--with-user=_chrony", "--enable-scfilter", "--without-nss", "--without-tomcrypt", "--disable-readline"]
+    [03] build
+         cwd  build/chrony-4.8/chrony-4.8
          argv ["make", "-j1"]
-    [03] install
-         cwd  build/chrony-4.8
-         argv ["make", "install", "DESTDIR=dest/chrony"]
     [04] install
-         cwd  build/chrony-4.8
+         cwd  build/chrony-4.8/chrony-4.8
+         argv ["make", "install", "DESTDIR=dest/chrony"]
+    [05] install
+         cwd  build/chrony-4.8/chrony-4.8
          argv ["sh", "-c", "mkdir -p dest/chrony/var/lib/chrony && cp /packages/chrony/files/chrony.conf dest/chrony/etc/chrony.conf"]
 
 ======================================================================

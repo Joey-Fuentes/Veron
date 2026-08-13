@@ -90,24 +90,40 @@ synchronised; `chronyc tracking` in a terminal is the only way to ask.
 prefixes = ["usr/sbin", "usr/bin", "etc", "var/lib/chrony"]
 
 [[steps]]
-name = "configure"
+name = "unpack"
 cwd  = "$B"
+run  = [["tar", "-xf", "$DL/chrony-4.8.tar.gz", "-C", "$B"]]
+
+[[steps]]
+# cwd = $S AND ./configure, WHICH IS THE CONVENTION EVERY OTHER AUTOTOOLS
+# RECIPE HERE USES. The first version ran from $B and gave configure an
+# absolute "$S/configure"; $S already IS the unpacked directory, so the path
+# came out doubled -- /build/chrony-4.8/chrony-4.8/configure -- and busybox sh
+# reported it as `not found`, which reads like a missing tool and is a wrong
+# path. There was no unpack step either; the driver does not extract on its
+# own, and dhcpcd's recipe shows the shape.
+#
 # EVERY FLAG HERE APPEARS IN ./configure --help FOR 4.8, checked rather than
 # recalled. NTS needs no flag: it is on when gnutls and nettle are found, and
 # --disable-nts exists only to turn it off. --without-nss and --without-tomcrypt
 # stop it picking up a second crypto library if one is ever added to this set;
 # --disable-readline keeps chronyc from linking readline, which is here for
 # other packages and not wanted in a network daemon's control tool.
-run  = [["sh", "-c", "$S/configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --with-user=_chrony --enable-scfilter --without-nss --without-tomcrypt --disable-readline"]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--sysconfdir=/etc",
+         "--localstatedir=/var", "--with-user=_chrony",
+         "--enable-scfilter", "--without-nss", "--without-tomcrypt",
+         "--disable-readline"]]
 
 [[steps]]
 name = "build"
-cwd  = "$B"
+cwd  = "$S"
 run  = [["make", "-j$J"]]
 
 [[steps]]
 name = "install"
-cwd  = "$B"
+cwd  = "$S"
 # THE SERVICE FILE IS NOT INSTALLED HERE. veron-system owns /etc/dinit.d
 # entirely, and two packages writing into one directory is the thing that goes
 # wrong without anything reporting it -- there is no conflict check in the
