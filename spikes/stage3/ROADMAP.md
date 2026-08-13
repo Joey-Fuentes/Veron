@@ -205,6 +205,53 @@ enough to audit, and that is the point of a bootstrap. Where this track removes
 a layer, it must replace the lost gate with a self-validating one (self-compile
 fixpoint, 3-stage compare) rather than with an assurance.
 
+## FIXED: the bootstrap compiler stored a double where an x87 long double belongs
+
+`patches/tcc-microc/0007`. The section after this one is the earlier account,
+kept because its measurements are real even though the conclusion it reached was
+wrong twice over.
+
+**The fault.** Patch 0005 added the branch for a host whose `long double` is
+narrower than the target's, and made it copy:
+
+    else if (sizeof(long double) < LDOUBLE_SIZE)
+        memcpy(ptr, &vtop->c.ld, sizeof(long double));
+
+x86_64-tcc's `long double` is an eight-byte IEEE double, because mc-tcc built it
+and patch 0001 sets `LDOUBLE_SIZE 8`. The x86_64 target's is x87 80-bit
+extended. Different **representations**, not just different widths.
+
+**Where it bites.** musl's `floatscan.c` accumulates decimal digits with
+`y = 1000000000.0L * y + x[...]`. That constant came out as the eight-byte
+double `65cdcd41` instead of `…00286bee1c40`, so `decfloat` multiplied by
+garbage. Small integers survived because `decfloat` returns them from its fast
+path without touching it -- which is why `1.0`, `3.0` and `1024.0` looked fine
+while `0.5` and `0.1` did not.
+
+**The chain.** Broken musl `strtod` → tcc linked against it misparses every
+decimal literal → gcc built by that tcc holds `M_LOG10_2` as `1.27e-12` → `cc1`
+dies at `real.c:1724` → rung 6 fails.
+
+**Verified end to end, locally, from stage 0.** The whole seed was rebuilt from
+the vendored sources -- micro-c (M2-Planet + 76 patches), M1 and hex2 with the
+`max_string` raise, mc-tcc (its `.M1` part sizes match the seed log exactly at
+20750 and 14772 lines), an aarch64 musl with `rungs.sh`'s `bits/float.h`
+rewrite, x86_64-tcc, an x86_64 musl, then tcc-x86_64. Twice, differing only in
+whether 0007 was applied:
+
+| | without 0007 | with 0007 |
+|---|---|---|
+| `0.5` | `0x1.9796cp-35` -- byte for byte what the shipped binary gives | `0x1p-1` |
+| `M_LOG10_2` | `1.266209359584991e-12` | `ff799f501344d33f` |
+
+**Both halves are needed.** A fixed x86_64-tcc linked against a musl built by
+the *unfixed* one still gives wrong answers -- the broken `floatscan` is already
+baked into that libc. The correction lands only once the fixed compiler builds
+the libc too, which is what the ladder does anyway. An earlier attempt looked
+like a failure for exactly this reason.
+
+**Not claimed.** Rungs 6 and beyond have not been run with this patch.
+
 ## The bootstrap compiler miscompiles one assignment, and both ladders stop there
 
 `patches/tcc-arm64-asm/0010` works around it. The defect itself is not fixed and

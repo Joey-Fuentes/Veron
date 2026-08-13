@@ -1,0 +1,138 @@
+From: Veron <veron@localhost>
+Subject: [PATCH] init_putv: a narrow host long double must be CONVERTED, not copied
+
+WHAT 0005 GOT RIGHT AND WHAT IT GOT WRONG. Patch 0005 added the missing branch
+for a host whose long double is smaller than the target's:
+
+    else if (sizeof(long double) < LDOUBLE_SIZE)
+        memcpy(ptr, &vtop->c.ld, sizeof(long double));
+
+The branch belongs there. What it does is wrong. x86_64-tcc's own long double
+is eight bytes -- an IEEE double, because mc-tcc compiled it and patch 0001
+sets LDOUBLE_SIZE 8 for that reason -- while the x86_64 target's long double
+is x87 80-bit extended. Those are different REPRESENTATIONS, not just different
+widths. Copying the eight bytes leaves a double sitting in a long double's
+slot, and every later `fldt` reads its bits as an 80-bit mantissa and exponent.
+
+WHERE IT BITES. musl's src/internal/floatscan.c accumulates decimal digits with
+
+    y = 1000000000.0L * y + x[a+i & MASK];
+
+x86_64-tcc emits that long double constant as
+
+    00 00 00 00 65 cd cd 41              the double 1e9, upper half left as-is
+
+where the target needs
+
+    00 00 00 00 00 28 6b ee 1c 40        1e9 as x87 extended
+
+so decfloat multiplies by garbage. Small integers survive because decfloat
+returns them from its fast path -- `if (lrp==dc && dc<10 ...) return sign *
+(long double)x[0]` -- without touching the constant, which is why 1.0, 3.0 and
+1024.0 look fine while 0.5, 0.1 and 123456789.0 do not.
+
+THE CHAIN THAT FOLLOWS. tcc built against that musl parses every decimal float
+literal wrongly. gcc's real.c carries
+
+    #define M_LOG10_2 0.30102999566398119521
+
+and a gcc built by such a tcc holds 1.266209359584991e-12 instead, so cc1 dies
+at real.c:1724 on the first float constant it is asked to print. That is what
+`cc1 -E -dM /dev/null` does, which is what configure does, which is where rung
+6 of the hermetic ladder stops.
+
+VERIFIED END TO END, LOCALLY, FROM STAGE 0. The whole seed was rebuilt from the
+vendored sources: micro-c (M2-Planet plus the 76-patch series), M1 and hex2
+with the max_string raise the seed makes, then mc-tcc -- whose .M1 part sizes
+match the seed log exactly at 20750 and 14772 lines -- then an aarch64 musl
+with rungs.sh's bits/float.h rewrite, then x86_64-tcc, then an x86_64 musl,
+then tcc-x86_64. Twice, differing only in whether this patch was applied:
+
+    without 0007   tcc-x86_64 gives 0.5 as 0x1.9796cp-35   -- and that is
+                   000000006c79c93d, byte for byte what the shipped
+                   tcc-x86_64 produces, so the reproduction is faithful
+    with 0007      0.5, 1.5, 0.1, 0.30102999566398119521, 123456789.0 and
+                   1e300 all exactly correct, M_LOG10_2 included
+
+BOTH HALVES ARE NEEDED, which is why an earlier attempt looked like a failure.
+A fixed x86_64-tcc linked against a musl built by the UNFIXED one still gives
+the wrong answers: the broken floatscan is already baked into that libc. The
+correction only lands once the fixed compiler builds the libc as well, which is
+what the ladder does anyway.
+
+THE CONVERSION IS INTEGER ONLY, on purpose. This code runs inside a compiler
+that mc-tcc built, and micro-c maps float, double and long double to one
+word-sized type -- patch 0004 exists because the constant folder could not do
+float arithmetic there either. So the bit pattern is taken apart and
+reassembled with shifts and masks, never with a floating cast.
+
+    double   sign | 11-bit exponent, bias 1023  | 52-bit mantissa, implicit 1
+    x87      sign | 15-bit exponent, bias 16383 | 64-bit mantissa, EXPLICIT 1
+
+so the exponent is rebiased, the mantissa is shifted left eleven places, and
+the integer bit is set explicitly. Zero, infinity, NaN and subnormals are each
+handled: a subnormal double has no implicit 1 and is normalised into the
+extended range, which is representable there because the exponent is far wider.
+
+The conversion was also checked directly against `(long double)v` on x86_64 for
+2^96, 2^64, 2^32, 0.5, 1.5, 0.0, -2.0, 1e300 and 0.1 -- all ten bytes identical
+in every case.
+
+WHAT IS NOT CLAIMED. Rungs 6 and beyond have not been run with this patch. What
+is shown is that the compiler which was producing a broken gcc now produces
+correct floating-point constants, which is the thing that was breaking it.
+
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -8074,8 +8074,49 @@
+ #endif
+                 else if (sizeof(double) == LDOUBLE_SIZE)
+                     *(double*)ptr = (double)vtop->c.ld;
+-                else if (sizeof(long double) < LDOUBLE_SIZE)
+-                    memcpy(ptr, &vtop->c.ld, sizeof(long double));
++                else if (sizeof(long double) < LDOUBLE_SIZE) {
++                    /* THE HOST'S long double IS AN IEEE DOUBLE; THE TARGET'S
++                       IS x87 80-BIT EXTENDED. Different representations, not
++                       just different widths -- convert, do not copy. Patch
++                       0005 copied, which left a double sitting in a long
++                       double's slot and every later fldt reading its bits as
++                       an 80-bit mantissa and exponent.
++
++                       INTEGER ONLY, because micro-c gives this compiler no
++                       float arithmetic -- the same reason patch 0004 exists.
++
++                         double  sign | 11-bit exp bias 1023  | 52-bit mant, implicit 1
++                         x87     sign | 15-bit exp bias 16383 | 64-bit mant, EXPLICIT 1 */
++                    unsigned char *q; unsigned long long b, m; int e, i, s;
++                    q = (unsigned char *)ptr;
++                    b = 0;
++                    memcpy(&b, &vtop->c.ld, 8);
++                    for (i = 0; i < LDOUBLE_SIZE; i++)
++                        q[i] = 0;
++                    s = (int)(b >> 63);
++                    e = (int)((b >> 52) & 0x7ff);
++                    m = b & 0xfffffffffffffULL;
++                    if (e == 0 && m == 0) {
++                        e = 0; m = 0;
++                    } else if (e == 0x7ff) {
++                        e = 0x7fff;
++                        m = (m << 11) | 0x8000000000000000ULL;
++                    } else if (e == 0) {
++                        e = 1 - 1023 + 16383;
++                        while (!(m & 0x10000000000000ULL)) {
++                            m = m << 1;
++                            e = e - 1;
++                        }
++                        m = m << 11;
++                    } else {
++                        e = e - 1023 + 16383;
++                        m = (m << 11) | 0x8000000000000000ULL;
++                    }
++                    for (i = 0; i < 8; i++)
++                        q[i] = (unsigned char)((m >> (i * 8)) & 0xff);
++                    q[8] = (unsigned char)(e & 0xff);
++                    q[9] = (unsigned char)(((e >> 8) & 0x7f) | (s << 7));
++                }
+                 else if (0 == memcmp(ptr, &vtop->c.ld, LDOUBLE_SIZE))
+                     ; /* nothing to do for 0.0 */
+ #ifndef TCC_CROSS_TEST

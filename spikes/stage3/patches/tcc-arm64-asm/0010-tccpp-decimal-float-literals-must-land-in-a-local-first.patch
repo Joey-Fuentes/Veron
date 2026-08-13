@@ -1,6 +1,33 @@
 From: Veron <veron@localhost>
 Subject: [PATCH] tccpp: decimal float literals must land in a local first
 
+THIS PATCH DID NOT FIX WHAT ITS FIRST VERSION CLAIMED, AND THE CLAIM IS LEFT
+HERE CORRECTED RATHER THAN QUIETLY REWRITTEN.
+
+It was written believing the fault was the direct assignment of strtod's
+returned double into the CValue union, because the hex path stored through a
+local and worked while the decimal path assigned directly and did not. That was
+wrong. Run 85889404158 carried this patch -- the seed log confirms "10 asm
+patches" and the shipped tcc-src.tar contains the change -- and rung 6 failed
+exactly as before.
+
+THE REAL FAULT is in tcc-microc/0007: a host whose long double is eight bytes
+must CONVERT its constants to the target's x87 80-bit format, and patch 0005
+copied them instead. The constant that matters is 1000000000.0L in musl's
+floatscan.c; with it corrupt, musl's strtod returns wrong values, and a tcc
+linked against that musl misparses every decimal float literal. Reproduced and
+fixed end to end from stage 0 -- see 0007's header.
+
+WHY THIS PATCH IS KEPT. It is verified behaviour-neutral -- a tcc built from the
+patched source emits 0.5, 0.30102999566398119521, 123456789.0, 0.1f and 1.5L
+correctly -- and routing a returned floating value through a local before a
+union assignment is the shape the hex path already uses. It costs nothing and
+matches its neighbour. It simply is not the fix, and nothing downstream should
+be read as if it were.
+
+The original reasoning follows, kept because the measurements in it are real
+even though the conclusion drawn from them was not.
+
 WHAT BREAKS. A tcc produced by this bootstrap chain parses decimal floating
 literals into the wrong value. Measured with the compiler the hermetic amd64
 ladder actually built (work/ref-tcc, from the compiler-under-test artifact),
