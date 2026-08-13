@@ -15,6 +15,16 @@
  * cost is the memcpy into it. Creating a pool per frame means a file descriptor
  * per frame, and the client hits its fd limit in about a minute.
  */
+/* _GNU_SOURCE BEFORE ANY HEADER. memfd_create and its MFD_* flags are behind
+ * it in glibc's sys/mman.h, and without it the compiler takes memfd_create for
+ * an implicit int-returning function and MFD_CLOEXEC for an undeclared
+ * identifier -- which is exactly how this failed. It has to come before the
+ * first include, not beside the others, because the feature test macros are
+ * read when features.h is first pulled in. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #include "wpe-veron-private.h"
 
 #include <wayland-client.h>
@@ -172,7 +182,7 @@ struct wl_buffer *wpeVeronBufferFromSHM(WPEViewVeron *view, WPEBuffer *buffer, G
         return NULL;
     }
 
-    struct wl_shm_pool *pool = wl_shm_pool_create(wlShm, fd, (int32_t)size);
+    struct wl_shm_pool *pool = wl_shm_create_pool(wlShm, fd, (int32_t)size);
     /* THE FD IS OURS TO CLOSE ONCE THE POOL HOLDS IT. wl_shm_pool_create dups
      * what it needs; keeping this open leaks one per buffer. */
     close(fd);
