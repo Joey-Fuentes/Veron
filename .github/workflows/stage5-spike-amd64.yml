@@ -1586,7 +1586,7 @@ jobs:
             -cpu qemu64 -smp 4 -m 4096 \
             -display none -no-reboot -nic none \
             -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
-            -device virtio-gpu-pci -device virtio-keyboard-pci \
+            -vga none -device virtio-gpu-pci -device virtio-keyboard-pci \
             -serial stdio \
             -monitor unix:"$O/mon.sock",server,nowait \
             -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
@@ -1644,6 +1644,27 @@ jobs:
           python3 "$S/tools/ppm2png.py" "$O/desktop.ppm" "$O/desktop.png"
           rm -f "$O/desktop.ppm" "$O/mon.sock" "$O/console.in"
           echo "VERON-SHOT-OK  $O/desktop.png"
+
+          # -vga none IS WHY THIS NOW SEES THE DESKTOP. x86_64 qemu adds a
+          # default VGA device unless told not to, so the guest had TWO
+          # displays: the std VGA that SeaBIOS and the kernel decompressor draw
+          # on, and virtio-gpu-pci that labwc opens through /dev/dri/card0.
+          # screendump takes the first, so every desktop.png ever captured was
+          # the boot text -- byte for byte the same frame across runs, which is
+          # what gave it away. STAGE5.md describes the same split from the
+          # other side: with -display gtk you flip between the console and the
+          # desktop through the View menu, because they are two outputs.
+          #
+          # A FRAME OF BOOT TEXT IS NOT A DESKTOP, so the size is checked. The
+          # VGA text console is 720x400; the compositor is whatever virtio-gpu
+          # came up at, and not that.
+          dims=$(python3 "$S/tools/png-size.py" "$O/desktop.png" 2>/dev/null || echo unknown)
+          echo "  frame: $dims"
+          case "$dims" in
+            720x400|640x480|unknown)
+              echo "  that is a VGA text console, not the compositor"
+              bad=1 ;;
+          esac
 
           # A SCREENSHOT IS NOT A PASS. Until this block existed the step
           # captured a frame and exited 0 no matter what the session had done,
