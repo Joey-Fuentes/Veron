@@ -4107,14 +4107,36 @@ if [ "$R7" = ok ]; then
   if [ "$_c8" != 0 ]; then
     R8=FAIL
     tail -20 cfg.log 2>/dev/null | sed 's/^/      /'
+  # install.log, NOT /dev/null. Rung 6 keeps its install log and rung 8 threw
+  # it away, so when rung 9 died with `ld: cannot find -lstdc++` there was no
+  # record of what rung 8 had actually put in /work/out2 -- and libstdc++.a is
+  # archived in BOTH build logs, so the build is not the question. The evidence
+  # that would answer it was being discarded by the rung that mattered.
   elif timeout 5400 make -j"$NP" MAKEINFO=true CC_FOR_BUILD="$PFX/bin/cc-static" > build.log 2>&1 \
-       && make install MAKEINFO=true CC_FOR_BUILD="$PFX/bin/cc-static" > /dev/null 2>&1; then
+       && make install MAKEINFO=true CC_FOR_BUILD="$PFX/bin/cc-static" > install.log 2>&1; then
     R8=ok
     say "    --- what stage 2 produced ---"
     for b in gcc g++ cpp; do
       printf '      %-8s %s\n' "$b" "$( [ -x /work/out2/bin/$b ] && echo present || echo ABSENT )"
     done
     /work/out2/bin/gcc --version 2>&1 | head -1 | sed 's/^/      /'
+    # THE LIBRARIES, NOT JUST THE BINARIES. Rung 9 configures gcc 10 with
+    # CXX=/work/out2/bin/g++ and autoconf's very first C++ probe links with
+    # -static, so it needs libstdc++.a. When that is missing the failure
+    # surfaces as
+    #
+    #     configure: error: cannot compute sizeof (long long)
+    #
+    # which names neither the library nor the link -- autoconf reports that for
+    # ANY failure of the probe, and the real line is one above it in
+    # config.log. Listing what stage 2 installed turns the next occurrence into
+    # a path instead of a guess. libstdc++.a IS archived in the build log, so
+    # the question is where install put it, not whether it was built.
+    say "    --- stage 2 libraries ---"
+    for _l in libstdc++.a libsupc++.a libgcc.a; do
+      _f=$(find /work/out2 -name "$_l" 2>/dev/null | head -2 | tr '\n' ' ')
+      printf '      %-14s %s\n' "$_l" "${_f:-ABSENT}"
+    done
   else
       R8=FAIL; say "    --- where it stopped ---"
       grep -nE "error:|Error [0-9]|internal compiler error" build.log 2>/dev/null \
@@ -4437,6 +4459,20 @@ if [ "$R8" = ok ]; then
             say "    --- compiler diagnostics ---"
             grep -nE "error:|internal compiler error" build10.log 2>/dev/null \
               | grep -v 'make\[' | head -15 | sed 's/^/      /'
+            # AUTOCONF'S MESSAGE NAMES THE PROBE, NOT THE FAULT. "cannot
+            # compute sizeof (long long)" is what it prints when the test
+            # program fails to compile, fails to link, or fails to run -- three
+            # different problems with one message. config.log holds the command
+            # and the compiler's actual output, and the line that matters sits
+            # immediately above the `$? = 1`. Run 85776849122 stopped here and
+            # the real error was `ld: cannot find -lstdc++`, which this would
+            # have printed.
+            for _cl in $(find /work/bld10 -name config.log 2>/dev/null | head -6); do
+              if grep -q "cannot compute\|error:" "$_cl" 2>/dev/null; then
+                say "    --- $_cl ---"
+                grep -B 6 '\$? = 1' "$_cl" 2>/dev/null | tail -12 | sed 's/^/      /'
+              fi
+            done
             say "    --- where the errors are ---"
             grep -oE '^[^ :]+\.(c|cc|h|H):[0-9]+:[0-9]*:? *error:' build10.log 2>/dev/null \
               | cut -d: -f1 | sort | uniq -c | sort -rn | head -12 | sed 's/^/      /'
