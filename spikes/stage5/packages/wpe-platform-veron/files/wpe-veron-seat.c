@@ -24,8 +24,6 @@
 #include <wayland-client.h>
 #include <linux/input-event-codes.h>
 #include <xkbcommon/xkbcommon.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 struct _VeronSeat {
     WPEDisplayVeron  *display;
@@ -335,26 +333,19 @@ static void keyboardKeymap(void *data, struct wl_keyboard *kb, uint32_t format,
 {
     VeronSeat *seat = data;
 
-    if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
-        close(fd);
-        return;
-    }
-
-    /* MAP_PRIVATE, NOT MAP_SHARED, AND THE FD IS CLOSED EITHER WAY. The
-     * compositor may hand the same fd to several clients; mapping it shared
-     * would let one client's xkb state corrupt another's. Leaking the fd is
-     * the other easy mistake here -- a compositor that re-sends the keymap on
-     * every layout change would exhaust the client's descriptors. */
-    char *map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-    if (map == MAP_FAILED)
-        return;
-
+    /* THE FD GOES STRAIGHT THROUGH. WPEKeymapXKB.h:44 takes (keymap, format,
+     * fd, size) and does the mmap itself; an earlier version of this function
+     * mapped the descriptor here and passed a char*, which does not even
+     * compile against the real header -- it was written against a stub and the
+     * stub was wrong.
+     *
+     * IT ALSO OWNS THE DESCRIPTOR AFTER THIS CALL. The stock backend --
+     * WPEWaylandSeat.cpp:298 -- passes fd on and neither maps nor closes it,
+     * so closing here would pull the file out from under WPE. */
     if (!seat->keymap)
         seat->keymap = wpe_keymap_xkb_new();
 
-    wpe_keymap_xkb_update(WPE_KEYMAP_XKB(seat->keymap), map, size);
-    munmap(map, size);
+    wpe_keymap_xkb_update(WPE_KEYMAP_XKB(seat->keymap), format, fd, size);
 }
 
 static void keyboardEnter(void *data, struct wl_keyboard *kb, uint32_t serial,
