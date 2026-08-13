@@ -1575,8 +1575,66 @@ jobs:
             printf 'export XDG_RUNTIME_DIR=/run/user/0\n'
             printf 'export WAYLAND_DISPLAY=$(ls /run/user/0 | grep -m1 wayland-)\n'
             printf 'echo ---BROWSER--- display=$WAYLAND_DISPLAY\n'
-            printf '[ -x /usr/libexec/wpe-webkit-2.0/MiniBrowser ] && /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html 2>&1 | head -30 &\n'
-            sleep 45
+            # G_MESSAGES_DEBUG SO GIO SAYS WHY. The module loader reports a
+            # rejected module through g_warning/g_debug; without this a module
+            # that fails to load is indistinguishable from one that loaded and
+            # declined to connect, and both end with the stock backend.
+            printf 'export G_MESSAGES_DEBUG=all\n'
+            #
+            # `2>&1 | head -30 &` WAS THE REASON THE LAST RUN SAID NOTHING.
+            # Three faults in one line. The pipeline is backgrounded, so its
+            # output raced the tty with everything else the feeder was typing.
+            # head closed the pipe after 30 lines, so a browser that lived
+            # would take SIGPIPE on its 31st. And the process died before
+            # printing anything at all, so the ONLY record of the crash was
+            # the shell's own `Segmentation fault` line -- no stderr, no
+            # faulting address, no library. Each run now goes to its own file
+            # in /tmp, which is a tmpfs, and is read back deliberately.
+            printf 'ulimit -c unlimited\n'
+            printf 'echo /tmp/core.%%e.%%p > /proc/sys/kernel/core_pattern\n'
+            printf 'echo ---MODULE-DIR---\n'
+            printf 'ls -lL /usr/lib/wpe-platform-2.0/modules 2>&1\n'
+            #
+            # RUN A: THE DEFAULT SELECTION, which is our module. It registers
+            # at priority 100 and wpe_display_get_default walks the extension
+            # list in priority order, so with no WPE_DISPLAY set this is
+            # WPEDisplayVeron. This is the case that segfaulted in run
+            # 31684964493 and the case this step exists to explain.
+            printf 'echo ---BROWSER-VERON---\n'
+            printf '/usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-veron.log 2>&1 &\n'
+            sleep 40
+            printf 'pidof MiniBrowser > /dev/null && echo VERON-BACKEND-ALIVE || echo VERON-BACKEND-DEAD\n'
+            printf 'cat /tmp/browser-veron.log\n'
+            #
+            # THE BACKTRACE, FROM THE CORE. eu-stack is in the image already --
+            # elfutils ships /usr/bin/eu-stack and the module is compiled -g,
+            # so a frame inside libwpe-display-veron.so is named with a
+            # function. This is the one thing that turns "it segfaults" into a
+            # line number, and guessing at 60 KB of C without it is what
+            # AGENTS.md 2d is about.
+            printf 'echo ---BACKTRACE---\n'
+            # THE EXECUTABLE COMES FROM THE CORE NAME, NOT FROM AN ASSUMPTION.
+            # core_pattern writes %e, and WebKit is three processes: a crash in
+            # WPEWebProcess resolved against MiniBrowser's symbols would name
+            # the wrong functions and look like nonsense rather than like a
+            # mismatch.
+            printf 'for c in /tmp/core.*; do [ -e "$c" ] || continue; n=${c#/tmp/core.}; n=${n%%.*}; echo "core $c  exe $n"; eu-stack --core "$c" -e /usr/libexec/wpe-webkit-2.0/$n 2>&1 | head -40; done\n'
+            sleep 15
+            #
+            # RUN B: THE STOCK WAYLAND BACKEND, ONLY IF A DIED. WPE_DISPLAY
+            # names an extension directly -- WPEDisplay.cpp:272 -- so this
+            # bypasses ours without uninstalling it. Two things at once: it
+            # says whether everything BELOW our module is healthy, and it puts
+            # a rendered page in the frame this job captures, which is what
+            # the screenshot is for. If A survived, B never runs and A stays
+            # on screen -- two toplevels would overlap and the frame would
+            # show whichever the compositor stacked last.
+            printf 'echo ---BROWSER-STOCK---\n'
+            printf 'if pidof MiniBrowser > /dev/null; then echo skipped -- the veron backend is still up; else WPE_DISPLAY=wpe-display-wayland /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-stock.log 2>&1 & fi\n'
+            sleep 40
+            printf 'pidof MiniBrowser > /dev/null && echo BROWSER-RUNNING || echo NO-BROWSER-RUNNING\n'
+            printf 'head -20 /tmp/browser-stock.log 2>/dev/null\n'
+            sleep 10
             printf 'echo VERON-SHOT-READY\n'
             sleep 600 ) > "$O/console.in" &
           feeder=$!
@@ -1601,8 +1659,17 @@ jobs:
             sleep 1
           done
 
+          # THE CAP WAS 140 AND THE FEEDER NEEDED 159, SO THIS LOOP HAS NEVER
+          # ONCE MATCHED ITS MARKER. Run 31684964493 printed `guest ready after
+          # 140s` -- the timeout, not the marker -- and screendump fired 19
+          # seconds before the feeder had even typed VERON-SHOT-READY. Every
+          # frame this step has captured was taken on a timeout that happened
+          # to land somewhere useful. The probe above is longer again, so the
+          # cap is now well clear of it and the loop exits on the marker; if it
+          # ever reports the full wait again, that is a real hang and not
+          # arithmetic.
           waited=0
-          while [ "$waited" -lt 140 ]; do
+          while [ "$waited" -lt 420 ]; do
             grep -aq "VERON-SHOT-READY" "$O/desktop-console.log" 2>/dev/null && break
             if ! kill -0 "$qpid" 2>/dev/null; then
               echo "  qemu exited after ${waited}s -- it did not stay up"
@@ -1625,6 +1692,19 @@ jobs:
           echo "  --- what the session said ---"
           grep -aE "labwc|seatd|swaybg|yambar|foot|OK  \]|FAILED\]" \
             "$O/desktop-console.log" 2>/dev/null | tail -25 | sed 's/^/    /' || true
+
+          # THE BROWSER SECTIONS, IN THE STEP LOG. desktop-console.log is
+          # uploaded as an artifact and the crash was sitting in it the whole
+          # time; nobody downloads an artifact to find out why a green run was
+          # green. Everything between the markers the feeder typed goes here.
+          echo "  --- browser: the veron backend ---"
+          sed -n '/---MODULE-DIR---/,/---BROWSER-STOCK---/p' \
+            "$O/desktop-console.log" 2>/dev/null | head -90 | sed 's/^/    /' \
+            || echo "    (no browser section -- the feeder never got that far)"
+          echo "  --- browser: the stock wayland backend ---"
+          sed -n '/---BROWSER-STOCK---/,/VERON-SHOT-READY/p' \
+            "$O/desktop-console.log" 2>/dev/null | head -40 | sed 's/^/    /' \
+            || echo "    (not reached)"
 
           if [ ! -s "$O/desktop.ppm" ]; then
             # THE FIRST FAILURE PRINTED NOTHING USEFUL. It said "no frame
