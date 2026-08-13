@@ -10,7 +10,7 @@
 # WPE_DISPLAY names the extension -- WPEDisplay.cpp:272 -- and without it the
 # highest-priority extension that connects wins, which is this one at 100.
 
-PKGS  = wpe-platform-2.0 wayland-client glib-2.0 gobject-2.0 gio-2.0 epoxy xkbcommon
+PKGS  = wpe-platform-2.0 wayland-client glib-2.0 gobject-2.0 gio-2.0 gmodule-2.0 epoxy xkbcommon
 CFLAGS  += -O2 -g -fPIC -Wall $(shell pkg-config --cflags $(PKGS))
 # -soname SO THE BROWSER CAN LINK THIS. veron-browser calls
 # wpe_toplevel_veron_set_chrome_height and friends directly; without a soname

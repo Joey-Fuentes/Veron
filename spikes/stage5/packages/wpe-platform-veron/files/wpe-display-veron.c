@@ -17,6 +17,11 @@
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include <string.h>
 
+/* gio.h for GIOModule and gmodule.h for G_MODULE_EXPORT -- both are needed by
+ * the module entry points at the bottom of this file. */
+#include <gio/gio.h>
+#include <gmodule.h>
+
 struct _WPEDisplayVeron {
     WPEDisplay parent_instance;
 
@@ -218,4 +223,44 @@ static void wpe_display_veron_class_init(WPEDisplayVeronClass *klass)
     displayClass->create_toplevel = wpeDisplayVeronCreateToplevel;
     displayClass->get_egl_display = wpeDisplayVeronGetEGLDisplay;
     displayClass->get_keymap      = wpeDisplayVeronGetKeymap;
+}
+
+/* ---- the GIO module entry points ------------------------------------
+ *
+ * WITHOUT THESE THE MODULE DOES NOT LOAD AT ALL. GIO dlopens a file in
+ * WPE_PLATFORMS_PATH and immediately looks for g_io_module_load; when it is
+ * missing the loader reports
+ *
+ *     'g_io_module_load': .../libwpe-display-veron.so: undefined symbol
+ *     Failed to load module: .../libwpe-display-veron.so
+ *
+ * and WPE falls through to the next extension -- which is why the browser came
+ * up on the stock wayland backend with no chrome and nothing said the module
+ * had been rejected. The G_DEFINE_TYPE_WITH_CODE above registers the extension
+ * point, but that code only runs when the type is first used, and nothing uses
+ * it until something loads the module.
+ *
+ * g_io_module_query MAY BE OMITTED, but returning the extension point name
+ * lets GIO cache what this file provides instead of dlopening it to find out.
+ */
+
+G_MODULE_EXPORT void g_io_module_load(GIOModule *module)
+{
+    (void)module;
+    /* Forces the class to be registered, which runs the
+     * g_io_extension_point_implement above. */
+    wpe_display_veron_get_type();
+}
+
+G_MODULE_EXPORT void g_io_module_unload(GIOModule *module)
+{
+    (void)module;
+    /* Nothing to undo: the type stays registered for the life of the process,
+     * and GIO does not unload extension implementations. */
+}
+
+G_MODULE_EXPORT char **g_io_module_query(void)
+{
+    char *eps[] = { (char *)WPE_DISPLAY_EXTENSION_POINT_NAME, NULL };
+    return g_strdupv(eps);
 }

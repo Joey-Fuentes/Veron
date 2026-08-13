@@ -1526,6 +1526,11 @@ jobs:
             # fine -- it logs "Created VT-bound seat seat0", "seatd started",
             # and exits 0 -- and /dev/dri/card0, /dev/dri/renderD128 and two
             # /dev/input/event nodes all exist in the running system.
+            # labwc's OWN LOG, FIRST. The service writes /run/labwc.log; if it
+            # died on boot the reason is in there and nowhere else, and this
+            # has to be read before the test restarts it and overwrites it.
+            printf 'echo ---LABWC-LOG---\n'
+            printf 'cat /run/labwc.log 2>&1 | tail -20\n'
             printf 'echo ---SEAT-STATE---\n'
             printf 'ls -l /run/seatd.sock /dev/dri /dev/input 2>&1 | head -20\n'
             printf 'dinitctl status seatd 2>&1 | head -6\n'
@@ -1639,6 +1644,52 @@ jobs:
           python3 "$S/tools/ppm2png.py" "$O/desktop.ppm" "$O/desktop.png"
           rm -f "$O/desktop.ppm" "$O/mon.sock" "$O/console.in"
           echo "VERON-SHOT-OK  $O/desktop.png"
+
+          # A SCREENSHOT IS NOT A PASS. Until this block existed the step
+          # captured a frame and exited 0 no matter what the session had done,
+          # so run 85938164747 shipped a green tick while labwc had died on
+          # boot and the WPE module had been rejected for a missing symbol.
+          # Both were in the log the whole time and nothing read it.
+          bad=0
+
+          # labwc DYING IS A FAILURE even though the test restarts it by hand
+          # further up -- the restart is there to get a frame, not to excuse
+          # the exit. dinit reports it in one line.
+          if grep -aq "Service labwc process terminated" "$O/desktop-console.log"; then
+            echo "  labwc terminated on boot:"
+            grep -aE "Service labwc|labwc" "$O/desktop-console.log" | head -6 | sed 's/^/    /'
+            echo "  --- labwc's own log ---"
+            sed -n '/---LABWC-LOG---/,/---SEAT-STATE---/p' "$O/desktop-console.log" \
+              | head -22 | sed 's/^/    /' || echo "    (not captured)"
+            bad=1
+          fi
+
+          # THE PLATFORM MODULE MUST LOAD. When GIO rejects it WPE silently
+          # falls through to the stock wayland backend, so the browser still
+          # draws -- without our chrome, and with no error anywhere but this
+          # line.
+          if grep -aqE "Failed to load module|g_io_module_load" "$O/desktop-console.log"; then
+            echo "  the wpe-platform-veron module did not load:"
+            grep -aE "Failed to load module|undefined symbol" "$O/desktop-console.log" \
+              | head -4 | sed 's/^/    /'
+            bad=1
+          fi
+
+          # ANY SERVICE EXITING NONZERO. chrony is excluded: it has no network
+          # in this harness and restarting too quickly is expected here.
+          if grep -aE "process terminated with exit code" "$O/desktop-console.log" \
+               | grep -av chrony | grep -aq .; then
+            echo "  services exited nonzero:"
+            grep -aE "process terminated with exit code" "$O/desktop-console.log" \
+              | grep -av chrony | head -6 | sed 's/^/    /'
+            bad=1
+          fi
+
+          if [ "$bad" != 0 ]; then
+            echo "VERON-DESKTOP-FAIL  the frame was captured but the session was not healthy"
+            exit 1
+          fi
+          echo "VERON-DESKTOP-OK  labwc stayed up, the module loaded, no service exited nonzero"
 
       - name: 'Upload the desktop screenshot'
         if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot && inputs.boot_system }}

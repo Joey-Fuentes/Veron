@@ -43,6 +43,13 @@
 type = process
 command = /bin/busybox sh /etc/dinit.d/scripts/labwc-session
 restart = false
+
+# logfile SO A FAILURE SAYS WHY. labwc terminated with exit code 1 on the boot
+# of run 85938164747 and started fine from dinitctl a moment later; the console
+# carried dinit's report of the exit but not a word from labwc itself, because
+# its stderr went into the same serial stream as everything else and did not
+# survive. With this the reason lands in a file the desktop test can read back.
+logfile = /run/labwc.log
 depends-on = seatd
 depends-on = xdg-runtime
 depends-on = early-filesystems
