@@ -16,7 +16,14 @@ PKGS = wpe-webkit-2.0 wpe-platform-2.0 wayland-client cairo glib-2.0 gobject-2.0
 # needs no path to it. Building by hand outside the recipe, copy
 # wpe-display-veron.h here first or add -I to point at it.
 CFLAGS  += -O2 -g -Wall $(shell pkg-config --cflags $(PKGS)) -I.
-LIBS     = $(shell pkg-config --libs $(PKGS))
+# -lwpe-display-veron BECAUSE THIS CALLS INTO THE BACKEND DIRECTLY.
+# wpe_toplevel_veron_set_chrome_height, _get_chrome_surface, _set_chrome_focus
+# and wpe_display_veron_get_shm are ours, not WPE's, and they live in the
+# platform module. It is installed in /usr/lib as well as under the module
+# directory precisely so this link works; the module path is a symlink to the
+# same file, so WPE dlopens the one this is linked against rather than a
+# second copy with its own GTypes.
+LIBS     = $(shell pkg-config --libs $(PKGS)) -lwpe-display-veron
 
 veron-browser: main.o chrome.o
 	$(CC) -o $@ main.o chrome.o $(LIBS)

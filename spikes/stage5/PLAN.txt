@@ -4556,7 +4556,7 @@ package wpewebkit 2.52.5
 package wpe-platform-veron 1.0
   group        browser
   license      BSD-2-Clause
-  recipe-sha   0c85e7a1949bf49ca7e338f7fc09ef8dcb25ed171af6bdff257d27224d6670d2
+  recipe-sha   b0167acdb345cd8fa215c97ed250630f5c5dd146851256a5cf930705d5625e94
 
   source
     url        this repository
@@ -4582,13 +4582,13 @@ package wpe-platform-veron 1.0
          argv ["make", "-j1"]
     [04] install
          cwd  build/wpe-platform-veron-1.0
-         argv ["sh", "-c", "mkdir -p dest/wpe-platform-veron/usr/lib/wpe-platform-2.0/modules && cp libwpe-display-veron.so dest/wpe-platform-veron/usr/lib/wpe-platform-2.0/modules/ && chmod 0755 dest/wpe-platform-veron/usr/lib/wpe-platform-2.0/modules/libwpe-display-veron.so"]
+         argv ["sh", "-c", "mkdir -p dest/wpe-platform-veron/usr/lib/wpe-platform-2.0/modules && cp libwpe-display-veron.so dest/wpe-platform-veron/usr/lib/libwpe-display-veron.so && chmod 0755 dest/wpe-platform-veron/usr/lib/libwpe-display-veron.so && ln -sf ../../libwpe-display-veron.so dest/wpe-platform-veron/usr/lib/wpe-platform-2.0/modules/libwpe-display-veron.so"]
 
 ======================================================================
 package veron-browser 1.0
   group        browser
   license      BSD-2-Clause
-  recipe-sha   ffd1dd9d6d89b31a4d6059f6a93768c1693034c854f06b56a02fd5a623241c3f
+  recipe-sha   9649f0d6192c802ae790bd71a688e84d635fb3e778eb71f0be95e4892f74e18a
 
   source
     url        this repository
@@ -4598,7 +4598,7 @@ package veron-browser 1.0
 
   deps
     build        cairo, glib, libxkbcommon, pkgconf, wayland, wpe-platform-veron, wpewebkit
-    link         cairo, glib, libxkbcommon, wayland, wpewebkit
+    link         cairo, glib, libxkbcommon, wayland, wpe-platform-veron, wpewebkit
     runtime      wpe-platform-veron, wpewebkit
     optional_off -
 

@@ -73,7 +73,7 @@ CJK preedit, and only one wl_seat is tracked.
 """
 
 [installs]
-prefixes = ["usr/lib/wpe-platform-2.0/modules"]
+prefixes = ["usr/lib/wpe-platform-2.0/modules", "usr/lib/libwpe-display-veron.so"]
 
 [[steps]]
 name = "copy"
@@ -102,7 +102,17 @@ run  = [["make", "-j$J"]]
 [[steps]]
 name = "install"
 cwd  = "$B"
-run  = [["sh", "-c", "mkdir -p $D/usr/lib/wpe-platform-2.0/modules && cp libwpe-display-veron.so $D/usr/lib/wpe-platform-2.0/modules/ && chmod 0755 $D/usr/lib/wpe-platform-2.0/modules/libwpe-display-veron.so"]]
+run  = [# TWO PATHS, ONE FILE. /usr/lib is where the linker finds it when
+        # veron-browser asks for -lwpe-display-veron, and where ld.so finds it
+        # at run time from the DT_NEEDED the soname puts there. The module
+        # directory is where WPE dlopens it -- WPEDisplay.cpp walks
+        # WPE_PLATFORMS_PATH looking for extensions.
+        #
+        # THE SECOND IS A SYMLINK, NOT A COPY. Two copies would be two
+        # GTypes: the browser's WPE_IS_DISPLAY_VERON would resolve against the
+        # one it linked, WPE's dlopen would register the other, and the cast
+        # would fail at run time with nothing obviously wrong in either.
+        ["sh", "-c", "mkdir -p $D/usr/lib/wpe-platform-2.0/modules && cp libwpe-display-veron.so $D/usr/lib/libwpe-display-veron.so && chmod 0755 $D/usr/lib/libwpe-display-veron.so && ln -sf ../../libwpe-display-veron.so $D/usr/lib/wpe-platform-2.0/modules/libwpe-display-veron.so"]]
 
 [guest]
 # THE MODULE IS PRESENT AND IS AN ELF SHARED OBJECT. Loading it needs a

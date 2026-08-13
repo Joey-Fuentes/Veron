@@ -12,7 +12,12 @@
 
 PKGS  = wpe-platform-2.0 wayland-client glib-2.0 gobject-2.0 gio-2.0 epoxy xkbcommon
 CFLAGS  += -O2 -g -fPIC -Wall $(shell pkg-config --cflags $(PKGS))
-LDFLAGS += -shared
+# -soname SO THE BROWSER CAN LINK THIS. veron-browser calls
+# wpe_toplevel_veron_set_chrome_height and friends directly; without a soname
+# its DT_NEEDED would carry the full build path. The same file is installed
+# twice -- once in /usr/lib where the linker and ld.so find it, once under the
+# module directory where WPE dlopens it -- so there is one copy, not two.
+LDFLAGS += -shared -Wl,-soname,libwpe-display-veron.so
 LIBS     = $(shell pkg-config --libs $(PKGS))
 
 # THE PROTOCOL HEADERS ARE GENERATED, NOT SHIPPED. xdg-shell and
