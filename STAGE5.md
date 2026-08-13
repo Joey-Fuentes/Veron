@@ -464,7 +464,7 @@ Everything here runs from Xubuntu.
 **1. Fetch the published image, kernel and initramfs.**
 
 ```sh
-cd ~/Downloads
+DL="${DL:-$HOME/Downloads}"; mkdir -p "$DL"; cd "$DL"
 gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
   --pattern 'rootfs.img.tar.zst' --pattern 'Image' \
   --pattern 'initramfs.cpio.gz' --clobber
@@ -491,23 +491,23 @@ find a blob at probe time.
 
 ```sh
 rm -rf /tmp/ir && mkdir -p /tmp/ir && cd /tmp/ir
-zcat ~/Downloads/initramfs.cpio.gz | sudo cpio -idm
+zcat "$DL/initramfs.cpio.gz" | sudo cpio -idm
 sudo mkdir -p lib/firmware/amdgpu lib/firmware/rtw89
 
 # graphics. dmesg names the ASIC:
 #   amdgpu: ATOM BIOS: 113-LUCIENNE-019
 # and amdgpu maps 0x164c to AMD_APU_IS_RENOIR, so Lucienne wants renoir_*.
 for f in /lib/firmware/amdgpu/renoir_*.bin.zst; do
-  sudo sh -c "zstd -d -f -c '$f' > lib/firmware/amdgpu/$(basename ${f%.zst})"
+  zstd -d -f -c "$f" | sudo tee "lib/firmware/amdgpu/$(basename "${f%.zst}")" >/dev/null
 done
 
 # wireless. dmesg names the exact file:
 #   rtw89_8852ae: loaded firmware rtw89/rtw8852a_fw.bin
-sudo sh -c 'zstd -d -f -c /lib/firmware/rtw89/rtw8852a_fw.bin.zst \
-            > lib/firmware/rtw89/rtw8852a_fw.bin'
+zstd -d -f -c /lib/firmware/rtw89/rtw8852a_fw.bin.zst \
+  | sudo tee lib/firmware/rtw89/rtw8852a_fw.bin >/dev/null
 
 ls -l lib/firmware/amdgpu | head -3
-sudo sh -c 'find . | cpio -o -H newc | gzip > /home/aiden/Downloads/initramfs-fw.cpio.gz'
+sudo sh -c 'find . | cpio -o -H newc' | gzip > "$DL/initramfs-fw.cpio.gz"
 ```
 
 **`-f` is load-bearing.** Those files are symlinks on Ubuntu, and plain
@@ -521,10 +521,24 @@ kernel is built with `FW_LOADER_COMPRESS_ZSTD`, so either works, and a
 firmware file the loader cannot decompress fails identically to one that is
 absent -- a bad failure to have to tell apart.
 
-**AN ABSOLUTE PATH, NOT `~`.** Inside `sudo sh -c` the tilde expands to root's
-home, and `/root/Downloads` does not exist:
+**NOTHING ROOT RUNS RESOLVES A PATH.** `~` inside `sudo sh -c` expands to
+ROOT's home, and `/root/Downloads` does not exist:
 
     sh: 1: cannot create /root/Downloads/...: Directory nonexistent
+
+Hardcoding `/home/aiden` fixes it for one account and breaks it for every
+other, which is what this file used to do. The rule that works everywhere is
+that **root never names a destination**: `$DL` is resolved once, by the user's
+own shell, and every write as root goes through a pipe into `tee` or a
+redirect that the USER's shell performs. `sudo` then only ever supplies
+privilege, never a path.
+
+`$DL` comes from the top of step 1 and defaults to `$HOME/Downloads`; set it
+first if the files are somewhere else:
+
+```sh
+DL=/mnt/big/veron
+```
 
 **4. Copy the kernel and initramfs onto the partition.**
 
@@ -532,10 +546,100 @@ GRUB reads these before Veron exists, so they have to be somewhere GRUB can
 already reach. The root of p5 works because GRUB can read ext4.
 
 ```sh
+sudo mkdir -p /mnt/veron
 sudo mount /dev/nvme0n1p5 /mnt/veron
-sudo cp ~/Downloads/Image ~/Downloads/initramfs-fw.cpio.gz /mnt/veron/
+sudo cp "$DL/Image" "$DL/initramfs-fw.cpio.gz" /mnt/veron/
 ls -l /mnt/veron/Image /mnt/veron/initramfs-fw.cpio.gz
 sudo umount /mnt/veron
+```
+
+`mkdir -p` because `/mnt/veron` is not a directory any distribution ships, and
+`mount` fails with `mount point does not exist` rather than creating it.
+
+#### All of it at once
+
+Steps 1 to 4 as one paste, for a re-test on a machine already set up. It does
+not add the GRUB entry -- that is step 5 and is done once.
+
+**IT RUNS IN A SUBSHELL UNDER `set -eu` FOR A REASON.** A failing step must
+stop the run rather than carry on to `dd`, and a bare `exit` in an interactive
+shell would close the terminal. The parentheses contain both.
+
+**IT WIPES TWO PARTITIONS.** `$ROOT` is overwritten wholesale, and `$PERSIST`
+has its contents deleted so the next boot starts with no wifi credentials and
+no saved mixer state. **Both are checked before anything is written**: the
+root by asking whether the file about to be written is a Veron image, and the
+persistence partition by its `veron-persist` label, which is the same string
+`guest/init:349` looks for. A mistyped device number is otherwise how someone
+deletes the partition they boot from.
+
+```sh
+( set -eu
+
+  DL="${DL:-$HOME/Downloads}"
+  ROOT=/dev/nvme0n1p5          # Veron's root -- OVERWRITTEN
+  PERSIST=/dev/nvme0n1p7       # Veron's /persist -- EMPTIED
+
+  # --- refuse to touch a partition that is not the one meant -------------
+  lbl=$(sudo blkid -s LABEL -o value "$PERSIST" 2>/dev/null || true)
+  [ "$lbl" = "veron-persist" ] || {
+    echo "refusing: $PERSIST is labelled '${lbl:-<none>}', not veron-persist"
+    exit 1; }
+
+  mkdir -p "$DL"; cd "$DL"
+
+  # --- 1. fetch ----------------------------------------------------------
+  gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
+    --pattern 'rootfs.img.tar.zst' --pattern 'Image' \
+    --pattern 'initramfs.cpio.gz' --clobber
+  tar --zstd -xf rootfs.img.tar.zst
+
+  # AN EXPLICIT exit, NOT `[ a ] && [ b ]`. `set -e` does NOT fire on a
+  # trailing AND-OR list -- `sh -c 'set -e; [ -f /no ] && [ -f /no ]; echo ran'`
+  # prints `ran` -- so the obvious one-liner would have checked nothing and
+  # let a failed download reach `dd`. Verified before this was written down.
+  for f in rootfs.img Image initramfs.cpio.gz; do
+    [ -s "$DL/$f" ] || { echo "missing or empty: $DL/$f"; exit 1; }
+  done
+
+  # --- 2. write the root -------------------------------------------------
+  sudo dd if="$DL/rootfs.img" of="$ROOT" bs=4M status=progress conv=fsync
+
+  # --- 3. firmware into the initramfs ------------------------------------
+  sudo rm -rf /tmp/ir && mkdir -p /tmp/ir && cd /tmp/ir
+  zcat "$DL/initramfs.cpio.gz" | sudo cpio -idm
+  sudo mkdir -p lib/firmware/amdgpu lib/firmware/rtw89
+
+  for f in /lib/firmware/amdgpu/renoir_*.bin.zst; do
+    zstd -d -f -c "$f" | sudo tee "lib/firmware/amdgpu/$(basename "${f%.zst}")" >/dev/null
+  done
+  zstd -d -f -c /lib/firmware/rtw89/rtw8852a_fw.bin.zst \
+    | sudo tee lib/firmware/rtw89/rtw8852a_fw.bin >/dev/null
+
+  sudo sh -c 'find . | cpio -o -H newc' | gzip > "$DL/initramfs-fw.cpio.gz"
+  echo "  amdgpu blobs: $(sudo ls lib/firmware/amdgpu | wc -l)  (expect ~12)"
+
+  # --- 4. kernel and initramfs where GRUB can read them ------------------
+  sudo mkdir -p /mnt/veron
+  sudo mount "$ROOT" /mnt/veron
+  sudo cp "$DL/Image" "$DL/initramfs-fw.cpio.gz" /mnt/veron/
+  ls -l /mnt/veron/Image /mnt/veron/initramfs-fw.cpio.gz
+  sudo umount /mnt/veron
+
+  # --- 5. empty the persistence partition --------------------------------
+  # rm, NOT mkfs. The label is what guest/init searches for, and a fresh
+  # filesystem would come back without one -- so /persist would silently
+  # stop being found and every boot would look stateless for a reason
+  # nothing reports. Deleting the contents keeps the label and the UUID.
+  sudo mkdir -p /mnt/veron-persist
+  sudo mount "$PERSIST" /mnt/veron-persist
+  sudo find /mnt/veron-persist -mindepth 1 -maxdepth 1 \
+       ! -name 'lost+found' -exec rm -rf {} +
+  ls -A /mnt/veron-persist
+  sudo umount /mnt/veron-persist
+
+  echo "VERON-READY  reboot and pick Veron"
+)
 ```
 
 **5. Add a GRUB entry.**
