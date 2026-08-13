@@ -46,13 +46,27 @@ typedef struct {
      * so only on machines without a GPU, which is exactly where nobody
      * looks. */
     gboolean            busy;
+    /* WHO TO TELL WHEN IT COMES BACK. Held without a reference on purpose:
+     * this struct is owned by the WPEBuffer through set_user_data, so it
+     * cannot outlive it, and the view cannot outlive its own buffers. */
+    WPEView            *view;
+    WPEBuffer          *buffer;
 } VeronSHMBuffer;
 
 static void shmBufferRelease(void *data, struct wl_buffer *wlBuffer)
 {
     VeronSHMBuffer *b = data;
-    if (b)
-        b->busy = FALSE;
+    if (!b)
+        return;
+    b->busy = FALSE;
+
+    /* AND TELL WPE, which this did not do. Clearing `busy` lets THIS file
+     * reuse the pool; it does nothing for WebKit, which has its own pool and
+     * waits for wpe_view_buffer_released before putting a buffer back in it.
+     * Without this the SHM path leaks buffers exactly the way the DMABuf path
+     * did -- slower, because llvmpipe is slower, and no less certain. */
+    if (b->view && b->buffer)
+        wpe_view_buffer_released(b->view, b->buffer);
 }
 
 static const struct wl_buffer_listener shmBufferListener = { shmBufferRelease };
@@ -209,6 +223,8 @@ struct wl_buffer *wpeVeronBufferFromSHM(WPEViewVeron *view, WPEBuffer *buffer, G
     b->data     = data;
     b->size     = size;
     b->busy     = TRUE;
+    b->view     = WPE_VIEW(view);
+    b->buffer   = buffer;
     wl_buffer_add_listener(wlBuffer, &shmBufferListener, b);
     wpe_buffer_set_user_data(buffer, b, veronSHMBufferFree);
 

@@ -48,6 +48,39 @@ static void frameDone(void *data, struct wl_callback *callback, uint32_t time)
 
 /* ---- buffer conversion ------------------------------------------------ */
 
+/* ---- giving the buffer back ------------------------------------------
+ *
+ * TWO NOTIFICATIONS, NOT ONE, AND THIS BACKEND ONLY EVER SENT ONE.
+ *
+ *   wpe_view_buffer_rendered  -- the frame was presented. Sent from the frame
+ *                                callback. This backend did send it.
+ *   wpe_view_buffer_released  -- the COMPOSITOR HAS FINISHED READING and the
+ *                                buffer may be reused. This backend never
+ *                                sent it at all.
+ *
+ * WebKit recycles a small pool of buffers and cannot put one back in the pool
+ * until it is told the compositor is done with it. Never being told, it kept
+ * allocating instead -- and every DMABuf carries a file descriptor per plane,
+ * so a page rendering continuously walks the process into its fd limit. A
+ * static page renders a handful of frames and never notices; a video renders
+ * thirty a second and falls over in well under a minute, which is exactly the
+ * shape of the YouTube crash.
+ *
+ * BOTH PATHS NEED IT. The stock backend attaches this listener to the DMABuf
+ * wl_buffer (WPEViewWayland.cpp:324) and to the shared-memory one
+ * (WPEViewWayland.cpp:367), and the SHM path here already had a release
+ * listener of its own for its `busy` flag -- it simply never passed the news
+ * on to WPE. */
+static void veronBufferReleased(void *data, struct wl_buffer *wlBuffer)
+{
+    WPEBuffer *buffer = data;
+    WPEView *view = g_object_get_data(G_OBJECT(buffer), "veron-view");
+    if (view)
+        wpe_view_buffer_released(view, buffer);
+}
+
+const struct wl_buffer_listener veronBufferReleaseListener = { veronBufferReleased };
+
 static struct wl_buffer *veronBufferFromDMABuf(WPEViewVeron *self, WPEBuffer *buffer, GError **error)
 {
     /* CACHED ON THE BUFFER, because WebKit recycles a small pool of them and
@@ -89,6 +122,11 @@ static struct wl_buffer *veronBufferFromDMABuf(WPEViewVeron *self, WPEBuffer *bu
             "veron: could not make a wl_buffer from the DMABuf");
         return NULL;
     }
+
+    /* THE VIEW IS RECORDED ON THE BUFFER because the release listener gets
+     * the WPEBuffer and has no other way back to the view that must be told. */
+    g_object_set_data(G_OBJECT(buffer), "veron-view", self);
+    wl_buffer_add_listener(wlBuffer, &veronBufferReleaseListener, buffer);
 
     wpe_buffer_set_user_data(buffer, wlBuffer, (GDestroyNotify)wl_buffer_destroy);
     return wlBuffer;
