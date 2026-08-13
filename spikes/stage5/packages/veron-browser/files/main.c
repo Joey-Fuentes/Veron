@@ -28,6 +28,10 @@ typedef struct {
     WebKitWebView    *webView;
     VeronChrome      *chrome;
     int               width;
+    /* THE LOOP, SO SOMETHING CAN STOP IT. Without a handle here nothing could
+     * end the process except a signal, which is why the close button did
+     * nothing. */
+    GMainLoop        *loop;
 } Browser;
 
 /* ---- the address the user typed --------------------------------------- */
@@ -129,6 +133,37 @@ static void browserNavigate(Browser *b)
 }
 
 /* ---- events on the strip ---------------------------------------------- */
+
+/* THE WINDOW WAS CLOSED, AND UNTIL THIS EXISTED NOTHING NOTICED.
+ *
+ * The chain was already complete on the backend side: labwc's close button
+ * sends xdg_toplevel.close, xdgToplevelClose calls wpe_toplevel_closed,
+ * WPEToplevel.cpp forwards it to every view as wpe_view_closed, and WPEView
+ * emits "closed". Nobody was connected to that signal, so the emission went
+ * nowhere and g_main_loop_run kept running a window the compositor had
+ * already been asked to destroy. The titlebar button, the menu item and
+ * anything else the compositor offers all arrive this way.
+ *
+ * ON THE VIEW, NOT THE TOPLEVEL. wpe_toplevel_closed does not emit a signal
+ * of its own -- it walks its views and closes each one -- so the view is
+ * where the notification actually surfaces.
+ */
+static void onViewClosed(WPEView *view, gpointer data)
+{
+    Browser *b = data;
+    if (b->loop)
+        g_main_loop_quit(b->loop);
+}
+
+/* JAVASCRIPT window.close() ARRIVES SOMEWHERE ELSE ENTIRELY. It is a WebKit
+ * concern rather than a compositor one, so it comes in on the web view and
+ * has to be handled separately or a page that closes itself is ignored. */
+static void onWebViewClose(WebKitWebView *webView, gpointer data)
+{
+    Browser *b = data;
+    if (b->loop)
+        g_main_loop_quit(b->loop);
+}
 
 /* THE BACKEND SAW A CLICK LAND ON THE PAGE. It has already stopped routing
  * keys here; this is the half that makes the field look unfocused, because the
@@ -420,6 +455,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* CREATED BEFORE THE HANDLERS ARE CONNECTED, not just before the run. A
+     * page that closes itself during the first load would otherwise reach
+     * onWebViewClose with a NULL loop. */
+    b.loop = g_main_loop_new(NULL, FALSE);
+
     b.toplevel = WPE_TOPLEVEL_VERON(wpe_view_get_toplevel(wpeView));
     wpe_toplevel_set_title(WPE_TOPLEVEL(b.toplevel), "Veron Browser");
     wpe_toplevel_resize(WPE_TOPLEVEL(b.toplevel), 1024, 768);
@@ -445,6 +485,8 @@ int main(int argc, char **argv)
     g_signal_connect(b.webView, "notify::estimated-load-progress",
                      G_CALLBACK(onProgress), &b);
     g_signal_connect(b.webView, "load-changed",  G_CALLBACK(onLoadChanged),  &b);
+    g_signal_connect(b.webView, "close",         G_CALLBACK(onWebViewClose), &b);
+    g_signal_connect(wpeView,   "closed",        G_CALLBACK(onViewClosed),   &b);
 
     const char *start = argc > 1 ? argv[1] : "https://duckduckgo.com";
     char *uri = veronResolveInput(start);
@@ -453,10 +495,9 @@ int main(int argc, char **argv)
 
     veron_chrome_draw(b.chrome, b.width);
 
-    GMainLoop *loop = g_main_loop_new(NULL, FALSE);
-    g_main_loop_run(loop);
+    g_main_loop_run(b.loop);
 
     veron_chrome_free(b.chrome);
-    g_main_loop_unref(loop);
+    g_main_loop_unref(b.loop);
     return 0;
 }

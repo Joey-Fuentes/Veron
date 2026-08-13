@@ -36,24 +36,50 @@
 #define BTN_W         34
 #define PAD           6
 
+/* ONE BUFFER DEADLOCKS, AND THAT IS WHY THE STRIP NEVER UPDATED.
+ *
+ * A wl_buffer may not be drawn into while the compositor is reading it, and
+ * the compositor says it has finished by sending wl_buffer.release. With a
+ * SINGLE buffer that is a cycle: wlroots holds an shm buffer until a new one
+ * is attached, so no release arrives; no release means the deferred redraw
+ * never runs; the redraw is what would have attached a new buffer. The strip
+ * painted exactly once, at startup, and every update after it -- the URL
+ * following a navigation, the focus ring, the caret, every keystroke typed
+ * into the field, the width during a resize -- was queued behind a release
+ * that was never coming.
+ *
+ * It looked like a keyboard fault and was not: typing into the PAGE worked
+ * the whole time, because WebKit renders through its own buffers and never
+ * touches this one.
+ *
+ * TWO BUFFERS BREAK THE CYCLE. A redraw takes whichever is free, and
+ * attaching it is itself what prompts the compositor to release the other.
+ * That is the ordinary Wayland client arrangement and this should have been
+ * written that way to begin with; deferring the frame was an improvement on
+ * dropping it and still assumed a release that a single-buffered client has
+ * no way to provoke. */
+typedef struct {
+    struct wl_buffer   *buffer;
+    struct wl_shm_pool *pool;
+    unsigned char      *data;
+    size_t              size;
+    cairo_surface_t    *cairo;
+    int                 width, height, stride;
+    gboolean            busy;
+    VeronChrome        *owner;
+} ChromeBuffer;
+
 struct _VeronChrome {
     struct wl_surface  *surface;
     struct wl_shm      *shm;
 
-    struct wl_buffer   *buffer;
-    struct wl_shm_pool *pool;
-    unsigned char      *data;
-    int                 width, height, stride;
-    size_t              size;
-    gboolean            busy;
-    /* A REDRAW THAT ARRIVED WHILE THE COMPOSITOR HELD THE BUFFER. Dropping it
-     * outright was the bug; remembering it and repainting on release is the
-     * fix. Only the LATEST width matters -- a drag produces a stream of
-     * configures and the intermediate ones are already stale. */
+    ChromeBuffer        buffers[2];
+    /* A REDRAW THAT ARRIVED WHILE BOTH BUFFERS WERE HELD. Rare with two, and
+     * still recorded rather than dropped. Only the LATEST width matters -- a
+     * drag produces a stream of configures and the intermediate ones are
+     * already stale. */
     gboolean            pending;
     int                 pendingWidth;
-
-    cairo_surface_t    *cairo;
 
     /* WHAT IS SHOWN. url is what the page reports; editing is what the user
      * has typed and has not yet committed. They are separate because a page
@@ -74,8 +100,12 @@ struct _VeronChrome {
 
 static void chromeBufferRelease(void *data, struct wl_buffer *buffer)
 {
-    VeronChrome *c = data;
-    c->busy = FALSE;
+    /* PER-BUFFER USER DATA, NOT THE CHROME. With two buffers the listener has
+     * to know WHICH one came back; passing the chrome would clear the wrong
+     * flag and hand a busy buffer to the next paint. */
+    ChromeBuffer *b = data;
+    VeronChrome *c = b->owner;
+    b->busy = FALSE;
 
     /* THE DEFERRED REDRAW HAPPENS HERE, and this is the whole fix. Without it
      * every chrome update that landed during a busy frame was lost for good:
@@ -102,49 +132,74 @@ static int anonFile(size_t size)
     return fd;
 }
 
-static gboolean chromeEnsureBuffer(VeronChrome *c, int width, int height)
+static void chromeBufferFree(ChromeBuffer *b)
 {
-    if (c->buffer && c->width == width && c->height == height)
+    g_clear_pointer(&b->cairo, cairo_surface_destroy);
+    g_clear_pointer(&b->buffer, wl_buffer_destroy);
+    g_clear_pointer(&b->pool, wl_shm_pool_destroy);
+    if (b->data) {
+        munmap(b->data, b->size);
+        b->data = NULL;
+    }
+    b->width = b->height = 0;
+    b->busy = FALSE;
+}
+
+static gboolean chromeBufferInit(VeronChrome *c, ChromeBuffer *b,
+                                 int width, int height)
+{
+    if (b->buffer && b->width == width && b->height == height)
         return TRUE;
 
-    g_clear_pointer(&c->cairo, cairo_surface_destroy);
-    g_clear_pointer(&c->buffer, wl_buffer_destroy);
-    g_clear_pointer(&c->pool, wl_shm_pool_destroy);
-    if (c->data) {
-        munmap(c->data, c->size);
-        c->data = NULL;
-    }
+    chromeBufferFree(b);
 
-    c->width  = width;
-    c->height = height;
-    c->stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width);
-    c->size   = (size_t)c->stride * (size_t)height;
+    b->owner  = c;
+    b->width  = width;
+    b->height = height;
+    b->stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width);
+    b->size   = (size_t)b->stride * (size_t)height;
 
-    int fd = anonFile(c->size);
+    int fd = anonFile(b->size);
     if (fd < 0)
         return FALSE;
 
-    c->data = mmap(NULL, c->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (c->data == MAP_FAILED) {
-        c->data = NULL;
+    b->data = mmap(NULL, b->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (b->data == MAP_FAILED) {
+        b->data = NULL;
         close(fd);
         return FALSE;
     }
 
-    c->pool = wl_shm_create_pool(c->shm, fd, (int32_t)c->size);
+    b->pool = wl_shm_create_pool(c->shm, fd, (int32_t)b->size);
     close(fd);
 
-    c->buffer = wl_shm_pool_create_buffer(c->pool, 0, width, height,
-                                          c->stride, WL_SHM_FORMAT_ARGB8888);
-    wl_buffer_add_listener(c->buffer, &bufferListener, c);
+    b->buffer = wl_shm_pool_create_buffer(b->pool, 0, width, height,
+                                          b->stride, WL_SHM_FORMAT_ARGB8888);
+    wl_buffer_add_listener(b->buffer, &bufferListener, b);
 
     /* CAIRO DRAWS STRAIGHT INTO THE MAPPED PAGES. No intermediate image and no
      * copy: cairo_image_surface_create_for_data wraps the same memory the
      * compositor will read. That is why the stride has to come from Cairo
      * rather than being width*4 -- it aligns rows for its own SIMD paths. */
-    c->cairo = cairo_image_surface_create_for_data(c->data, CAIRO_FORMAT_ARGB32,
-                                                   width, height, c->stride);
-    return c->cairo != NULL;
+    b->cairo = cairo_image_surface_create_for_data(b->data, CAIRO_FORMAT_ARGB32,
+                                                   width, height, b->stride);
+    return b->cairo != NULL;
+}
+
+/* THE FIRST FREE ONE, OR NULL. Resizing while one is held is why this
+ * reinitialises per buffer rather than tearing both down: the held buffer
+ * keeps its old size until the compositor is done with it, and is rebuilt at
+ * the new size the next time it comes round. */
+static ChromeBuffer *chromeAcquire(VeronChrome *c, int width, int height)
+{
+    for (int i = 0; i < 2; i++) {
+        if (c->buffers[i].busy)
+            continue;
+        if (!chromeBufferInit(c, &c->buffers[i], width, height))
+            continue;
+        return &c->buffers[i];
+    }
+    return NULL;
 }
 
 /* ---- drawing --------------------------------------------------------- */
@@ -203,18 +258,19 @@ void veron_chrome_draw(VeronChrome *c, int width)
      * width it had when the drag started while the window kept growing, so
      * the URL field ended in the middle of the window.
      *
-     * chromeEnsureBuffer would also have destroyed a buffer still in use, so
-     * the early return was protecting something real. It just needed to leave
-     * a note. */
-    if (c->busy) {
+     * WITH TWO BUFFERS THIS IS NOW THE RARE PATH rather than the normal one:
+     * it takes both being in flight at once, which needs two commits inside a
+     * single compositor frame. It is kept because rare is not never, and a
+     * dropped frame here is invisible until someone photographs a stale URL
+     * bar. */
+    ChromeBuffer *b = chromeAcquire(c, width, CHROME_HEIGHT);
+    if (!b) {
         c->pending = TRUE;
         c->pendingWidth = width;
         return;
     }
-    if (!chromeEnsureBuffer(c, width, CHROME_HEIGHT))
-        return;
 
-    cairo_t *cr = cairo_create(c->cairo);
+    cairo_t *cr = cairo_create(b->cairo);
 
     cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
     cairo_set_source_rgb(cr, 0.93, 0.93, 0.94);
@@ -288,12 +344,12 @@ void veron_chrome_draw(VeronChrome *c, int width)
     cairo_restore(cr);
 
     cairo_destroy(cr);
-    cairo_surface_flush(c->cairo);
+    cairo_surface_flush(b->cairo);
 
-    wl_surface_attach(c->surface, c->buffer, 0, 0);
+    wl_surface_attach(c->surface, b->buffer, 0, 0);
     wl_surface_damage_buffer(c->surface, 0, 0, width, CHROME_HEIGHT);
     wl_surface_commit(c->surface);
-    c->busy = TRUE;
+    b->busy = TRUE;
 }
 
 /* ---- hit testing ----------------------------------------------------- */
@@ -421,11 +477,8 @@ void veron_chrome_free(VeronChrome *c)
 {
     if (!c)
         return;
-    g_clear_pointer(&c->cairo, cairo_surface_destroy);
-    g_clear_pointer(&c->buffer, wl_buffer_destroy);
-    g_clear_pointer(&c->pool, wl_shm_pool_destroy);
-    if (c->data)
-        munmap(c->data, c->size);
+    chromeBufferFree(&c->buffers[0]);
+    chromeBufferFree(&c->buffers[1]);
     g_string_free(c->editing, TRUE);
     g_free(c->url);
     g_free(c);
