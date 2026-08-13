@@ -632,3 +632,35 @@ sysroot digest is part of every package key.
   package keys.
 - **23 checkpoint recipes lack an explicit `--libdir`**, and 18 recipes have
   flags in a step that are not in `[declared]`.
+
+## Reboot hangs, and the menu uses `reboot -f` to get around it
+
+Selecting Restart without `-f` left the machine black, past the firmware and
+never reaching GRUB; only holding the power button recovered it.
+
+**It is not the kernel and not the hardware.** Four `reboot=` methods -- efi,
+pci, acpi, bios -- made no difference, nor did `reboot=cold` or
+`reboot=acpi,force`. Stopping the compositor first made no difference, so it is
+not amdgpu left in a state the firmware cannot re-initialise. Ubuntu reboots
+normally on the same firmware. And `reboot -f`, which skips the graceful path
+and calls `reboot()` directly, works every time.
+
+**So the hang is in dinit's shutdown sequence.** Something it waits on never
+finishes. The most likely candidate is `wpa_supplicant`: the `wpa` service is
+`type = process` with no `stop-command`, so dinit signals it and waits, and a
+supplicant that does not exit leaves the sequence stuck. That is a guess and
+has not been confirmed -- `dinitctl list` during shutdown would show which
+service never reaches STOPPED.
+
+**Why `poweroff` is unaffected** is not established either. It completes, and it
+shares the same sequence up to the final syscall, so either it does not hang or
+it hangs and the machine powers off anyway by another path.
+
+The menu entry uses `-f` because this root filesystem has nothing to lose: it is
+a read-only ext4 image with a tmpfs overlay, and the only writable thing is
+/persist, which everything writing to it syncs as it goes. On a system with a
+writable root this would be the wrong trade.
+
+**It is papering over a bug and should be revisited.** A shutdown sequence that
+cannot complete is worth fixing on its own terms, whatever the filesystem can
+survive.

@@ -85,7 +85,7 @@ bar:
             # spikes/stage5/README.md records under what is not done. Pointing
             # it at the local test page rather than a URL is the honest use of
             # it until a browser shell exists.
-            on-click: /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html
+            on-click: /usr/bin/veron-browser
 
     # THE WINDOW LIST, and the reason the bar is worth having. foreign-toplevel
     # instantiates its template once per open window, over the
@@ -98,15 +98,31 @@ bar:
           map:
             conditions:
               ~activated:
-                - string: {text: "{app-id}", foreground: 909090ff}
+                # margin, BECAUSE THE ENTRIES RAN TOGETHER. The template is
+                # instantiated once per window with nothing between them, so
+                # three open windows read `fl_editorfootfoot` as one word.
+                # yambar-particles(5) gives margin as shorthand for left-margin
+                # and right-margin.
+                - string: {text: "{app-id}", foreground: 909090ff, margin: 6}
               activated:
-                - string: {text: "{app-id}", foreground: ffffffff}
+                - string: {text: "{app-id}", foreground: ffffffff, margin: 6}
 
   center:
+    # THE CLOCK, IN THE FORM A PERSON READS RATHER THAN THE ONE A LOG USES.
+    #
+    # %-I RATHER THAN %I, because %I pads to two digits and "05:28 PM" is not
+    # how anyone writes five o'clock. The dash is a glibc extension suppressing
+    # the pad, used again in %-d for the day.
+    #
+    # %Z PRINTS THE ZONE AND FOLLOWS DST BY ITSELF: EDT in August, EST in
+    # January. Writing "EST" literally would be wrong half the year. It reads
+    # TZ, so it is only correct because /etc/profile and scripts/labwc-session
+    # both export one; without that it says UTC.
     - clock:
-        time-format: "%H:%M:%S"
+        time-format: "%-I:%M:%S %p %Z"
+        date-format: "%a, %b %-d %Y"
         content:
-          - string: {text: "{time}"}
+          - string: {text: "{date}  {time}"}
 
   right:
     - cpu:

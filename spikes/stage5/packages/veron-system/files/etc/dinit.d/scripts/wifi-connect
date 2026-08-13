@@ -31,13 +31,32 @@ for d in /sys/class/net/*; do
 done
 [ -n "$IFACE" ] || die "No wireless device"
 
-mkdir -p /run/wpa_supplicant
+# -p IS NOT OPTIONAL AND ITS ABSENCE COST A ROUND OF DEBUGGING.
+#
+# wpa_supplicant writes its control socket where the config says --
+# ctrl_interface=/run/wpa_supplicant -- but wpa_cli defaults to
+# /var/run/wpa_supplicant, and this image has no /var/run symlink. So every
+# wpa_cli call looked in a directory that does not exist, `ping` failed, this
+# script concluded no supplicant was running, started a second one, and that
+# one died with:
+#
+#   ctrl_iface exists and seems to be in use - cannot override it
+#   Failed to initialize control interface '/run/wpa_supplicant'
+#
+# which surfaced to the user as "wpa_supplicant would not start" -- a message
+# about the wrong process entirely.
+#
+# THE SYMLINK IS ALSO ADDED, in files/var/run, because anything else that
+# assumes the conventional path will hit the same wall. This flag is the
+# specific fix and the symlink is the general one; both are wanted.
+CTRL=/run/wpa_supplicant
+mkdir -p "$CTRL"
 
 # THE SUPPLICANT MUST BE RUNNING TO SCAN, and on a first boot it is not --
 # wpa-start exits when there is no config. Start one against an empty config
 # so wpa_cli has something to talk to; it will be replaced by the real service
 # once a network is saved.
-if ! /usr/sbin/wpa_cli -i "$IFACE" ping >/dev/null 2>&1; then
+if ! /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" ping >/dev/null 2>&1; then
     [ -s /etc/wpa_supplicant.conf ] || {
         printf 'ctrl_interface=/run/wpa_supplicant\nupdate_config=1\n' \
             > /etc/wpa_supplicant.conf
@@ -48,13 +67,15 @@ if ! /usr/sbin/wpa_cli -i "$IFACE" ping >/dev/null 2>&1; then
     sleep 2
 fi
 
-/usr/sbin/wpa_cli -i "$IFACE" scan >/dev/null 2>&1
+if ! /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan 2>&1 | grep -q OK; then
+    die "the supplicant would not scan -- is it running on $IFACE?"
+fi
 sleep 3
 
 # ONE LINE PER SSID, STRONGEST FIRST, DUPLICATES REMOVED. scan_results is
 # tab-separated: bssid / frequency / signal / flags / ssid. A network with no
 # SSID is hidden and cannot be joined from a list.
-SSID=$(/usr/sbin/wpa_cli -i "$IFACE" scan_results 2>/dev/null \
+SSID=$(/usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan_results 2>/dev/null \
        | awk -F'\t' 'NR>2 && $5 != "" { if (!seen[$5]++) print $5 }' \
        | fuzzel --dmenu --prompt 'Wi-Fi: ' 2>/dev/null) || exit 0
 [ -n "$SSID" ] || exit 0
@@ -76,8 +97,37 @@ case "$BLOCK" in *psk=*) : ;; *) die "Bad passphrase" ;; esac
 printf 'ctrl_interface=/run/wpa_supplicant\nupdate_config=1\n\n' > /etc/wpa_supplicant.conf
 echo "$BLOCK" | grep -v '^[[:space:]]*#psk=' >> /etc/wpa_supplicant.conf
 
-/usr/sbin/wpa_cli -i "$IFACE" reconfigure >/dev/null 2>&1
-sleep 4
-/usr/sbin/dhcpcd "$IFACE" >/dev/null 2>&1 &
+# reconfigure IS THE STEP THAT ACTUALLY JOINS THE NETWORK, and its failure was
+# invisible. Everything here used to end in >/dev/null 2>&1, so when wpa_cli
+# could not reach the supplicant -- which it could not, before -p was passed --
+# the config was written, nothing reloaded it, and the dialog simply closed. To
+# the person using it that is indistinguishable from success, and the only
+# symptom is a browser with no network some minutes later.
+#
+# THE STATUS IS CHECKED RATHER THAN ASSUMED. A reconfigure that returns OK only
+# means the supplicant accepted the command; association takes a few seconds
+# and can still fail on a wrong passphrase, which is by far the most likely
+# mistake and deserves to be reported as itself.
+if ! /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" reconfigure 2>&1 | grep -q OK; then
+    die "could not tell the supplicant to reload -- is wpa_supplicant running?"
+fi
+
+# UP TO 15 SECONDS, POLLED. A fixed sleep is either too short on a slow
+# association or wasted time on a fast one.
+n=0
+while [ "$n" -lt 15 ]; do
+    STATE=$(/usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" status 2>/dev/null \
+            | sed -n 's/^wpa_state=//p')
+    [ "$STATE" = "COMPLETED" ] && break
+    n=$((n + 1))
+    sleep 1
+done
+
+[ "$STATE" = "COMPLETED" ] || die "could not join $SSID (wpa_state=${STATE:-unknown}) -- wrong password?"
+
+# DHCP ONLY AFTER ASSOCIATION. Asking for a lease on an interface with no
+# carrier just times out, and the boot-time dhcp service has long since given
+# up on an interface that was not associated when it ran.
+/usr/sbin/dhcpcd -n "$IFACE" >/dev/null 2>&1 || /usr/sbin/dhcpcd "$IFACE" >/dev/null 2>&1 &
 
 exit 0

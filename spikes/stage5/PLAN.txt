@@ -122,30 +122,33 @@ between this file and the recipes fails the run.
   100. shared-mime-info
   101. utf8proc
   102. wl-clipboard
-  103. glib-networking
-  104. harfbuzz
-  105. libwebp
-  106. mesa
-  107. freetype
-  108. libepoxy
-  109. libsoup
-  110. wlroots
-  111. fontconfig
-  112. cairo
-  113. fcft
-  114. foot
-  115. fuzzel
-  116. pango
-  117. swaybg
-  118. yambar
-  119. fltk
-  120. gst-plugins-base
-  121. labwc
-  122. gst-libav
-  123. gst-plugins-bad
-  124. gst-plugins-good
-  125. veron-edit
-  126. wpewebkit
+  103. chrony
+  104. glib-networking
+  105. harfbuzz
+  106. libwebp
+  107. mesa
+  108. freetype
+  109. libepoxy
+  110. libsoup
+  111. wlroots
+  112. fontconfig
+  113. cairo
+  114. fcft
+  115. foot
+  116. fuzzel
+  117. pango
+  118. swaybg
+  119. yambar
+  120. fltk
+  121. gst-plugins-base
+  122. labwc
+  123. gst-libav
+  124. gst-plugins-bad
+  125. gst-plugins-good
+  126. veron-edit
+  127. wpewebkit
+  128. wpe-platform-veron
+  129. veron-browser
 
 ======================================================================
 package bzip2 1.0.8
@@ -731,7 +734,7 @@ package unifdef 2.12
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   90625dd13d4bc9581207884ad7cb5ae45030364c531e0dcbc500f6b230df3501
+  recipe-sha   7011b77b4466fac2888af2fd17437656cee4f1018ed1f262c299ce80e21ab13d
 
   source
     url        this repository
@@ -791,6 +794,9 @@ locale one.
     [02] install
          cwd  build/veron-system-0.1.0
          argv ["sh", "-c", "mkdir -p \"dest/veron-system\" && cp -a /packages/veron-system/files/. \"dest/veron-system/\""]
+    [03] install
+         cwd  build/veron-system-0.1.0
+         argv ["sh", "-c", "mkdir -p \"dest/veron-system/var/lib/chrony\" && chown 53:53 \"dest/veron-system/var/lib/chrony\""]
 
 ======================================================================
 package xz 5.8.3
@@ -3700,6 +3706,38 @@ package wl-clipboard 2.3.0
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package chrony 4.8
+  group        network
+  license      GPL-2.0-only
+  recipe-sha   cc2e05a528d26f1f525ac329422fbc143f7533c9d639d6de38e7f39b537ab56a
+
+  source
+    url        https://chrony-project.org/releases/chrony-4.8.tar.gz
+    sha256     21ca27feeef5009fbb3e170d0884a5fbcad248826608256a7e3bca43cd7cd1eb
+    signature  https://chrony-project.org/releases/chrony-4.8.tar.gz.asc -- signed by the chrony project key; not yet verified against it
+    correspond none
+
+  deps
+    build        gnutls, libcap, libseccomp, nettle, pkgconf
+    link         gnutls, libcap, libseccomp, nettle
+    runtime      ca-certificates, veron-system
+    optional_off libnss, nss, openssl, readline
+
+  commands (literal; this is exactly what runs)
+    [01] configure
+         cwd  build/chrony-4.8
+         argv ["sh", "-c", "build/chrony-4.8/chrony-4.8/configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --with-user=_chrony --enable-scfilter --without-nss --without-tomcrypt --disable-readline"]
+    [02] build
+         cwd  build/chrony-4.8
+         argv ["make", "-j1"]
+    [03] install
+         cwd  build/chrony-4.8
+         argv ["make", "install", "DESTDIR=dest/chrony"]
+    [04] install
+         cwd  build/chrony-4.8
+         argv ["sh", "-c", "mkdir -p dest/chrony/var/lib/chrony && cp /packages/chrony/files/chrony.conf dest/chrony/etc/chrony.conf"]
+
+======================================================================
 package glib-networking 2.80.1
   group        browser-substrate
   license      LGPL-2.1-or-later
@@ -4510,4 +4548,65 @@ package wpewebkit 2.52.5
          cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
          env  DESTDIR=dest/wpewebkit
          argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package wpe-platform-veron 1.0
+  group        browser
+  license      BSD-2-Clause
+  recipe-sha   89a8f737f78d9b12427eba963676dbd4f1e7f2218ce2a93dbbc9f542418ee905
+
+  source
+    url        this repository
+    sha256     n/a -- the source is in this repository; the commit is the pin
+    signature  n/a -- provenance is the commit that carries these files
+    correspond none
+
+  deps
+    build        glib, libepoxy, libxkbcommon, pkgconf, wayland, wayland-protocols, wpewebkit
+    link         glib, libepoxy, libxkbcommon, wayland, wpewebkit
+    runtime      wpewebkit
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] copy
+         cwd  build/wpe-platform-veron-1.0
+         argv ["sh", "-c", "cp /packages/wpe-platform-veron/files/* build/wpe-platform-veron-1.0/"]
+    [02] protocols
+         cwd  build/wpe-platform-veron-1.0
+         argv ["sh", "-c", "WLPROTO=$(pkg-config --variable=pkgdatadir wayland-protocols) && wayland-scanner client-header \"$WLPROTO/stable/xdg-shell/xdg-shell.xml\" xdg-shell-client-protocol.h && wayland-scanner private-code \"$WLPROTO/stable/xdg-shell/xdg-shell.xml\" xdg-shell-protocol.c && wayland-scanner client-header \"$WLPROTO/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml\" linux-dmabuf-unstable-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml\" linux-dmabuf-unstable-v1-protocol.c"]
+    [03] build
+         cwd  build/wpe-platform-veron-1.0
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/wpe-platform-veron-1.0
+         argv ["sh", "-c", "mkdir -p dest/wpe-platform-veron/usr/lib/wpe-platform-2.0/modules && cp libwpe-display-veron.so dest/wpe-platform-veron/usr/lib/wpe-platform-2.0/modules/ && chmod 0755 dest/wpe-platform-veron/usr/lib/wpe-platform-2.0/modules/libwpe-display-veron.so"]
+
+======================================================================
+package veron-browser 1.0
+  group        browser
+  license      BSD-2-Clause
+  recipe-sha   ec9e1c3af63f70b6fbc70993e2c354fdbd50d47a29202c479ded9fc33e484a9d
+
+  source
+    url        this repository
+    sha256     n/a -- the source is in this repository; the commit is the pin
+    signature  n/a -- provenance is the commit that carries these files
+    correspond none
+
+  deps
+    build        cairo, glib, libxkbcommon, pkgconf, wayland, wpe-platform-veron, wpewebkit
+    link         cairo, glib, libxkbcommon, wayland, wpewebkit
+    runtime      wpe-platform-veron, wpewebkit
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] copy
+         cwd  build/veron-browser-1.0
+         argv ["sh", "-c", "cp /packages/veron-browser/files/* build/veron-browser-1.0/ && cp /packages/wpe-platform-veron/files/wpe-display-veron.h build/veron-browser-1.0/"]
+    [02] build
+         cwd  build/veron-browser-1.0
+         argv ["make", "-j1"]
+    [03] install
+         cwd  build/veron-browser-1.0
+         argv ["sh", "-c", "mkdir -p dest/veron-browser/usr/bin dest/veron-browser/usr/share/veron/applications && cp veron-browser dest/veron-browser/usr/bin/veron-browser && chmod 0755 dest/veron-browser/usr/bin/veron-browser && printf '[Desktop Entry]\\nType=Application\\nName=Browser\\nComment=Browse the web\\nExec=/usr/bin/veron-browser\\nTerminal=false\\nCategories=Network;WebBrowser;\\n' > dest/veron-browser/usr/share/veron/applications/veron-browser.desktop"]
 

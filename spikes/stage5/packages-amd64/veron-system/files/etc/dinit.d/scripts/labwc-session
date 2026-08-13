@@ -155,6 +155,39 @@ export XCURSOR_SIZE=24
 # inherits from here.
 export LANG=C.UTF-8
 
+# cd / BECAUSE EVERY CHILD INHERITS THIS PROCESS'S DIRECTORY. dinit runs its
+# services from /etc/dinit.d and labwc passes that to every terminal, editor
+# and browser launched from the bar. A foot window opening in /etc/dinit.d is
+# the visible symptom; the real one is that anything writing a relative path
+# writes it into the service directory.
+cd / || true
+
+# TZ, BECAUSE WITHOUT IT EVERYTHING IS UTC AND ALMOST NOBODY IS.
+#
+# There is no /etc/localtime and no tzdata package, so glibc falls back to UTC.
+# CreepJS shows the result plainly: locale en-US beside Coordinated Universal
+# Time, on a machine whose address geolocates to the US east coast. A clock
+# that disagrees with the IP is a signal bot detection weighs, and it is wrong
+# for the person using the machine besides -- every timestamp reads four or
+# five hours off.
+#
+# A POSIX TZ STRING, NOT A ZONE NAME. TZ=America/New_York needs
+# /usr/share/zoneinfo/America/New_York and this image ships no zoneinfo at all;
+# glibc silently falls back to UTC when the file is missing, so the wrong form
+# fails invisibly. The POSIX form carries the offset and the DST rules inline
+# and needs no file:
+#
+#   EST5EDT      standard is UTC-5, daylight is UTC-4
+#   M3.2.0       DST starts the second Sunday in March
+#   M11.1.0      and ends the first Sunday in November
+#
+# THAT ENCODES A LOCATION AND A LAW, WHICH IS THE COST. US rules changed in
+# 2007 and could change again; a zone name would follow tzdata, this will not.
+# It is also simply wrong for anyone not on US eastern time. Shipping tzdata
+# and a real /etc/localtime is the correct answer and is a package this set
+# does not have.
+export TZ=${TZ:-EST5EDT,M3.2.0,M11.1.0}
+
 # FAIL WITH A REASON, NOT A STACK TRACE. Each of these is a distinct fault with
 # a distinct fix, and labwc's own error for the first two is about DRM rather
 # than about what is actually missing.

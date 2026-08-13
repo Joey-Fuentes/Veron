@@ -1,0 +1,206 @@
+/* The shared-memory buffer path.
+ *
+ * WHEN THIS IS USED. DMABuf is the normal path on this hardware -- mesa hands
+ * WebKit a GPU buffer and the compositor scans it out without a copy. SHM is
+ * what happens when there is no GPU path: llvmpipe, a compositor without
+ * linux-dmabuf, or a machine where EGL failed. It is slower by a memcpy per
+ * frame and it is the difference between a working browser and a blank window.
+ *
+ * ONE FORMAT EXISTS. WPEBufferSHM.h:49 defines exactly WPE_PIXEL_FORMAT_ARGB8888
+ * and nothing else, so this converts one thing and refuses the rest rather than
+ * pretending to be general.
+ *
+ * A POOL PER BUFFER, NOT PER FRAME. WebKit recycles a small set of buffers, so
+ * the wl_shm_pool is created once and cached on the WPEBuffer; the per-frame
+ * cost is the memcpy into it. Creating a pool per frame means a file descriptor
+ * per frame, and the client hits its fd limit in about a minute.
+ */
+#include "wpe-veron-private.h"
+
+#include <wayland-client.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+typedef struct {
+    struct wl_buffer   *wlBuffer;
+    struct wl_shm_pool *pool;
+    void               *data;
+    size_t              size;
+    /* WHETHER THE COMPOSITOR IS STILL READING IT. wl_buffer.release says it
+     * has finished; until then the memory must not be written. Without this
+     * flag a fast page can memcpy over a buffer mid-scanout, which shows as
+     * tearing or a frame from the wrong moment -- and only on the SHM path,
+     * so only on machines without a GPU, which is exactly where nobody
+     * looks. */
+    gboolean            busy;
+} VeronSHMBuffer;
+
+static void shmBufferRelease(void *data, struct wl_buffer *wlBuffer)
+{
+    VeronSHMBuffer *b = data;
+    if (b)
+        b->busy = FALSE;
+}
+
+static const struct wl_buffer_listener shmBufferListener = { shmBufferRelease };
+
+static void veronSHMBufferFree(gpointer ptr)
+{
+    VeronSHMBuffer *b = ptr;
+    if (!b)
+        return;
+    g_clear_pointer(&b->wlBuffer, wl_buffer_destroy);
+    g_clear_pointer(&b->pool, wl_shm_pool_destroy);
+    if (b->data && b->data != MAP_FAILED)
+        munmap(b->data, b->size);
+    g_free(b);
+}
+
+/* AN ANONYMOUS FILE, PREFERRING memfd. memfd_create needs no filesystem and no
+ * name to collide with; shm_open is the fallback for kernels without it, and
+ * the file is unlinked immediately so nothing is left behind if this crashes. */
+static int veronAnonFile(size_t size)
+{
+    int fd = -1;
+
+#ifdef __linux__
+    fd = memfd_create("veron-shm", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+#endif
+    if (fd < 0) {
+        char name[] = "/veron-shm-XXXXXX";
+        for (int tries = 0; tries < 100 && fd < 0; ++tries) {
+            for (char *p = name + 11; *p; ++p)
+                *p = 'A' + (g_random_int() % 26);
+            fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+            if (fd >= 0)
+                shm_unlink(name);
+            else if (errno != EEXIST)
+                break;
+        }
+    }
+    if (fd < 0)
+        return -1;
+
+    /* ftruncate CAN FAIL AND MUST BE CHECKED. A pool sized from a file that
+     * was never extended maps successfully and then faults on first write,
+     * which presents as a crash in the compositor's address space rather than
+     * an error here. */
+    if (ftruncate(fd, (off_t)size) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+struct wl_buffer *wpeVeronBufferFromSHM(WPEViewVeron *view, WPEBuffer *buffer, GError **error)
+{
+    WPEBufferSHM *shm = WPE_BUFFER_SHM(buffer);
+
+    if (wpe_buffer_shm_get_format(shm) != WPE_PIXEL_FORMAT_ARGB8888) {
+        g_set_error_literal(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED,
+            "veron: only ARGB8888 shared-memory buffers are supported");
+        return NULL;
+    }
+
+    GBytes *bytes = wpe_buffer_shm_get_data(shm);
+    if (!bytes) {
+        g_set_error_literal(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED,
+            "veron: shared-memory buffer has no data");
+        return NULL;
+    }
+
+    gsize inSize = 0;
+    gconstpointer in = g_bytes_get_data(bytes, &inSize);
+
+    VeronSHMBuffer *cached = wpe_buffer_get_user_data(buffer);
+    if (cached) {
+        /* THE POOL IS REUSED AND THE PIXELS ARE NOT. WebKit hands back the
+         * same WPEBuffer with new contents, so only the copy repeats.
+         *
+         * BUT NOT WHILE THE COMPOSITOR HOLDS IT. Refusing the frame is the
+         * right answer rather than waiting: WebKit will render again, and
+         * blocking here would stall the whole main loop -- including the
+         * Wayland source that delivers the release this is waiting for, which
+         * deadlocks. */
+        if (cached->busy) {
+            g_set_error_literal(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED,
+                "veron: shared-memory buffer still held by the compositor");
+            return NULL;
+        }
+        memcpy(cached->data, in, MIN(inSize, cached->size));
+        cached->busy = TRUE;
+        return cached->wlBuffer;
+    }
+
+    int width  = wpe_buffer_get_width(buffer);
+    int height = wpe_buffer_get_height(buffer);
+    guint stride = wpe_buffer_shm_get_stride(shm);
+    size_t size = (size_t)stride * (size_t)height;
+
+    if (width < 1 || height < 1 || !stride || size < inSize) {
+        g_set_error(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED,
+            "veron: implausible shared-memory geometry %dx%d stride %u",
+            width, height, stride);
+        return NULL;
+    }
+
+    int fd = veronAnonFile(size);
+    if (fd < 0) {
+        g_set_error_literal(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED,
+            "veron: could not create a shared-memory file");
+        return NULL;
+    }
+
+    void *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data == MAP_FAILED) {
+        close(fd);
+        g_set_error_literal(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED,
+            "veron: could not map the shared-memory file");
+        return NULL;
+    }
+
+    WPEDisplayVeron *display = WPE_DISPLAY_VERON(wpe_view_get_display(WPE_VIEW(view)));
+    struct wl_shm *wlShm = wpeVeronDisplayGetShm(display);
+    if (!wlShm) {
+        munmap(data, size);
+        close(fd);
+        g_set_error_literal(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED,
+            "veron: compositor has no wl_shm");
+        return NULL;
+    }
+
+    struct wl_shm_pool *pool = wl_shm_pool_create(wlShm, fd, (int32_t)size);
+    /* THE FD IS OURS TO CLOSE ONCE THE POOL HOLDS IT. wl_shm_pool_create dups
+     * what it needs; keeping this open leaks one per buffer. */
+    close(fd);
+
+    /* WL_SHM_FORMAT_ARGB8888 IS THE PREMULTIPLIED ONE and matches what WebKit
+     * produces. XRGB would drop the alpha channel silently, which shows up as
+     * black where a page expected transparency. */
+    struct wl_buffer *wlBuffer = wl_shm_pool_create_buffer(pool, 0,
+        width, height, (int32_t)stride, WL_SHM_FORMAT_ARGB8888);
+
+    if (!wlBuffer) {
+        wl_shm_pool_destroy(pool);
+        munmap(data, size);
+        g_set_error_literal(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED,
+            "veron: could not create a wl_buffer from the pool");
+        return NULL;
+    }
+
+    memcpy(data, in, MIN(inSize, size));
+
+    VeronSHMBuffer *b = g_new0(VeronSHMBuffer, 1);
+    b->wlBuffer = wlBuffer;
+    b->pool     = pool;
+    b->data     = data;
+    b->size     = size;
+    b->busy     = TRUE;
+    wl_buffer_add_listener(wlBuffer, &shmBufferListener, b);
+    wpe_buffer_set_user_data(buffer, b, veronSHMBufferFree);
+
+    return wlBuffer;
+}

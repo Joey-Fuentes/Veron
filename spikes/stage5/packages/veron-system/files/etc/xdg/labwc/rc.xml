@@ -49,7 +49,99 @@
     <keybind key="W-q">
       <action name="Close" />
     </keybind>
-    <!-- EXIT IS BOUND BECAUSE THIS RUNS BESIDE A CONSOLE, NOT INSTEAD OF ONE.
+        <!-- A-Tab AND A-S-Tab, WHICH ARE THE ONLY WAY BACK FROM Iconify.
+         The client menu offers Minimize and nothing restores it: the window
+         vanishes, so it is no longer focused and W-q cannot reach it, and the
+         bar's window list reports names without acting on them: yambar's
+         foreign-toplevel module exposes no actions and labwc has no IPC. Until
+         these binds existed a minimised window was unreachable until labwc
+         restarted.
+
+         NextWindow and PreviousWindow are confirmed present in labwc's own
+         rc.xml.all; nothing here is guessed. -->
+    <keybind key="A-Tab">
+      <action name="NextWindow" />
+    </keybind>
+    <keybind key="A-S-Tab">
+      <action name="PreviousWindow" />
+    </keybind>
+
+    <!-- A-Space IS THE WAY OUT OF THE CLIENT MENU'S OWN TRAPS, and it is
+         labwc's own default binding rather than an invention.
+
+         That menu offers Decorations and Fullscreen. Both remove the titlebar,
+         and the titlebar is where every route back to the menu lived: the
+         TitleBar right-click, the WindowMenu button and the Icon are all on
+         it. Choosing either was a one way trip, and W-q, which closes the
+         window, was the only exit.
+
+         This binds the menu to a key, so it is reachable when there is no
+         titlebar to click. It also means ToggleDecorations and
+         ToggleFullscreen never have to be named here: labwc's own menu already
+         has them, and those two action names do not appear anywhere in
+         rc.xml.all, so writing them would have been guesswork. -->
+    <keybind key="A-Space">
+      <action name="ShowMenu" menu="client-menu" atCursor="no" />
+    </keybind>
+
+    <!-- W-a MAXIMISES, NOT W-Up, WHICH IS WHERE THIS WAS WRONG. An earlier
+         draft bound W-Up to ToggleMaximize; labwc's own rc.xml.all uses W-a
+         for that and reserves the arrows for SnapToEdge. Following the
+         convention costs nothing and means anything written about labwc
+         elsewhere applies here. -->
+    <keybind key="W-a">
+      <action name="ToggleMaximize" />
+    </keybind>
+
+    <!-- SNAPPING TO HALVES, which is the other thing the arrows are for and
+         the reason W-Up had to give them up. -->
+    <keybind key="W-Left">
+      <action name="SnapToEdge" direction="left" />
+    </keybind>
+    <keybind key="W-Right">
+      <action name="SnapToEdge" direction="right" />
+    </keybind>
+    <keybind key="W-Up">
+      <action name="SnapToEdge" direction="up" />
+    </keybind>
+    <keybind key="W-Down">
+      <action name="SnapToEdge" direction="down" />
+    </keybind>
+
+    <!-- A-F4 CLOSES, which is what every other desktop uses and what a person
+         coming from one will try first. W-q stays as it was. -->
+    <keybind key="A-F4">
+      <action name="Close" />
+    </keybind>
+
+    <!-- THE HARDWARE KEYS, WHICH EMIT XF86 SYMBOLS AND WERE BOUND TO NOTHING.
+         scripts/backlight and amixer already existed; the only route to them
+         was clicking a bar label, which is a poor answer for a key that exists
+         on the keyboard.
+
+         amixer -c 1 IS THIS MACHINE'S ANALOGUE CARD and the sound service
+         picks the card at boot by reading /proc/asound. These binds cannot ask
+         it, so they name card 1: right here, wrong on a machine whose
+         analogue codec enumerates first. A wrapper that reads the same
+         /etc/asound.conf the service wrote is the better answer and is not
+         written. -->
+    <keybind key="XF86MonBrightnessUp">
+      <action name="Execute" command="/etc/dinit.d/scripts/backlight up" />
+    </keybind>
+    <keybind key="XF86MonBrightnessDown">
+      <action name="Execute" command="/etc/dinit.d/scripts/backlight down" />
+    </keybind>
+    <keybind key="XF86AudioRaiseVolume">
+      <action name="Execute" command="/bin/sh -c 'amixer -c 1 sset Master 5%+ unmute'" />
+    </keybind>
+    <keybind key="XF86AudioLowerVolume">
+      <action name="Execute" command="/bin/sh -c 'amixer -c 1 sset Master 5%- unmute'" />
+    </keybind>
+    <keybind key="XF86AudioMute">
+      <action name="Execute" command="/bin/sh -c 'amixer -c 1 sset Master toggle'" />
+    </keybind>
+
+<!-- EXIT IS BOUND BECAUSE THIS RUNS BESIDE A CONSOLE, NOT INSTEAD OF ONE.
          Leaving the compositor returns to a machine that still has a shell. -->
     <keybind key="W-S-e">
       <action name="Exit" />

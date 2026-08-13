@@ -1,0 +1,22 @@
+# chronyd: authenticated time.
+#
+# type = process, NOT bgprocess. chronyd forks by default; -n keeps it in the
+# foreground so dinit can supervise the actual process rather than a pid file.
+type = process
+command = /usr/sbin/chronyd -n -f /etc/chrony.conf
+
+# AFTER dhcp, BECAUSE NTS NEEDS DNS AND DNS NEEDS A LEASE. time.cloudflare.com
+# has to resolve before any of this works, and a chronyd started before the
+# network simply retries -- noisily, and for as long as it takes.
+depends-on = dhcp
+depends-on = early-filesystems
+
+# RESTART, BECAUSE A CLOCK THAT STOPS BEING DISCIPLINED IS A CLOCK THAT DRIFTS.
+# Unlike labwc, where restart = false is correct because a compositor that keeps
+# dying should not loop forever, a time daemon losing its network should keep
+# trying.
+restart = true
+restart-delay = 10
+
+smooth-recovery = true
+logfile = /run/chrony.log

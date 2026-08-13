@@ -1,7 +1,26 @@
+# -f, BECAUSE THE GRACEFUL PATH HANGS AND THIS FILESYSTEM HAS NOTHING TO LOSE.
+#
+# Without -f the machine went black and never reached the firmware again; only
+# holding the power button recovered it. That was chased through four kernel
+# reboot= methods, through disabling the compositor, and none of it mattered:
+# `reboot -f` works, and Ubuntu reboots on the same firmware. So the kernel and
+# the hardware are fine and the hang is in dinit's shutdown sequence -- some
+# service that never stops, most likely wpa_supplicant, which is type=process
+# with no stop-command for dinit to wait on.
+#
+# -f SKIPS THAT AND CALLS reboot() DIRECTLY. On a general purpose system that
+# would be a bad trade: unmounting matters when there is a writable disk. Here
+# the root is a read-only ext4 image with a tmpfs overlay, and the only
+# writable thing is /persist, which everything writing to it syncs as it goes.
+# There is no dirty state to lose.
+#
+# IT IS STILL PAPERING OVER A BUG and should be revisited when the shutdown
+# sequence is fixed. The Shut Down entry does NOT use -f, because that path
+# completes; if it ever stops completing, the same reasoning applies.
 [Desktop Entry]
 Type=Application
 Name=Restart
 Comment=Reboot the machine
-Exec=/bin/sh -c reboot
+Exec=/usr/sbin/reboot -f
 Terminal=false
 Categories=System;

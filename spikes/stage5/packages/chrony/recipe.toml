@@ -1,0 +1,124 @@
+name    = "chrony"
+version = "4.8"
+group   = "network"
+license = "GPL-2.0-only"
+srcdir  = "chrony-4.8"
+
+[source]
+url       = "https://chrony-project.org/releases/chrony-4.8.tar.gz"
+sha256    = "21ca27feeef5009fbb3e170d0884a5fbcad248826608256a7e3bca43cd7cd1eb"
+signature = "https://chrony-project.org/releases/chrony-4.8.tar.gz.asc -- signed by the chrony project key; not yet verified against it"
+crosschecked_against = []
+
+[deps]
+# gnutls FOR NTS AND NOTHING ELSE. chrony can be built against gnutls, nss or
+# openssl; gnutls is already in this set for the browser, so NTS costs no new
+# dependency. nettle comes with it. libseccomp is what lets chronyd install a
+# syscall filter on itself, and libcap is what lets it drop root after binding.
+build        = ["gnutls", "nettle", "libseccomp", "libcap", "pkgconf"]
+link         = ["gnutls", "nettle", "libseccomp", "libcap"]
+runtime      = ["veron-system", "ca-certificates"]
+optional_off = ["nss", "openssl", "readline", "libnss"]
+
+[declared]
+configure_flags = [
+  "--prefix=/usr",
+  "--sysconfdir=/etc",
+  "--localstatedir=/var",
+  "--with-user=_chrony",
+  "--enable-scfilter",
+  "--without-nss",
+  "--without-tomcrypt",
+  "--disable-readline",
+]
+verification = "chronyd -Q against the configured sources, offline"
+packaged_as  = ["chrony"]
+deferral = """
+TIME, AND WHY IT IS AUTHENTICATED TIME.
+
+THE CLOCK VALIDATES EVERY CERTIFICATE. A machine whose clock is wrong by enough \
+rejects valid certificates as not-yet-valid or expired, and HTTPS stops working \
+entirely. Worse in the other direction: a clock pushed BACKWARDS makes expired \
+certificates look valid again, which turns a revoked or long-dead certificate \
+into a working one. Time is not a convenience on a general purpose system, it \
+is part of the trust chain.
+
+WHAT THIS IMAGE HAD BEFORE. Nothing. The RTC works -- dmesg shows `PM: RTC \
+time: 14:47:20, date: 2026-08-12` and rtc_cmos registering as rtc0, and on x86 \
+the kernel reads the CMOS clock early without needing RTC_HCTOSYS. So the clock \
+is right at boot and drifts from there with nothing to correct it. It has \
+looked fine only because this machine dual boots, and the other system \
+disciplines the RTC every time it runs. A machine running only Veron would \
+drift unchecked.
+
+WHY chrony AND NOT busybox ntpd, WHICH WOULD HAVE BEEN FREE. busybox has an \
+ntpd applet and enabling it costs no package at all. It speaks plain NTP, which \
+is unauthenticated: anyone on the path can move the clock, and moving a clock \
+is exactly how you make a dead certificate live again. A project that built its \
+own compiler rather than trust a binary should not then accept its time from \
+whoever answers first.
+
+NTS IS THE FIX AND IT COSTS NOTHING HERE. Network Time Security authenticates \
+the time source over TLS. chrony is the implementation that has it, and every \
+library it needs is already in this set for other reasons: gnutls and nettle \
+came in with the browser stack, libseccomp and libcap with the sandbox work. \
+There is no new dependency tail, which is the only reason this is a small \
+change rather than a large one.
+
+--enable-scfilter INSTALLS A SECCOMP FILTER ON chronyd ITSELF, which is worth \
+having on a daemon that holds CAP_SYS_TIME and talks to the network. It needs \
+CONFIG_SECCOMP, which sysroot-amd64.sh already sets for the browser sandbox.
+
+THE SOURCES ARE NTS-CAPABLE AND POOLED. /etc/chrony.conf names Cloudflare and \
+Netnod, both of which run NTS, plus the pool as an unauthenticated fallback for \
+the first sync on a machine whose clock is too wrong for TLS to work at all. \
+That fallback is a real weakness and it is deliberate: without it a machine \
+whose RTC has died cannot bootstrap, because NTS needs TLS and TLS needs a \
+clock. chrony's own answer to that circularity is `nts` plus a first-time \
+`makestep`, which is what this does.
+
+THE _chrony USER IS THE PART THAT FAILS SILENTLY, and dhcpcd's recipe records the same trap for _dhcpcd. --with-user=_chrony means chronyd drops privilege after binding; if the account is missing it exits at startup, and the only symptom is a clock that never syncs. veron-system has to carry the passwd and group lines and /var/lib/chrony owned by it -- this package cannot, because it does not own /etc.
+
+WHAT IS NOT DONE. There is no NTS key persistence across reboots -- \
+/var/lib/chrony would need to live on /persist for that, and without it every \
+boot renegotiates. That costs a round trip, not correctness. And chronyc, the \
+control tool, is built but nothing in the desktop surfaces whether time is \
+synchronised; `chronyc tracking` in a terminal is the only way to ask.
+"""
+
+[installs]
+prefixes = ["usr/sbin", "usr/bin", "etc", "var/lib/chrony"]
+
+[[steps]]
+name = "configure"
+cwd  = "$B"
+# EVERY FLAG HERE APPEARS IN ./configure --help FOR 4.8, checked rather than
+# recalled. NTS needs no flag: it is on when gnutls and nettle are found, and
+# --disable-nts exists only to turn it off. --without-nss and --without-tomcrypt
+# stop it picking up a second crypto library if one is ever added to this set;
+# --disable-readline keeps chronyc from linking readline, which is here for
+# other packages and not wanted in a network daemon's control tool.
+run  = [["sh", "-c", "$S/configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --with-user=_chrony --enable-scfilter --without-nss --without-tomcrypt --disable-readline"]]
+
+[[steps]]
+name = "build"
+cwd  = "$B"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+# THE SERVICE FILE IS NOT INSTALLED HERE. veron-system owns /etc/dinit.d
+# entirely, and two packages writing into one directory is the thing that goes
+# wrong without anything reporting it -- there is no conflict check in the
+# driver. files/service/chrony is shipped for veron-system to adopt; see the
+# README beside it.
+run  = [["make", "install", "DESTDIR=$D"],
+        ["sh", "-c", "mkdir -p $D/var/lib/chrony && cp /packages/chrony/files/chrony.conf $D/etc/chrony.conf"]]
+
+[guest]
+# -Q ASKS WITHOUT SETTING, and -t bounds it so a boot test cannot hang on a
+# machine with no network. It exits non-zero when it cannot reach a source,
+# which is why this only checks the binary runs and prints its version.
+test   = [["/bin/sh", "-c", "/usr/sbin/chronyd -v >/dev/null 2>&1 && echo chronyd-ok"]]
+expect = ["chronyd-ok"]

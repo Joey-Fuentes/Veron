@@ -1,0 +1,111 @@
+name    = "wpe-platform-veron"
+version = "1.0"
+group   = "browser"
+license = "BSD-2-Clause"
+srcdir  = "."
+
+[source]
+kind      = "local"
+path      = "packages/wpe-platform-veron/files"
+url       = "this repository"
+sha256    = "n/a -- the source is in this repository; the commit is the pin"
+signature = "n/a -- provenance is the commit that carries these files"
+crosschecked_against = []
+
+[deps]
+build        = ["wpewebkit", "wayland", "wayland-protocols", "glib", "libepoxy",
+                "libxkbcommon", "pkgconf"]
+link         = ["wpewebkit", "wayland", "glib", "libepoxy", "libxkbcommon"]
+runtime      = ["wpewebkit"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "none -- it is a display backend and needs a compositor"
+packaged_as     = ["wpe-platform-veron"]
+deferral        = """
+A FOURTH WPE PLATFORM BACKEND, beside drm, headless and wayland. It exists so a \
+browser can have a URL bar.
+
+WHY WPE NEEDS ONE AT ALL. The stock Wayland backend gives the page the \
+toplevel's own wl_surface -- WPEViewWayland.cpp:741, where \
+wpe_view_wayland_get_wl_surface() returns wpe_toplevel_wayland_get_wl_surface(). \
+The page IS the window's contents, so there is nowhere to draw chrome. This \
+backend puts the page in a wl_subsurface below a reserved strip; the toplevel's \
+surface then belongs to whoever is building a browser.
+
+WHY A BACKEND AND NOT A PATCH TO WPE. WPEDisplayWayland, WPEToplevelWayland and \
+WPEViewWayland are all G_DECLARE_FINAL_TYPE -- upstream saying their internals \
+are not a stable interface. Subclassing them would mean depending on a private \
+struct layout and undocumented call ordering, and re-patching on every upgrade. \
+The BASE classes are WPE_DECLARE_DERIVABLE_TYPE, which is how the three shipped \
+backends are siblings rather than a hierarchy. This is a fourth sibling, on \
+public API only.
+
+EIGHT VFUNCS, WHICH IS THE WHOLE CONTRACT. wpe/headless is a complete backend \
+in 433 lines; wpe/wayland is 5404 because it implements gamepads, input \
+methods, presentation feedback, explicit sync and multi-screen. This starts \
+from the smaller shape: connect, create_view, create_toplevel, get_egl_display, \
+get_keymap on the display; resize, set_fullscreen, set_title on the toplevel; \
+render_buffer on the view.
+
+INSTALLED WHERE WPE ALREADY LOOKS. WPEPlatform/CMakeLists.txt:3 compiles in \
+WPE_PLATFORM_MODULE_DIR as ${LIB_INSTALL_DIR}/wpe-platform-2.0/modules, and \
+WPEExtensions.cpp:69 scans it for GIO modules before the built-ins. Installing \
+there means nothing has to set WPE_PLATFORMS_PATH -- that variable stays for \
+development, where a module is built in a working directory and tried without \
+installing it.
+
+PRIORITY 100 BEATS WAYLAND'S. wpe_display_get_default walks the extension list \
+trying to connect until one succeeds (WPEDisplay.cpp:287), so this wins by \
+default and WPE_DISPLAY=wpe-display-wayland still selects the stock one. That \
+fallback is free and worth having: if this backend fails to connect it declines \
+rather than aborting, and the user gets a working browser without chrome \
+instead of no browser.
+
+WPE IS NEVER REBUILT FOR ANY OF THIS, which is the point of the module shape. \
+The backend and everything built on it iterate in seconds.
+
+WHAT IS NOT DONE, and it is in the README beside the source: the chrome is not \
+drawn here (that belongs to the browser), touch is implemented but untested \
+against real hardware, there is no input method context so no compose key or \
+CJK preedit, and only one wl_seat is tracked.
+"""
+
+[installs]
+prefixes = ["usr/lib/wpe-platform-2.0/modules"]
+
+[[steps]]
+name = "copy"
+cwd  = "$B"
+run  = [["sh", "-c", "cp /packages/wpe-platform-veron/files/* $B/"]]
+
+[[steps]]
+name = "protocols"
+# GENERATED, NOT SHIPPED. xdg-shell and linux-dmabuf are XML in
+# wayland-protocols; wayland-scanner turns them into the client stubs this
+# links against. Both are in the package set already.
+cwd  = "$B"
+# $P IS THE PATCHES DIRECTORY AND MUST NOT BE REUSED. An earlier version of
+# this step named its own variable $P, and the driver substituted the recipe's
+# patches/ path into it before the shell ever ran -- so the plan recorded an
+# absolute /home/... path and `machine-specific path` failed the selftest.
+# tools/veron:3682 records someone hitting the same thing with
+# `P=$D/usr/bin/python3.14`. WLPROTO is not a substitution.
+run  = [["sh", "-c", "WLPROTO=$(pkg-config --variable=pkgdatadir wayland-protocols) && wayland-scanner client-header \"$WLPROTO/stable/xdg-shell/xdg-shell.xml\" xdg-shell-client-protocol.h && wayland-scanner private-code \"$WLPROTO/stable/xdg-shell/xdg-shell.xml\" xdg-shell-protocol.c && wayland-scanner client-header \"$WLPROTO/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml\" linux-dmabuf-unstable-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml\" linux-dmabuf-unstable-v1-protocol.c"]]
+
+[[steps]]
+name = "build"
+cwd  = "$B"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+run  = [["sh", "-c", "mkdir -p $D/usr/lib/wpe-platform-2.0/modules && cp libwpe-display-veron.so $D/usr/lib/wpe-platform-2.0/modules/ && chmod 0755 $D/usr/lib/wpe-platform-2.0/modules/libwpe-display-veron.so"]]
+
+[guest]
+# THE MODULE IS PRESENT AND IS AN ELF SHARED OBJECT. Loading it needs a
+# compositor, which the boot test does not have at the point package tests run.
+test   = [["/bin/sh", "-c", "test -f /usr/lib/wpe-platform-2.0/modules/libwpe-display-veron.so && echo present"]]
+expect = ["present"]

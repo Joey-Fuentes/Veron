@@ -1,0 +1,94 @@
+name    = "veron-browser"
+version = "1.0"
+group   = "browser"
+license = "BSD-2-Clause"
+srcdir  = "."
+
+[source]
+kind      = "local"
+path      = "packages/veron-browser/files"
+url       = "this repository"
+sha256    = "n/a -- the source is in this repository; the commit is the pin"
+signature = "n/a -- provenance is the commit that carries these files"
+crosschecked_against = []
+
+[deps]
+build        = ["wpewebkit", "wpe-platform-veron", "wayland", "cairo", "glib",
+                "libxkbcommon", "pkgconf"]
+link         = ["wpewebkit", "wayland", "cairo", "glib", "libxkbcommon"]
+runtime      = ["wpewebkit", "wpe-platform-veron"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "none -- it opens a window"
+packaged_as     = ["veron-browser"]
+deferral        = """
+A WEB BROWSER WITH A URL BAR, which is what MiniBrowser is not. \
+ROADMAP-STAGE5.md records the gap: MiniBrowser is WPE's demo shell, takes a URL \
+on the command line and shows it, and has no address bar, no back button and no \
+title.
+
+HOW IT BINDS TO THE BACKEND. "display" is a construct property of \
+WebKitWebView -- Tools/MiniBrowser/wpe/main.cpp:411 uses the same one. Passing a \
+WPEDisplayVeron means the WPEToplevel WebKit builds is one whose page lives in a \
+subsurface with a strip reserved above it. The strip is then this package's: it \
+draws with Cairo straight into the mapped pages of a wl_shm buffer, and the \
+backend delivers events landing on it as "chrome-event" and "chrome-key".
+
+NOTHING HERE HIT-TESTS AGAINST WEB CONTENT and nothing translates coordinates. \
+The compositor knows the page and the strip are different surfaces and says \
+which one an event was on. That is why 740 lines is enough.
+
+CAIRO RATHER THAN FLTK, though fltk is in this set and would draw widgets. It \
+wants to own a window and an event loop and this already has both; Cairo draws \
+into a buffer we allocate and hands it back, which is the whole requirement.
+
+THE USER AGENT IS SET AND THE DEFAULT IS BROKEN. WPE sends \
+`Version/60.5 Safari/605.1.15` -- a Safari release that has never existed. \
+UserAgentGLib.cpp:110 says the number was chosen high deliberately to get past \
+version checks. Measured on the laptop with httpbin.org/headers: every other \
+header is already normal, and the UA is the only anomaly. This sends \
+`Version/26.6 Veron/1.0 Safari/605.1.15` -- a real Safari version, with a \
+product token in the position Epiphany uses for its own. Claiming Firefox was \
+considered and rejected: a UA is checked against the TLS handshake, Firefox \
+uses NSS and this uses what glib-networking is built on, so claiming Firefox \
+would CREATE a mismatch that does not otherwise exist. VERON_USER_AGENT \
+overrides without a rebuild.
+
+THE SESSION IS EPHEMERAL BY CHOICE, explicitly rather than by accident. The \
+default session writes to XDG directories which land on the tmpfs overlay here, \
+so nothing would survive a reboot anyway -- but that is a property of the root \
+filesystem, not a decision, and mounting /persist over the wrong path would \
+silently start keeping history. webkit_network_session_new_ephemeral() is the \
+same thing MiniBrowser's --private uses. It costs CAPTCHAs, and that is \
+accepted rather than hidden.
+
+WHAT IS NOT DONE: no tabs, no history UI, no bookmarks, no downloads UI, no \
+find-in-page, and no keyboard shortcuts -- the strip only sees keys when it \
+already has focus, so Ctrl+L would have to be handled in the page's key path.
+"""
+
+[installs]
+prefixes = ["usr/bin", "usr/share/veron/applications"]
+
+[[steps]]
+name = "copy"
+cwd  = "$B"
+run  = [["sh", "-c", "cp /packages/veron-browser/files/* $B/ && cp /packages/wpe-platform-veron/files/wpe-display-veron.h $B/"]]
+
+[[steps]]
+name = "build"
+cwd  = "$B"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+run  = [["sh", "-c", "mkdir -p $D/usr/bin $D/usr/share/veron/applications && cp veron-browser $D/usr/bin/veron-browser && chmod 0755 $D/usr/bin/veron-browser && printf '[Desktop Entry]\\nType=Application\\nName=Browser\\nComment=Browse the web\\nExec=/usr/bin/veron-browser\\nTerminal=false\\nCategories=Network;WebBrowser;\\n' > $D/usr/share/veron/applications/veron-browser.desktop"]]
+
+[guest]
+# --version, NOT A PAGE LOAD. It opens a window and there is no compositor at
+# the point package tests run.
+test   = [["/bin/sh", "-c", "test -x /usr/bin/veron-browser && echo present"]]
+expect = ["present"]

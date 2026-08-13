@@ -1,7 +1,13 @@
+# THE ABSOLUTE PATH, BECAUSE THE NAME IS AMBIGUOUS.
+# busybox provides a poweroff applet and dinit installs /usr/sbin/poweroff as a
+# symlink to its own shutdown. Whichever PATH finds first wins, and busybox's
+# signals PID 1 in a way dinit does not listen for -- so the entry did nothing
+# at all, silently, while typing `shutdown` in a terminal worked because that
+# name has no busybox rival. Naming the path removes the question.
 [Desktop Entry]
 Type=Application
 Name=Shut Down
 Comment=Halt the machine
-Exec=/bin/sh -c poweroff
+Exec=/usr/sbin/poweroff
 Terminal=false
 Categories=System;

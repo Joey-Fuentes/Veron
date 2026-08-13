@@ -157,10 +157,17 @@ cwd  = "$B"
 # tidiness: the sandbox binds /packages, /policy and /tools and NOTHING else.
 # A source tree under guest/ would not exist inside the box at all, and the
 # step would fail on a path that looks perfectly reasonable from outside it.
-run  = [["sh", "-c", "mkdir -p \"$D\" && cp -a /packages/veron-system/files/. \"$D/\""]]
+run  = [["sh", "-c", "mkdir -p \"$D\" && cp -a /packages/veron-system/files/. \"$D/\""],
+        # /var/lib/chrony OWNED BY _chrony, WHICH IS THE PART THAT FAILS
+        # SILENTLY. chronyd is configured --with-user=_chrony and drops
+        # privilege after binding; it then writes the drift file and the NTS
+        # key cache here. Root-owned, it starts, works, and relearns the
+        # oscillator's drift from scratch on every boot with nothing reporting
+        # why. 53:53 matches the passwd and group lines in files/etc.
+        ["sh", "-c", "mkdir -p \"$D/var/lib/chrony\" && chown 53:53 \"$D/var/lib/chrony\""]]
 
 [installs]
-prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts", "etc/xdg/labwc", "etc/xdg/yambar", "usr/lib/locale", "usr/share/veron"]
+prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts", "etc/xdg/labwc", "etc/xdg/yambar", "usr/lib/locale", "usr/share/veron", "var/lib/chrony", "var/run"]
 files    = 39
 digest   = "5dccab11437584ba0ac7f8f05295876f655d0eb0d2d0222be13acd4817c55cba"
 [guest]
