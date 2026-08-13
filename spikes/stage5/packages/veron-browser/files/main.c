@@ -130,6 +130,19 @@ static void browserNavigate(Browser *b)
 
 /* ---- events on the strip ---------------------------------------------- */
 
+/* THE BACKEND SAW A CLICK LAND ON THE PAGE. It has already stopped routing
+ * keys here; this is the half that makes the field look unfocused, because the
+ * caret and the blue ring are drawn by this file and the backend cannot know
+ * about either. */
+static void onChromeFocusLost(WPEToplevelVeron *toplevel, gpointer data)
+{
+    Browser *b = data;
+    if (!veron_chrome_focused(b->chrome))
+        return;
+    veron_chrome_set_focused(b->chrome, FALSE);
+    veron_chrome_draw(b->chrome, b->width);
+}
+
 static void onChromeEvent(WPEToplevelVeron *toplevel, guint type, guint time,
                           guint modifiers, guint button, double x, double y,
                           double dx, double dy, gpointer data)
@@ -423,6 +436,8 @@ int main(int argc, char **argv)
 
     g_signal_connect(b.toplevel, "chrome-event", G_CALLBACK(onChromeEvent), &b);
     g_signal_connect(b.toplevel, "chrome-key",   G_CALLBACK(onChromeKey),   &b);
+    g_signal_connect(b.toplevel, "chrome-focus-lost",
+                     G_CALLBACK(onChromeFocusLost), &b);
     g_signal_connect(b.toplevel, "notify::width", G_CALLBACK(onToplevelResized), &b);
 
     g_signal_connect(b.webView, "notify::uri",   G_CALLBACK(onUriChanged),   &b);

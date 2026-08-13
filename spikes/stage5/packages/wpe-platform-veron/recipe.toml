@@ -92,7 +92,7 @@ cwd  = "$B"
 # absolute /home/... path and `machine-specific path` failed the selftest.
 # tools/veron:3682 records someone hitting the same thing with
 # `P=$D/usr/bin/python3.14`. WLPROTO is not a substitution.
-run  = [["sh", "-c", "WLPROTO=$(pkg-config --variable=pkgdatadir wayland-protocols) && wayland-scanner client-header \"$WLPROTO/stable/xdg-shell/xdg-shell.xml\" xdg-shell-client-protocol.h && wayland-scanner private-code \"$WLPROTO/stable/xdg-shell/xdg-shell.xml\" xdg-shell-protocol.c && wayland-scanner client-header \"$WLPROTO/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml\" linux-dmabuf-unstable-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml\" linux-dmabuf-unstable-v1-protocol.c"]]
+run  = [["sh", "-c", "WLPROTO=$(pkg-config --variable=pkgdatadir wayland-protocols) && wayland-scanner client-header \"$WLPROTO/stable/xdg-shell/xdg-shell.xml\" xdg-shell-client-protocol.h && wayland-scanner private-code \"$WLPROTO/stable/xdg-shell/xdg-shell.xml\" xdg-shell-protocol.c && wayland-scanner client-header \"$WLPROTO/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml\" linux-dmabuf-unstable-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml\" linux-dmabuf-unstable-v1-protocol.c && wayland-scanner client-header \"$WLPROTO/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml\" xdg-decoration-unstable-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml\" xdg-decoration-unstable-v1-protocol.c"]]
 
 [[steps]]
 name = "build"

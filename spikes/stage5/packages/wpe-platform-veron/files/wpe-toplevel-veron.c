@@ -19,6 +19,7 @@
 
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
+#include "xdg-decoration-unstable-v1-client-protocol.h"
 
 struct _WPEToplevelVeron {
     WPEToplevel parent_instance;
@@ -45,6 +46,7 @@ struct _WPEToplevelVeron {
     struct wl_subsurface *pageSubsurface;
     struct xdg_surface   *xdgSurface;
     struct xdg_toplevel  *xdgToplevel;
+    struct zxdg_toplevel_decoration_v1 *xdgDecoration;
 
     /* THE BACKGROUND, AND THE SIZE IT WAS PAINTED AT. Kept so a configure
      * that does not change the size does not throw away a good buffer and
@@ -59,7 +61,7 @@ struct _WPEToplevelVeron {
     int   pendingHeight;
 };
 
-enum { CHROME_EVENT, CHROME_KEY, N_SIGNALS };
+enum { CHROME_EVENT, CHROME_KEY, CHROME_FOCUS_LOST, N_SIGNALS };
 static guint signals[N_SIGNALS];
 
 /* THE SIZE A WINDOW OPENS AT WHEN NOBODY SAYS. 1024x768 is WPE's own default
@@ -124,6 +126,30 @@ void wpeVeronToplevelEmitChromeEvent(WPEToplevelVeron *self, WPEEventType type,
                   (guint)type, time, (guint)modifiers, button, x, y, dx, dy);
 }
 
+/* THE PAGE TAKES THE KEYBOARD BACK WHEN IT IS CLICKED, AND NOTHING DID THIS.
+ *
+ * onChromeEvent clears chrome focus when a click lands on the strip and misses
+ * every widget -- but a click on the PAGE never reaches onChromeEvent at all.
+ * It goes through seatDispatch to WPEView and touches nothing here. So after
+ * one click in the URL bar, chromeFocus stayed TRUE for the life of the
+ * window, keyboardKey kept taking the `wpeVeronToplevelChromeHasFocus` branch,
+ * and every keystroke went to the URL field no matter where the user clicked.
+ * Clicking a search box on the page focused it in WebKit and then typing did
+ * nothing visible, which reads as "clicks do not work" and is really "keys go
+ * somewhere else".
+ *
+ * THE BACKEND IS WHERE THIS BELONGS because the backend is what knows the
+ * click was on the page: Wayland hit-tested it onto the page subsurface, which
+ * is the same fact seatDispatch already routes on. The browser cannot see it
+ * without being told, so it is told. */
+void wpeVeronToplevelDropChromeFocus(WPEToplevelVeron *self)
+{
+    if (!self || !self->chromeFocus)
+        return;
+    self->chromeFocus = FALSE;
+    g_signal_emit(self, signals[CHROME_FOCUS_LOST], 0);
+}
+
 void wpeVeronToplevelEmitChromeKey(WPEToplevelVeron *self, WPEEventType type,
                                    guint32 time, WPEModifiers modifiers,
                                    guint keycode, guint keyval)
@@ -167,6 +193,7 @@ static void veronToplevelPaintBackground(WPEToplevelVeron *self, int width, int 
      * before. Destroying it first would pull it out from under a compositor
      * that is still scanning it out for the current frame. */
     g_clear_pointer(&self->background, wpeVeronSolidBufferFree);
+    g_clear_pointer(&self->xdgDecoration, zxdg_toplevel_decoration_v1_destroy);
     self->background       = next;
     self->backgroundWidth  = width;
     self->backgroundHeight = height;
@@ -289,6 +316,29 @@ static void wpeToplevelVeronConstructed(GObject *object)
     xdg_toplevel_add_listener(self->xdgToplevel, &xdgToplevelListener, self);
     xdg_toplevel_set_title(self->xdgToplevel, "Veron");
     xdg_toplevel_set_app_id(self->xdgToplevel, "org.veron.Browser");
+
+    /* SERVER-SIDE DECORATIONS, ASKED FOR EXPLICITLY. A titlebar is not
+     * something a Wayland compositor gives an xdg_toplevel by default -- the
+     * client requests it, and until this line no window from this backend had
+     * one, so none of them could be moved, resized, maximised or closed.
+     *
+     * NO LISTENER, AND THE STOCK BACKEND EXPLAINS WHY IN ONE SENTENCE
+     * (WPEToplevelWayland.cpp:566): a compositor may answer CLIENT_SIDE
+     * instead, and knowing that is useless here because painting our own
+     * decorations is not something this backend does. Ask for server-side;
+     * take what arrives.
+     *
+     * THE STRIP IS NOT AFFECTED EITHER WAY. Decorations are drawn outside the
+     * window geometry by the compositor; the chrome subsurface is inside it,
+     * at y=0, and the two do not overlap or compete. */
+    struct zxdg_decoration_manager_v1 *decorations =
+        wpeVeronDisplayGetDecorationManager(display);
+    if (decorations) {
+        self->xdgDecoration = zxdg_decoration_manager_v1_get_toplevel_decoration(
+            decorations, self->xdgToplevel);
+        zxdg_toplevel_decoration_v1_set_mode(self->xdgDecoration,
+            ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    }
 
     /* ALL THREE GO IN THE MAP. The seat resolves an event back to a toplevel
      * through this table, and pointer events over the strip now arrive on
@@ -434,6 +484,7 @@ static void wpeToplevelVeronDispose(GObject *object)
     veronUnregisterSurface(self->chromeSurface);
     veronUnregisterSurface(self->pageSurface);
     g_clear_pointer(&self->background, wpeVeronSolidBufferFree);
+    g_clear_pointer(&self->xdgDecoration, zxdg_toplevel_decoration_v1_destroy);
     G_OBJECT_CLASS(wpe_toplevel_veron_parent_class)->dispose(object);
 }
 
@@ -455,6 +506,12 @@ static void wpe_toplevel_veron_class_init(WPEToplevelVeronClass *klass)
         G_TYPE_UINT,   /* button       */
         G_TYPE_DOUBLE, G_TYPE_DOUBLE,   /* x, y     */
         G_TYPE_DOUBLE, G_TYPE_DOUBLE);  /* dx, dy   */
+
+    /* NO ARGUMENTS: the only fact is that it happened. A browser connects this
+     * to unfocus its field and repaint; nothing else needs it. */
+    signals[CHROME_FOCUS_LOST] = g_signal_new("chrome-focus-lost",
+        G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+        G_TYPE_NONE, 0);
 
     signals[CHROME_KEY] = g_signal_new("chrome-key",
         G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,

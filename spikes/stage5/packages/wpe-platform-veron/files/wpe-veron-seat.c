@@ -126,20 +126,60 @@ static void pointerLeave(void *data, struct wl_pointer *pointer, uint32_t serial
  * it: if the surface under the pointer is a toplevel's page subsurface the
  * event becomes a WPEEvent for that view; if it is the toplevel's own surface
  * the event is chrome and is emitted as a signal instead. */
+/* WHY THERE IS A TRACE HERE AT ALL. On bare metal veron-browser rendered
+ * duckduckgo.com and then ignored clicks -- in the page AND in the URL bar --
+ * while MiniBrowser on the SAME backend followed links normally. The two
+ * differ in one thing: MiniBrowser never sets a chrome height, so its page
+ * subsurface is the whole window, and veron-browser's sits below a 44-pixel
+ * strip. That is a hypothesis and nothing in the log distinguishes it from
+ * "no pointer events arrive at all", which is a completely different bug.
+ *
+ * OFF UNLESS ASKED, so it costs a branch per event and nothing else:
+ *
+ *     VERON_DEBUG_INPUT=1 veron-browser https://example.com
+ *
+ * It names which of the three surfaces the compositor decided the pointer was
+ * on, which is the one fact that separates "Wayland routed it somewhere
+ * unexpected" from "we routed it correctly and WebKit did nothing with it". */
+static int veronInputDebug(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = g_getenv("VERON_DEBUG_INPUT") != NULL;
+    return on;
+}
+
 static gboolean seatDispatch(VeronSeat *seat, WPEEventType type, guint32 time,
                              guint button, double dx, double dy, gboolean isScroll)
 {
-    if (!seat->pointerToplevel)
+    if (!seat->pointerToplevel) {
+        if (veronInputDebug() && type != WPE_EVENT_POINTER_MOVE)
+            g_printerr("veron-input: type=%d NO TOPLEVEL for surface %p\n",
+                       (int)type, (void *)seat->pointerSurface);
         return FALSE;
+    }
 
     gboolean onPage = wpeVeronToplevelIsPageSurface(seat->pointerToplevel,
                                                     seat->pointerSurface);
+
+    if (veronInputDebug() && type != WPE_EVENT_POINTER_MOVE) {
+        const char *where = onPage ? "page"
+            : (seat->pointerSurface == wpe_toplevel_veron_get_chrome_surface(seat->pointerToplevel)
+               ? "chrome" : "background/other");
+        g_printerr("veron-input: type=%d button=%u at %.1f,%.1f on %s\n",
+                   (int)type, button, seat->pointerX, seat->pointerY, where);
+    }
     if (!onPage) {
         wpeVeronToplevelEmitChromeEvent(seat->pointerToplevel, type, time,
                                         seat->modifiers, button,
                                         seat->pointerX, seat->pointerY, dx, dy);
         return TRUE;
     }
+
+    /* A CLICK ON THE PAGE IS ALSO A DECISION ABOUT THE KEYBOARD. Without this
+     * the URL bar kept focus forever after being clicked once. */
+    if (type == WPE_EVENT_POINTER_DOWN)
+        wpeVeronToplevelDropChromeFocus(seat->pointerToplevel);
 
     WPEView *view = seatViewFor(seat, seat->pointerToplevel);
     if (!view)

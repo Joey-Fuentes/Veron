@@ -15,6 +15,7 @@
 #include <epoxy/egl.h>
 #include "xdg-shell-client-protocol.h"
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
+#include "xdg-decoration-unstable-v1-client-protocol.h"
 #include <string.h>
 
 /* gio.h for GIOModule and gmodule.h for G_MODULE_EXPORT -- both are needed by
@@ -36,6 +37,15 @@ struct _WPEDisplayVeron {
     struct wl_shm        *wlShm;
     struct wl_seat       *wlSeat;
     struct zwp_linux_dmabuf_v1 *linuxDMABuf;
+    /* WITHOUT THIS THE WINDOW HAS NO TITLEBAR AND CANNOT BE MOVED. labwc
+     * decorates a toplevel only when the client asks through this protocol,
+     * and this backend never bound it -- so on bare metal veron-browser and
+     * MiniBrowser both came up undecorated, unmovable and unresizable. It
+     * looked like a regression because MiniBrowser used to be decorated, and
+     * it was: back when the module was being REJECTED and MiniBrowser fell
+     * through to the stock Wayland backend, which does bind it
+     * (WPEToplevelWayland.cpp:569). */
+    struct zxdg_decoration_manager_v1 *xdgDecorationManager;
 
     EGLDisplay eglDisplay;
     GSource   *eventSource;
@@ -76,6 +86,9 @@ static void registryGlobal(void *data, struct wl_registry *registry, uint32_t na
          * this the browser is closed as unresponsive some seconds after it
          * starts, which looks like a crash and is not one. */
         xdg_wm_base_add_listener(display->xdgWMBase, &xdgWMBaseListener, display);
+    } else if (!strcmp(interface, "zxdg_decoration_manager_v1")) {
+        display->xdgDecorationManager = wl_registry_bind(registry, name,
+            &zxdg_decoration_manager_v1_interface, 1);
     } else if (!strcmp(interface, "zwp_linux_dmabuf_v1")) {
         /* VERSION 3 IS ENOUGH for create_params/create_immed with modifiers,
          * which is all the view uses. Asking for more would exclude
@@ -194,6 +207,14 @@ struct wl_shm *wpe_display_veron_get_shm(WPEDisplayVeron *d)
 }
 struct wl_seat          *wpeVeronDisplayGetSeat(WPEDisplayVeron *d)         { return d->wlSeat; }
 struct zwp_linux_dmabuf_v1 *wpeVeronDisplayGetLinuxDMABuf(WPEDisplayVeron *d) { return d->linuxDMABuf; }
+
+/* NOT REQUIRED IN connect(). A compositor without xdg-decoration is a
+ * compositor that draws no decorations, which is a worse window and not a
+ * reason to decline the display and hand the user no browser at all. */
+struct zxdg_decoration_manager_v1 *wpeVeronDisplayGetDecorationManager(WPEDisplayVeron *d)
+{
+    return d->xdgDecorationManager;
+}
 
 static void wpe_display_veron_init(WPEDisplayVeron *self)
 {

@@ -46,6 +46,12 @@ struct _VeronChrome {
     int                 width, height, stride;
     size_t              size;
     gboolean            busy;
+    /* A REDRAW THAT ARRIVED WHILE THE COMPOSITOR HELD THE BUFFER. Dropping it
+     * outright was the bug; remembering it and repainting on release is the
+     * fix. Only the LATEST width matters -- a drag produces a stream of
+     * configures and the intermediate ones are already stale. */
+    gboolean            pending;
+    int                 pendingWidth;
 
     cairo_surface_t    *cairo;
 
@@ -70,6 +76,16 @@ static void chromeBufferRelease(void *data, struct wl_buffer *buffer)
 {
     VeronChrome *c = data;
     c->busy = FALSE;
+
+    /* THE DEFERRED REDRAW HAPPENS HERE, and this is the whole fix. Without it
+     * every chrome update that landed during a busy frame was lost for good:
+     * the URL bar not following a navigation, the caret not appearing, the
+     * progress bar not moving, and -- most visibly -- the strip keeping its
+     * old width through a resize while the window grew around it. */
+    if (c->pending) {
+        c->pending = FALSE;
+        veron_chrome_draw(c, c->pendingWidth);
+    }
 }
 
 static const struct wl_buffer_listener bufferListener = { chromeBufferRelease };
@@ -178,8 +194,23 @@ static void drawReload(cairo_t *cr, double cx, double cy, gboolean loading)
 
 void veron_chrome_draw(VeronChrome *c, int width)
 {
-    if (c->busy)
+    /* WAIT, DO NOT DISCARD. A wl_buffer that the compositor is still reading
+     * must not be redrawn into or destroyed, so a redraw arriving now cannot
+     * happen now -- but returning without recording it means it never happens
+     * at all, and nothing retries. Every one of the nine callers of this
+     * function was silently unreliable, and a drag-resize made it obvious
+     * because configures arrive faster than releases: the strip stayed at the
+     * width it had when the drag started while the window kept growing, so
+     * the URL field ended in the middle of the window.
+     *
+     * chromeEnsureBuffer would also have destroyed a buffer still in use, so
+     * the early return was protecting something real. It just needed to leave
+     * a note. */
+    if (c->busy) {
+        c->pending = TRUE;
+        c->pendingWidth = width;
         return;
+    }
     if (!chromeEnsureBuffer(c, width, CHROME_HEIGHT))
         return;
 

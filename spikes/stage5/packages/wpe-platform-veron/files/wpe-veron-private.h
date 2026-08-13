@@ -18,6 +18,7 @@ struct wl_surface;
 struct wl_buffer;
 struct xdg_wm_base;
 struct zwp_linux_dmabuf_v1;
+struct zxdg_decoration_manager_v1;
 
 G_BEGIN_DECLS
 
@@ -28,6 +29,7 @@ struct xdg_wm_base      *wpeVeronDisplayGetXDGWMBase     (WPEDisplayVeron *displ
 struct wl_shm           *wpeVeronDisplayGetShm           (WPEDisplayVeron *display);
 struct wl_seat          *wpeVeronDisplayGetSeat          (WPEDisplayVeron *display);
 struct zwp_linux_dmabuf_v1 *wpeVeronDisplayGetLinuxDMABuf(WPEDisplayVeron *display);
+struct zxdg_decoration_manager_v1 *wpeVeronDisplayGetDecorationManager(WPEDisplayVeron *display);
 
 struct wl_surface       *wpeVeronToplevelGetPageSurface  (WPEToplevelVeron *toplevel);
 void                     wpeVeronToplevelResizePage      (WPEToplevelVeron *toplevel,
@@ -46,6 +48,7 @@ WPEToplevelVeron *wpeVeronToplevelForSurface     (struct wl_surface *surface);
 gboolean          wpeVeronToplevelIsPageSurface  (WPEToplevelVeron *toplevel,
                                                   struct wl_surface *surface);
 gboolean          wpeVeronToplevelChromeHasFocus (WPEToplevelVeron *toplevel);
+void              wpeVeronToplevelDropChromeFocus(WPEToplevelVeron *toplevel);
 
 void wpeVeronToplevelEmitChromeEvent (WPEToplevelVeron *toplevel, WPEEventType type,
                                       guint32 time, WPEModifiers modifiers, guint button,

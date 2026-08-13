@@ -28,11 +28,13 @@ PROTO_DIR = $(shell pkg-config --variable=pkgdatadir wayland-protocols)
 SCANNER   = wayland-scanner
 
 GEN = xdg-shell-client-protocol.h xdg-shell-protocol.c \
-      linux-dmabuf-unstable-v1-client-protocol.h linux-dmabuf-unstable-v1-protocol.c
+      linux-dmabuf-unstable-v1-client-protocol.h linux-dmabuf-unstable-v1-protocol.c \
+      xdg-decoration-unstable-v1-client-protocol.h xdg-decoration-unstable-v1-protocol.c
 
 OBJS = wpe-display-veron.o wpe-toplevel-veron.o wpe-view-veron.o \
        wpe-veron-seat.o wpe-veron-shm.o wpe-veron-source.o \
-       xdg-shell-protocol.o linux-dmabuf-unstable-v1-protocol.o
+       xdg-shell-protocol.o linux-dmabuf-unstable-v1-protocol.o \
+       xdg-decoration-unstable-v1-protocol.o
 
 all: libwpe-display-veron.so
 
@@ -44,6 +46,10 @@ linux-dmabuf-unstable-v1-client-protocol.h:
 	$(SCANNER) client-header $(PROTO_DIR)/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml $@
 linux-dmabuf-unstable-v1-protocol.c:
 	$(SCANNER) private-code  $(PROTO_DIR)/unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml $@
+xdg-decoration-unstable-v1-client-protocol.h:
+	$(SCANNER) client-header $(PROTO_DIR)/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml $@
+xdg-decoration-unstable-v1-protocol.c:
+	$(SCANNER) private-code  $(PROTO_DIR)/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml $@
 
 $(OBJS): $(GEN)
 
