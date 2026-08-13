@@ -16,6 +16,14 @@
  * second at most, never per frame. One buffer, redrawn in place, with the
  * compositor's release tracked so it is never written mid-scanout.
  */
+/* _GNU_SOURCE BEFORE ANY HEADER, for memfd_create and the MFD_* flags -- they
+ * are behind it in glibc's sys/mman.h. It has to come before the first include
+ * because the feature test macros are read when features.h is first pulled in,
+ * so putting it beside the other defines further down does nothing. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #include "chrome.h"
 
 #include <cairo/cairo.h>
@@ -107,7 +115,7 @@ static gboolean chromeEnsureBuffer(VeronChrome *c, int width, int height)
         return FALSE;
     }
 
-    c->pool = wl_shm_pool_create(c->shm, fd, (int32_t)c->size);
+    c->pool = wl_shm_create_pool(c->shm, fd, (int32_t)c->size);
     close(fd);
 
     c->buffer = wl_shm_pool_create_buffer(c->pool, 0, width, height,

@@ -183,7 +183,7 @@ struct wl_buffer *wpeVeronBufferFromSHM(WPEViewVeron *view, WPEBuffer *buffer, G
     }
 
     struct wl_shm_pool *pool = wl_shm_create_pool(wlShm, fd, (int32_t)size);
-    /* THE FD IS OURS TO CLOSE ONCE THE POOL HOLDS IT. wl_shm_pool_create dups
+    /* THE FD IS OURS TO CLOSE ONCE THE POOL HOLDS IT. wl_shm_create_pool dups
      * what it needs; keeping this open leaks one per buffer. */
     close(fd);
 
