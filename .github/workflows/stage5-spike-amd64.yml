@@ -1594,47 +1594,98 @@ jobs:
             printf 'echo /tmp/core.%%e.%%p > /proc/sys/kernel/core_pattern\n'
             printf 'echo ---MODULE-DIR---\n'
             printf 'ls -lL /usr/lib/wpe-platform-2.0/modules 2>&1\n'
+            printf 'ls -l /usr/bin/veron-browser 2>&1\n'
             #
-            # RUN A: THE DEFAULT SELECTION, which is our module. It registers
-            # at priority 100 and wpe_display_get_default walks the extension
-            # list in priority order, so with no WPE_DISPLAY set this is
-            # WPEDisplayVeron. This is the case that segfaulted in run
-            # 31684964493 and the case this step exists to explain.
-            printf 'echo ---BROWSER-VERON---\n'
-            printf '/usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-veron.log 2>&1 &\n'
+            # RUN A: MiniBrowser ON OUR BACKEND, UNCONDITIONALLY, AND THEN
+            # KILLED. It is not what the desktop ships -- veron-browser is --
+            # but it has to work anyway, and it is the FIRST milestone rather
+            # than a lesser version of the second. wpe-toplevel-veron.c says it
+            # outright: chrome height defaults to zero, "at zero the subsurface
+            # covers the whole toplevel and this backend is behaviourally the
+            # stock one; that is the first thing to verify, before any chrome
+            # exists, because it separates 'the backend loads and renders' from
+            # 'the split works'." MiniBrowser IS that first milestone. Testing
+            # only veron-browser would leave a failure unattributable between
+            # the two.
+            #
+            # WPE_DISPLAY IS NAMED RATHER THAN LEFT TO PRIORITY. Run
+            # 31722362111 inferred the selection from the crash; if the module
+            # ever fails to load, priority selection falls through to the stock
+            # backend silently and this run would pass while testing nothing.
+            printf 'echo ---BROWSER-MINI-VERON---\n'
+            printf 'WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-veron.log 2>&1 &\n'
             sleep 40
-            printf 'pidof MiniBrowser > /dev/null && echo VERON-BACKEND-ALIVE || echo VERON-BACKEND-DEAD\n'
-            printf 'cat /tmp/browser-veron.log\n'
+            printf 'pidof MiniBrowser > /dev/null && echo MINI-VERON-ALIVE || echo MINI-VERON-DEAD\n'
+            printf 'cat /tmp/browser-mini-veron.log 2>/dev/null\n'
+            # KILLED WHETHER OR NOT IT LIVED, so it is not in the frame and not
+            # holding a toplevel when veron-browser opens its own. The children
+            # go too: WebKit is three processes and an orphaned WPEWebProcess
+            # keeps its share of a 4 GB guest.
+            printf 'killall MiniBrowser WPEWebProcess WPENetworkProcess 2>/dev/null; echo killed-minibrowser\n'
+            sleep 10
             #
-            # THE BACKTRACE, FROM THE CORE. eu-stack is in the image already --
-            # elfutils ships /usr/bin/eu-stack and the module is compiled -g,
-            # so a frame inside libwpe-display-veron.so is named with a
-            # function. This is the one thing that turns "it segfaults" into a
-            # line number, and guessing at 60 KB of C without it is what
-            # AGENTS.md 2d is about.
+            # RUN B: veron-browser -- THE BROWSER THIS PROJECT IS BUILDING, and
+            # the one the frame should show. The step has only ever launched
+            # MiniBrowser, which is WPE's demo shell: no URL bar, no back
+            # button, and it reaches our backend only by PRIORITY ACCIDENT.
+            # veron-browser names the backend outright -- main.c:318
+            # g_setenv("WPE_DISPLAY", "wpe-display-veron") -- and refuses to
+            # start with a printed reason if it did not load, so a fallback
+            # cannot pass silently. It is also the only thing that exercises
+            # the chrome strip, the wl_shm chrome buffer and the
+            # chrome-event/chrome-key signals, which is most of what c5688e4
+            # made reachable for the first time.
+            #
+            # THE ARGUMENT IS NOT OPTIONAL. main.c:402 defaults to
+            # https://duckduckgo.com when argc == 1, and this harness has no
+            # network and must never attempt one.
+            printf 'echo ---BROWSER-VERON-BROWSER---\n'
+            printf '[ -x /usr/bin/veron-browser ] && /usr/bin/veron-browser /usr/share/veron/test.html > /tmp/browser-veron-browser.log 2>&1 &\n'
+            sleep 40
+            printf 'pidof veron-browser > /dev/null && echo VERON-BROWSER-ALIVE || echo VERON-BROWSER-DEAD\n'
+            printf 'cat /tmp/browser-veron-browser.log 2>/dev/null\n'
+            sleep 5
+            #
+            # RUN C: THE STOCK WAYLAND BACKEND, only if veron-browser died.
+            # WPE_DISPLAY names an extension directly -- WPEDisplay.cpp:272 --
+            # so this bypasses ours without uninstalling it. Run 31722362111
+            # already showed it renders, which is what proved everything BELOW
+            # the module healthy; it stays as the thing that puts a page in the
+            # frame when the two above cannot.
+            printf 'echo ---BROWSER-STOCK---\n'
+            printf 'if pidof veron-browser > /dev/null; then echo skipped -- veron-browser is up; else WPE_DISPLAY=wpe-display-wayland /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-stock.log 2>&1 & fi\n'
+            sleep 40
+            printf 'pidof veron-browser MiniBrowser > /dev/null && echo BROWSER-RUNNING || echo NO-BROWSER-RUNNING\n'
+            printf 'head -20 /tmp/browser-stock.log 2>/dev/null\n'
+            #
+            # THE BACKTRACES, LAST, so every core from every run above is on
+            # disk before this reads them.
+            #
+            # eu-unstrip -n IS THE PART RUN 31722362111 LACKED. Its backtrace
+            # was one line and a shrug:
+            #
+            #   TID 459: #0 0x00007f7108799980
+            #   eu-stack: ... in <unknown>: No DWARF information found
+            #
+            # Every OTHER thread unwound with real symbols, so the tooling
+            # works -- the faulting PC simply belongs to no module eu-stack
+            # could name. `eu-unstrip -n --core` prints every module in the
+            # core with its address range, which says in one line whether that
+            # address is inside libwpe-display-veron.so, inside an anonymous
+            # mapping, or in the gap between two libraries. Without it there is
+            # nothing to reason from.
             printf 'echo ---BACKTRACE---\n'
             # THE EXECUTABLE COMES FROM THE CORE NAME, NOT FROM AN ASSUMPTION.
-            # core_pattern writes %e, and WebKit is three processes: a crash in
-            # WPEWebProcess resolved against MiniBrowser's symbols would name
-            # the wrong functions and look like nonsense rather than like a
-            # mismatch.
-            printf 'for c in /tmp/core.*; do [ -e "$c" ] || continue; n=${c#/tmp/core.}; n=${n%%.*}; echo "core $c  exe $n"; eu-stack --core "$c" -e /usr/libexec/wpe-webkit-2.0/$n 2>&1 | head -40; done\n'
-            sleep 15
+            # core_pattern writes %e, and there are four names that can dump:
+            # veron-browser in /usr/bin, and MiniBrowser, WPEWebProcess and
+            # WPENetworkProcess in the libexec directory. A core resolved
+            # against the wrong binary prints confident nonsense rather than an
+            # obvious mismatch, so each is resolved by name.
             #
-            # RUN B: THE STOCK WAYLAND BACKEND, ONLY IF A DIED. WPE_DISPLAY
-            # names an extension directly -- WPEDisplay.cpp:272 -- so this
-            # bypasses ours without uninstalling it. Two things at once: it
-            # says whether everything BELOW our module is healthy, and it puts
-            # a rendered page in the frame this job captures, which is what
-            # the screenshot is for. If A survived, B never runs and A stays
-            # on screen -- two toplevels would overlap and the frame would
-            # show whichever the compositor stacked last.
-            printf 'echo ---BROWSER-STOCK---\n'
-            printf 'if pidof MiniBrowser > /dev/null; then echo skipped -- the veron backend is still up; else WPE_DISPLAY=wpe-display-wayland /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-stock.log 2>&1 & fi\n'
-            sleep 40
-            printf 'pidof MiniBrowser > /dev/null && echo BROWSER-RUNNING || echo NO-BROWSER-RUNNING\n'
-            printf 'head -20 /tmp/browser-stock.log 2>/dev/null\n'
-            sleep 10
+            # -m PRINTS THE MODULE PER FRAME, which is what turns a bare
+            # address into an attribution for the frames that DO resolve.
+            printf 'for c in /tmp/core.*; do [ -e "$c" ] || continue; n=${c#/tmp/core.}; n=${n%%.*}; e=/usr/libexec/wpe-webkit-2.0/$n; [ -x "$e" ] || e=/usr/bin/$n; echo "=== core $c  exe $e"; eu-stack -m -a --core "$c" -e "$e" 2>&1 | head -40; echo "--- modules"; eu-unstrip -n --core "$c" 2>&1 | head -60; done\n'
+            sleep 15
             printf 'echo VERON-SHOT-READY\n'
             sleep 600 ) > "$O/console.in" &
           feeder=$!
@@ -1697,14 +1748,22 @@ jobs:
           # uploaded as an artifact and the crash was sitting in it the whole
           # time; nobody downloads an artifact to find out why a green run was
           # green. Everything between the markers the feeder typed goes here.
-          echo "  --- browser: the veron backend ---"
-          sed -n '/---MODULE-DIR---/,/---BROWSER-STOCK---/p' \
-            "$O/desktop-console.log" 2>/dev/null | head -90 | sed 's/^/    /' \
+          echo "  --- browser: MiniBrowser on the veron backend ---"
+          sed -n '/---MODULE-DIR---/,/---BROWSER-VERON-BROWSER---/p' \
+            "$O/desktop-console.log" 2>/dev/null | head -50 | sed 's/^/    /' \
             || echo "    (no browser section -- the feeder never got that far)"
+          echo "  --- browser: veron-browser ---"
+          sed -n '/---BROWSER-VERON-BROWSER---/,/---BROWSER-STOCK---/p' \
+            "$O/desktop-console.log" 2>/dev/null | head -50 | sed 's/^/    /' \
+            || echo "    (not reached)"
           echo "  --- browser: the stock wayland backend ---"
-          sed -n '/---BROWSER-STOCK---/,/VERON-SHOT-READY/p' \
+          sed -n '/---BROWSER-STOCK---/,/---BACKTRACE---/p' \
             "$O/desktop-console.log" 2>/dev/null | head -40 | sed 's/^/    /' \
             || echo "    (not reached)"
+          echo "  --- cores: stacks and module maps ---"
+          sed -n '/---BACKTRACE---/,/VERON-SHOT-READY/p' \
+            "$O/desktop-console.log" 2>/dev/null | head -160 | sed 's/^/    /' \
+            || echo "    (no core dumped)"
 
           if [ ! -s "$O/desktop.ppm" ]; then
             # THE FIRST FAILURE PRINTED NOTHING USEFUL. It said "no frame
