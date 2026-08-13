@@ -214,3 +214,96 @@ struct wl_buffer *wpeVeronBufferFromSHM(WPEViewVeron *view, WPEBuffer *buffer, G
 
     return wlBuffer;
 }
+
+/* ---- a flat colour on the toplevel's own surface ----------------------- */
+
+/* WHY THE BACKEND OWNS A BUFFER AT ALL, given the README says drawing belongs
+ * to the browser. It does -- the CHROME belongs to the browser, and it still
+ * does. This is not chrome. An xdg_toplevel maps when a buffer is attached to
+ * its own wl_surface, and a wl_subsurface's buffer does not count. With the
+ * page and the chrome both on subsurfaces there is nothing left to map the
+ * window, so a client that draws no chrome gets no window at all: MiniBrowser
+ * ran happily through three CI runs with no toplevel on screen and nothing in
+ * the log, because nothing was wrong except that nobody had painted the parent.
+ *
+ * OPAQUE WHITE BECAUSE THAT IS WEBKIT'S OWN DEFAULT. WPEViewWayland.cpp:113
+ * says so in as many words -- "The web view default background color is opaque
+ * white" -- so a page that has not painted yet blends into the background
+ * instead of flashing against it.
+ *
+ * THE CLIENT MAPPING IS KEPT RATHER THAN DROPPED AFTER THE FILL. It could be
+ * munmapped -- the compositor maps the fd itself -- but keeping it means a
+ * repaint on resize is a memcpy instead of a new pool, and it makes the
+ * lifetime obvious: one struct owns the pool, the buffer and the memory, and
+ * frees all three together. */
+struct _VeronSolidBuffer {
+    struct wl_buffer   *wlBuffer;
+    struct wl_shm_pool *pool;
+    void               *data;
+    size_t              size;
+};
+
+VeronSolidBuffer *wpeVeronSolidBufferNew(struct wl_shm *shm, int width, int height,
+                                         guint32 argb)
+{
+    if (!shm || width < 1 || height < 1)
+        return NULL;
+
+    size_t stride = (size_t)width * 4;
+    size_t size   = stride * (size_t)height;
+
+    int fd = veronAnonFile(size);
+    if (fd < 0)
+        return NULL;
+
+    void *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data == MAP_FAILED) {
+        close(fd);
+        return NULL;
+    }
+
+    struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
+    close(fd);
+    if (!pool) {
+        munmap(data, size);
+        return NULL;
+    }
+
+    struct wl_buffer *wlBuffer = wl_shm_pool_create_buffer(pool, 0, width, height,
+        (int32_t)stride, WL_SHM_FORMAT_ARGB8888);
+    if (!wlBuffer) {
+        wl_shm_pool_destroy(pool);
+        munmap(data, size);
+        return NULL;
+    }
+
+    /* A WORD AT A TIME, NOT memset. memset writes one byte and this is a
+     * 32-bit pixel; filling 0xFFFFFFFF happens to survive it and any other
+     * colour would come out as a grey the caller never asked for. */
+    guint32 *px = data;
+    for (size_t i = 0; i < size / 4; ++i)
+        px[i] = argb;
+
+    VeronSolidBuffer *b = g_new0(VeronSolidBuffer, 1);
+    b->wlBuffer = wlBuffer;
+    b->pool     = pool;
+    b->data     = data;
+    b->size     = size;
+    return b;
+}
+
+struct wl_buffer *wpeVeronSolidBufferGet(VeronSolidBuffer *buffer)
+{
+    return buffer ? buffer->wlBuffer : NULL;
+}
+
+void wpeVeronSolidBufferFree(VeronSolidBuffer *buffer)
+{
+    if (!buffer)
+        return;
+    g_clear_pointer(&buffer->wlBuffer, wl_buffer_destroy);
+    g_clear_pointer(&buffer->pool, wl_shm_pool_destroy);
+    if (buffer->data && buffer->data != MAP_FAILED)
+        munmap(buffer->data, buffer->size);
+    g_free(buffer);
+}

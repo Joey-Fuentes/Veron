@@ -58,6 +58,25 @@ struct wl_buffer        *wpeVeronBufferFromSHM           (WPEViewVeron *view,
                                                           WPEBuffer *buffer,
                                                           GError **error);
 
+/* A FLAT wl_shm BUFFER, FOR THE TOPLEVEL'S OWN SURFACE.
+ *
+ * The page and the chrome are both subsurfaces, and a wl_subsurface's buffer
+ * does NOT map its parent -- only a buffer on the xdg_surface's own wl_surface
+ * does. Nothing in WPE will attach one: WPEViewWayland.cpp:573 has the VIEW
+ * attaching to the toplevel surface, which is exactly the arrangement this
+ * backend replaces, and WPEToplevelWayland never attaches anything itself. So
+ * the backend paints its own background, and this is the smallest thing that
+ * can be painted.
+ *
+ * It lives beside the other shm code because that file already carries
+ * _GNU_SOURCE for memfd_create and the pool/fd handling that goes with it. */
+typedef struct _VeronSolidBuffer VeronSolidBuffer;
+
+VeronSolidBuffer *wpeVeronSolidBufferNew (struct wl_shm *shm,
+                                          int width, int height, guint32 argb);
+struct wl_buffer *wpeVeronSolidBufferGet (VeronSolidBuffer *buffer);
+void              wpeVeronSolidBufferFree(VeronSolidBuffer *buffer);
+
 /* THE WAYLAND FD IN THE GLIB MAIN LOOP. WebKit runs a GMainLoop and Wayland
  * events arrive on a socket; without a source attached, nothing is ever
  * dispatched and the window never gets a configure. This is the piece that is

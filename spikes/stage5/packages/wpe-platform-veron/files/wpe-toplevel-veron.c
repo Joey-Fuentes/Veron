@@ -23,11 +23,35 @@
 struct _WPEToplevelVeron {
     WPEToplevel parent_instance;
 
-    struct wl_surface    *wlSurface;      /* the window: chrome lives here */
-    struct wl_surface    *pageSurface;    /* the page, as a subsurface     */
+    /* THREE SURFACES, ONE OWNER EACH, AND THAT IS THE WHOLE OF THIS CHANGE.
+     *
+     * It used to be two, with the chrome drawn straight onto wlSurface, and
+     * that had the chrome and the window fighting over one buffer. A
+     * wl_surface holds exactly ONE buffer, so veron-browser's 1024x44 chrome
+     * buffer WAS the window: labwc sized the toplevel to it and the frame
+     * showed a URL bar floating on the desktop with nothing under it. And a
+     * client that drew no chrome at all -- MiniBrowser -- attached nothing to
+     * wlSurface, so the xdg_toplevel never mapped and no window appeared.
+     *
+     * Now the toplevel surface carries a background the backend owns, and
+     * both the chrome and the page are subsurfaces on top of it. Nobody
+     * overwrites anybody, the window maps whether or not a browser draws
+     * chrome, and the geometry comes from the toplevel rather than from
+     * whatever the caller happened to paint. */
+    struct wl_surface    *wlSurface;      /* the window: background lives here */
+    struct wl_surface    *chromeSurface;  /* the strip, as a subsurface        */
+    struct wl_subsurface *chromeSubsurface;
+    struct wl_surface    *pageSurface;    /* the page, as a subsurface         */
     struct wl_subsurface *pageSubsurface;
     struct xdg_surface   *xdgSurface;
     struct xdg_toplevel  *xdgToplevel;
+
+    /* THE BACKGROUND, AND THE SIZE IT WAS PAINTED AT. Kept so a configure
+     * that does not change the size does not throw away a good buffer and
+     * allocate an identical one every frame the compositor acks. */
+    VeronSolidBuffer     *background;
+    int                   backgroundWidth;
+    int                   backgroundHeight;
 
     guint chromeHeight;
     gboolean chromeFocus;
@@ -108,6 +132,46 @@ void wpeVeronToplevelEmitChromeKey(WPEToplevelVeron *self, WPEEventType type,
                   (guint)type, time, (guint)modifiers, keycode, keyval);
 }
 
+/* ---- the background the window is made of ---------------------------- */
+
+/* CALLED WHEREVER A SIZE IS DECIDED, AND NOWHERE ELSE. Both call sites are
+ * below -- the configure and the resize vfunc -- and they are the only two
+ * places this toplevel ever learns how big it is. */
+static void veronToplevelPaintBackground(WPEToplevelVeron *self, int width, int height)
+{
+    if (width < 1 || height < 1)
+        return;
+    if (self->background && self->backgroundWidth == width
+                         && self->backgroundHeight == height) {
+        /* Same size: the existing buffer is still correct and still attached.
+         * Reallocating here would churn a pool per configure, and compositors
+         * send configures for things that are not resizes. */
+        return;
+    }
+
+    WPEDisplayVeron *display =
+        WPE_DISPLAY_VERON(wpe_toplevel_get_display(WPE_TOPLEVEL(self)));
+    struct wl_shm *shm = wpeVeronDisplayGetShm(display);
+    if (!shm)
+        return;
+
+    VeronSolidBuffer *next = wpeVeronSolidBufferNew(shm, width, height, 0xffffffffu);
+    if (!next)
+        return;
+
+    wl_surface_attach(self->wlSurface, wpeVeronSolidBufferGet(next), 0, 0);
+    wl_surface_damage(self->wlSurface, 0, 0, width, height);
+    wl_surface_commit(self->wlSurface);
+
+    /* THE OLD BUFFER IS RELEASED AFTER THE COMMIT THAT REPLACES IT, not
+     * before. Destroying it first would pull it out from under a compositor
+     * that is still scanning it out for the current frame. */
+    g_clear_pointer(&self->background, wpeVeronSolidBufferFree);
+    self->background       = next;
+    self->backgroundWidth  = width;
+    self->backgroundHeight = height;
+}
+
 /* ---- xdg plumbing ---------------------------------------------------- */
 
 static void xdgSurfaceConfigure(void *data, struct xdg_surface *surface, uint32_t serial)
@@ -125,6 +189,10 @@ static void xdgSurfaceConfigure(void *data, struct xdg_surface *surface, uint32_
         if (pageHeight < 1)
             pageHeight = 1;
 
+        /* THE BACKGROUND IS PAINTED BEFORE THE VIEW IS TOLD ANYTHING. This is
+         * the commit that maps the window, and until it happens the page
+         * subsurface has no visible parent to be a subsurface OF. */
+        veronToplevelPaintBackground(self, self->pendingWidth, self->pendingHeight);
         wpe_toplevel_resized(WPE_TOPLEVEL(self), self->pendingWidth, self->pendingHeight);
         wpeVeronToplevelResizePage(self, self->pendingWidth, pageHeight);
         self->pendingWidth = self->pendingHeight = 0;
@@ -186,11 +254,24 @@ static void wpeToplevelVeronConstructed(GObject *object)
 
     struct wl_compositor *compositor = wpeVeronDisplayGetCompositor(display);
 
-    self->wlSurface   = wl_compositor_create_surface(compositor);
-    self->pageSurface = wl_compositor_create_surface(compositor);
+    self->wlSurface     = wl_compositor_create_surface(compositor);
+    self->chromeSurface = wl_compositor_create_surface(compositor);
+    self->pageSurface   = wl_compositor_create_surface(compositor);
+
+    struct wl_subcompositor *subcompositor = wpeVeronDisplayGetSubcompositor(display);
+
+    /* THE CHROME IS A SUBSURFACE NOW, AND THE CALLER CANNOT TELL. It still
+     * gets a bare wl_surface out of wpe_toplevel_veron_get_chrome_surface and
+     * still attaches buffers and commits; a subsurface takes exactly the same
+     * calls. What changes is that its buffer no longer decides how big the
+     * window is, which is what made veron-browser's window 1024x44. */
+    self->chromeSubsurface = wl_subcompositor_get_subsurface(
+        subcompositor, self->chromeSurface, self->wlSurface);
+    wl_subsurface_set_desync(self->chromeSubsurface);
+    wl_subsurface_set_position(self->chromeSubsurface, 0, 0);
 
     self->pageSubsurface = wl_subcompositor_get_subsurface(
-        wpeVeronDisplayGetSubcompositor(display), self->pageSurface, self->wlSurface);
+        subcompositor, self->pageSurface, self->wlSurface);
 
     /* DESYNC, NOT SYNC, AND THE REASON IS THE FRAME RATE. A synchronised
      * subsurface only appears when its parent commits, which would tie every
@@ -209,7 +290,13 @@ static void wpeToplevelVeronConstructed(GObject *object)
     xdg_toplevel_set_title(self->xdgToplevel, "Veron");
     xdg_toplevel_set_app_id(self->xdgToplevel, "org.veron.Browser");
 
+    /* ALL THREE GO IN THE MAP. The seat resolves an event back to a toplevel
+     * through this table, and pointer events over the strip now arrive on
+     * chromeSurface rather than on wlSurface. Leaving it out would drop every
+     * click on the URL bar -- wpeVeronToplevelForSurface would return NULL and
+     * the event would be discarded with nothing logged. */
     veronRegisterSurface(self->wlSurface, self);
+    veronRegisterSurface(self->chromeSurface, self);
     veronRegisterSurface(self->pageSurface, self);
 
     wl_surface_commit(self->wlSurface);
@@ -239,6 +326,7 @@ static gboolean wpeToplevelVeronResize(WPEToplevel *toplevel, int width, int hei
      * wpe_toplevel_resized IS THE NOTIFICATION, NOT THE REQUEST, so this does
      * not recurse: wpe_toplevel_resize calls this vfunc, and this tells WPE
      * what the size became. xdgSurfaceConfigure already used it the same way. */
+    veronToplevelPaintBackground(self, width, height);
     wpe_toplevel_resized(WPE_TOPLEVEL(self), width, height);
     wpeVeronToplevelResizePage(self, width, pageHeight);
     return TRUE;
@@ -269,6 +357,8 @@ void wpe_toplevel_veron_set_chrome_height(WPEToplevelVeron *self, guint height)
 
     self->chromeHeight = height;
     wl_subsurface_set_position(self->pageSubsurface, 0, (int)height);
+    /* The chrome subsurface stays at the origin whatever the height is; the
+     * strip's height is the height of the buffer the caller attaches. */
 
     /* THE PAGE IS RESIZED IMMEDIATELY, because changing the strip changes how
      * much room the page has and nothing else will tell it. */
@@ -293,7 +383,12 @@ guint wpe_toplevel_veron_get_chrome_height(WPEToplevelVeron *self)
 struct wl_surface *wpe_toplevel_veron_get_chrome_surface(WPEToplevelVeron *self)
 {
     g_return_val_if_fail(WPE_IS_TOPLEVEL_VERON(self), NULL);
-    return self->wlSurface;
+    /* THE STRIP'S OWN SURFACE, NOT THE TOPLEVEL'S. Same signature, same
+     * meaning, same calls on the far side -- the caller draws the chrome and
+     * commits, and cannot tell a subsurface from a toplevel surface by doing
+     * so. It no longer competes with the window's background for the one
+     * buffer a wl_surface can hold. */
+    return self->chromeSurface;
 }
 
 struct wl_surface *wpeVeronToplevelGetPageSurface(WPEToplevelVeron *self)
@@ -336,7 +431,9 @@ static void wpeToplevelVeronDispose(GObject *object)
     /* BOTH SURFACES LEAVE THE MAP. A stale entry would hand the seat a
      * freed toplevel the next time the compositor reused the surface id. */
     veronUnregisterSurface(self->wlSurface);
+    veronUnregisterSurface(self->chromeSurface);
     veronUnregisterSurface(self->pageSurface);
+    g_clear_pointer(&self->background, wpeVeronSolidBufferFree);
     G_OBJECT_CLASS(wpe_toplevel_veron_parent_class)->dispose(object);
 }
 

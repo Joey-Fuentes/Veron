@@ -146,6 +146,67 @@ static gboolean wpeViewVeronRenderBuffer(WPEView *view, WPEBuffer *buffer,
 
 static void wpe_view_veron_init(WPEViewVeron *self) { }
 
+/* ---- mapping: the reason the page never appeared -------------------------
+ *
+ * A WPEView PAINTS ONLY WHEN IT IS MAPPED, and this backend never mapped one.
+ * WPEWebViewPlatform.cpp:88 connects notify::mapped and feeds it straight into
+ * WebCore::ActivityState::IsVisible, and a page that is not visible does not
+ * render. So WebKit produced no buffers, render_buffer above was never called,
+ * the page subsurface never got anything to show, and both browsers came up
+ * with an empty page area and no error anywhere -- because nothing had gone
+ * wrong, WebKit had simply been told the view was not on screen.
+ *
+ * EVERY SHIPPED BACKEND DOES THIS ITSELF; none of it happens automatically.
+ * wayland/WPEViewWayland.cpp:123-140, headless/WPEViewHeadless.cpp:80 and
+ * drm/WPEViewDRM.cpp:89 each connect notify::toplevel and call wpe_view_map
+ * from it. This follows the Wayland one, which is the sibling this backend is
+ * modelled on.
+ *
+ * THE SIZE IS SET BEFORE THE MAP, in that order, because WebKit reads the
+ * view's size when visibility turns on. Mapping first means the first paint
+ * uses whatever size the view had before -- 0x0 on a new view -- and the page
+ * lays out for a window that does not exist.
+ *
+ * THE CHROME COMES OFF HERE TOO. The toplevel's size includes the strip; the
+ * view only ever gets what is left under it. This is the same subtraction as
+ * xdgSurfaceConfigure and wpeToplevelVeronResize, and all three have to agree.
+ *
+ * notify::screen IS DELIBERATELY NOT CONNECTED, and that is a difference from
+ * the stock backend rather than an omission. WPEViewWayland connects it and
+ * UNMAPS when wpe_view_get_screen returns NULL -- which it can afford because
+ * it implements WPEToplevelClass::get_screen. This backend does not, so
+ * wpe_view_get_screen is NULL forever, and copying that handler would unmap
+ * the view the first time the property was notified. WebKit already handles a
+ * screenless view: WPEWebViewPlatform.cpp:83 falls back to the primary display
+ * id. Screens are worth implementing and are not this change. */
+static void veronViewToplevelChanged(WPEView *view, GParamSpec *pspec, gpointer data)
+{
+    WPEToplevel *toplevel = wpe_view_get_toplevel(view);
+    if (!toplevel) {
+        wpe_view_unmap(view);
+        return;
+    }
+
+    int width = 0, height = 0;
+    wpe_toplevel_get_size(toplevel, &width, &height);
+    if (width > 0 && height > 0) {
+        int pageHeight = height -
+            (int)wpe_toplevel_veron_get_chrome_height(WPE_TOPLEVEL_VERON(toplevel));
+        if (pageHeight < 1)
+            pageHeight = 1;
+        wpe_view_resized(view, width, pageHeight);
+    }
+
+    wpe_view_map(view);
+}
+
+static void wpeViewVeronConstructed(GObject *object)
+{
+    G_OBJECT_CLASS(wpe_view_veron_parent_class)->constructed(object);
+    g_signal_connect(object, "notify::toplevel",
+                     G_CALLBACK(veronViewToplevelChanged), NULL);
+}
+
 static void wpe_view_veron_dispose(GObject *object)
 {
     WPEViewVeron *self = WPE_VIEW_VERON(object);
@@ -155,6 +216,7 @@ static void wpe_view_veron_dispose(GObject *object)
 
 static void wpe_view_veron_class_init(WPEViewVeronClass *klass)
 {
+    G_OBJECT_CLASS(klass)->constructed = wpeViewVeronConstructed;
     G_OBJECT_CLASS(klass)->dispose = wpe_view_veron_dispose;
     WPE_VIEW_CLASS(klass)->render_buffer = wpeViewVeronRenderBuffer;
 }
