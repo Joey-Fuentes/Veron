@@ -11,22 +11,44 @@ export PATH=/usr/bin:/usr/sbin:/bin:/sbin
 export XDG_RUNTIME_DIR=/run/user/0
 export XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}
 
-# XDG_DATA_HOME, WHICH IS HOW THE LAUNCHER'S MENU IS CURATED.
+# XDG_DATA_DIRS, WHICH IS HOW THE LAUNCHER'S MENU IS CURATED.
 #
 # fuzzel lists .desktop files, and the only ones any package installs are
 # foot, foot-server, footclient and yambar -- three variants of one terminal
-# and something already running. That is not a menu.
+# and something already running. That is not a menu. So /usr/share/veron holds
+# Veron's own entries -- Browser, Files, Volume, Shut Down, Restart -- and also
+# a NoDisplay=true copy of each of the four names above, which is the spec's
+# own way of saying "installed, do not show in a menu" rather than deleting
+# another package's file.
 #
-# The spec searches XDG_DATA_HOME BEFORE XDG_DATA_DIRS, and a file found first
-# wins. So /usr/share/veron holds Veron's own entries -- Browser, Files,
-# Volume, Shut Down, Restart -- and also a NoDisplay=true copy of each of the
-# four names above, which is the spec's own way of saying "installed, do not
-# show in a menu" rather than deleting another package's file.
+# THIS USED TO BE DONE WITH XDG_DATA_HOME AND THAT WAS THE WRONG VARIABLE.
+# The curation worked -- the spec searches XDG_DATA_HOME first and a file found
+# first wins -- but XDG_DATA_HOME is not a search path. It is where every
+# application on the system is told to WRITE ITS OWN STATE, and pointing it at
+# a shipped directory told WebKit, and anything else with a data store, to keep
+# per-user data inside the image. Measured on the running system:
 #
-# THE DEFAULT IS THE SPEC'S, NOT INVENTED: with XDG_DATA_HOME unset the search
-# path is ~/.local/share then /usr/local/share:/usr/share, so naming this
-# directory adds a layer above rather than replacing anything.
-export XDG_DATA_HOME=${XDG_DATA_HOME:-/usr/share/veron}
+#     HOME=/  XDG_DATA_HOME=/usr/share/veron  XDG_CACHE_HOME=
+#
+# XDG_DATA_DIRS is the search path, it is searched in order, and the first hit
+# still wins -- so naming /usr/share/veron ahead of the spec default gives
+# exactly the same menu with none of the side effect. The default is the
+# spec's, /usr/local/share:/usr/share, and it is spelled out rather than
+# assumed for the same reason PATH is.
+export XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/share/veron:/usr/local/share:/usr/share}
+
+# AND THE PER-USER DIRECTORIES, WHERE THEY BELONG. /etc/passwd already says
+# root's home is /root; nothing was establishing it, because the console shell
+# is not a login shell and inherits whatever init had -- which is `/`. These
+# are on the tmpfs overlay, so they are writable, and they vanish on reboot,
+# which is what a stateless image should do rather than being unable to write
+# at all.
+export HOME=${HOME:-/root}
+[ "$HOME" = "/" ] && export HOME=/root
+export XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
+export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
+export XDG_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
+mkdir -p "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" 2>/dev/null || :
 # WAYLAND CLIENTS FIND THE COMPOSITOR THROUGH THIS. Without it labwc still
 # creates wayland-0 in XDG_RUNTIME_DIR, but anything launched from autostart
 # inherits whatever the service had -- naming it makes the socket a decision.

@@ -19,6 +19,7 @@
 #include <wpe/webkit.h>
 #include "wpe-display-veron.h"
 
+#include <libsoup/soup.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include <string.h>
 
@@ -349,6 +350,59 @@ static void onUriChanged(WebKitWebView *view, GParamSpec *spec, gpointer data)
     veron_chrome_draw(b->chrome, b->width);
 }
 
+/* WHAT THE JAR ACTUALLY HOLDS, ASKED OF THE BROWSER RATHER THAN INFERRED.
+ *
+ * Four theories have now been refuted by the machine -- the accept policy, the
+ * redirect, the ephemeral session, and the filesystem being read-only -- and
+ * every one of them looked identical from httpbin's side, because a page can
+ * only ever report what it RECEIVED. These three cases are indistinguishable
+ * from outside and need different fixes:
+ *
+ *   stored but not sent      a SameSite or Secure attribute question
+ *   never stored             Set-Cookie is reaching the jar and being refused
+ *   manager unreachable      the session is not wired up the way we assume
+ *
+ * webkit_cookie_manager_get_cookies asks the network process directly, so its
+ * answer distinguishes all three. Off unless VERON_DEBUG_COOKIES is set. */
+static void onCookiesDumped(GObject *manager, GAsyncResult *result, gpointer data)
+{
+    GError *error = NULL;
+    GList *cookies = webkit_cookie_manager_get_cookies_finish(
+        WEBKIT_COOKIE_MANAGER(manager), result, &error);
+
+    if (error) {
+        g_printerr("veron-cookies: get_cookies failed: %s\n", error->message);
+        g_error_free(error);
+        return;
+    }
+    if (!cookies) {
+        g_printerr("veron-cookies: jar is EMPTY for %s\n", (const char *)data);
+        return;
+    }
+    for (GList *l = cookies; l; l = l->next) {
+        SoupCookie *c = l->data;
+        g_printerr("veron-cookies: %s=%s domain=%s path=%s secure=%d httponly=%d\n",
+                   soup_cookie_get_name(c), soup_cookie_get_value(c),
+                   soup_cookie_get_domain(c), soup_cookie_get_path(c),
+                   soup_cookie_get_secure(c), soup_cookie_get_http_only(c));
+    }
+    g_list_free_full(cookies, (GDestroyNotify)soup_cookie_free);
+}
+
+static void browserDumpCookies(Browser *b)
+{
+    if (!g_getenv("VERON_DEBUG_COOKIES"))
+        return;
+    const char *uri = webkit_web_view_get_uri(b->webView);
+    if (!uri)
+        return;
+    WebKitCookieManager *cm =
+        webkit_network_session_get_cookie_manager(
+            webkit_web_view_get_network_session(b->webView));
+    webkit_cookie_manager_get_cookies(cm, uri, NULL, onCookiesDumped,
+                                      (gpointer)uri);
+}
+
 static void onLoadChanged(WebKitWebView *view, WebKitLoadEvent event, gpointer data)
 {
     Browser *b = data;
@@ -359,6 +413,8 @@ static void onLoadChanged(WebKitWebView *view, WebKitLoadEvent event, gpointer d
     veron_chrome_set_navigation(b->chrome,
         webkit_web_view_can_go_back(view), webkit_web_view_can_go_forward(view));
     veron_chrome_draw(b->chrome, b->width);
+
+    browserDumpCookies(b);
 }
 
 static void onProgress(WebKitWebView *view, GParamSpec *spec, gpointer data)

@@ -11,7 +11,14 @@
 # WPE IS NEVER REBUILT for any of this. The browser links libWPEWebKit-2.0 and
 # the backend is a GIO module loaded at runtime; both are already installed.
 
-PKGS = wpe-webkit-2.0 wpe-platform-2.0 wayland-client cairo glib-2.0 gobject-2.0 xkbcommon
+# libsoup-3.0 IS DECLARED NOW RATHER THAN ARRIVING BY ACCIDENT. It was already
+# linked -- VERON-LINKED has been reporting `veron-browser links libsoup
+# (libsoup-3.0.so.0) and deps.link does not say so` on every run -- because
+# wpe-webkit-2.0 pulls it in transitively. The cookie dump uses SoupCookie
+# directly, so the header is needed as well as the library, and an undeclared
+# dependency that a gate has been naming for weeks is worth closing while the
+# file is open.
+PKGS = wpe-webkit-2.0 wpe-platform-2.0 wayland-client cairo glib-2.0 gobject-2.0 xkbcommon libsoup-3.0
 # THE BACKEND'S HEADER IS COPIED IN BESIDE THE SOURCE by the recipe, so this
 # needs no path to it. Building by hand outside the recipe, copy
 # wpe-display-veron.h here first or add -I to point at it.
