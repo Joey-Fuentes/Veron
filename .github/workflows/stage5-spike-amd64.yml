@@ -1617,6 +1617,19 @@ jobs:
             sleep 40
             printf 'pidof MiniBrowser > /dev/null && echo MINI-VERON-ALIVE || echo MINI-VERON-DEAD\n'
             printf 'cat /tmp/browser-mini-veron.log 2>/dev/null\n'
+            #
+            # RUN A2: THE SAME THING WITH G_DEBUG=fatal-warnings. A wild jump
+            # is often the SECOND thing that goes wrong -- a g_critical from a
+            # failed g_return_if_fail or a bad cast comes first, execution
+            # carries on with a value the code already knows is wrong, and the
+            # crash lands somewhere unattributable. fatal-warnings aborts at
+            # the first one instead, and an abort has a stack that resolves.
+            # If nothing warns, this segfaults exactly like A1 and costs 40s.
+            printf 'echo ---BROWSER-MINI-VERON-FATAL---\n'
+            printf 'G_DEBUG=fatal-warnings WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-fatal.log 2>&1 &\n'
+            sleep 40
+            printf 'pidof MiniBrowser > /dev/null && echo MINI-FATAL-ALIVE || echo MINI-FATAL-DEAD\n'
+            printf 'cat /tmp/browser-mini-fatal.log 2>/dev/null\n'
             # KILLED WHETHER OR NOT IT LIVED, so it is not in the frame and not
             # holding a toplevel when veron-browser opens its own. The children
             # go too: WebKit is three processes and an orphaned WPEWebProcess
@@ -1684,7 +1697,7 @@ jobs:
             #
             # -m PRINTS THE MODULE PER FRAME, which is what turns a bare
             # address into an attribution for the frames that DO resolve.
-            printf 'for c in /tmp/core.*; do [ -e "$c" ] || continue; n=${c#/tmp/core.}; n=${n%%.*}; e=/usr/libexec/wpe-webkit-2.0/$n; [ -x "$e" ] || e=/usr/bin/$n; echo "=== core $c  exe $e"; eu-stack -m -a --core "$c" -e "$e" 2>&1 | head -40; echo "--- modules"; eu-unstrip -n --core "$c" 2>&1 | head -60; done\n'
+            printf 'for c in /tmp/core.*; do [ -e "$c" ] || continue; n=${c#/tmp/core.}; n=${n%%.*}; e=/usr/libexec/wpe-webkit-2.0/$n; [ -x "$e" ] || e=/usr/bin/$n; echo "=== core $c  exe $e"; eu-stack -m -a --core "$c" -e "$e" 2>&1 | head -40; echo "--- is the veron module mapped at all"; eu-unstrip -n --core "$c" 2>&1 | grep -i veron || echo "  libwpe-display-veron.so IS NOT IN THIS CORE MODULE LIST"; echo "--- modules"; eu-unstrip -n --core "$c" 2>&1 | sort | head -200; done\n'
             sleep 15
             printf 'echo VERON-SHOT-READY\n'
             sleep 600 ) > "$O/console.in" &
@@ -1762,7 +1775,7 @@ jobs:
             || echo "    (not reached)"
           echo "  --- cores: stacks and module maps ---"
           sed -n '/---BACKTRACE---/,/VERON-SHOT-READY/p' \
-            "$O/desktop-console.log" 2>/dev/null | head -160 | sed 's/^/    /' \
+            "$O/desktop-console.log" 2>/dev/null | head -300 | sed 's/^/    /' \
             || echo "    (no core dumped)"
 
           if [ ! -s "$O/desktop.ppm" ]; then

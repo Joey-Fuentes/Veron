@@ -64,6 +64,38 @@ static char *veronResolveInput(const char *input)
         return result;
     }
 
+    /* AN ABSOLUTE PATH IS A FILE, NOT A HOSTNAME, AND THE DOT RULE BELOW
+     * CANNOT TELL. `/usr/share/veron/test.html` has a dot and no space, so it
+     * took the hostname branch and became `https:///usr/share/veron/test.html`
+     * -- which WebKit parsed with `usr` as the host. Run 31723918286 is that
+     * bug in one frame: the chrome strip drew, the URL field read
+     * `https://usr/share/veron/test.html`, and the page surface stayed empty
+     * because the load was still resolving a name that does not exist:
+     *
+     *     IPv4 DNS error: Error resolving "usr": Temporary failure in name
+     *     resolution
+     *
+     * MiniBrowser never had this because it does not parse -- main.cpp:696
+     * hands the argument to g_file_new_for_commandline_arg, which resolves an
+     * absolute path to file://. THIS CANNOT USE THAT FUNCTION FOR EVERYTHING:
+     * a URL bar given `example.com` would have it turned into a RELATIVE file
+     * URI against the working directory, which is worse than the bug being
+     * fixed. So the test is the one thing that is unambiguous, a leading
+     * slash, and everything else keeps the old rule.
+     *
+     * g_filename_to_uri RATHER THAN PREPENDING "file://", because it
+     * percent-encodes: a path containing a space or a `#` survives it and does
+     * not survive concatenation. It returns NULL on a path it cannot convert,
+     * and that case falls through to the heuristic rather than returning NULL
+     * to the caller, which would silently do nothing. */
+    if (g_path_is_absolute(text)) {
+        result = g_filename_to_uri(text, NULL, NULL);
+        if (result) {
+            g_free(text);
+            return result;
+        }
+    }
+
     gboolean hasSpace = strchr(text, ' ') != NULL;
     gboolean hasDot   = strchr(text, '.') != NULL;
 
