@@ -61,7 +61,7 @@ struct _WPEToplevelVeron {
     int   pendingHeight;
 };
 
-enum { CHROME_EVENT, CHROME_KEY, CHROME_FOCUS_LOST, N_SIGNALS };
+enum { CHROME_EVENT, CHROME_KEY, CHROME_FOCUS_LOST, CHROME_RESIZED, N_SIGNALS };
 static guint signals[N_SIGNALS];
 
 /* THE SIZE A WINDOW OPENS AT WHEN NOBODY SAYS. 1024x768 is WPE's own default
@@ -142,6 +142,26 @@ void wpeVeronToplevelEmitChromeEvent(WPEToplevelVeron *self, WPEEventType type,
  * click was on the page: Wayland hit-tested it onto the page subsurface, which
  * is the same fact seatDispatch already routes on. The browser cannot see it
  * without being told, so it is told. */
+/* THE WINDOW CHANGED SIZE AND THE BROWSER HAS NO OTHER WAY TO HEAR ABOUT IT.
+ *
+ * veron-browser connected to "notify::width" on the toplevel, and WPEToplevel
+ * HAS NO SUCH PROPERTY -- WPEToplevel.cpp installs exactly two, display and
+ * max-views, and wpe_toplevel_resized only assigns priv->width without
+ * emitting anything at all. So that handler never ran once: the browser's
+ * cached width stayed at the 1024 it was given at startup, and every
+ * veron_chrome_draw redrew the strip at the launch width no matter how large
+ * the window got. Maximise, fullscreen and a drag-resize all looked the same
+ * because none of them was ever delivered.
+ *
+ * A SIGNAL RATHER THAN A PROPERTY, to match the three already here. The
+ * backend is what receives the configure, so it is what knows. */
+void wpeVeronToplevelEmitResized(WPEToplevelVeron *self, int width, int height)
+{
+    if (!self || width < 1 || height < 1)
+        return;
+    g_signal_emit(self, signals[CHROME_RESIZED], 0, (guint)width, (guint)height);
+}
+
 void wpeVeronToplevelDropChromeFocus(WPEToplevelVeron *self)
 {
     if (!self || !self->chromeFocus)
@@ -221,6 +241,7 @@ static void xdgSurfaceConfigure(void *data, struct xdg_surface *surface, uint32_
          * subsurface has no visible parent to be a subsurface OF. */
         veronToplevelPaintBackground(self, self->pendingWidth, self->pendingHeight);
         wpe_toplevel_resized(WPE_TOPLEVEL(self), self->pendingWidth, self->pendingHeight);
+        wpeVeronToplevelEmitResized(self, self->pendingWidth, self->pendingHeight);
         wpeVeronToplevelResizePage(self, self->pendingWidth, pageHeight);
         self->pendingWidth = self->pendingHeight = 0;
     }
@@ -378,6 +399,7 @@ static gboolean wpeToplevelVeronResize(WPEToplevel *toplevel, int width, int hei
      * what the size became. xdgSurfaceConfigure already used it the same way. */
     veronToplevelPaintBackground(self, width, height);
     wpe_toplevel_resized(WPE_TOPLEVEL(self), width, height);
+    wpeVeronToplevelEmitResized(self, width, height);
     wpeVeronToplevelResizePage(self, width, pageHeight);
     return TRUE;
 }
@@ -512,6 +534,13 @@ static void wpe_toplevel_veron_class_init(WPEToplevelVeronClass *klass)
     signals[CHROME_FOCUS_LOST] = g_signal_new("chrome-focus-lost",
         G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
         G_TYPE_NONE, 0);
+
+    /* WIDTH AND HEIGHT OF THE WHOLE TOPLEVEL, chrome included. The caller
+     * subtracts its own strip if it cares; the page's size is the backend's
+     * business and is already handled. */
+    signals[CHROME_RESIZED] = g_signal_new("chrome-resized",
+        G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+        G_TYPE_NONE, 2, G_TYPE_UINT, G_TYPE_UINT);
 
     signals[CHROME_KEY] = g_signal_new("chrome-key",
         G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,

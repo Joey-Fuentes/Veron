@@ -46,10 +46,16 @@ typedef struct {
      * so only on machines without a GPU, which is exactly where nobody
      * looks. */
     gboolean            busy;
-    /* WHO TO TELL WHEN IT COMES BACK. Held without a reference on purpose:
-     * this struct is owned by the WPEBuffer through set_user_data, so it
-     * cannot outlive it, and the view cannot outlive its own buffers. */
-    WPEView            *view;
+    /* WHO TO TELL WHEN IT COMES BACK.
+     *
+     * THE VIEW IS WEAK AND THE BUFFER IS NOT, and the asymmetry is the point.
+     * This struct is owned BY the WPEBuffer through wpe_buffer_set_user_data,
+     * so it cannot outlive it and that pointer is always good. The VIEW can
+     * die first -- close a window while the compositor still holds its last
+     * frame and the release arrives afterwards -- so it is nulled by GObject
+     * rather than left dangling. Same reason the stock backend keeps a
+     * GWeakPtr (WPEViewWayland.cpp:193) instead of a raw one. */
+    WPEView            *view;    /* weak */
     WPEBuffer          *buffer;
 } VeronSHMBuffer;
 
@@ -76,6 +82,8 @@ static void veronSHMBufferFree(gpointer ptr)
     VeronSHMBuffer *b = ptr;
     if (!b)
         return;
+    if (b->view)
+        g_object_remove_weak_pointer(G_OBJECT(b->view), (gpointer *)&b->view);
     g_clear_pointer(&b->wlBuffer, wl_buffer_destroy);
     g_clear_pointer(&b->pool, wl_shm_pool_destroy);
     if (b->data && b->data != MAP_FAILED)
@@ -225,6 +233,7 @@ struct wl_buffer *wpeVeronBufferFromSHM(WPEViewVeron *view, WPEBuffer *buffer, G
     b->busy     = TRUE;
     b->view     = WPE_VIEW(view);
     b->buffer   = buffer;
+    g_object_add_weak_pointer(G_OBJECT(b->view), (gpointer *)&b->view);
     wl_buffer_add_listener(wlBuffer, &shmBufferListener, b);
     wpe_buffer_set_user_data(buffer, b, veronSHMBufferFree);
 

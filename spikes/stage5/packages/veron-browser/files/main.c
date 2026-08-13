@@ -28,6 +28,8 @@ typedef struct {
     WebKitWebView    *webView;
     VeronChrome      *chrome;
     int               width;
+    gboolean          selecting;      /* a pointer drag is in progress   */
+    guint             lastUrlClick;   /* for the double-click threshold  */
     /* THE LOOP, SO SOMETHING CAN STOP IT. Without a handle here nothing could
      * end the process except a signal, which is why the close button did
      * nothing. */
@@ -184,6 +186,20 @@ static void onChromeEvent(WPEToplevelVeron *toplevel, guint type, guint time,
 {
     Browser *b = data;
 
+    /* A DRAG IS A MOVE WITH BUTTON 1 HELD, and the backend already puts the
+     * button state in the modifier mask, so this needs no press/release
+     * bookkeeping of its own. */
+    if (type == WPE_EVENT_POINTER_MOVE) {
+        if (b->selecting && (modifiers & WPE_MODIFIER_POINTER_BUTTON1)) {
+            veron_chrome_drag_to(b->chrome, x);
+            veron_chrome_draw(b->chrome, b->width);
+        }
+        return;
+    }
+    if (type == WPE_EVENT_POINTER_UP) {
+        b->selecting = FALSE;
+        return;
+    }
     if (type != WPE_EVENT_POINTER_DOWN)
         return;
 
@@ -204,13 +220,34 @@ static void onChromeEvent(WPEToplevelVeron *toplevel, guint type, guint time,
         else
             webkit_web_view_reload(b->webView);
         break;
-    case VERON_CHROME_URL:
+    case VERON_CHROME_URL: {
+        /* 400 ms IS THE SAME THRESHOLD THE BACKEND USES FOR ITS OWN CLICK
+         * COUNT, and the two should not disagree about what a double click
+         * is. The backend cannot count these for us: it does not know the
+         * chrome has a text field, only that a click landed on the strip. */
+        gboolean dbl = (time - b->lastUrlClick) < 400;
+        b->lastUrlClick = time;
+
+        gboolean wasFocused = veron_chrome_focused(b->chrome);
         veron_chrome_set_focused(b->chrome, TRUE);
+
+        if (dbl)
+            veron_chrome_word_at(b->chrome, x);
+        else if (!wasFocused)
+            /* THE FIRST CLICK SELECTS THE WHOLE URL, which is what every
+             * browser does and what makes typing over it possible without
+             * clearing the field by hand first. */
+            veron_chrome_select_all(b->chrome);
+        else {
+            veron_chrome_press_at(b->chrome, x);
+            b->selecting = TRUE;
+        }
         /* THE BACKEND HAS TO BE TOLD, because the compositor cannot know that
          * a URL field inside our surface wants the keyboard. Wayland routes
          * the pointer for us and cannot route this. */
         wpe_toplevel_veron_set_chrome_focus(b->toplevel, TRUE);
         break;
+    }
     default:
         /* A CLICK ON THE BAR BUT NOT ON ANYTHING GIVES THE PAGE ITS KEYBOARD
          * BACK, which is what every browser does and what a user expects from
@@ -236,6 +273,22 @@ static void onChromeKey(WPEToplevelVeron *toplevel, guint type, guint time,
     if (!veron_chrome_focused(b->chrome))
         return;
 
+    gboolean shift = (modifiers & WPE_MODIFIER_KEYBOARD_SHIFT) != 0;
+    gboolean ctrl  = (modifiers & WPE_MODIFIER_KEYBOARD_CONTROL) != 0;
+
+    /* CONTROL-A BEFORE THE SWITCH, because the plain `a` case below would
+     * otherwise insert the letter. Checked on the keysym rather than the
+     * keycode so it follows the user's layout. */
+    if (ctrl && (keyval == XKB_KEY_a || keyval == XKB_KEY_A)) {
+        veron_chrome_select_all(b->chrome);
+        veron_chrome_draw(b->chrome, b->width);
+        return;
+    }
+    /* ANY OTHER CONTROL COMBINATION IS NOT TEXT and must not be typed. Without
+     * this, Ctrl-C would insert a control character into the field. */
+    if (ctrl)
+        return;
+
     switch (keyval) {
     case XKB_KEY_Return:
     case XKB_KEY_KP_Enter:
@@ -252,10 +305,18 @@ static void onChromeKey(WPEToplevelVeron *toplevel, guint type, guint time,
 
     case XKB_KEY_BackSpace: veron_chrome_backspace(b->chrome); break;
     case XKB_KEY_Delete:    veron_chrome_delete(b->chrome);    break;
-    case XKB_KEY_Left:      veron_chrome_move_caret(b->chrome, -1, FALSE); break;
-    case XKB_KEY_Right:     veron_chrome_move_caret(b->chrome,  1, FALSE); break;
-    case XKB_KEY_Home:      veron_chrome_move_caret(b->chrome, -1, TRUE);  break;
-    case XKB_KEY_End:       veron_chrome_move_caret(b->chrome,  1, TRUE);  break;
+
+    /* SHIFT EXTENDS, CONTROL SELECTS EVERYTHING. The modifier mask arrives
+     * with the event, so this needs no state of its own -- which matters
+     * because a modifier held across a focus change would otherwise stick. */
+    case XKB_KEY_Left:
+        veron_chrome_move_caret_ex(b->chrome, -1, FALSE, shift); break;
+    case XKB_KEY_Right:
+        veron_chrome_move_caret_ex(b->chrome,  1, FALSE, shift); break;
+    case XKB_KEY_Home:
+        veron_chrome_move_caret_ex(b->chrome, -1, TRUE,  shift); break;
+    case XKB_KEY_End:
+        veron_chrome_move_caret_ex(b->chrome,  1, TRUE,  shift); break;
 
     default: {
         /* THE KEYSYM BECOMES A CHARACTER, NOT A KEYCODE. xkb_keysym_to_utf32
@@ -319,15 +380,21 @@ static void onTitleChanged(WebKitWebView *view, GParamSpec *spec, gpointer data)
 /* THE STRIP IS REDRAWN ON EVERY RESIZE, and it has to be: the buffer is sized
  * to the window and a stale one would be stretched or clipped by the
  * compositor. */
-static void onToplevelResized(WPEToplevel *toplevel, GParamSpec *spec, gpointer data)
+/* THE BACKEND TELLS US; THERE IS NO PROPERTY TO WATCH.
+ *
+ * This was connected to "notify::width" on the toplevel, and WPEToplevel has
+ * no width property -- it installs display and max-views and nothing else, and
+ * wpe_toplevel_resized emits nothing. The handler never ran, so b->width kept
+ * the 1024 it was given at startup and the strip was redrawn at that width for
+ * the life of the window however large it got. */
+static void onToplevelResized(WPEToplevelVeron *toplevel, guint width,
+                              guint height, gpointer data)
 {
     Browser *b = data;
-    int w = 0, h = 0;
-    wpe_toplevel_get_size(toplevel, &w, &h);
-    if (w > 0) {
-        b->width = w;
-        veron_chrome_draw(b->chrome, w);
-    }
+    if (width < 1)
+        return;
+    b->width = (int)width;
+    veron_chrome_draw(b->chrome, b->width);
 }
 
 /* ---- the user agent ---------------------------------------------------- */
@@ -478,7 +545,7 @@ int main(int argc, char **argv)
     g_signal_connect(b.toplevel, "chrome-key",   G_CALLBACK(onChromeKey),   &b);
     g_signal_connect(b.toplevel, "chrome-focus-lost",
                      G_CALLBACK(onChromeFocusLost), &b);
-    g_signal_connect(b.toplevel, "notify::width", G_CALLBACK(onToplevelResized), &b);
+    g_signal_connect(b.toplevel, "chrome-resized", G_CALLBACK(onToplevelResized), &b);
 
     g_signal_connect(b.webView, "notify::uri",   G_CALLBACK(onUriChanged),   &b);
     g_signal_connect(b.webView, "notify::title", G_CALLBACK(onTitleChanged), &b);

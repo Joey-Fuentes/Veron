@@ -49,6 +49,8 @@ gboolean          wpeVeronToplevelIsPageSurface  (WPEToplevelVeron *toplevel,
                                                   struct wl_surface *surface);
 gboolean          wpeVeronToplevelChromeHasFocus (WPEToplevelVeron *toplevel);
 void              wpeVeronToplevelDropChromeFocus(WPEToplevelVeron *toplevel);
+void              wpeVeronToplevelEmitResized    (WPEToplevelVeron *toplevel,
+                                                  int width, int height);
 
 void wpeVeronToplevelEmitChromeEvent (WPEToplevelVeron *toplevel, WPEEventType type,
                                       guint32 time, WPEModifiers modifiers, guint button,

@@ -36,3 +36,18 @@ void veron_chrome_insert     (VeronChrome *chrome, const char *utf8);
 void veron_chrome_backspace  (VeronChrome *chrome);
 void veron_chrome_delete     (VeronChrome *chrome);
 void veron_chrome_move_caret (VeronChrome *chrome, int direction, gboolean toEnd);
+
+/* SELECTION. The range is the span between an anchor and the caret, so a plain
+ * caret is the degenerate case where they are equal and there is no separate
+ * "no selection" state to keep consistent. `extend` is what Shift does. */
+void     veron_chrome_move_caret_ex (VeronChrome *chrome, int direction,
+                                     gboolean toEnd, gboolean extend);
+void     veron_chrome_select_all    (VeronChrome *chrome);
+gboolean veron_chrome_has_selection (VeronChrome *chrome);
+
+/* POINTER SELECTION. `press` starts a drag at an x within the strip, `drag`
+ * extends it, and `word` is the double-click case. x is in chrome-surface
+ * coordinates, the same ones veron_chrome_hit takes. */
+void veron_chrome_press_at (VeronChrome *chrome, double x);
+void veron_chrome_drag_to  (VeronChrome *chrome, double x);
+void veron_chrome_word_at  (VeronChrome *chrome, double x);

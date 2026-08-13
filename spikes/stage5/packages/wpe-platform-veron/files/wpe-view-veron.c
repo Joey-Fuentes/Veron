@@ -71,15 +71,42 @@ static void frameDone(void *data, struct wl_callback *callback, uint32_t time)
  * (WPEViewWayland.cpp:367), and the SHM path here already had a release
  * listener of its own for its `busy` flag -- it simply never passed the news
  * on to WPE. */
+/* THE VIEW IS HELD WEAKLY, WHICH IS NOT A DETAIL. WebKit owns the WPEBuffers
+ * and the view owns nothing of them, so a buffer can outlive the view that
+ * rendered it -- a window closed while the compositor still holds its last
+ * frame is the ordinary case, not a corner one. A raw pointer here would be
+ * read after free the moment that release arrives, and the crash would land
+ * on window close rather than anywhere near this code.
+ *
+ * The stock backend holds `GWeakPtr<WPEView> m_view` for the same reason and
+ * null-checks it on every release (WPEViewWayland.cpp:529). This is the C
+ * spelling of that: g_object_add_weak_pointer nulls the field when the view
+ * is finalised, and the handler checks before using it. */
+typedef struct {
+    struct wl_buffer *wlBuffer;
+    WPEView          *view;      /* weak -- nulled when the view dies */
+} VeronDMABuf;
+
+static void veronDMABufFree(gpointer ptr)
+{
+    VeronDMABuf *d = ptr;
+    if (!d)
+        return;
+    if (d->view)
+        g_object_remove_weak_pointer(G_OBJECT(d->view), (gpointer *)&d->view);
+    g_clear_pointer(&d->wlBuffer, wl_buffer_destroy);
+    g_free(d);
+}
+
 static void veronBufferReleased(void *data, struct wl_buffer *wlBuffer)
 {
     WPEBuffer *buffer = data;
-    WPEView *view = g_object_get_data(G_OBJECT(buffer), "veron-view");
-    if (view)
-        wpe_view_buffer_released(view, buffer);
+    VeronDMABuf *d = wpe_buffer_get_user_data(buffer);
+    if (d && d->view)
+        wpe_view_buffer_released(d->view, buffer);
 }
 
-const struct wl_buffer_listener veronBufferReleaseListener = { veronBufferReleased };
+static const struct wl_buffer_listener veronBufferReleaseListener = { veronBufferReleased };
 
 static struct wl_buffer *veronBufferFromDMABuf(WPEViewVeron *self, WPEBuffer *buffer, GError **error)
 {
@@ -87,9 +114,9 @@ static struct wl_buffer *veronBufferFromDMABuf(WPEViewVeron *self, WPEBuffer *bu
      * building a wl_buffer per frame would leak one per frame. wpe_buffer_set_
      * user_data with a destroy notify is how the stock backend does it and is
      * the only place the lifetime is expressible. */
-    struct wl_buffer *cached = wpe_buffer_get_user_data(buffer);
+    VeronDMABuf *cached = wpe_buffer_get_user_data(buffer);
     if (cached)
-        return cached;
+        return cached->wlBuffer;
 
     WPEDisplayVeron *display = WPE_DISPLAY_VERON(wpe_view_get_display(WPE_VIEW(self)));
     struct zwp_linux_dmabuf_v1 *dmabuf = wpeVeronDisplayGetLinuxDMABuf(display);
@@ -123,12 +150,16 @@ static struct wl_buffer *veronBufferFromDMABuf(WPEViewVeron *self, WPEBuffer *bu
         return NULL;
     }
 
-    /* THE VIEW IS RECORDED ON THE BUFFER because the release listener gets
-     * the WPEBuffer and has no other way back to the view that must be told. */
-    g_object_set_data(G_OBJECT(buffer), "veron-view", self);
-    wl_buffer_add_listener(wlBuffer, &veronBufferReleaseListener, buffer);
+    /* THE VIEW IS RECORDED ALONGSIDE THE wl_buffer, because the release
+     * listener is handed the WPEBuffer and has no other way back to the view
+     * that has to be told. */
+    VeronDMABuf *d = g_new0(VeronDMABuf, 1);
+    d->wlBuffer = wlBuffer;
+    d->view = WPE_VIEW(self);
+    g_object_add_weak_pointer(G_OBJECT(d->view), (gpointer *)&d->view);
 
-    wpe_buffer_set_user_data(buffer, wlBuffer, (GDestroyNotify)wl_buffer_destroy);
+    wl_buffer_add_listener(wlBuffer, &veronBufferReleaseListener, buffer);
+    wpe_buffer_set_user_data(buffer, d, veronDMABufFree);
     return wlBuffer;
 }
 

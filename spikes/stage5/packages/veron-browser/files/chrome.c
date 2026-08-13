@@ -81,6 +81,13 @@ struct _VeronChrome {
     gboolean            pending;
     int                 pendingWidth;
 
+    /* SELECTION IS AN ANCHOR PLUS THE CARET, and nothing else. The selected
+     * range is whatever lies between them, so a caret with no selection is
+     * simply anchor == caret and there is no second state to keep in step.
+     * Storing a start and a length instead is what makes shift+Left at the
+     * left edge of a selection ambiguous. */
+    int                 anchor;
+
     /* WHAT IS SHOWN. url is what the page reports; editing is what the user
      * has typed and has not yet committed. They are separate because a page
      * that navigates while you are typing must not overwrite the field. */
@@ -202,6 +209,149 @@ static ChromeBuffer *chromeAcquire(VeronChrome *c, int width, int height)
     return NULL;
 }
 
+/* ---- selection ------------------------------------------------------- */
+
+static void selRange(VeronChrome *c, int *from, int *to)
+{
+    *from = c->caret < c->anchor ? c->caret : c->anchor;
+    *to   = c->caret < c->anchor ? c->anchor : c->caret;
+}
+
+gboolean veron_chrome_has_selection(VeronChrome *c)
+{
+    return c && c->caret != c->anchor;
+}
+
+/* DELETING THE SELECTION IS THE FIRST STEP OF ALMOST EVERY EDIT -- typing,
+ * backspace, delete and paste all begin by replacing what is selected. Doing
+ * it in one place is what stops those four drifting apart. */
+static gboolean selDelete(VeronChrome *c)
+{
+    if (c->caret == c->anchor)
+        return FALSE;
+    int from, to;
+    selRange(c, &from, &to);
+    g_string_erase(c->editing, from, to - from);
+    c->caret = c->anchor = from;
+    return TRUE;
+}
+
+void veron_chrome_select_all(VeronChrome *c)
+{
+    if (!c)
+        return;
+    c->anchor = 0;
+    c->caret  = (int)c->editing->len;
+}
+
+/* THE X OF A BYTE OFFSET, AND THE OFFSET AT AN X. Both go through Cairo rather
+ * than assuming a fixed advance -- the field is drawn in a proportional font,
+ * so an estimate drifts further the longer the URL. */
+static double selXForOffset(VeronChrome *c, cairo_t *cr, double textX, int offset)
+{
+    char *before = g_strndup(c->editing->str, offset);
+    cairo_text_extents_t te;
+    cairo_text_extents(cr, before, &te);
+    g_free(before);
+    return textX + te.x_advance;
+}
+
+/* THE BYTE OFFSET UNDER AN X, BY MEASURING. Cairo is asked for the width of
+ * each prefix and the nearest boundary wins, so a click lands between the two
+ * characters it looks like it landed between. Walking by codepoint rather than
+ * byte keeps multi-byte characters indivisible.
+ *
+ * IT NEEDS A cairo_t TO MEASURE WITH and does not have one at click time, so
+ * the field's geometry and font are re-established on a throwaway context.
+ * They must match veron_chrome_draw exactly; that is the cost of measuring
+ * outside the paint. */
+static int selOffsetForX(VeronChrome *c, double x)
+{
+    if (!c->buffers[0].cairo && !c->buffers[1].cairo)
+        return (int)c->editing->len;
+
+    cairo_surface_t *tmp = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+    cairo_t *cr = cairo_create(tmp);
+    cairo_select_font_face(cr, "sans-serif", CAIRO_FONT_SLANT_NORMAL,
+                           CAIRO_FONT_WEIGHT_NORMAL);
+    cairo_set_font_size(cr, 14.0);
+
+    double textX = PAD + BTN_W * 3 + PAD + 8;
+    const char *str = c->editing->str;
+    int best = 0;
+    double bestD = 1e9;
+
+    for (const char *p = str; ; p = g_utf8_next_char(p)) {
+        int off = (int)(p - str);
+        double px = selXForOffset(c, cr, textX, off);
+        double d = px - x;
+        if (d < 0)
+            d = -d;
+        if (d < bestD) {
+            bestD = d;
+            best = off;
+        }
+        if (!*p)
+            break;
+    }
+
+    cairo_destroy(cr);
+    cairo_surface_destroy(tmp);
+    return best;
+}
+
+void veron_chrome_press_at(VeronChrome *c, double x)
+{
+    if (!c) return;
+    c->caret = c->anchor = selOffsetForX(c, x);
+}
+
+void veron_chrome_drag_to(VeronChrome *c, double x)
+{
+    if (!c) return;
+    c->caret = selOffsetForX(c, x);
+}
+
+/* A DOUBLE CLICK TAKES THE WORD UNDER THE POINTER, and a URL's separators are
+ * not a language's -- splitting on spaces alone would select the whole thing.
+ * `/`, `.`, `:`, `?`, `&`, `=`, `-` and `_` all end a word here, which is what
+ * makes double-clicking a path segment or a query parameter useful. */
+static gboolean selIsWordChar(gunichar u)
+{
+    if (g_unichar_isalnum(u))
+        return TRUE;
+    return u == '%' || u == '+' || u == '~';
+}
+
+void veron_chrome_word_at(VeronChrome *c, double x)
+{
+    if (!c) return;
+    int at = selOffsetForX(c, x);
+    const char *str = c->editing->str;
+    int len = (int)c->editing->len;
+
+    int from = at;
+    while (from > 0) {
+        const char *prev = g_utf8_prev_char(str + from);
+        if (!selIsWordChar(g_utf8_get_char(prev)))
+            break;
+        from = (int)(prev - str);
+    }
+    int to = at;
+    while (to < len) {
+        const char *p = str + to;
+        if (!selIsWordChar(g_utf8_get_char(p)))
+            break;
+        to = (int)(g_utf8_next_char(p) - str);
+    }
+    /* A DOUBLE CLICK ON A SEPARATOR SELECTS THE SEPARATOR, not nothing. */
+    if (from == to && to < len)
+        to = (int)(g_utf8_next_char(str + to) - str);
+
+    c->anchor = from;
+    c->caret  = to;
+}
+
 /* ---- drawing --------------------------------------------------------- */
 
 static void roundedRect(cairo_t *cr, double x, double y, double w, double h, double r)
@@ -220,7 +370,12 @@ static void drawArrow(cairo_t *cr, double cx, double cy, gboolean forward, gbool
     cairo_set_line_width(cr, 2.0);
     cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
     cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-    double d = forward ? 1.0 : -1.0;
+    /* THE SIGN WAS BACKWARDS AND BOTH BUTTONS DREW THE WRONG WAY ROUND.
+     * With forward=FALSE this produced an apex at cx+3 -- a chevron pointing
+     * RIGHT -- and it is the BACK button (chrome.c:281 passes FALSE). So back
+     * showed `>` and forward showed `<`, which is the opposite of every
+     * browser ever made. The call sites were right; the geometry was not. */
+    double d = forward ? -1.0 : 1.0;
     cairo_move_to(cr, cx + d * 3, cy - 5);
     cairo_line_to(cr, cx - d * 3, cy);
     cairo_line_to(cr, cx + d * 3, cy + 5);
@@ -322,10 +477,27 @@ void veron_chrome_draw(VeronChrome *c, int width)
     cairo_font_extents(cr, &fe);
     double ty = y + fe.height / 2 - fe.descent;
 
+    /* THE HIGHLIGHT GOES UNDER THE TEXT, so the glyphs stay dark and legible
+     * rather than being painted over. Drawn only when focused, because an
+     * unfocused field shows the page's URL and has no editing state to
+     * select. */
+    if (c->focused && c->caret != c->anchor) {
+        int from, to;
+        selRange(c, &from, &to);
+        double x0 = selXForOffset(c, cr, fx + 8, from);
+        double x1 = selXForOffset(c, cr, fx + 8, to);
+        cairo_set_source_rgb(cr, 0.68, 0.83, 0.99);
+        cairo_rectangle(cr, x0, 8, x1 - x0, CHROME_HEIGHT - 16);
+        cairo_fill(cr);
+        cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
+    }
+
     cairo_move_to(cr, fx + 8, ty);
     cairo_show_text(cr, text);
 
-    if (c->focused) {
+    /* NO CARET WHILE A RANGE IS SELECTED. Every text field hides it, and
+     * showing both reads as two cursors. */
+    if (c->focused && c->caret == c->anchor) {
         /* THE CARET IS MEASURED, NOT ESTIMATED. cairo_text_extents on the text
          * before the caret gives its exact x -- a fixed advance per character
          * would drift on any proportional font, and this one is proportional. */
@@ -383,6 +555,7 @@ void veron_chrome_set_url(VeronChrome *c, const char *url)
     if (!c->focused) {
         g_string_assign(c->editing, c->url);
         c->caret = (int)c->editing->len;
+        c->anchor = c->caret;
     }
 }
 
@@ -419,12 +592,17 @@ void veron_chrome_insert(VeronChrome *c, const char *utf8)
 {
     if (!utf8 || !*utf8)
         return;
+    selDelete(c);
     g_string_insert(c->editing, c->caret, utf8);
     c->caret += (int)strlen(utf8);
+    c->anchor = c->caret;
 }
 
 void veron_chrome_backspace(VeronChrome *c)
 {
+    /* A SELECTION IS WHAT GETS DELETED, not the character before it. */
+    if (selDelete(c))
+        return;
     if (c->caret <= 0)
         return;
     /* ONE CHARACTER, NOT ONE BYTE. g_utf8_prev_char walks back over a
@@ -437,10 +615,13 @@ void veron_chrome_backspace(VeronChrome *c)
     int n = (int)(at - prev);
     g_string_erase(c->editing, c->caret - n, n);
     c->caret -= n;
+    c->anchor = c->caret;
 }
 
 void veron_chrome_delete(VeronChrome *c)
 {
+    if (selDelete(c))
+        return;
     if (c->caret >= (int)c->editing->len)
         return;
     const char *at = c->editing->str + c->caret;
@@ -450,15 +631,36 @@ void veron_chrome_delete(VeronChrome *c)
 
 void veron_chrome_move_caret(VeronChrome *c, int direction, gboolean toEnd)
 {
-    if (toEnd) {
-        c->caret = direction < 0 ? 0 : (int)c->editing->len;
+    veron_chrome_move_caret_ex(c, direction, toEnd, FALSE);
+}
+
+/* WITHOUT SHIFT, AN ARROW KEY COLLAPSES THE SELECTION TO ITS EDGE rather than
+ * moving from the caret. Pressing Left with `example.com` selected puts the
+ * caret at the start, not one character back from wherever the caret happened
+ * to be -- that is what every text field does and the difference is obvious
+ * the first time someone selects and then arrows. */
+void veron_chrome_move_caret_ex(VeronChrome *c, int direction, gboolean toEnd,
+                                gboolean extend)
+{
+    if (!extend && c->caret != c->anchor && !toEnd) {
+        int from, to;
+        selRange(c, &from, &to);
+        c->caret = c->anchor = (direction < 0 ? from : to);
         return;
     }
-    const char *start = c->editing->str;
-    if (direction < 0 && c->caret > 0)
-        c->caret = (int)(g_utf8_prev_char(start + c->caret) - start);
-    else if (direction > 0 && c->caret < (int)c->editing->len)
-        c->caret = (int)(g_utf8_next_char(start + c->caret) - start);
+
+    if (toEnd)
+        c->caret = direction < 0 ? 0 : (int)c->editing->len;
+    else {
+        const char *start = c->editing->str;
+        if (direction < 0 && c->caret > 0)
+            c->caret = (int)(g_utf8_prev_char(start + c->caret) - start);
+        else if (direction > 0 && c->caret < (int)c->editing->len)
+            c->caret = (int)(g_utf8_next_char(start + c->caret) - start);
+    }
+
+    if (!extend)
+        c->anchor = c->caret;
 }
 
 /* ---- lifetime -------------------------------------------------------- */

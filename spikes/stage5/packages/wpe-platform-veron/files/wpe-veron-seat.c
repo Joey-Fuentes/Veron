@@ -29,6 +29,20 @@ struct _VeronSeat {
     WPEDisplayVeron  *display;
     struct wl_seat   *wlSeat;
 
+    /* KEY REPEAT, WHICH WAYLAND MAKES THE CLIENT'S JOB. The compositor sends
+     * ONE key-down and ONE key-up however long a key is held; wl_keyboard has
+     * no repeat event. It sends repeat_info -- a rate and a delay -- and every
+     * client is expected to run its own timer. keyboardRepeatInfo here was an
+     * empty stub, so nothing repeated anywhere in the browser: holding
+     * backspace deleted one character, holding an arrow key moved one line,
+     * and every key had to be pressed and released individually. */
+    int32_t           repeatRate;    /* keys per second; 0 disables repeat */
+    int32_t           repeatDelay;   /* ms before the first repeat         */
+    guint             repeatSource;  /* g_timeout id, 0 when idle          */
+    guint             repeatKeycode;
+    guint             repeatKeyval;
+    guint32           repeatTime;
+
     struct wl_pointer  *pointer;
     struct wl_keyboard *keyboard;
     struct wl_touch    *touch;
@@ -368,6 +382,84 @@ static const struct wl_pointer_listener pointerListener = {
 
 /* ---- keyboard -------------------------------------------------------- */
 
+/* ---- key repeat ------------------------------------------------------- */
+
+/* ONE PATH FOR A REAL KEY AND A REPEATED ONE. A repeat that took a different
+ * route would drift from the real thing the first time either was edited --
+ * and the chrome/page split is exactly the kind of decision that must not be
+ * duplicated. */
+static void veronSeatDispatchKey(VeronSeat *seat, guint keycode, guint keyval,
+                                 gboolean pressed, guint32 time)
+{
+    if (!seat->keyboardToplevel)
+        return;
+
+    WPEEventType type = pressed ? WPE_EVENT_KEYBOARD_KEY_DOWN
+                                : WPE_EVENT_KEYBOARD_KEY_UP;
+
+    /* THE KEYBOARD GOES TO THE PAGE UNLESS THE CHROME HAS FOCUS, and the
+     * toplevel decides that -- a URL bar being typed into is a state the
+     * browser knows and the compositor does not. Wayland's hit testing solves
+     * the pointer for us and cannot solve this. */
+    if (wpeVeronToplevelChromeHasFocus(seat->keyboardToplevel)) {
+        wpeVeronToplevelEmitChromeKey(seat->keyboardToplevel, type, time,
+                                      seat->modifiers, keycode, keyval);
+        return;
+    }
+
+    WPEView *view = seatViewFor(seat, seat->keyboardToplevel);
+    if (!view)
+        return;
+
+    WPEEvent *event = wpe_event_keyboard_new(type, view, WPE_INPUT_SOURCE_KEYBOARD,
+        time, seat->modifiers, keycode, keyval);
+    wpe_view_event(view, event);
+    wpe_event_unref(event);
+}
+
+static void veronSeatStopRepeat(VeronSeat *seat)
+{
+    if (seat->repeatSource) {
+        g_source_remove(seat->repeatSource);
+        seat->repeatSource = 0;
+    }
+    seat->repeatKeycode = 0;
+}
+
+/* A REPEAT IS A KEY-DOWN WITH NO KEY-UP, which is what X11 and every Wayland
+ * toolkit synthesise and what WebKit expects: the auto-repeat handler in
+ * WPEWebViewPlatform.cpp keys off consecutive downs of the same keycode. */
+static gboolean veronSeatRepeatTick(gpointer data)
+{
+    VeronSeat *seat = data;
+    if (!seat->repeatKeycode) {
+        seat->repeatSource = 0;
+        return G_SOURCE_REMOVE;
+    }
+    seat->repeatTime += (guint32)(seat->repeatRate > 0 ? 1000 / seat->repeatRate : 33);
+    veronSeatDispatchKey(seat, seat->repeatKeycode, seat->repeatKeyval, TRUE,
+                         seat->repeatTime);
+    return G_SOURCE_CONTINUE;
+}
+
+static gboolean veronSeatRepeatFirst(gpointer data)
+{
+    VeronSeat *seat = data;
+    seat->repeatSource = 0;
+    if (!seat->repeatKeycode)
+        return G_SOURCE_REMOVE;
+
+    veronSeatRepeatTick(seat);
+    if (seat->repeatKeycode) {
+        guint interval = seat->repeatRate > 0
+            ? (guint)(1000 / seat->repeatRate) : 33;
+        if (interval < 1)
+            interval = 1;
+        seat->repeatSource = g_timeout_add(interval, veronSeatRepeatTick, seat);
+    }
+    return G_SOURCE_REMOVE;
+}
+
 static void keyboardKeymap(void *data, struct wl_keyboard *kb, uint32_t format,
                            int32_t fd, uint32_t size)
 {
@@ -397,6 +489,9 @@ static void keyboardEnter(void *data, struct wl_keyboard *kb, uint32_t serial,
     seat->keyboardToplevel = surface ? wpeVeronToplevelForSurface(surface) : NULL;
 }
 
+/* LEAVING STOPS THE REPEAT. Alt-tab away mid-keypress and the key-up is
+ * delivered to whoever has focus next, never to us -- so without this the
+ * timer runs forever, typing into a window the user is no longer looking at. */
 static void keyboardLeave(void *data, struct wl_keyboard *kb, uint32_t serial,
                           struct wl_surface *surface)
 {
@@ -404,6 +499,7 @@ static void keyboardLeave(void *data, struct wl_keyboard *kb, uint32_t serial,
     seat->lastSerial       = serial;
     seat->keyboardSurface  = NULL;
     seat->keyboardToplevel = NULL;
+    veronSeatStopRepeat(seat);
 }
 
 static void keyboardKey(void *data, struct wl_keyboard *kb, uint32_t serial,
@@ -427,27 +523,40 @@ static void keyboardKey(void *data, struct wl_keyboard *kb, uint32_t serial,
     if (xkbState)
         keyval = xkb_state_key_get_one_sym(xkbState, keycode);
 
-    /* THE KEYBOARD GOES TO THE PAGE UNLESS THE CHROME HAS FOCUS, and the
-     * toplevel decides that -- a URL bar being typed into is a state the
-     * browser knows and the compositor does not. Wayland's hit testing solves
-     * the pointer for us and cannot solve this. */
-    WPEEventType type = (state == WL_KEYBOARD_KEY_STATE_PRESSED)
-        ? WPE_EVENT_KEYBOARD_KEY_DOWN : WPE_EVENT_KEYBOARD_KEY_UP;
+    veronSeatDispatchKey(seat, keycode, keyval,
+                         state == WL_KEYBOARD_KEY_STATE_PRESSED, time);
 
-    if (wpeVeronToplevelChromeHasFocus(seat->keyboardToplevel)) {
-        wpeVeronToplevelEmitChromeKey(seat->keyboardToplevel, type, time,
-                                      seat->modifiers, keycode, keyval);
+    /* ---- arm or cancel the repeat ---------------------------------------
+     *
+     * xkb DECIDES WHICH KEYS REPEAT, not us. Modifiers, Caps Lock and the
+     * function keys are marked non-repeating in the keymap, and repeating
+     * them would be a bug that only shows up when someone holds Shift. */
+    struct xkb_keymap *xkbKeymap =
+        wpe_keymap_xkb_get_xkb_keymap(WPE_KEYMAP_XKB(seat->keymap));
+
+    if (state != WL_KEYBOARD_KEY_STATE_PRESSED) {
+        if (seat->repeatKeycode == keycode)
+            veronSeatStopRepeat(seat);
         return;
     }
 
-    WPEView *view = seatViewFor(seat, seat->keyboardToplevel);
-    if (!view)
+    /* A NEW PRESS CANCELS THE OLD REPEAT. Holding `a` and then pressing `b`
+     * repeats `b`, which is what every toolkit does and what a typist
+     * expects. */
+    veronSeatStopRepeat(seat);
+
+    if (seat->repeatRate <= 0)
+        return;
+    if (xkbKeymap && !xkb_keymap_key_repeats(xkbKeymap, keycode))
         return;
 
-    WPEEvent *event = wpe_event_keyboard_new(type, view, WPE_INPUT_SOURCE_KEYBOARD,
-        time, seat->modifiers, keycode, keyval);
-    wpe_view_event(view, event);
-    wpe_event_unref(event);
+    seat->repeatKeycode = keycode;
+    seat->repeatKeyval  = keyval;
+    seat->repeatTime    = time;
+    /* THE FIRST INTERVAL IS THE DELAY, THE REST ARE THE RATE, so this timeout
+     * removes itself and installs the repeating one. */
+    seat->repeatSource = g_timeout_add(seat->repeatDelay > 0 ? (guint)seat->repeatDelay : 400,
+                                       veronSeatRepeatFirst, seat);
 }
 
 static void keyboardModifiers(void *data, struct wl_keyboard *kb, uint32_t serial,
@@ -472,7 +581,18 @@ static void keyboardModifiers(void *data, struct wl_keyboard *kb, uint32_t seria
     seat->modifiers = wpe_keymap_get_modifiers(seat->keymap) | buttons;
 }
 
-static void keyboardRepeatInfo(void *data, struct wl_keyboard *kb, int32_t rate, int32_t delay) { }
+/* THE COMPOSITOR'S SETTING, NOT OURS. labwc reads it from its own config and
+ * the user's; a client inventing its own numbers would repeat at a different
+ * speed from every other window on the desktop. rate == 0 means the user has
+ * turned repeat off and must be honoured. */
+static void keyboardRepeatInfo(void *data, struct wl_keyboard *kb, int32_t rate, int32_t delay)
+{
+    VeronSeat *seat = data;
+    seat->repeatRate  = rate;
+    seat->repeatDelay = delay;
+    if (rate <= 0)
+        veronSeatStopRepeat(seat);
+}
 
 static const struct wl_keyboard_listener keyboardListener = {
     keyboardKeymap, keyboardEnter, keyboardLeave, keyboardKey,
@@ -673,6 +793,7 @@ void wpeVeronSeatFree(VeronSeat *seat)
     g_clear_pointer(&seat->pointer, wl_pointer_release);
     g_clear_pointer(&seat->keyboard, wl_keyboard_release);
     g_clear_pointer(&seat->touch, wl_touch_release);
+    veronSeatStopRepeat(seat);
     g_clear_pointer(&seat->touchPoints, g_hash_table_destroy);
     g_clear_object(&seat->keymap);
     g_free(seat);
