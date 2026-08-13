@@ -37,6 +37,24 @@
 # root is read-only; guest/init mounts /run before exec'ing dinit and the
 # socket goes there.
 type = process
-command = /usr/bin/seatd -g video
+command = /usr/bin/seatd -g video -n 3
+
+# ready-notification, BECAUSE depends-on IS NOT ENOUGH FOR type = process.
+# dinit calls a process service STARTED the moment it forks, so labwc ran while
+# seatd was still initialising and labwc-session's own guard caught it:
+#
+#     labwc-session: no /run/seatd.sock -- seatd is not running
+#
+# every boot since the desktop existed. The socket was there a second later,
+# which is why starting labwc by hand always worked and why this looked like
+# nothing was wrong.
+#
+# seatd SIGNALS AT THE RIGHT MOMENT, which is the reason this is the fix rather
+# than a sleep. seatd.c:182-201 opens the socket, binds, listens, chmods and
+# chowns it, adds it to the poller, and only then writes to the fd given by -n.
+# `-n <fd>` is documented in its own usage text. dinit holds the service in
+# STARTING until that write arrives, so depends-on = seatd now means what it
+# reads like.
+ready-notification = pipefd:3
 restart = true
 depends-on = early-filesystems
