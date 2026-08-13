@@ -164,7 +164,13 @@ run  = [["sh", "-c", "mkdir -p \"$D\" && cp -a /packages/veron-system/files/. \"
         # key cache here. Root-owned, it starts, works, and relearns the
         # oscillator's drift from scratch on every boot with nothing reporting
         # why. 53:53 matches the passwd and group lines in files/etc.
-        ["sh", "-c", "mkdir -p \"$D/var/lib/chrony\" && chown 53:53 \"$D/var/lib/chrony\""]]
+        # THE DIRECTORY IS MADE HERE AND OWNED AT BOOT. An earlier version
+        # chowned it to 53:53 in this step and the build died with
+        # `chown: Invalid argument` -- package builds run unprivileged, so
+        # there is no uid to give it away to, and busybox reports the refusal
+        # as EINVAL rather than EPERM. scripts/chrony-start does it at boot,
+        # where init is root, the same way guest/init makes /var/db/dhcpcd.
+        ["sh", "-c", "mkdir -p \"$D/var/lib/chrony\""]]
 
 [installs]
 prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts", "etc/xdg/labwc", "etc/xdg/yambar", "usr/lib/locale", "usr/share/veron", "var/lib/chrony", "var/run"]

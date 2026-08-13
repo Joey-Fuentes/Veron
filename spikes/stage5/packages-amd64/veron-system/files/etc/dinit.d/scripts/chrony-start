@@ -1,0 +1,28 @@
+#!/bin/busybox sh
+# Own chrony's state directory, then start chronyd.
+#
+# THE chown CANNOT HAPPEN AT BUILD TIME. An earlier version did it in
+# veron-system's install step and the build died with
+#
+#     chown: /dest/veron-system/var/lib/chrony: Invalid argument
+#
+# because package builds run unprivileged -- there is no uid 53 to give a
+# directory away to, and busybox reports the refusal as EINVAL rather than
+# EPERM, which reads like a bad argument and is not one. Ownership of a
+# runtime state directory belongs at boot, where this runs as root.
+#
+# WHAT IT IS FOR. chronyd is configured --with-user=_chrony and drops
+# privilege after binding; it then writes the drift file and the NTS key cache
+# here. Root-owned, chronyd starts, works, and silently relearns this
+# oscillator's drift from scratch on every boot -- the failure is invisible
+# and costs accuracy rather than function.
+set -u
+
+DIR=/var/lib/chrony
+mkdir -p "$DIR"
+chown _chrony:_chrony "$DIR" 2>/dev/null || chown 53:53 "$DIR" 2>/dev/null || true
+chmod 0750 "$DIR"
+
+# -n KEEPS IT IN THE FOREGROUND so dinit supervises chronyd itself rather than
+# a pid file -- the same reason wpa-start does not pass -B.
+exec /usr/sbin/chronyd -n -f /etc/chrony.conf

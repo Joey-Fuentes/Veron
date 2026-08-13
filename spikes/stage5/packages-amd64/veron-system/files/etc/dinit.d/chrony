@@ -1,9 +1,14 @@
 # chronyd: authenticated time.
 #
-# type = process, NOT bgprocess. chronyd forks by default; -n keeps it in the
-# foreground so dinit can supervise the actual process rather than a pid file.
+# type = process, NOT bgprocess. chronyd forks by default; the script passes -n
+# so dinit supervises the actual process rather than a pid file.
+#
+# IT GOES THROUGH A SCRIPT because /var/lib/chrony has to be owned by _chrony
+# and that cannot be done at build time -- package builds are unprivileged, and
+# the chown failed the whole stage 5 run with `Invalid argument` when it was
+# attempted there.
 type = process
-command = /usr/sbin/chronyd -n -f /etc/chrony.conf
+command = /etc/dinit.d/scripts/chrony-start
 
 # AFTER dhcp, BECAUSE NTS NEEDS DNS AND DNS NEEDS A LEASE. time.cloudflare.com
 # has to resolve before any of this works, and a chronyd started before the
