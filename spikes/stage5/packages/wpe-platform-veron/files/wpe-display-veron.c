@@ -246,7 +246,43 @@ static void wpe_display_veron_class_init(WPEDisplayVeronClass *klass)
 
 G_MODULE_EXPORT void g_io_module_load(GIOModule *module)
 {
-    (void)module;
+    /* RESIDENT, AND THIS IS THE WHOLE OF THE MiniBrowser CRASH.
+     *
+     * GIOModule is a GTypeModule, and GIO unloads a module whose use count
+     * falls back to zero after the scan. The types above are registered with
+     * G_DEFINE_TYPE_WITH_CODE -- STATIC registration -- so they SURVIVE that
+     * unload while their class vfunc pointers do not: the pointers keep
+     * naming addresses inside a library that has been munmapped, and the next
+     * vfunc call jumps into the hole.
+     *
+     * That is exactly what three cores showed. The faulting PC was
+     * 0x7f317c0f2980, 0x7f37418cd980 and 0x7f0e2c866980 across three runs --
+     * three ASLR bases, all ending 980, one function at one offset in one
+     * library -- and eu-unstrip answered where the library had gone:
+     *
+     *     libwpe-display-veron.so IS NOT IN THIS CORE MODULE LIST
+     *
+     * AND IT IS WHY veron-browser NEVER HIT IT. dc68313 gave veron-browser
+     * -lwpe-display-veron so it could call wpe_toplevel_veron_* directly, so
+     * ld.so holds the library for the life of that process whatever GIO does
+     * with its handle. MiniBrowser only reaches it through the module scan.
+     * One binary was protected by accident; the other was not. Confirmed in
+     * run 31727755290 with no source change at all: LD_PRELOAD of this exact
+     * file turned MINI-VERON-DEAD into MINI-PRELOAD-ALIVE.
+     *
+     * g_type_module_use TAKES A REFERENCE THAT IS NEVER DROPPED, which is how
+     * a GIO module holding static types keeps itself loaded. It cannot
+     * recurse into this function: use_count is already 1 here -- GIO raised
+     * it to call load -- and g_type_module_use only invokes load on the 0 -> 1
+     * transition.
+     *
+     * THE ALTERNATIVE WAS G_DEFINE_DYNAMIC_TYPE, which is the other correct
+     * answer and a much larger change: three types would need class_finalize
+     * handlers and registration against the GTypeModule, and would have to be
+     * re-registerable across an unload/reload cycle that nothing here needs.
+     * Residency is the smaller claim -- this module is loaded once and stays. */
+    g_type_module_use(G_TYPE_MODULE(module));
+
     /* Forces the class to be registered, which runs the
      * g_io_extension_point_implement above. */
     wpe_display_veron_get_type();

@@ -1651,7 +1651,7 @@ jobs:
             # the fix is residency in g_io_module_load. If it dies the same
             # way, the theory is wrong and costs one launch.
             printf 'echo ---BROWSER-MINI-PRELOAD---\n'
-            printf 'LD_PRELOAD=/usr/lib/libwpe-display-veron.so WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-preload.log 2>&1 &\n'
+            printf 'if pidof MiniBrowser > /dev/null; then echo skipped -- the plain launch survived, residency is fixed; else LD_PRELOAD=/usr/lib/libwpe-display-veron.so WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-preload.log 2>&1 & fi\n'
             sleep 40
             printf 'pidof MiniBrowser > /dev/null && echo MINI-PRELOAD-ALIVE || echo MINI-PRELOAD-DEAD\n'
             printf 'cat /tmp/browser-mini-preload.log 2>/dev/null\n'

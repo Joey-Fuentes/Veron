@@ -38,6 +38,14 @@ struct _WPEToplevelVeron {
 enum { CHROME_EVENT, CHROME_KEY, N_SIGNALS };
 static guint signals[N_SIGNALS];
 
+/* THE SIZE A WINDOW OPENS AT WHEN NOBODY SAYS. 1024x768 is WPE's own default
+ * and what MiniBrowser has always come up at on the stock Wayland backend, so
+ * a client moved from that backend to this one sees the window it expects.
+ * It is only ever a fallback: a compositor that names a size wins, and so does
+ * a client that called wpe_toplevel_resize. */
+#define VERON_DEFAULT_WIDTH  1024
+#define VERON_DEFAULT_HEIGHT 768
+
 G_DEFINE_TYPE(WPEToplevelVeron, wpe_toplevel_veron, WPE_TYPE_TOPLEVEL)
 
 /* EVERY TOPLEVEL, BY SURFACE. The seat is told which wl_surface an event
@@ -135,7 +143,27 @@ static void xdgToplevelConfigure(void *data, struct xdg_toplevel *toplevel,
     if (width > 0 && height > 0) {
         self->pendingWidth = width;
         self->pendingHeight = height;
+        return;
     }
+
+    /* BUT DECLINING TO CHOOSE IS NOT AN OPTION EITHER, AND THAT WAS THE BUG.
+     * This returned here, so pendingWidth stayed 0, so xdgSurfaceConfigure
+     * acked and did nothing, so wpe_toplevel_resized() was NEVER CALLED and
+     * WPEToplevel's recorded size stayed 0x0 for the life of the window.
+     * labwc sends 0x0 for every new toplevel, so that was every window.
+     *
+     * "You choose" is an instruction, not permission to skip. Prefer a size
+     * WPE already has -- the client may have called wpe_toplevel_resize --
+     * and fall back to WPE's own default, which is what the stock Wayland
+     * backend ends up at and what MiniBrowser has always opened with. */
+    int w = 0, h = 0;
+    wpe_toplevel_get_size(WPE_TOPLEVEL(self), &w, &h);
+    if (w < 1 || h < 1) {
+        w = VERON_DEFAULT_WIDTH;
+        h = VERON_DEFAULT_HEIGHT;
+    }
+    self->pendingWidth  = w;
+    self->pendingHeight = h;
 }
 
 static void xdgToplevelClose(void *data, struct xdg_toplevel *toplevel)
@@ -193,9 +221,25 @@ static void wpeToplevelVeronConstructed(GObject *object)
 static gboolean wpeToplevelVeronResize(WPEToplevel *toplevel, int width, int height)
 {
     WPEToplevelVeron *self = WPE_TOPLEVEL_VERON(toplevel);
+    if (width < 1 || height < 1)
+        return FALSE;
+
     int pageHeight = height - (int)self->chromeHeight;
     if (pageHeight < 1)
         pageHeight = 1;
+
+    /* THE TOPLEVEL'S OWN SIZE HAS TO BE RECORDED, AND THIS DID NOT RECORD IT.
+     * It resized the views and returned, so WPEToplevel still believed it was
+     * whatever it was before -- 0x0 on a fresh window. veron-browser's
+     * wpe_toplevel_resize(1024, 768) therefore moved the views and left the
+     * toplevel at zero, and wpe_toplevel_veron_set_chrome_height read that
+     * zero back out of wpe_toplevel_get_size a few lines later and skipped
+     * its own resize. Two functions disagreeing about the size of one window.
+     *
+     * wpe_toplevel_resized IS THE NOTIFICATION, NOT THE REQUEST, so this does
+     * not recurse: wpe_toplevel_resize calls this vfunc, and this tells WPE
+     * what the size became. xdgSurfaceConfigure already used it the same way. */
+    wpe_toplevel_resized(WPE_TOPLEVEL(self), width, height);
     wpeVeronToplevelResizePage(self, width, pageHeight);
     return TRUE;
 }
