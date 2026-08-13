@@ -1493,7 +1493,8 @@ jobs:
           [ -s boot/Image ] || { echo "VERON-SHOT-SKIP  no kernel artifact"; exit 0; }
           O=spikes/stage5/out
           S=spikes/stage5
-          rm -f "$O/mon.sock" "$O/desktop.ppm" "$O/desktop.png" "$O/console.in"
+          rm -f "$O/mon.sock" "$O/desktop.ppm" "$O/desktop.png" "$O/console.in" \
+                "$O/shot.ppm" "$O/desktop-minibrowser.png"
           mkfifo "$O/console.in"
 
           # HOLD THE FIFO OPEN. A `>` redirect that finishes closes the write
@@ -1618,18 +1619,55 @@ jobs:
             printf 'pidof MiniBrowser > /dev/null && echo MINI-VERON-ALIVE || echo MINI-VERON-DEAD\n'
             printf 'cat /tmp/browser-mini-veron.log 2>/dev/null\n'
             #
-            # RUN A2: THE SAME THING WITH G_DEBUG=fatal-warnings. A wild jump
-            # is often the SECOND thing that goes wrong -- a g_critical from a
-            # failed g_return_if_fail or a bad cast comes first, execution
-            # carries on with a value the code already knows is wrong, and the
-            # crash lands somewhere unattributable. fatal-warnings aborts at
-            # the first one instead, and an abort has a stack that resolves.
-            # If nothing warns, this segfaults exactly like A1 and costs 40s.
-            printf 'echo ---BROWSER-MINI-VERON-FATAL---\n'
-            printf 'G_DEBUG=fatal-warnings WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-fatal.log 2>&1 &\n'
+            # RUN A2: THE SAME THING WITH THE MODULE FORCED RESIDENT, WHICH IS
+            # A ONE-LINE TEST OF A SPECIFIC HYPOTHESIS AND NOT A FIX.
+            #
+            # Three cores from three runs put the faulting PC at 0x7f317c0f2980,
+            # 0x7f37418cd980 and 0x7f0e2c866980 -- three ASLR bases, and all
+            # three end in 980. Same function, same library, different load
+            # address. And `eu-unstrip -n --core` answered where that library
+            # went:
+            #
+            #     libwpe-display-veron.so IS NOT IN THIS CORE MODULE LIST
+            #
+            # It is not mapped at the moment of the crash. The module registers
+            # its GTypes with G_DEFINE_TYPE_WITH_CODE -- STATIC registration --
+            # from inside a GIOModule, which is a GTypeModule. A static type
+            # survives its module being unloaded, but its class vfunc pointers
+            # do not: they keep pointing into an address range that has been
+            # munmapped, and the next vfunc call jumps into a hole. That is
+            # exactly a wild PC below every library with no unwind information.
+            #
+            # AND IT EXPLAINS WHY veron-browser LIVES ON THE SAME BACKEND.
+            # veron-browser LINKS the library -- dc68313 added
+            # -lwpe-display-veron so it can call wpe_toplevel_veron_* directly
+            # -- so ld.so holds it resident for the life of the process no
+            # matter what GIO does with its dlopen handle. MiniBrowser only
+            # ever reaches it through the module scan. One binary is protected
+            # by accident and the other is not.
+            #
+            # LD_PRELOAD REPRODUCES THAT ACCIDENT WITHOUT TOUCHING THE SOURCE.
+            # If this run survives where A1 died, the diagnosis is settled and
+            # the fix is residency in g_io_module_load. If it dies the same
+            # way, the theory is wrong and costs one launch.
+            printf 'echo ---BROWSER-MINI-PRELOAD---\n'
+            printf 'LD_PRELOAD=/usr/lib/libwpe-display-veron.so WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-preload.log 2>&1 &\n'
             sleep 40
-            printf 'pidof MiniBrowser > /dev/null && echo MINI-FATAL-ALIVE || echo MINI-FATAL-DEAD\n'
-            printf 'cat /tmp/browser-mini-fatal.log 2>/dev/null\n'
+            printf 'pidof MiniBrowser > /dev/null && echo MINI-PRELOAD-ALIVE || echo MINI-PRELOAD-DEAD\n'
+            printf 'cat /tmp/browser-mini-preload.log 2>/dev/null\n'
+            # THE FIRST FRAME IS TAKEN HERE, WITH THIS RUN ON SCREEN. It
+            # answers a second question the same launch happens to settle:
+            # MiniBrowser never calls wpe_toplevel_veron_set_chrome_height, so
+            # chromeHeight stays 0, and wpe-toplevel-veron.c says that case
+            # outright -- "at zero the subsurface covers the whole toplevel and
+            # this backend is behaviourally the stock one; that is the first
+            # thing to verify". A page in this frame means our render_buffer
+            # and our page subsurface work, and the blank page under
+            # veron-browser is the SPLIT rather than the rendering. A blank
+            # frame here means the opposite. There is no way to read that off
+            # the console, so it needs its own screendump.
+            printf 'echo VERON-SHOT-1-READY\n'
+            sleep 5
             # KILLED WHETHER OR NOT IT LIVED, so it is not in the frame and not
             # holding a toplevel when veron-browser opens its own. The children
             # go too: WebKit is three processes and an orphaned WPEWebProcess
@@ -1723,15 +1761,47 @@ jobs:
             sleep 1
           done
 
-          # THE CAP WAS 140 AND THE FEEDER NEEDED 159, SO THIS LOOP HAS NEVER
+          # ONE CAPTURE PATH, CALLED TWICE. Two frames are needed now -- the
+          # MiniBrowser/LD_PRELOAD run and the veron-browser run answer
+          # different questions and cannot share a frame -- and writing the
+          # screendump twice by hand is how the second copy drifts from the
+          # first. Arguments: the marker to wait for, and the png to write.
+          veron_capture() {
+            _marker=$1
+            _png=$2
+            _waited=0
+            while [ "$_waited" -lt 420 ]; do
+              grep -aq "$_marker" "$O/desktop-console.log" 2>/dev/null && break
+              if ! kill -0 "$qpid" 2>/dev/null; then
+                echo "  qemu exited after ${_waited}s -- it did not stay up"
+                return 1
+              fi
+              sleep 2
+              _waited=$((_waited + 2))
+            done
+            echo "  $_marker after ${_waited}s"
+            rm -f "$O/shot.ppm"
+            python3 "$S/tools/qemu-monitor.py" "$O/mon.sock" \
+              "screendump $PWD/$O/shot.ppm" | sed 's/^/    /'
+            sleep 3
+            [ -s "$O/shot.ppm" ] || { echo "  no frame for $_marker"; return 1; }
+            python3 "$S/tools/ppm2png.py" "$O/shot.ppm" "$_png"
+            rm -f "$O/shot.ppm"
+            return 0
+          }
+
+          # FRAME 1: MiniBrowser under LD_PRELOAD, chrome height 0.
+          veron_capture VERON-SHOT-1-READY "$O/desktop-minibrowser.png" \
+            || echo "  (no MiniBrowser frame -- see the console log)"
+
+          # THE CAP WAS 140 AND THE FEEDER NEEDED 159, SO THIS LOOP HAD NEVER
           # ONCE MATCHED ITS MARKER. Run 31684964493 printed `guest ready after
           # 140s` -- the timeout, not the marker -- and screendump fired 19
           # seconds before the feeder had even typed VERON-SHOT-READY. Every
-          # frame this step has captured was taken on a timeout that happened
-          # to land somewhere useful. The probe above is longer again, so the
-          # cap is now well clear of it and the loop exits on the marker; if it
-          # ever reports the full wait again, that is a real hang and not
-          # arithmetic.
+          # frame this step captured before that fix was taken on a timeout
+          # that happened to land somewhere useful. The cap is now well clear
+          # of the feeder; if it ever reports the full wait again, that is a
+          # real hang and not arithmetic.
           waited=0
           while [ "$waited" -lt 420 ]; do
             grep -aq "VERON-SHOT-READY" "$O/desktop-console.log" 2>/dev/null && break
@@ -1763,8 +1833,11 @@ jobs:
           # green. Everything between the markers the feeder typed goes here.
           echo "  --- browser: MiniBrowser on the veron backend ---"
           sed -n '/---MODULE-DIR---/,/---BROWSER-VERON-BROWSER---/p' \
-            "$O/desktop-console.log" 2>/dev/null | head -50 | sed 's/^/    /' \
+            "$O/desktop-console.log" 2>/dev/null | head -70 | sed 's/^/    /' \
             || echo "    (no browser section -- the feeder never got that far)"
+          echo "  --- the residency comparison, in two lines ---"
+          grep -aE "MINI-VERON-(ALIVE|DEAD)|MINI-PRELOAD-(ALIVE|DEAD)|VERON-BROWSER-(ALIVE|DEAD)" \
+            "$O/desktop-console.log" 2>/dev/null | sed 's/^/    /' || true
           echo "  --- browser: veron-browser ---"
           sed -n '/---BROWSER-VERON-BROWSER---/,/---BROWSER-STOCK---/p' \
             "$O/desktop-console.log" 2>/dev/null | head -50 | sed 's/^/    /' \
@@ -1871,6 +1944,7 @@ jobs:
           name: veron-stage5-desktop-amd64-${{ github.run_id }}
           path: |
             spikes/stage5/out/desktop.png
+            spikes/stage5/out/desktop-minibrowser.png
             spikes/stage5/out/desktop-console.log
           if-no-files-found: warn
 
