@@ -509,6 +509,44 @@ int main(int argc, char **argv)
      * future change to the session type cannot quietly turn it on. */
     webkit_network_session_set_persistent_credential_storage_enabled(session, FALSE);
 
+    /* COOKIES, EXPLICITLY, AND EPHEMERAL DOES NOT MEAN WITHOUT THEM.
+     *
+     * `httpbin.org/cookies/set/veron/1` redirects to `/cookies` and the second
+     * request arrived with `{"cookies": {}}` -- the cookie did not survive a
+     * SAME-ORIGIN redirect. That is not a privacy setting working as intended;
+     * it is a browser that cannot complete any set-then-read exchange, which
+     * is what every sign-in and every bot challenge is built on. Google's
+     * refusal is the visible symptom and not a fingerprinting question at all.
+     *
+     * THE CAUSE IS ONE LINE ABOVE. WebKitNetworkSession.cpp:354 documents it:
+     * "while ITP is enabled the accept policy ACCEPT_NO_THIRD_PARTY is ignored
+     * and ACCEPT_ALWAYS is used instead". Turning ITP off -- which this does,
+     * deliberately, because ITP keeps per-site state in a session that is
+     * supposed to have none -- hands cookie policy back to the default, and
+     * the default is stricter than anyone here chose.
+     *
+     * SO THE POLICY IS NOW STATED RATHER THAN INHERITED. Ephemeral keeps the
+     * jar in memory and writes nothing to disk; that is the property the
+     * recipe's deferral actually asks for, and it survives this. What changes
+     * is that cookies are accepted for the life of the process instead of
+     * being dropped at the first redirect.
+     *
+     * OVERRIDABLE WITHOUT A REBUILD, because which policy a given site needs
+     * is an empirical question and this machine is a laptop, not CI:
+     *
+     *   VERON_COOKIE_POLICY=always          accept everything
+     *   VERON_COOKIE_POLICY=no-third-party  first-party only (the default)
+     *   VERON_COOKIE_POLICY=never           the old behaviour, for comparison
+     */
+    WebKitCookieManager *cookies = webkit_network_session_get_cookie_manager(session);
+    const char *policy = g_getenv("VERON_COOKIE_POLICY");
+    WebKitCookieAcceptPolicy accept = WEBKIT_COOKIE_POLICY_ACCEPT_NO_THIRD_PARTY;
+    if (policy && !g_strcmp0(policy, "always"))
+        accept = WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS;
+    else if (policy && !g_strcmp0(policy, "never"))
+        accept = WEBKIT_COOKIE_POLICY_ACCEPT_NEVER;
+    webkit_cookie_manager_set_accept_policy(cookies, accept);
+
     b.webView = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
         "display", display,
         "network-session", session,
