@@ -52,19 +52,18 @@ done
 CTRL=/run/wpa_supplicant
 mkdir -p "$CTRL"
 
-# THE SUPPLICANT MUST BE RUNNING TO SCAN, and on a first boot it is not --
-# wpa-start exits when there is no config. Start one against an empty config
-# so wpa_cli has something to talk to; it will be replaced by the real service
-# once a network is saved.
+# THE SUPPLICANT MUST BE RUNNING TO SCAN, and the wpa service now guarantees
+# one on every boot -- with an empty config if no network is saved. That is a
+# change made for this script's benefit: it used to start its own when none was
+# running, which is impossible now that the session is unprivileged.
 if ! /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" ping >/dev/null 2>&1; then
-    [ -s /etc/wpa_supplicant.conf ] || {
-        printf 'ctrl_interface=/run/wpa_supplicant\nupdate_config=1\n' \
-            > /etc/wpa_supplicant.conf
-    }
-    ip link set "$IFACE" up 2>/dev/null || true
-    /usr/sbin/wpa_supplicant -B -i "$IFACE" -c /etc/wpa_supplicant.conf \
-        >/dev/null 2>&1 || die "wpa_supplicant would not start"
-    sleep 2
+    # THIS NO LONGER STARTS A SUPPLICANT ITSELF, because it cannot: this menu
+    # runs as the desktop user now, and both `wpa_supplicant -B` and
+    # `ip link set up` are root-only. The wpa service starts one at boot
+    # whether or not a network is saved, so reaching here means that service
+    # failed rather than that the machine is unconfigured -- a different
+    # problem, and worth saying which.
+    die "no supplicant on $IFACE -- check: dinitctl status wpa"
 fi
 
 # ONE LINE PER SSID, STRONGEST FIRST, DUPLICATES REMOVED. scan_results is
@@ -159,7 +158,7 @@ case "$BLOCK" in *psk=*) : ;; *) die "Bad passphrase" ;; esac
 # THE PLAINTEXT LINE IS STRIPPED. wpa_passphrase emits the passphrase as a
 # comment beside the hash, which would put it in the file this exists to avoid
 # putting it in.
-printf 'ctrl_interface=/run/wpa_supplicant\nupdate_config=1\n\n' > /etc/wpa_supplicant.conf
+printf 'ctrl_interface=DIR=/run/wpa_supplicant GROUP=veron\nupdate_config=1\n\n' > /etc/wpa_supplicant.conf
 echo "$BLOCK" | grep -v '^[[:space:]]*#psk=' >> /etc/wpa_supplicant.conf
 
 # reconfigure IS THE STEP THAT ACTUALLY JOINS THE NETWORK, and its failure was

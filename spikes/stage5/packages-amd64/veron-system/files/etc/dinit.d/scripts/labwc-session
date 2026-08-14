@@ -8,7 +8,7 @@
 set -u
 
 export PATH=/usr/bin:/usr/sbin:/bin:/sbin
-export XDG_RUNTIME_DIR=/run/user/0
+export XDG_RUNTIME_DIR=/run/user/1000
 export XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}
 
 # XDG_DATA_DIRS, WHICH IS HOW THE LAUNCHER'S MENU IS CURATED.
@@ -43,8 +43,10 @@ export XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/share/veron:/usr/local/share:/usr/sha
 # are on the tmpfs overlay, so they are writable, and they vanish on reboot,
 # which is what a stateless image should do rather than being unable to write
 # at all.
-export HOME=${HOME:-/root}
-[ "$HOME" = "/" ] && export HOME=/root
+# /home/veron, BECAUSE THIS RUNS AS veron NOW. dinit's run-as sets the uid but
+# not the environment, so HOME would otherwise still be whatever PID 1 had.
+export HOME=${HOME:-/home/veron}
+case "$HOME" in /|/root) export HOME=/home/veron ;; esac
 export XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
 export XDG_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}

@@ -1,0 +1,18 @@
+# Device node ownership for the unprivileged desktop.
+#
+# WHAT IT IS FOR. The desktop runs as `veron`, not root, and there is no udev
+# in this image to apply the rules a distribution would. devtmpfs leaves
+# /dev/snd/* as root:root 0600, which alsa-lib cannot open as a normal user.
+# seatd already brokers the DRM device and the evdev nodes -- it opens them and
+# passes descriptors -- so this only covers what seatd does not.
+#
+# type = scripted, NOT process. It runs once and exits; dinit would otherwise
+# treat the exit as a crash and restart it forever.
+#
+# BEFORE labwc AND BEFORE sound, because both need what it sets up. It depends
+# on early-filesystems for the same reason xdg-runtime does: /run and the
+# overlay have to exist first.
+type = scripted
+command = /bin/busybox sh /etc/dinit.d/scripts/device-nodes
+restart = false
+depends-on = early-filesystems

@@ -4893,6 +4893,76 @@ def cmd_selftest(a):
         if not _bad:
             print("  ok    every yambar module has a body and content")
 
+    # EVERY GROUP A SCRIPT USES MUST EXIST IN /etc/group, AND EVERY USER TOO.
+    #
+    # `chgrp audio /dev/snd` against a group that is not in /etc/group fails at
+    # runtime with nothing in the boot log worth reading, and the symptom is
+    # "sound does not work as the desktop user" three layers away. Same for
+    # dinit's `run-as = veron` -- an unknown user makes the service fail to
+    # start, taking the whole desktop with it.
+    for _arch in ("packages", "packages-amd64"):
+        _gf = f"{_arch}/veron-system/files/etc/group"
+        _pf = f"{_arch}/veron-system/files/etc/passwd"
+        if not os.path.exists(_gf):
+            continue
+        _groups = {l.split(":")[0] for l in open(_gf)
+                   if l.strip() and not l.startswith("#")}
+        _users = {l.split(":")[0] for l in open(_pf)
+                  if l.strip() and not l.startswith("#")}
+        _bad = 0
+        for _root, _dirs, _files in os.walk(f"{_arch}/veron-system/files/etc"):
+            for _fn in _files:
+                _path = os.path.join(_root, _fn)
+                if os.path.islink(_path):
+                    continue
+                try:
+                    _text = open(_path, encoding="utf-8").read()
+                except (UnicodeDecodeError, OSError):
+                    continue
+                for _m in re.finditer(r"chgrp (?:-R )?([a-z_][a-z0-9_]*)", _text):
+                    if _m.group(1) not in _groups:
+                        print(f"  FAIL  {_path}: chgrp to `{_m.group(1)}`, "
+                              f"which is not in {_gf}")
+                        ok = False; _bad += 1
+                for _m in re.finditer(r"seatd -g ([a-z_][a-z0-9_]*)", _text):
+                    if _m.group(1) not in _groups:
+                        print(f"  FAIL  {_path}: seatd -g `{_m.group(1)}`, "
+                              f"which is not in {_gf}")
+                        ok = False; _bad += 1
+                for _m in re.finditer(r"^run-as\s*=\s*(\S+)", _text, re.M):
+                    if _m.group(1) not in _users:
+                        print(f"  FAIL  {_path}: run-as `{_m.group(1)}`, "
+                              f"which is not in {_pf}")
+                        ok = False; _bad += 1
+        if not _bad:
+            print(f"  ok    {_arch}: every group and run-as user is defined")
+
+    # A SOURCE THAT CALLS wl_* MUST INCLUDE wayland-client.h ITSELF.
+    #
+    # wpe-veron-private.h only FORWARD-DECLARES the wl_ types -- `struct
+    # wl_surface;` and friends -- which is enough to name them in a prototype
+    # and not enough to call wl_surface_attach. A new file that leans on
+    # another header having pulled the protocol in compiles locally and fails
+    # in CI with a wall of implicit-declaration errors, 25 minutes into a
+    # build. That is exactly how wpe-veron-cursor.c broke run 86173867477.
+    _wlcalls = re.compile(r"\bwl_[a-z0-9_]+\s*\(")
+    _bad = 0
+    for _src in sorted(glob.glob("packages/wpe-platform-veron/files/*.c")):
+        _text = open(_src, encoding="utf-8").read()
+        # STRIP COMMENTS FIRST. Half the files discuss wl_surface_attach() in
+        # prose, and a check that fires on a comment is a check people learn
+        # to route around.
+        _code = re.sub(r"/\*.*?\*/", "", _text, flags=re.S)
+        _code = re.sub(r"^\s*//.*$", "", _code, flags=re.M)
+        if not _wlcalls.search(_code):
+            continue
+        if "#include <wayland-client.h>" not in _text:
+            print(f"  FAIL  {_src}: calls wl_* but does not include "
+                  f"<wayland-client.h>")
+            ok = False; _bad += 1
+    if not _bad:
+        print("  ok    every backend source that calls wl_* includes wayland-client.h")
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 

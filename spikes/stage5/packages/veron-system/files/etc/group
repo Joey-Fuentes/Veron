@@ -1,7 +1,33 @@
 root:x:0:
 tty:x:5:
-video:x:39:
-input:x:24:
+# video IS THE SEAT GROUP, AND THAT IS WHY IT MATTERS MOST. seatd runs as
+# `seatd -g video` (etc/dinit.d/seatd), so membership here is what lets the
+# compositor open /run/seatd.sock at all. Without it labwc reports no session
+# and no DRM device.
+video:x:39:veron
+# input FOR COMPLETENESS RATHER THAN NECESSITY. seatd opens the evdev nodes
+# and passes the file descriptors, so libinput never opens /dev/input/event*
+# itself. Membership costs nothing and means a program that does try the
+# direct path -- evtest, a debug tool -- works without becoming root.
+input:x:24:veron
+# audio IS GENUINELY REQUIRED. ALSA is not brokered by seatd: alsa-lib opens
+# /dev/snd/* directly, and devtmpfs creates those nodes 0600 root:root because
+# nothing in this image is udev. The device-nodes service regroups them.
+audio:x:29:veron
+# render FOR THE GPU RENDER NODE. /dev/dri/renderD128 is how the browser's
+# WebProcess gets hardware acceleration without a DRM master. The kernel
+# already creates it 0666, so this is belt and braces against a driver that
+# does not.
+render:x:105:veron
+# seat EXISTS FOR THE DAY seatd IS RUN WITH `-g seat` INSTEAD. Naming the
+# group now means that change is one word in one file rather than a new group
+# plus a migration.
+seat:x:107:veron
+# power CONTROLS dinit, AND ONLY dinit. Membership means Shut Down and Restart
+# work from the bar without a setuid binary; see the device-nodes script for
+# exactly what it does and does not grant.
+power:x:108:veron
 nogroup:x:65534:
 _dhcpcd:x:52:
 _chrony:x:53:
+veron:x:1000:

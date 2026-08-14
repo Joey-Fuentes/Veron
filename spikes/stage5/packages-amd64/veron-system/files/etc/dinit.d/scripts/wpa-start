@@ -14,9 +14,36 @@
 set -u
 
 CONF=/etc/wpa_supplicant.conf
+
+# THE SUPPLICANT NOW STARTS EVEN WITH NO SAVED NETWORK, and that is a change
+# forced by the desktop no longer being root.
+#
+# It used to exit here, and the Wi-Fi menu started its own wpa_supplicant on
+# demand. That worked when the menu ran as uid 0. It cannot now: starting a
+# daemon and bringing an interface up are both root-only, and the menu runs as
+# `veron` like everything else in the session. So the daemon is always here,
+# owned by root, and the menu only ever speaks to it through wpa_cli.
+#
+# AN EMPTY CONFIG IS A VALID CONFIG. wpa_supplicant with no network blocks
+# scans nothing and associates with nothing; it sits there offering a control
+# socket, which is exactly what is wanted.
 if [ ! -s "$CONF" ]; then
-    echo "VERON-WIFI-UNCONFIGURED  no saved network -- use the Wi-Fi entry in the launcher"
-    exit 0
+    echo "VERON-WIFI-UNCONFIGURED  no saved network -- starting a supplicant anyway"
+    printf 'ctrl_interface=DIR=/run/wpa_supplicant GROUP=veron\nupdate_config=1\n' > "$CONF" 2>/dev/null || {
+        echo "VERON-WIFI-NO-CONFIG  cannot write $CONF"
+        exit 0
+    }
+fi
+
+# GROUP=veron ON THE CONTROL INTERFACE, added to configs that predate it.
+# wpa_supplicant creates /run/wpa_supplicant and its socket root:root without
+# it, and wpa_cli run by the desktop user then gets EACCES -- which surfaces as
+# "the supplicant would not scan", naming the wrong culprit. A config already
+# saved on /persist was written before this existed, so it is upgraded in
+# place rather than requiring the user to re-enter a network.
+if ! /bin/busybox grep -q "GROUP=veron" "$CONF" 2>/dev/null; then
+    /bin/busybox sed -i 's#^ctrl_interface=.*#ctrl_interface=DIR=/run/wpa_supplicant GROUP=veron#' "$CONF" 2>/dev/null \
+        && echo "VERON-WIFI-CTRL-REGROUPED  $CONF now admits group veron"
 fi
 
 IFACE=

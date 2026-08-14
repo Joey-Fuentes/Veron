@@ -25,6 +25,12 @@
  */
 #include "wpe-veron-private.h"
 
+/* wayland-client.h EXPLICITLY, AND NOT BY LUCK FROM ANOTHER HEADER.
+ * wpe-veron-private.h only FORWARD-DECLARES the wl_ types -- it declares
+ * `struct wl_surface;` so it can name them in prototypes without pulling the
+ * protocol in. That is enough to compile a pointer, and not enough to CALL
+ * wl_surface_attach or wl_pointer_set_cursor. */
+#include <wayland-client.h>
 #include <wayland-cursor.h>
 #include <stdlib.h>
 

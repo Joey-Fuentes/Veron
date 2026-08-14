@@ -1,0 +1,100 @@
+#!/bin/busybox sh
+# Give the desktop user the device nodes seatd does not broker.
+#
+# WHY THIS EXISTS AT ALL. On a normal distribution udev applies rules that put
+# /dev/snd/* in group audio and /dev/dri/* in group video. There is no udev in
+# this image -- libudev-zero provides the API without the daemon -- so device
+# nodes are whatever devtmpfs made them, which is root:root with the driver's
+# own mode. For sound that is 0600, and a non-root desktop cannot open it.
+#
+# SEATD ALREADY COVERS THE HARD CASES AND THIS IS THE REMAINDER. seatd opens
+# the DRM device and the evdev nodes itself and passes file descriptors over
+# its socket, so the compositor needs no permission on /dev/dri/card0 or
+# /dev/input/event*. ALSA has no such broker: alsa-lib opens /dev/snd/* by
+# path, directly, in the process that wants sound.
+#
+# NOT A LOOP OVER EVERYTHING IN /dev. Only the nodes a desktop needs are
+# touched, by name, because a script that regroups devices it was not asked
+# about is how a permission mistake gets made quietly.
+#
+# HOTPLUG IS NOT HANDLED HERE, and that is a real limit worth stating: a USB
+# sound card plugged in after boot gets root:root nodes and will not be
+# openable by the desktop until this runs again. Fixing that properly means
+# wiring busybox mdev as the kernel's hotplug helper, which is a separate
+# change with its own failure modes.
+set -u
+
+echo "device-nodes: regrouping for the desktop user"
+
+# SOUND. 0660 rather than 0666: group members only, which is the point of
+# having a group. ABSENT IS NOT AN ERROR -- a machine with no sound card has
+# no /dev/snd, and dinit treats a non-zero exit as a failed start on a service
+# the session depends on.
+if [ -d /dev/snd ]; then
+    /bin/busybox chgrp -R audio /dev/snd 2>/dev/null
+    /bin/busybox chmod -R 0660 /dev/snd 2>/dev/null
+    echo "  /dev/snd -> audio 0660"
+fi
+
+# THE GPU RENDER NODE, which the browser's WebProcess opens for accelerated
+# rendering. The kernel usually creates it 0666 already; this makes the
+# grouping explicit so a driver that does not is not a silent regression.
+if [ -e /dev/dri/renderD128 ]; then
+    /bin/busybox chgrp render /dev/dri/renderD128 2>/dev/null
+    /bin/busybox chmod 0660 /dev/dri/renderD128 2>/dev/null
+    echo "  /dev/dri/renderD128 -> render 0660"
+fi
+
+# THE CARD NODE STAYS root:root ON PURPOSE. seatd opens it and hands over the
+# descriptor; loosening it would give every process on the machine the ability
+# to become DRM master and take the display, which is exactly what seatd
+# exists to prevent.
+
+# THE BACKLIGHT, which the bar's own buttons write. /sys/class/backlight/*/
+# brightness is root-owned 0644 and the session is not root any more, so
+# without this the bar reports VERON-BACKLIGHT-DENIED on every click. Group
+# video already means "may drive the display" here, so it is the honest owner.
+for bl in /sys/class/backlight/*/brightness; do
+    [ -e "$bl" ] || continue
+    /bin/busybox chgrp video "$bl" 2>/dev/null
+    /bin/busybox chmod 0664 "$bl" 2>/dev/null
+    echo "  $bl -> video 0664"
+done
+
+# dinit's CONTROL SOCKET, WHICH IS HOW Shut Down AND Restart WORK.
+#
+# /usr/sbin/shutdown does not halt anything itself -- it asks dinit to, over
+# /run/dinitctl, and that socket is root-only. The power menu runs as the
+# desktop user, so without this both entries silently do nothing, which is
+# exactly the bug we just finished fixing for a different reason.
+#
+# WHAT THIS GRANTS, STATED PLAINLY: anyone in group power can start, stop and
+# restart any service dinit knows about, and can shut the machine down. It
+# does NOT let them run arbitrary commands as root -- dinit only executes the
+# service files in /etc/dinit.d, which stay root-owned and unwritable. For a
+# laptop whose console user is the person at the keyboard, that is a fair
+# trade for not having a setuid binary.
+if [ -S /run/dinitctl ]; then
+    /bin/busybox chgrp power /run/dinitctl 2>/dev/null
+    /bin/busybox chmod 0660 /run/dinitctl 2>/dev/null
+    echo "  /run/dinitctl -> power 0660"
+fi
+
+# THE HOME DIRECTORY, because /home is on the read-only image with a tmpfs
+# overlay and nothing has created it. Owned by the user or nothing they run
+# can write a config.
+/bin/busybox mkdir -p /home/veron 2>/dev/null
+/bin/busybox chown veron:veron /home/veron 2>/dev/null
+/bin/busybox chmod 0700 /home/veron 2>/dev/null
+echo "  /home/veron ready"
+
+# PERSISTENCE, IF THERE IS ANY. /persist is where wifi credentials and mixer
+# state live. It is mounted by guest/init before dinit starts, root-owned; the
+# desktop user needs to write it or a network entered once is forgotten.
+if /bin/busybox mountpoint -q /persist 2>/dev/null || [ -d /persist ]; then
+    /bin/busybox chown -R veron:veron /persist 2>/dev/null || true
+    /bin/busybox chmod 0700 /persist 2>/dev/null || true
+    echo "  /persist -> veron"
+fi
+
+exit 0

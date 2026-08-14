@@ -7,11 +7,16 @@
 # early-filesystems. So: already correct is success, not an error.
 set -u
 
-DIR=/run/user/0
+# /run/user/1000, NOT /run/user/0. The desktop runs as uid 1000 now, and the
+# runtime directory is required by the spec to be owned by the user it belongs
+# to -- labwc checks and exits at src/main.c:242 if it cannot use it.
+DIR=/run/user/1000
+UID=1000
 
 if [ -d "$DIR" ]; then
     # Already there. Re-assert the mode anyway: the value of this directory
     # is that it is private, and "it exists" is not the same claim.
+    /bin/busybox chown "$UID:$UID" "$DIR" 2>/dev/null
     /bin/busybox chmod 0700 "$DIR" 2>/dev/null
     echo "xdg-runtime: $DIR already present"
     exit 0
@@ -30,5 +35,6 @@ if ! /bin/busybox mkdir -p "$DIR" 2>/dev/null; then
     exit 1
 fi
 
+/bin/busybox chown "$UID:$UID" "$DIR"
 /bin/busybox chmod 0700 "$DIR"
-echo "xdg-runtime: $DIR ready (mode 0700, uid 0)"
+echo "xdg-runtime: $DIR ready (mode 0700, uid $UID)"

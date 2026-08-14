@@ -40,8 +40,27 @@
 # than anything added here. restart = false plus a console service that runs
 # independently means a compositor that cannot start costs one error message
 # and leaves a shell.
+# run-as = veron IS THE WHOLE POINT OF THIS SERVICE FILE NOW.
+#
+# The compositor, the bar, the terminal and the browser are all children of
+# this process, so this one word is what moves the entire desktop off uid 0. A
+# WebKit bug stops being a whole-machine compromise and becomes one
+# unprivileged account -- on a system where the browser is by far the largest
+# piece of attack surface.
+#
+# IT WORKS BECAUSE OF seatd AND NOT IN SPITE OF IT. wlroots needs the DRM
+# device and the evdev nodes, and a normal user can open neither; seatd runs
+# as root, opens them, and passes the descriptors over /run/seatd.sock. Group
+# `video` is what admits us to that socket -- see etc/dinit.d/seatd, which
+# runs `seatd -g video`.
+#
+# THE CONSOLE STAYS ROOT ON PURPOSE. etc/dinit.d/console is a separate service
+# and is untouched: if the desktop cannot start, or the user account is
+# misconfigured, there must still be a way in. That is the same reasoning that
+# made labwc a service beside the console rather than a replacement for it.
 type = process
 command = /bin/busybox sh /etc/dinit.d/scripts/labwc-session
+run-as = veron
 restart = false
 
 # logfile SO A FAILURE SAYS WHY. labwc terminated with exit code 1 on the boot
@@ -53,3 +72,4 @@ logfile = /run/labwc.log
 depends-on = seatd
 depends-on = xdg-runtime
 depends-on = early-filesystems
+depends-on = device-nodes
