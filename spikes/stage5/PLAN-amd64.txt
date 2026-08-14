@@ -38,119 +38,120 @@ between this file and the recipes fails the run.
   16. pkgconf
   17. scdoc
   18. unifdef
-  19. veron-system
-  20. xz
-  21. zlib
-  22. alsa-lib
-  23. autoconf
-  24. dhcpcd
-  25. dosfstools
-  26. elfutils
-  27. gmp
-  28. lcms2
-  29. libgpg-error
-  30. libidn2
-  31. libnl
-  32. libogg
-  33. libpng
-  34. libseccomp
-  35. libtasn1
-  36. libtool
-  37. libvpx
-  38. libyaml
-  39. nghttp2
-  40. readline
-  41. tzdb
-  42. zstd
-  43. alsa-utils
-  44. automake
-  45. bash
-  46. curl
-  47. freetype-bootstrap
-  48. iproute2
-  49. libarchive
-  50. libgcrypt
-  51. libvorbis
-  52. libxml2
-  53. nettle
-  54. nnn
-  55. ruby
-  56. sqlite
-  57. wpa_supplicant
-  58. git
-  59. libcap
-  60. libhyphen
-  61. python
-  62. ca-certificates
-  63. markupsafe
-  64. meson
-  65. ninja
-  66. packaging
-  67. pyyaml
-  68. veron-cursors
-  69. bubblewrap
-  70. cmake
-  71. dav1d
-  72. fribidi
-  73. glib
-  74. libdisplay-info
-  75. libdrm
-  76. libevdev
-  77. libpsl
-  78. libsfdo
-  79. libxkbcommon
-  80. mako
-  81. opus
-  82. orc
-  83. p11-kit
-  84. pixman
-  85. seatd
-  86. tllist
-  87. wayland
-  88. wayland-protocols
-  89. xkeyboard-config
-  90. brotli
-  91. ffmpeg
-  92. gnutls
-  93. graphene
-  94. graphite2
-  95. gstreamer
-  96. json-c
-  97. libinput
-  98. libjpeg-turbo
-  99. llvm
-  100. shared-mime-info
-  101. utf8proc
-  102. wl-clipboard
-  103. chrony
-  104. glib-networking
-  105. harfbuzz
-  106. libwebp
-  107. mesa
-  108. freetype
-  109. libepoxy
-  110. libsoup
-  111. wlroots
-  112. fontconfig
-  113. cairo
-  114. fcft
-  115. foot
-  116. fuzzel
-  117. pango
-  118. swaybg
-  119. yambar
-  120. fltk
-  121. gst-plugins-base
-  122. labwc
-  123. gst-libav
-  124. gst-plugins-bad
-  125. gst-plugins-good
-  126. veron-about
-  127. veron-edit
-  128. veron-filechooser
-  129. wpewebkit
-  130. wpe-platform-veron
-  131. veron-browser
+  19. veron-fltk-style
+  20. veron-system
+  21. xz
+  22. zlib
+  23. alsa-lib
+  24. autoconf
+  25. dhcpcd
+  26. dosfstools
+  27. elfutils
+  28. gmp
+  29. lcms2
+  30. libgpg-error
+  31. libidn2
+  32. libnl
+  33. libogg
+  34. libpng
+  35. libseccomp
+  36. libtasn1
+  37. libtool
+  38. libvpx
+  39. libyaml
+  40. nghttp2
+  41. readline
+  42. tzdb
+  43. zstd
+  44. alsa-utils
+  45. automake
+  46. bash
+  47. curl
+  48. freetype-bootstrap
+  49. iproute2
+  50. libarchive
+  51. libgcrypt
+  52. libvorbis
+  53. libxml2
+  54. nettle
+  55. nnn
+  56. ruby
+  57. sqlite
+  58. wpa_supplicant
+  59. git
+  60. libcap
+  61. libhyphen
+  62. python
+  63. ca-certificates
+  64. markupsafe
+  65. meson
+  66. ninja
+  67. packaging
+  68. pyyaml
+  69. veron-cursors
+  70. bubblewrap
+  71. cmake
+  72. dav1d
+  73. fribidi
+  74. glib
+  75. libdisplay-info
+  76. libdrm
+  77. libevdev
+  78. libpsl
+  79. libsfdo
+  80. libxkbcommon
+  81. mako
+  82. opus
+  83. orc
+  84. p11-kit
+  85. pixman
+  86. seatd
+  87. tllist
+  88. wayland
+  89. wayland-protocols
+  90. xkeyboard-config
+  91. brotli
+  92. ffmpeg
+  93. gnutls
+  94. graphene
+  95. graphite2
+  96. gstreamer
+  97. json-c
+  98. libinput
+  99. libjpeg-turbo
+  100. llvm
+  101. shared-mime-info
+  102. utf8proc
+  103. wl-clipboard
+  104. chrony
+  105. glib-networking
+  106. harfbuzz
+  107. libwebp
+  108. mesa
+  109. freetype
+  110. libepoxy
+  111. libsoup
+  112. wlroots
+  113. fontconfig
+  114. cairo
+  115. fcft
+  116. foot
+  117. fuzzel
+  118. pango
+  119. swaybg
+  120. yambar
+  121. fltk
+  122. gst-plugins-base
+  123. labwc
+  124. gst-libav
+  125. gst-plugins-bad
+  126. gst-plugins-good
+  127. veron-about
+  128. veron-edit
+  129. veron-filechooser
+  130. wpewebkit
+  131. wpe-platform-veron
+  132. veron-browser
 
 ======================================================================
 package bzip2 1.0.8
@@ -736,10 +737,33 @@ package unifdef 2.12
          argv ["make", "install", "prefix=/usr", "CFLAGS=-std=gnu17 -O2", "DESTDIR=dest/unifdef"]
 
 ======================================================================
+package veron-fltk-style 1
+  group        desktop
+  license      MIT
+  recipe-sha   72f6ca60006198720ebff16092c136945cc173b51e434cb1eeb2421ea6b42839
+
+  source
+    url        this repository
+    sha256     n/a -- the program is this repository's own source, carried in files/
+    signature  n/a -- the provenance is the commit that carries the source
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] install
+         cwd  build/veron-fltk-style-1
+         argv ["sh", "-c", "mkdir -p dest/veron-fltk-style/usr/include/veron && cp /packages/veron-fltk-style/files/veron-fltk-style.h dest/veron-fltk-style/usr/include/veron/veron-fltk-style.h && chmod 0644 dest/veron-fltk-style/usr/include/veron/veron-fltk-style.h"]
+
+======================================================================
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   2acfae2795415ff41e5fdd40131104f786df540d9602cc42b6c724f6a1aa1e3b
+  recipe-sha   2aca2baf6ad23b710e877064568aae503366a0ea05098056018a62013986ff08
 
   source
     url        this repository
@@ -4502,7 +4526,7 @@ package gst-plugins-good 1.28.1
 package veron-about 1
   group        desktop
   license      MIT
-  recipe-sha   50cde9b040774a15ae86e8308f3e31894d8719d5cd724f0c583d5313e4205e79
+  recipe-sha   016fb6a1a25befe5d7bc0ba8840fff1a2def6378d768c8da6aed05671a9789ad
 
   source
     url        this repository
@@ -4511,7 +4535,7 @@ package veron-about 1
     correspond none
 
   deps
-    build        fltk, pkgconf
+    build        fltk, pkgconf, veron-fltk-style
     link         fltk
     runtime      ca-certificates, curl, fltk
     optional_off -
@@ -4519,7 +4543,7 @@ package veron-about 1
   commands (literal; this is exactly what runs)
     [01] compile
          cwd  build/veron-about-1
-         argv ["sh", "-c", "cp /packages/veron-about/files/about.cxx . && c++ -O2 -std=c++17 -o veron-about about.cxx $(fltk-config --cxxflags --ldflags)"]
+         argv ["sh", "-c", "cp /packages/veron-about/files/about.cxx . && c++ -O2 -std=c++17 -I/sysroot/usr/include -o veron-about about.cxx $(fltk-config --cxxflags --ldflags)"]
     [02] install
          cwd  build/veron-about-1
          argv ["sh", "-c", "mkdir -p dest/veron-about/usr/bin dest/veron-about/usr/share/veron/applications && cp veron-about dest/veron-about/usr/bin/veron-about && chmod 0755 dest/veron-about/usr/bin/veron-about && printf '[Desktop Entry]\\nType=Application\\nName=About Veron\\nComment=Which commit built this machine, and whether it is current\\nExec=/usr/bin/veron-about\\nTerminal=false\\nCategories=System;\\n' > dest/veron-about/usr/share/veron/applications/veron-about.desktop"]
@@ -4554,7 +4578,7 @@ package veron-edit 1.4.5
 package veron-filechooser 1
   group        desktop
   license      MIT
-  recipe-sha   f74b0576c8d62932e5290a700c2639d38c096cdd886fca5008cb11bc148cec02
+  recipe-sha   486406f29b6bc35a023017e272d97c1d0facd98edf7cff4e21a475917e2597f3
 
   source
     url        this repository
@@ -4563,7 +4587,7 @@ package veron-filechooser 1
     correspond none
 
   deps
-    build        fltk, pkgconf
+    build        fltk, pkgconf, veron-fltk-style
     link         fltk
     runtime      fltk
     optional_off -
@@ -4571,7 +4595,7 @@ package veron-filechooser 1
   commands (literal; this is exactly what runs)
     [01] compile
          cwd  build/veron-filechooser-1
-         argv ["sh", "-c", "cp /packages/veron-filechooser/files/filechooser.cxx . && c++ -O2 -std=c++17 -o veron-filechooser filechooser.cxx $(fltk-config --cxxflags --ldflags)"]
+         argv ["sh", "-c", "cp /packages/veron-filechooser/files/filechooser.cxx . && c++ -O2 -std=c++17 -I/sysroot/usr/include -o veron-filechooser filechooser.cxx $(fltk-config --cxxflags --ldflags)"]
     [02] install
          cwd  build/veron-filechooser-1
          argv ["sh", "-c", "mkdir -p dest/veron-filechooser/usr/bin && cp veron-filechooser dest/veron-filechooser/usr/bin/veron-filechooser && chmod 0755 dest/veron-filechooser/usr/bin/veron-filechooser"]

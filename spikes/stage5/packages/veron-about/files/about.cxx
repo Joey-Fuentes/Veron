@@ -13,13 +13,19 @@
 // would be a new dependency for one window.
 //
 // THE UPDATE CHECK SHELLS OUT TO curl AND DOES NOT PARSE JSON PROPERLY.
-// GitHub's compare API returns behind_by as a small integer in a large
+// GitHub's compare API returns ahead_by as a small integer in a large
 // document; pulling one number out with a substring search is enough and
 // avoids linking json-c for a single field. It is stated here rather than
 // hidden because a real JSON parse is what this should become if the app ever
 // reads a second field.
+//
+// A SUBSTRING SEARCH IS ALSO WHY THE FIELD NAME MATTERS SO MUCH. There is no
+// schema to disagree with, so reading the wrong key is not an error -- it
+// finds a real number and reports it confidently. That is exactly what
+// happened with behind_by.
 
 #include <FL/Fl.H>
+#include <veron/veron-fltk-style.h>
 #include <FL/Fl_Window.H>
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
@@ -82,9 +88,25 @@ static void append(const char *label, const char *value)
 
 // COMMITS BEHIND, VIA THE COMPARE API.
 //
-// api.github.com/repos/OWNER/REPO/compare/BASE...HEAD reports behind_by and
-// ahead_by. With BASE the commit this image was built from and HEAD the branch,
-// behind_by is exactly "how many commits have landed since this image".
+// api.github.com/repos/OWNER/REPO/compare/BASE...HEAD reports ahead_by and
+// behind_by, and BOTH ARE RELATIVE TO THE BASE:
+//
+//   ahead_by   commits in HEAD that are not in BASE
+//   behind_by  commits in BASE that are not in HEAD
+//
+// BASE is this image's commit and HEAD is main, so commits landing on main
+// make main AHEAD of the image -- ahead_by grows and behind_by stays 0.
+//
+// THE FIRST VERSION READ behind_by AND SO ALWAYS SAID "up to date". It was
+// not a network failure or a stale manifest: the number it printed was
+// correct and answered a question nobody asked, namely how many commits this
+// image has that main does not -- which for an image built FROM main is
+// always zero.
+//
+// GitHub's OWN DEFINITION SETTLES IT: the endpoint is documented as
+// "equivalent to running the git log BASE..HEAD command", and git log
+// BASE..HEAD lists the commits in HEAD that are not in BASE. That is the
+// count this app wants, and ahead_by is the field carrying it.
 //
 // IT REQUIRES NETWORK AND SAYS SO WHEN IT FAILS. A machine with no wifi
 // configured is the common case on a first boot, and "could not reach GitHub"
@@ -119,14 +141,14 @@ static void check_updates(Fl_Widget *, void *)
     }
 
     // THE WHOLE RESPONSE, BOUNDED. A compare of many commits carries every one
-    // of them; only the first behind_by matters and it appears early, but the
+    // of them; only the first ahead_by matters and it appears early, but the
     // read is capped rather than trusting that.
     static char body[65536];
     size_t n = fread(body, 1, sizeof body - 1, p);
     body[n] = '\0';
     int rc = pclose(p);
 
-    const char *key = "\"behind_by\":";
+    const char *key = "\"ahead_by\":";
     char *at = strstr(body, key);
 
     if (!at) {
@@ -149,20 +171,25 @@ static void check_updates(Fl_Widget *, void *)
         return;
     }
 
-    long behind = strtol(at + strlen(key), 0, 10);
+    long ahead = strtol(at + strlen(key), 0, 10);
     char msg[300];
-    if (behind <= 0)
+    if (ahead <= 0)
         snprintf(msg, sizeof msg, "Up to date with main.");
     else
         snprintf(msg, sizeof msg,
                  "%ld commit%s behind main.  Updating is not automatic yet -- "
-                 "rebuild and re-flash.", behind, behind == 1 ? "" : "s");
+                 "rebuild and re-flash.", ahead, ahead == 1 ? "" : "s");
     g_status->copy_label(msg);
     g_status->redraw();
 }
 
 int main(int argc, char **argv)
 {
+    /* THE LOOK IS SET BEFORE ANY WIDGET EXISTS. Box types and the palette are
+     * read when a widget is constructed, so a widget made before this call
+     * keeps the default grey. */
+    veron_fltk_style();
+
     Fl_Window *win = new Fl_Window(620, 420, "About Veron");
     win->color(FL_BACKGROUND_COLOR);
 

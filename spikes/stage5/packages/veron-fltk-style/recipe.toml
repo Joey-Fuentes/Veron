@@ -1,0 +1,56 @@
+name    = "veron-fltk-style"
+version = "1"
+group   = "desktop"
+license = "MIT"
+srcdir  = "."
+
+[source]
+kind      = "local"
+path = "packages/veron-fltk-style/files"
+url       = "this repository"
+sha256    = "n/a -- the program is this repository's own source, carried in files/"
+signature = "n/a -- the provenance is the commit that carries the source"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "the binary exists and is executable; the window is interactive"
+packaged_as     = ["veron-filechooser"]
+deferral        = """
+FLTK's DEFAULT LOOK IS DESCRIBED BY FLTK'S OWN DOCUMENTATION as resembling \
+"old Windows (95/98/Me/NT/2000) and old GTK/KDE" -- grey bevels and 3D frames \
+that match nothing else on this desktop. Three programs use FLTK now and each \
+carrying its own palette would be three places for the accent colour to drift.
+
+A HEADER, NOT A LIBRARY. It is a dozen calls made once at startup; a shared \
+object would add a DT_NEEDED to every FLTK program for no benefit.
+
+THE FLAT BOX TYPES ARE WHAT ACTUALLY CHANGES THE LOOK, not the scheme. Both \
+gleam and oxy draw their gradients by averaging toward FL_WHITE \
+(fl_oxy.cxx:158), which washes out a dark palette. Fl::set_boxtype(to, from) \
+copies one entry of the box table over another (fl_boxtype.cxx:461), so every \
+widget asking for FL_UP_BOX gets a flat one -- including the widgets inside \
+Fl_File_Chooser, which our code never touches.
+"""
+
+[installs]
+prefixes = ["usr/include/veron"]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+# NO .desktop ENTRY. This is not something a person launches from Apps; it is
+# what the browser runs when a page asks for a file. Listing it in the menu
+# would put a dialog with no caller on the launcher.
+run  = [["sh", "-c", "mkdir -p $D/usr/include/veron && cp /packages/veron-fltk-style/files/veron-fltk-style.h $D/usr/include/veron/veron-fltk-style.h && chmod 0644 $D/usr/include/veron/veron-fltk-style.h"]]
+
+[guest]
+# THE BINARY EXISTS AND IS EXECUTABLE. Running it would open a window.
+test   = [["/bin/sh", "-c", "test -f /usr/include/veron/veron-fltk-style.h && echo present"]]
+expect = ["present"]

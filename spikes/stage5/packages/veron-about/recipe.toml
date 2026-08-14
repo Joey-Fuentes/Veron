@@ -13,7 +13,7 @@ signature = "n/a -- the provenance is the commit that carries the source"
 crosschecked_against = []
 
 [deps]
-build        = ["fltk", "pkgconf"]
+build        = ["fltk", "pkgconf", "veron-fltk-style"]
 link         = ["fltk"]
 # curl AT RUNTIME AND NOT AT LINK TIME. The update check shells out to the
 # curl BINARY rather than linking libcurl, so nothing here has a DT_NEEDED on
@@ -79,7 +79,7 @@ name = "compile"
 # standard flag, and a toolchain defaulting to an older mode would fail here
 # with a message about converting a lambda to a function pointer.
 cwd  = "$B"
-run  = [["sh", "-c", "cp /packages/veron-about/files/about.cxx . && c++ -O2 -std=c++17 -o veron-about about.cxx $(fltk-config --cxxflags --ldflags)"]]
+run  = [["sh", "-c", "cp /packages/veron-about/files/about.cxx . && c++ -O2 -std=c++17 -I$SYSROOT/usr/include -o veron-about about.cxx $(fltk-config --cxxflags --ldflags)"]]
 
 [[steps]]
 name = "install"

@@ -13,7 +13,7 @@ signature = "n/a -- the provenance is the commit that carries the source"
 crosschecked_against = []
 
 [deps]
-build        = ["fltk", "pkgconf"]
+build        = ["fltk", "pkgconf", "veron-fltk-style"]
 link         = ["fltk"]
 runtime      = ["fltk"]
 optional_off = []
@@ -55,7 +55,7 @@ name = "compile"
 # standard flag, and a toolchain defaulting to an older mode would fail here
 # with a message about converting a lambda to a function pointer.
 cwd  = "$B"
-run  = [["sh", "-c", "cp /packages/veron-filechooser/files/filechooser.cxx . && c++ -O2 -std=c++17 -o veron-filechooser filechooser.cxx $(fltk-config --cxxflags --ldflags)"]]
+run  = [["sh", "-c", "cp /packages/veron-filechooser/files/filechooser.cxx . && c++ -O2 -std=c++17 -I$SYSROOT/usr/include -o veron-filechooser filechooser.cxx $(fltk-config --cxxflags --ldflags)"]]
 
 [[steps]]
 name = "install"

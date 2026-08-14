@@ -55,6 +55,22 @@ mkdir -p "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" 2>/dev/null || :
 # creates wayland-0 in XDG_RUNTIME_DIR, but anything launched from autostart
 # inherits whatever the service had -- naming it makes the socket a decision.
 export XDG_SESSION_TYPE=wayland
+
+# FLTK_SCHEME, FOR THE FLTK PROGRAM THIS PROJECT DOES NOT OWN.
+#
+# veron-about and veron-filechooser call veron_fltk_style() and set their own
+# palette and box types. veron-edit is FLTK's own editor example, carried
+# unmodified on purpose, so the only way to reach it is the environment.
+#
+# window->show(argc, argv) APPLIES IT WITHOUT ANY CODE. Fl_arg.cxx:326 calls
+# Fl::scheme(Fl::scheme()), which with no scheme set is Fl::scheme(NULL), and
+# that reads this variable (Fl_get_system_colors.cxx:198). The editor example
+# uses that form, so it picks the scheme up for free.
+#
+# gleam RATHER THAN oxy. Both are flat-ish and modern; oxy averages its
+# gradients toward FL_WHITE (fl_oxy.cxx:158), which on anything dark washes
+# the surface out. gleam shades between two colours instead.
+export FLTK_SCHEME=${FLTK_SCHEME:-gleam}
 # WLR_RENDERER=pixman, AND IT IS THE COMPOSITOR SETTING THAT MAKES THE BROWSER
 # RENDER. This is the least obvious line in the file, so:
 #

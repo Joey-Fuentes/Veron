@@ -18,6 +18,7 @@
 // anything -- without touching the browser.
 
 #include <FL/Fl.H>
+#include <veron/veron-fltk-style.h>
 #include <FL/Fl_File_Chooser.H>
 
 #include <stdio.h>
@@ -26,6 +27,11 @@
 
 int main(int argc, char **argv)
 {
+    /* THE LOOK IS SET BEFORE ANY WIDGET EXISTS. Box types and the palette are
+     * read when a widget is constructed, so a widget made before this call
+     * keeps the default grey. */
+    veron_fltk_style();
+
     const char *title = "Select a file";
     const char *filter = "*";
     const char *start = getenv("HOME");

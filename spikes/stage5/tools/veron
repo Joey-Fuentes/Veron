@@ -5705,6 +5705,33 @@ def cmd_selftest(a):
         else:
             print("  ok    download-started is connected where 2.52 emits it")
 
+    # THE UPDATE CHECK MUST READ ahead_by, NOT behind_by.
+    #
+    # Both fields are relative to the BASE of the comparison, and the app
+    # compares its own commit against main -- so new commits on main make main
+    # AHEAD. Reading behind_by finds a real number, reports it confidently,
+    # and is always zero for an image built from main. The check said "up to
+    # date with main" across several pushes and looked like it was working.
+    #
+    # A SUBSTRING SEARCH HAS NO SCHEMA TO DISAGREE WITH, which is why this is
+    # worth a gate: the wrong key is not an error at any level, just a wrong
+    # answer delivered with confidence.
+    _ab = "packages/veron-about/files/about.cxx"
+    if os.path.exists(_ab):
+        _t = open(_ab, encoding="utf-8").read()
+        _code = "\n".join(l for l in _t.split("\n")
+                           if not l.lstrip().startswith("//"))
+        if '"behind_by' in _code:
+            print(f"  FAIL  {_ab}: parses behind_by, which is always 0 when "
+                  f"comparing this image against main -- ahead_by is the "
+                  f"count of new commits")
+            ok = False
+        elif '"ahead_by' not in _code:
+            print(f"  FAIL  {_ab}: parses neither ahead_by nor behind_by")
+            ok = False
+        else:
+            print("  ok    the update check reads ahead_by")
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 
