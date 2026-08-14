@@ -5732,6 +5732,30 @@ def cmd_selftest(a):
         else:
             print("  ok    the update check reads ahead_by")
 
+    # NOTE: there is deliberately NO CHECK HERE that struct fields used are
+    # declared, and the reason is worth recording so it is not attempted a
+    # second time.
+    #
+    # An edit once added `seat->keyboardSerial = serial` in three places while
+    # the declaration silently failed to land, and CI caught it only after
+    # restoring 128 packages:
+    #
+    #     wpe-veron-seat.c:500: 'VeronSeat' has no member named
+    #     'keyboardSerial'; did you mean 'keyboardSurface'?
+    #
+    # A regex cannot do this. Three separate false positives came out of one
+    # afternoon's attempt: a local `struct wl_cursor *cursor` from libwayland
+    # collided with a guessed variable name; prose in a comment matched as a
+    # declaration; and finally `b` is declared as `VeronSHMBuffer *` in one
+    # function and `VeronSolidBuffer *` in another, so a file-wide scan has no
+    # way to know which `b->field` belongs to which type. Getting that right
+    # means scopes, and scopes mean a C parser.
+    #
+    # THE COMPILER ALREADY DOES THIS PERFECTLY AND CI RUNS IT. The gap is only
+    # that it runs after the package restore rather than before, which costs
+    # minutes rather than correctness. A check that reports working code as
+    # broken is worse than the wait.
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 

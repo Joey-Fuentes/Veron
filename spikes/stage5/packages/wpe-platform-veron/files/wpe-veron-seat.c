@@ -57,6 +57,15 @@ struct _VeronSeat {
      * wl_pointer.set_cursor will only accept this one. */
     guint32             enterSerial;
 
+    /* THE KEYBOARD SERIAL, SEPARATE FROM lastSerial.
+     *
+     * wl_data_device.set_selection wants a serial from a KEYBOARD event --
+     * stock passes seat->keyboardSerial() (WPEClipboardWayland.cpp:227).
+     * lastSerial is whatever event arrived most recently, so a mouse move
+     * between the copy and the claim replaces it with a pointer serial and
+     * the compositor silently refuses the selection. */
+    guint32             keyboardSerial;
+
     struct wl_surface  *keyboardSurface;
     WPEToplevelVeron   *keyboardToplevel;
 
