@@ -147,9 +147,10 @@ between this file and the recipes fails the run.
   125. gst-plugins-good
   126. veron-about
   127. veron-edit
-  128. wpewebkit
-  129. wpe-platform-veron
-  130. veron-browser
+  128. veron-filechooser
+  129. wpewebkit
+  130. wpe-platform-veron
+  131. veron-browser
 
 ======================================================================
 package bzip2 1.0.8
@@ -738,7 +739,7 @@ package unifdef 2.12
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   4b7e5745e65de2021df69fd05443bac7fc308dee7f41c82a1600910bee4689be
+  recipe-sha   1eb71fc18f14d268a1ed8ac99e78648a043edd8cb04b3841fe51e5c7652ae5ab
 
   source
     url        this repository
@@ -4550,6 +4551,32 @@ package veron-edit 1.4.5
          argv ["sh", "-c", "mkdir -p dest/veron-edit/usr/bin dest/veron-edit/usr/share/veron/applications && cp veron-edit dest/veron-edit/usr/bin/veron-edit && chmod 0755 dest/veron-edit/usr/bin/veron-edit && printf '[Desktop Entry]\\nType=Application\\nName=Text Editor\\nComment=Edit a text file\\nExec=/usr/bin/veron-edit\\nTerminal=false\\nCategories=Utility;TextEditor;\\n' > dest/veron-edit/usr/share/veron/applications/veron-edit.desktop"]
 
 ======================================================================
+package veron-filechooser 1
+  group        desktop
+  license      MIT
+  recipe-sha   f74b0576c8d62932e5290a700c2639d38c096cdd886fca5008cb11bc148cec02
+
+  source
+    url        this repository
+    sha256     n/a -- the program is this repository's own source, carried in files/
+    signature  n/a -- the provenance is the commit that carries the source
+    correspond none
+
+  deps
+    build        fltk, pkgconf
+    link         fltk
+    runtime      fltk
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] compile
+         cwd  build/veron-filechooser-1
+         argv ["sh", "-c", "cp /packages/veron-filechooser/files/filechooser.cxx . && c++ -O2 -std=c++17 -o veron-filechooser filechooser.cxx $(fltk-config --cxxflags --ldflags)"]
+    [02] install
+         cwd  build/veron-filechooser-1
+         argv ["sh", "-c", "mkdir -p dest/veron-filechooser/usr/bin && cp veron-filechooser dest/veron-filechooser/usr/bin/veron-filechooser && chmod 0755 dest/veron-filechooser/usr/bin/veron-filechooser"]
+
+======================================================================
 package wpewebkit 2.52.5
   group        browser
   license      LGPL-2.1-or-later AND BSD-2-Clause
@@ -4586,7 +4613,7 @@ package wpewebkit 2.52.5
 package wpe-platform-veron 1.0
   group        browser
   license      BSD-2-Clause
-  recipe-sha   2f7e5fc976b7d2c92539222796a29ce417fbae000a1bfc86980a182b9506e15c
+  recipe-sha   76f745d687b9827fc8cddd988ca698bb362d2cace5cb6a25008969d039a53c75
 
   source
     url        this repository
@@ -4618,7 +4645,7 @@ package wpe-platform-veron 1.0
 package veron-browser 1.0
   group        browser
   license      BSD-2-Clause
-  recipe-sha   d72265b3f8547704612d37282edd0d9812edc057639e5ea5f16cae01d617976b
+  recipe-sha   7aa50b239d41936ca85cb2de8114ab41bf7e12472ed10fe03111e2a528f78be1
 
   source
     url        this repository
@@ -4629,7 +4656,7 @@ package veron-browser 1.0
   deps
     build        cairo, glib, libsoup, libxkbcommon, pkgconf, wayland, wpe-platform-veron, wpewebkit
     link         cairo, glib, libsoup, libxkbcommon, wayland, wpe-platform-veron, wpewebkit
-    runtime      wpe-platform-veron, wpewebkit
+    runtime      veron-filechooser, wpe-platform-veron, wpewebkit
     optional_off -
 
   commands (literal; this is exactly what runs)

@@ -1652,7 +1652,7 @@ jobs:
             printf 'echo ---BROWSER-MINI-VERON---\n'
             printf 'WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-veron.log 2>&1 &\n'
             sleep 40
-            printf 'pidof MiniBrowser > /dev/null; printf "MINIVERON%s\\n" "$?"\n'
+            printf 'pidof MiniBrowser > /dev/null; printf "MINIVERON%%s\\n" "$?"\n'
             printf 'cat /tmp/browser-mini-veron.log 2>/dev/null\n'
             #
             # RUN A2: THE SAME THING WITH THE MODULE FORCED RESIDENT, WHICH IS
@@ -1689,7 +1689,7 @@ jobs:
             printf 'echo ---BROWSER-MINI-PRELOAD---\n'
             printf 'if pidof MiniBrowser > /dev/null; then echo skipped -- the plain launch survived, residency is fixed; else LD_PRELOAD=/usr/lib/libwpe-display-veron.so WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-preload.log 2>&1 & fi\n'
             sleep 40
-            printf 'pidof MiniBrowser > /dev/null; printf "MINIPRELOAD%s\\n" "$?"\n'
+            printf 'pidof MiniBrowser > /dev/null; printf "MINIPRELOAD%%s\\n" "$?"\n'
             printf 'cat /tmp/browser-mini-preload.log 2>/dev/null\n'
             # THE FIRST FRAME IS TAKEN HERE, WITH THIS RUN ON SCREEN. It
             # answers a second question the same launch happens to settle:
@@ -1729,7 +1729,7 @@ jobs:
             printf 'echo ---BROWSER-VERON-BROWSER---\n'
             printf '[ -x /usr/bin/veron-browser ] && /usr/bin/veron-browser /usr/share/veron/test.html > /tmp/browser-veron-browser.log 2>&1 &\n'
             sleep 40
-            printf 'pidof veron-browser > /dev/null; printf "VERONBROWSER%s\\n" "$?"\n'
+            printf 'pidof veron-browser > /dev/null; printf "VERONBROWSER%%s\\n" "$?"\n'
             printf 'cat /tmp/browser-veron-browser.log 2>/dev/null\n'
             sleep 5
             #

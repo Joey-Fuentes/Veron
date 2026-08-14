@@ -145,7 +145,42 @@ echo "  /run/labwc.log -> veron"
 /bin/busybox mkdir -p /home/veron 2>/dev/null
 /bin/busybox chown veron:veron /home/veron 2>/dev/null
 /bin/busybox chmod 0700 /home/veron 2>/dev/null
-echo "  /home/veron ready"
+
+# AND IT SURVIVES A REBOOT, IF THERE IS SOMEWHERE FOR IT TO SURVIVE.
+#
+# /home sits on the tmpfs overlay over a read-only image, so without this
+# every downloaded file, every browser profile and every shell history is
+# discarded at poweroff. That is correct for a live image and wrong for the
+# machine someone actually uses.
+#
+# A BIND MOUNT, NOT A SYMLINK. HOME=/home/veron is exported by the session and
+# baked into a dozen places; with a bind mount that path stays literally true
+# and nothing -- not the browser, not glib's XDG lookup, not a shell -- has to
+# know the storage is elsewhere. A symlink would leak /persist into every
+# resolved path and into anything that calls realpath().
+#
+# THE WHOLE HOME, NOT A DOWNLOADS FOLDER. Persisting one directory would mean
+# deciding, one at a time and forever, which parts of a home directory matter.
+# The home directory is the unit a person thinks in.
+#
+# IT MUST HAPPEN BEFORE ANYTHING OPENS A FILE THERE. This service runs before
+# labwc, so the mount is in place before the session, the browser or the bar
+# can create anything in the tmpfs copy that the bind would then hide.
+if [ -d /persist ]; then
+    /bin/busybox mkdir -p /persist/home/veron 2>/dev/null
+    /bin/busybox chown veron:veron /persist/home/veron 2>/dev/null
+    /bin/busybox chmod 0700 /persist/home/veron 2>/dev/null
+    if /bin/busybox mount --bind /persist/home/veron /home/veron 2>/dev/null; then
+        echo "  /home/veron -> /persist/home/veron (persistent)"
+    else
+        echo "  /home/veron is on tmpfs -- the bind mount failed, nothing kept"
+    fi
+else
+    # NAMED, NOT SILENT. A machine with no persist partition is a legitimate
+    # configuration -- the live image is one -- but "my downloads disappeared"
+    # should be answerable from the boot log rather than by experiment.
+    echo "  /home/veron is on tmpfs -- no /persist, nothing is kept"
+fi
 
 # PERSISTENCE, IF THERE IS ANY. /persist is where wifi credentials and mixer
 # state live. It is mounted by guest/init before dinit starts, root-owned; the

@@ -1,0 +1,71 @@
+name    = "veron-filechooser"
+version = "1"
+group   = "desktop"
+license = "MIT"
+srcdir  = "."
+
+[source]
+kind      = "local"
+path      = "packages/veron-filechooser/files"
+url       = "this repository"
+sha256    = "n/a -- the program is this repository's own source, carried in files/"
+signature = "n/a -- the provenance is the commit that carries the source"
+crosschecked_against = []
+
+[deps]
+build        = ["fltk", "pkgconf"]
+link         = ["fltk"]
+runtime      = ["fltk"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "the binary exists and is executable; the window is interactive"
+packaged_as     = ["veron-filechooser"]
+deferral        = """
+`<input type="file">` DID NOTHING AT ALL. WebKit emits run-file-chooser and \
+its documented default handler runs a GtkFileChooserDialog -- there is no GTK \
+in this image, no D-Bus and no portal, so the default cannot run and the \
+element is inert. Any page with a file upload was simply broken.
+
+SOMETHING HAS TO DRAW A DIALOG and the only toolkit here is FLTK, already \
+built and running for veron-edit and veron-about. Fl_File_Chooser is a \
+complete chooser with navigation, filtering and multiple selection; it costs \
+no new dependency.
+
+A SEPARATE PROGRAM RATHER THAN CODE IN THE BROWSER. FLTK and WPE each want to \
+own the main loop, and calling Fl::run() from inside a WebKit signal handler \
+nests one loop inside the other. A crash in a file dialog should not take the \
+browser with it. And a chooser that prints paths on stdout can be tested from \
+a shell and replaced -- with fuzzel, with anything -- without the browser \
+knowing.
+
+THE CONTRACT IS THIN ON PURPOSE: selected paths on stdout one per line and \
+exit 0; nothing selected means exit 1 and no output. That is the whole \
+interface.
+"""
+
+[installs]
+prefixes = ["usr/bin/veron-filechooser"]
+
+[[steps]]
+name = "compile"
+# -std=c++17 IS NOT DECORATION. The Close button uses a captureless lambda as
+# an Fl_Callback, which is a C++11 conversion; fltk-config does not add a
+# standard flag, and a toolchain defaulting to an older mode would fail here
+# with a message about converting a lambda to a function pointer.
+cwd  = "$B"
+run  = [["sh", "-c", "cp /packages/veron-filechooser/files/filechooser.cxx . && c++ -O2 -std=c++17 -o veron-filechooser filechooser.cxx $(fltk-config --cxxflags --ldflags)"]]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+# NO .desktop ENTRY. This is not something a person launches from Apps; it is
+# what the browser runs when a page asks for a file. Listing it in the menu
+# would put a dialog with no caller on the launcher.
+run  = [["sh", "-c", "mkdir -p $D/usr/bin && cp veron-filechooser $D/usr/bin/veron-filechooser && chmod 0755 $D/usr/bin/veron-filechooser"]]
+
+[guest]
+# THE BINARY EXISTS AND IS EXECUTABLE. Running it would open a window.
+test   = [["/bin/sh", "-c", "test -x /usr/bin/veron-filechooser && echo present"]]
+expect = ["present"]

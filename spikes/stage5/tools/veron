@@ -23,6 +23,7 @@ try:
     import yaml
 except ImportError:
     yaml = None
+import collections
 import contextlib
 import hashlib
 import io
@@ -3278,6 +3279,123 @@ def cmd_update(a):
     return 0
 
 
+def verify_tree(manifest, root, only=None, progress=None):
+    """Check a tree against a manifest. Returns a list of (path, problem).
+
+    THE ROOT IS AN ARGUMENT AND NOT ASSUMED TO BE `/`, which is the whole
+    reason this is useful twice. Run against `/` it answers "has this system
+    drifted"; run against a mount point it answers "is the partition I just
+    wrote correct", which is the post-condition a delta update needs before it
+    is safe to switch to the other slot.
+
+    IT ALSO ESCAPES THE CIRCULARITY, IF YOU WANT IT TO. A checker living on
+    the filesystem it checks can be altered by whoever altered the files. Run
+    from another system against a mounted Veron partition, the checker is not
+    on the disk under test and that objection disappears. Same code either
+    way; the difference is only where it is invoked from.
+
+    ONLY THE PATHS ASKED FOR, WHEN ASKED. After an update, rehashing 1.32 GiB
+    to confirm sixty changed files is a minute of pointless I/O -- `only`
+    restricts the walk to the paths the update touched.
+
+    WHAT COUNTS AS A PROBLEM, and each is a different failure:
+
+      missing     the manifest lists it and the tree does not have it
+      content     the bytes hash to something else
+      mode        the bytes are right and the permission is not, which is how
+                  a correctly-restored /usr/sbin/shutdown ends up unrunnable
+      kind        a file where a symlink belongs, or the reverse
+      target      a symlink pointing somewhere else
+      unreadable  it exists and could not be opened, which is not the same as
+                  wrong and should not be reported as if it were
+    """
+    problems = []
+    paths = sorted(only) if only is not None else sorted(manifest)
+    for i, rel in enumerate(paths):
+        rec = manifest.get(rel)
+        if rec is None:
+            continue
+        pkg, kind, val, size, mode = rec
+        full = os.path.join(root, rel)
+        if progress and i % 500 == 0:
+            progress(i, len(paths))
+
+        if not os.path.lexists(full):
+            problems.append((rel, "missing"))
+            continue
+
+        if kind == "symlink":
+            if not os.path.islink(full):
+                problems.append((rel, "kind: expected a symlink"))
+            elif os.readlink(full) != val:
+                problems.append((rel, f"target: {os.readlink(full)} != {val}"))
+            continue
+
+        if kind != "file":
+            # `unreadable` records that the BUILD could not read it. Nothing
+            # is claimed about the content, so there is nothing to check.
+            continue
+
+        if os.path.islink(full):
+            problems.append((rel, "kind: expected a file, found a symlink"))
+            continue
+
+        try:
+            st = os.lstat(full)
+            got = sha256_file(full)
+        except OSError as e:
+            problems.append((rel, f"unreadable: {type(e).__name__}"))
+            continue
+
+        if got != val:
+            problems.append((rel, f"content: {got[:16]}... != {val[:16]}..."))
+        elif mode and f"{st.st_mode & 0o7777:04o}" != mode:
+            problems.append((rel,
+                             f"mode: {st.st_mode & 0o7777:04o} != {mode}"))
+    return problems
+
+
+def cmd_verify(a):
+    """Does this tree match the manifest that describes it?
+
+    EXIT 1 ON ANY PROBLEM, because the caller of this is a script deciding
+    whether to switch to the slot it just wrote, and a verifier whose failure
+    has to be parsed out of prose is a verifier that gets ignored.
+    """
+    manifest = read_manifest(a.manifest)
+    only = None
+    if a.only:
+        with open(a.only, encoding="utf-8") as f:
+            only = {ln.strip() for ln in f if ln.strip()}
+
+    def tick(i, n):
+        if a.quiet:
+            return
+        print(f"  {i}/{n}...", end="\r", flush=True)
+
+    problems = verify_tree(manifest, a.root, only=only, progress=tick)
+    if not a.quiet:
+        print(" " * 40, end="\r")
+
+    checked = len(only) if only is not None else len(manifest)
+    if not problems:
+        print(f"VERON-VERIFY-OK  {checked} path(s) under {a.root} "
+              f"match {a.manifest}")
+        return 0
+
+    print(f"VERON-VERIFY-FAIL  {len(problems)} of {checked} path(s) "
+          f"under {a.root} do not match {a.manifest}")
+    kinds = collections.Counter(p.split(":")[0] for _rel, p in problems)
+    for k, n in sorted(kinds.items()):
+        print(f"  {k:12s} {n}")
+    for rel, why in problems[:a.show]:
+        print(f"  {rel}: {why}")
+    if len(problems) > a.show:
+        print(f"  ... and {len(problems) - a.show} more "
+              f"(--show N to see them)")
+    return 1
+
+
 def cmd_manifest(a):
     recipes = load_recipes()
     roots = roots_from_args(a)
@@ -5338,6 +5456,199 @@ def cmd_selftest(a):
     else:
         print("  ok    update delta: add, change, chmod, remove, and column skew")
 
+    # verify_tree IS RUN AGAINST A REAL TREE ON DISK.
+    #
+    # It is the post-condition a delta update depends on: after writing the
+    # other slot, "every path matches the manifest" is what makes switching to
+    # it safe. A verifier that misses a class of damage is worse than none,
+    # because the update then reports success. So each kind of damage is
+    # actually inflicted on a real directory here and the result checked --
+    # inspecting the source would not catch a wrong comparison.
+    #
+    # THE FIVE-COLUMN CASE IS INCLUDED for the same reason it is in the delta
+    # check: a machine on an older image holds a manifest with no mode column,
+    # and if an absent mode read as a mismatch, verify would report every file
+    # in the image as broken.
+    with tempfile.TemporaryDirectory() as _td:
+        _t = os.path.join(_td, "t")
+        os.makedirs(os.path.join(_t, "usr", "bin"))
+        os.makedirs(os.path.join(_t, "etc"))
+        _prog = os.path.join(_t, "usr", "bin", "prog")
+        open(_prog, "w").write("#!/bin/sh\n")
+        os.chmod(_prog, 0o755)
+        _conf = os.path.join(_t, "etc", "conf")
+        open(_conf, "w").write("cfg\n")
+        os.chmod(_conf, 0o644)
+        os.symlink("/usr/bin/prog", os.path.join(_t, "usr", "bin", "link"))
+
+        _h = lambda q: sha256_file(q)
+        _man = {
+            "usr/bin/prog": ("p", "file", _h(_prog), 10, "0755"),
+            "etc/conf":     ("p", "file", _h(_conf), 4, "0644"),
+            "usr/bin/link": ("p", "symlink", "/usr/bin/prog", 0, ""),
+            "etc/gone":     ("p", "file", "0" * 64, 1, "0644"),
+        }
+
+        # the tree is correct except for the path that was never created
+        _p = verify_tree(_man, _t)
+        if [r for r, _w in _p] != ["etc/gone"]:
+            print(f"  FAIL  verify_tree on a good tree reported {_p}")
+            ok = False
+
+        # now damage it in each distinct way
+        os.chmod(_prog, 0o644)
+        open(_conf, "w").write("tampered\n")
+        _p = dict(verify_tree(_man, _t))
+        for _rel, _pre in (("usr/bin/prog", "mode"), ("etc/conf", "content"),
+                           ("etc/gone", "missing")):
+            if not _p.get(_rel, "").startswith(_pre):
+                print(f"  FAIL  verify_tree: {_rel} reported "
+                      f"{_p.get(_rel)!r}, expected {_pre}")
+                ok = False
+
+        # A FIVE-COLUMN MANIFEST MUST NOT PRODUCE MODE FAILURES. prog's mode
+        # is wrong on disk; with no mode recorded there is nothing to compare.
+        _old5 = {k: v[:4] + ("",) for k, v in _man.items()}
+        _p5 = dict(verify_tree(_old5, _t))
+        if _p5.get("usr/bin/prog", "").startswith("mode"):
+            print("  FAIL  verify_tree reported a mode mismatch against a "
+                  "manifest that records no modes")
+            ok = False
+        elif ok:
+            print("  ok    verify: content, mode, missing, symlink, "
+                  "and column skew")
+
+    # ANYTHING THAT USES THE HOME DIRECTORY MUST WAIT FOR device-nodes.
+    #
+    # device-nodes bind-mounts /persist/home/veron over /home/veron. A service
+    # that writes there BEFORE the bind lands writes into the tmpfs copy,
+    # which the bind then hides -- the file exists, nothing errors, and it is
+    # gone at reboot along with the rest of the overlay. The failure is
+    # invisible until someone asks where their download went.
+    #
+    # THE DEPENDENCY IS THE ONLY THING ENFORCING THE ORDER, and dinit will
+    # happily start services in any order that satisfies what is declared.
+    _bad = 0
+    for _arch in ("packages", "packages-amd64"):
+        _dir = f"{_arch}/veron-system/files/etc/dinit.d"
+        if not os.path.isdir(_dir):
+            continue
+        _scripts = os.path.join(_dir, "scripts")
+        for _fn in sorted(os.listdir(_dir)):
+            _svc = os.path.join(_dir, _fn)
+            if os.path.islink(_svc) or not os.path.isfile(_svc):
+                continue
+            _text = open(_svc, encoding="utf-8").read()
+            _deps = re.findall(r"^depends-on\s*=\s*(\S+)", _text, re.M)
+            if "device-nodes" in _deps or _fn == "device-nodes":
+                continue
+            # does this service, or the script it runs, touch the home dir?
+            _uses = "/home/veron" in "\n".join(
+                l for l in _text.split("\n") if not l.lstrip().startswith("#"))
+            # THE SCRIPT IS NOT THE FIRST WORD. Several services are spelled
+            # `command = /bin/busybox sh /etc/dinit.d/scripts/foo`, so taking
+            # the first token finds busybox and inspects nothing -- which is
+            # how the first version of this check passed while labwc, whose
+            # session script is full of /home/veron, had no dependency at all.
+            # Every script path on the line is examined instead.
+            for _m in re.finditer(r"/etc/dinit\.d/scripts/(\S+)", _text):
+                _sp = os.path.join(_scripts, _m.group(1))
+                if not os.path.isfile(_sp):
+                    continue
+                _st = open(_sp, encoding="utf-8").read()
+                _uses = _uses or "/home/veron" in "\n".join(
+                    l for l in _st.split("\n")
+                    if not l.lstrip().startswith("#"))
+            if _uses:
+                print(f"  FAIL  {_svc}: uses /home/veron but does not "
+                      f"depends-on device-nodes, which bind-mounts it")
+                ok = False; _bad += 1
+    if not _bad:
+        print("  ok    everything using /home/veron waits for device-nodes")
+
+    # A MARKER THE GUEST CAN NEVER EMIT MAKES ITS CHECK USELESS.
+    #
+    # The desktop step feeds commands to a serial console with printf, so a
+    # `%s` meant for the GUEST's printf must be written `%%s` -- otherwise the
+    # OUTER printf consumes it and the guest receives
+    #
+    #     printf "VERONBROWSER\\n" "$?"
+    #
+    # which prints the marker with no exit code appended. The check then looks
+    # for VERONBROWSER0 or VERONBROWSER1, finds neither, and reports "no
+    # marker at all" -- failing the build for a reason that has nothing to do
+    # with the browser. That cost a full CI run.
+    #
+    # THE ROUND TRIP IS RUN, NOT READ. Each emitting line is executed to see
+    # what the guest would receive, and that is executed to see what comes
+    # back. Inspecting the source for `%%` would not catch a line that is
+    # correctly escaped and still wrong.
+    _wf = "../../.github/workflows/stage5-spike-amd64.yml"
+    if os.path.exists(_wf):
+        _bad = 0
+        for _i, _ln in enumerate(open(_wf, encoding="utf-8"), 1):
+            _t = _ln.strip()
+            if not _t.startswith("printf '") or "$?" not in _t:
+                continue
+            try:
+                _sent = subprocess.run(["sh", "-c", _t], capture_output=True,
+                                       text=True, timeout=10).stdout
+                _got = subprocess.run(["sh", "-c", _sent], capture_output=True,
+                                      text=True, timeout=10).stdout.strip()
+            except Exception as _e:
+                print(f"  FAIL  {_wf}:{_i}: could not run the marker: {_e}")
+                ok = False; _bad += 1
+                continue
+            # the reply must end in a digit -- the exit code the check reads
+            if not _got or not _got[-1].isdigit():
+                print(f"  FAIL  {_wf}:{_i}: marker reply {_got!r} carries no "
+                      f"exit code -- a `%s` for the guest needs `%%s` here")
+                ok = False; _bad += 1
+        if not _bad:
+            print("  ok    every console marker round-trips with its exit code")
+
+    # A HEADER IS READ TOP TO BOTTOM AND SO IS THIS.
+    #
+    # A declaration was added next to the code it exists for -- which is where
+    # a reader would look -- and above the typedef that names its argument:
+    #
+    #     wpe-veron-private.h:42:35: error: unknown type name 'VeronSeat'
+    #
+    # 129 packages restored, then a compile failure on line 42 of a header.
+    # There is no compiler here to catch that, so the rule is modelled: every
+    # Veron* type used in a declaration must be introduced by an earlier
+    # typedef or G_DECLARE macro. Grouping by purpose is worth less than
+    # declaring after the types you mention.
+    _hdrs = sorted(glob.glob("packages/*/files/*.h"))
+    _bad = 0
+    _local = re.compile(r"\b(Veron[A-Za-z]+)\b")
+    for _h in _hdrs:
+        _introduced = set()
+        for _i, _ln in enumerate(open(_h, encoding="utf-8"), 1):
+            _st = _ln.strip()
+            if _st.startswith(("*", "/*", "//", "#")):
+                continue
+            # A TYPEDEF NEED NOT FIT ON ONE LINE, and the first version of
+            # this check assumed it did -- flagging VeronChromeHit, which is a
+            # perfectly correct multi-line `typedef enum { ... } Name;`. A
+            # check that fails on working code gets switched off, so any
+            # closing `} Name;` introduces the name too.
+            for _m in re.finditer(r"typedef\s+struct\s+\S+\s+(\w+);", _ln):
+                _introduced.add(_m.group(1))
+            for _m in re.finditer(r"^\s*\}\s*(\w+)\s*;", _ln):
+                _introduced.add(_m.group(1))
+            for _m in re.finditer(r"G_DECLARE_\w+\(\s*(\w+)", _ln):
+                _introduced.add(_m.group(1))
+            if "(" in _st and ";" in _st:
+                for _n in sorted(set(_local.findall(_st))):
+                    if _n not in _introduced:
+                        print(f"  FAIL  {_h}:{_i}: `{_n}` is used before any "
+                              f"typedef introduces it")
+                        ok = False; _bad += 1
+    if not _bad:
+        print(f"  ok    every header declares types before using them "
+              f"({len(_hdrs)} header(s))")
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 
@@ -5471,6 +5782,14 @@ def build_parser():
 
     p = sub.add_parser("manifest", help="every installed path -> its package")
     p.set_defaults(fn=cmd_manifest)
+
+    p = sub.add_parser("verify", help="does a tree match the manifest for it")
+    p.add_argument("--manifest", required=True, help="files.tsv to check against")
+    p.add_argument("--root", default="/", help="the tree to check (default /)")
+    p.add_argument("--only", help="file of paths to check, one per line")
+    p.add_argument("--show", type=int, default=20, help="how many to list")
+    p.add_argument("--quiet", action="store_true", help="no progress output")
+    p.set_defaults(fn=cmd_verify)
 
     p = sub.add_parser("update", help="what an update between two manifests would do")
     p.add_argument("--old", required=True, help="the running system's files.tsv")

@@ -37,9 +37,6 @@ struct wl_data_device_manager *wpeVeronDisplayGetDataDeviceManager(WPEDisplayVer
 G_DECLARE_FINAL_TYPE(WPEClipboardVeron, wpe_clipboard_veron, WPE, CLIPBOARD_VERON, WPEClipboard)
 WPEClipboard *wpeVeronClipboardNew(WPEDisplayVeron *display);
 
-/* THE LAST INPUT SERIAL, WHICH set_selection REQUIRES. A compositor rejects a
- * selection claimed with a serial it did not issue, and does so silently. */
-guint32 wpeVeronSeatGetLastSerial(VeronSeat *seat);
 
 struct wl_surface       *wpeVeronToplevelGetPageSurface  (WPEToplevelVeron *toplevel);
 void                     wpeVeronToplevelResizePage      (WPEToplevelVeron *toplevel,
@@ -71,6 +68,22 @@ void         wpeVeronCursorResetOnEnter(VeronCursor *cursor,
  * reaching into the seat struct. */
 struct wl_pointer *wpeVeronSeatGetPointer      (VeronSeat *seat);
 guint32            wpeVeronSeatGetEnterSerial  (VeronSeat *seat);
+
+/* THE LAST INPUT SERIAL, WHICH wl_data_device.set_selection REQUIRES -- a
+ * compositor silently rejects a selection claimed with a serial it did not
+ * issue. Distinct from the ENTER serial above, which is what set_cursor
+ * insists on instead.
+ *
+ * DECLARED HERE AND NOT EARLIER IN THE FILE. It was first put above, next to
+ * the clipboard declarations it exists for, which is where a reader would
+ * look -- and above the `typedef struct _VeronSeat VeronSeat` that names the
+ * argument, so the build failed with
+ *
+ *     wpe-veron-private.h:42:35: error: unknown type name 'VeronSeat'
+ *
+ * Grouping by what a function is for is worth less than declaring it after
+ * the types it mentions. */
+guint32            wpeVeronSeatGetLastSerial   (VeronSeat *seat);
 
 VeronSeat *wpeVeronSeatNew        (WPEDisplayVeron *display, struct wl_seat *seat);
 void       wpeVeronSeatFree       (VeronSeat *seat);

@@ -12,11 +12,14 @@ sha256    = "n/a -- the source is in this repository; the commit is the pin"
 signature = "n/a -- provenance is the commit that carries these files"
 crosschecked_against = []
 
+# veron-filechooser AT RUNTIME. `<input type="file">` spawns
+# /usr/bin/veron-filechooser by absolute path; an image without it has an
+# upload button that fails with a spawn error instead of opening a dialog.
 [deps]
 build        = ["wpewebkit", "wpe-platform-veron", "wayland", "cairo", "glib",
                 "libxkbcommon", "libsoup", "pkgconf"]
 link         = ["wpewebkit", "wayland", "cairo", "glib", "libxkbcommon", "libsoup", "wpe-platform-veron"]
-runtime      = ["wpewebkit", "wpe-platform-veron"]
+runtime      = ["wpewebkit", "wpe-platform-veron", "veron-filechooser"]
 optional_off = []
 
 [declared]

@@ -513,6 +513,212 @@ static void browserSetUserAgent(WebKitWebView *view)
 
 /* ---- main -------------------------------------------------------------- */
 
+
+/* ---------------------------------------------------------------------------
+ * Downloads.
+ *
+ * WebKit DOES THE TRANSFER AND WE ONLY CHOOSE WHERE IT LANDS. Without a
+ * decide-destination handler WebKit has nowhere to put the bytes, so clicking
+ * a download link did nothing at all -- no file, no error, no sign anything
+ * had been asked for.
+ * ------------------------------------------------------------------------ */
+
+/* A NAME THAT DOES NOT OVERWRITE SOMETHING. Two downloads of the same file
+ * must not silently clobber, and a page supplies the suggested name, so the
+ * name is attacker-influenced. The counter stops at 999 rather than looping
+ * forever on a directory that cannot be written to. */
+static char *veronDownloadPath(const char *dir, const char *name)
+{
+    char *base = g_path_get_basename(name && *name ? name : "download");
+
+    /* A SUGGESTED FILENAME IS UNTRUSTED INPUT. g_path_get_basename strips any
+     * directory component, so "../../etc/passwd" becomes "passwd" and the
+     * file cannot escape the downloads directory however the name is spelled. */
+    if (!*base || !g_strcmp0(base, ".") || !g_strcmp0(base, "..")) {
+        g_free(base);
+        base = g_strdup("download");
+    }
+
+    char *path = g_build_filename(dir, base, NULL);
+    if (!g_file_test(path, G_FILE_TEST_EXISTS)) {
+        g_free(base);
+        return path;
+    }
+    g_free(path);
+
+    char *dot = strrchr(base, '.');
+    char *stem = dot && dot != base ? g_strndup(base, dot - base)
+                                    : g_strdup(base);
+    const char *ext = dot && dot != base ? dot : "";
+
+    for (int i = 1; i < 1000; i++) {
+        char *try = g_strdup_printf("%s/%s-%d%s", dir, stem, i, ext);
+        if (!g_file_test(try, G_FILE_TEST_EXISTS)) {
+            g_free(stem); g_free(base);
+            return try;
+        }
+        g_free(try);
+    }
+    g_free(stem); g_free(base);
+    return NULL;
+}
+
+static gboolean onDecideDestination(WebKitDownload *download,
+                                    const char *suggested, gpointer data)
+{
+    Browser *b = data;
+
+    /* $HOME/Downloads, CREATED IF ABSENT. A first boot has no such directory
+     * and a download that fails because of that is indistinguishable, to the
+     * person clicking, from a download that does nothing. */
+    const char *home = g_get_home_dir();
+    char *dir = g_build_filename(home ? home : "/tmp", "Downloads", NULL);
+    g_mkdir_with_parents(dir, 0755);
+
+    char *path = veronDownloadPath(dir, suggested);
+    if (!path) {
+        g_warning("veron: no free name for %s in %s", suggested, dir);
+        webkit_download_cancel(download);
+        g_free(dir);
+        return TRUE;
+    }
+
+    /* AN ABSOLUTE PATH, NOT A URI, AND UNDER THIS API A URI IS REJECTED.
+     * Checked against WebKitDownload.cpp:526 rather than remembered: with
+     * ENABLE(2022_GLIB_API) -- which WPE 2.52 builds with -- the function
+     * begins
+     *
+     *     g_return_if_fail(g_path_is_absolute(destination));
+     *
+     * and the older branch that accepted "file://" is compiled out. So a URI
+     * here would trip a glib assertion and set no destination at all.
+     * g_build_filename on g_get_home_dir() is absolute, which satisfies it. */
+    webkit_download_set_destination(download, path);
+
+    /* NO VISIBLE FEEDBACK YET, AND THAT IS A REAL GAP. The chrome strip has
+     * no status line -- there is veron_chrome_set_url, set_loading and
+     * set_navigation and nothing that shows a message -- so a download is
+     * silent from the person's side except for the file appearing. Adding a
+     * status area means layout, drawing and clearing in chrome.c, which is
+     * the next increment rather than something to bolt on here. Until then
+     * this is at least visible in the log.
+     *
+     * The `b` parameter is kept for when there IS somewhere to put this. */
+    (void)b;
+    g_message("veron-download: %s -> %s", suggested ? suggested : "?", path);
+
+    g_free(path);
+    g_free(dir);
+    return TRUE;
+}
+
+static void onDownloadFinished(WebKitDownload *download, gpointer data)
+{
+    (void)data;
+    const char *dest = webkit_download_get_destination(download);
+    g_message("veron-download: finished %s", dest ? dest : "?");
+}
+
+static void onDownloadFailed(WebKitDownload *download, GError *error,
+                             gpointer data)
+{
+    (void)data;
+    g_warning("veron-download: failed: %s",
+              error ? error->message : "unknown");
+}
+
+static void onDownloadStarted(WebKitWebContext *context,
+                              WebKitDownload *download, gpointer data)
+{
+    g_signal_connect(download, "decide-destination",
+                     G_CALLBACK(onDecideDestination), data);
+    g_signal_connect(download, "finished", G_CALLBACK(onDownloadFinished), data);
+    g_signal_connect(download, "failed",   G_CALLBACK(onDownloadFailed),   data);
+}
+
+/* ---------------------------------------------------------------------------
+ * The file chooser.
+ *
+ * THE DEFAULT HANDLER RUNS A GtkFileChooserDialog, which does not exist here.
+ * So `<input type="file">` was inert: clicking it did nothing and the page
+ * had no way to know why. Returning TRUE from this handler stops the default
+ * from being reached at all.
+ * ------------------------------------------------------------------------ */
+static gboolean onRunFileChooser(WebKitWebView *view,
+                                 WebKitFileChooserRequest *request,
+                                 gpointer data)
+{
+    gboolean multiple = webkit_file_chooser_request_get_select_multiple(request);
+
+    char *argv[8];
+    int n = 0;
+    argv[n++] = (char *)"/usr/bin/veron-filechooser";
+    argv[n++] = (char *)"--title";
+    argv[n++] = (char *)(multiple ? "Select files to upload"
+                                  : "Select a file to upload");
+    if (multiple)
+        argv[n++] = (char *)"--multiple";
+    argv[n] = NULL;
+
+    /* SYNCHRONOUS, BECAUSE THE PAGE IS WAITING. The request must be answered
+     * -- selected or cancelled -- and WebKit holds the element until it is.
+     * The browser's own loop is blocked meanwhile, which is what a modal file
+     * dialog means everywhere else too.
+     *
+     * G_SPAWN_SEARCH_PATH IS NOT USED. The absolute path is spelled out so
+     * this cannot pick up a different veron-filechooser from a PATH the
+     * session happened to inherit. */
+    char *out = NULL;
+    int status = 0;
+    GError *err = NULL;
+
+    if (!g_spawn_sync(NULL, argv, NULL, G_SPAWN_DEFAULT, NULL, NULL,
+                      &out, NULL, &status, &err)) {
+        g_warning("veron: could not run the file chooser: %s",
+                  err ? err->message : "unknown");
+        g_clear_error(&err);
+        webkit_file_chooser_request_cancel(request);
+        return TRUE;
+    }
+
+    /* A NONZERO EXIT IS A CANCELLATION, NOT AN ERROR. The chooser exits 1
+     * when nothing was chosen, which is the ordinary case of a person
+     * changing their mind. */
+    if (!g_spawn_check_wait_status(status, NULL) || !out || !*out) {
+        g_free(out);
+        webkit_file_chooser_request_cancel(request);
+        return TRUE;
+    }
+
+    char **lines = g_strsplit(out, "\n", -1);
+    GPtrArray *files = g_ptr_array_new();
+    for (int i = 0; lines[i]; i++)
+        if (*lines[i])
+            g_ptr_array_add(files, lines[i]);
+    g_ptr_array_add(files, NULL);
+
+    /* WebKit COPIES THE ARRAY (g_strdup per entry, WebKitFileChooserRequest.cpp
+     * :323), so freeing ours immediately after is correct.
+     *
+     * IT ALSO PERCENT-DECODES WHAT WE PASS. The same loop runs each string
+     * through PAL::decodeURLEscapeSequences even though the documented
+     * contract is "paths to local files" -- so a file genuinely named
+     * `report%20final.pdf` reaches the page as `report final.pdf` and fails
+     * to open. Pre-encoding to compensate would corrupt every ordinary path,
+     * so this is recorded and left alone: it is upstream's behaviour, and the
+     * affected filenames are rare. */
+    if (files->len > 1)
+        webkit_file_chooser_request_select_files(
+            request, (const char * const *)files->pdata);
+    else
+        webkit_file_chooser_request_cancel(request);
+
+    g_ptr_array_free(files, TRUE);
+    g_strfreev(lines);
+    g_free(out);
+    return TRUE;
+}
+
 int main(int argc, char **argv)
 {
     /* THE BACKEND IS NAMED EXPLICITLY rather than left to priority. A browser
@@ -648,6 +854,13 @@ int main(int argc, char **argv)
     g_signal_connect(b.webView, "load-changed",  G_CALLBACK(onLoadChanged),  &b);
     g_signal_connect(b.webView, "close",         G_CALLBACK(onWebViewClose), &b);
     g_signal_connect(wpeView,   "closed",        G_CALLBACK(onViewClosed),   &b);
+    g_signal_connect(b.webView, "run-file-chooser",
+                     G_CALLBACK(onRunFileChooser), &b);
+
+    /* THE DOWNLOAD SIGNAL IS ON THE CONTEXT, NOT THE VIEW, because a download
+     * outlives the page that started it -- and may outlive the view. */
+    g_signal_connect(webkit_web_view_get_context(b.webView), "download-started",
+                     G_CALLBACK(onDownloadStarted), &b);
 
     const char *start = argc > 1 ? argv[1] : "https://duckduckgo.com";
     char *uri = veronResolveInput(start);
