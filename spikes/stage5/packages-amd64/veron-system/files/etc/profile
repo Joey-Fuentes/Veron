@@ -29,6 +29,36 @@ export TERM=${TERM:-linux}
 # The compositor was running the whole time. Only the shell could not find it.
 export XDG_RUNTIME_DIR=/run/user/1000
 
+# WAYLAND_DISPLAY, WHICH NOTHING IN THIS SYSTEM SET AT ALL.
+#
+# wl_display_connect(NULL) reads this variable, and every graphical program
+# here goes through it. labwc exports it to processes IT spawns, but a shell
+# on a VT is a separate dinit service and inherits nothing from the
+# compositor -- so anything launched from a terminal died with
+#
+#     Failed to connect to display of type wpe-display-veron:
+#     veron: no Wayland display
+#
+# which reads as a backend fault and is a missing environment variable. Fixing
+# XDG_RUNTIME_DIR alone was not enough: the runtime dir says WHERE to look and
+# this says WHAT to look for, and both have to be right.
+#
+# THE SOCKET IS DISCOVERED, NOT ASSUMED. labwc takes wayland-0 when it is
+# free and wayland-1 if something else holds it, so hardcoding wayland-0 is
+# right until the day it is not. The first socket in the runtime directory is
+# the compositor's; if there is none, the variable is left unset and the
+# error message is the honest one about there being no display.
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    for _sock in "$XDG_RUNTIME_DIR"/wayland-[0-9]*; do
+        case "$_sock" in *.lock) continue ;; esac
+        [ -S "$_sock" ] || continue
+        WAYLAND_DISPLAY=${_sock##*/}
+        export WAYLAND_DISPLAY
+        break
+    done
+    unset _sock
+fi
+
 # XDG_CONFIG_DIRS, BECAUSE labwc INSTALLS ITS CONFIG AS DOCUMENTATION.
 #
 # meson.build:27 puts rc.xml, menu.xml and themerc in

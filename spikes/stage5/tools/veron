@@ -5649,6 +5649,32 @@ def cmd_selftest(a):
         print(f"  ok    every header declares types before using them "
               f"({len(_hdrs)} header(s))")
 
+    # A GRAPHICAL PROGRAM NEEDS BOTH XDG_RUNTIME_DIR AND WAYLAND_DISPLAY.
+    #
+    # wl_display_connect(NULL) reads WAYLAND_DISPLAY; the runtime dir says
+    # WHERE to look and that says WHAT to look for. Nothing in this system set
+    # the second one at all, and because labwc exports it only to processes it
+    # spawns, a shell on a VT -- a separate dinit service -- inherited
+    # nothing. Every launch from a terminal died with
+    #
+    #     Failed to connect to display of type wpe-display-veron:
+    #     veron: no Wayland display
+    #
+    # which reads as a backend fault. Fixing XDG_RUNTIME_DIR alone was not
+    # enough and cost a second CI run to discover.
+    _bad = 0
+    for _prof in sorted(glob.glob("packages*/veron-system/files/etc/profile")):
+        _code = "\n".join(l for l in open(_prof, encoding="utf-8").read().split("\n")
+                          if not l.lstrip().startswith("#"))
+        for _var in ("XDG_RUNTIME_DIR", "WAYLAND_DISPLAY"):
+            if _var not in _code:
+                print(f"  FAIL  {_prof}: never sets {_var}, without which "
+                      f"nothing graphical launched from a shell can reach "
+                      f"the compositor")
+                ok = False; _bad += 1
+    if not _bad:
+        print("  ok    a login shell gets both the runtime dir and the display")
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 
