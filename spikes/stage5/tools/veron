@@ -1204,6 +1204,15 @@ def cmd_checkpoint(a):
     policy = load_policy()
     roots = roots_from_args(a)
     keys = package_keys(recipes, policy, a.base)
+    # NO dest/ AT ALL IS "NOTHING BUILT", NOT AN ERROR. This step exists to
+    # bank a partial build, so it runs after a failure -- and a failure early
+    # enough to precede the first package (a stale plan, a bad recipe) leaves
+    # the directory uncreated rather than empty. Crashing here turned one
+    # honest error into two, and the traceback landed *after* the real message
+    # in the log, so the second thing looked like the cause.
+    if not os.path.isdir(roots["dest"]):
+        print("VERON-CHECKPOINT-EMPTY  nothing built to record")
+        return 0
     have = {n for n in os.listdir(roots["dest"])
             if os.path.isdir(os.path.join(roots["dest"], n)) and n in keys}
     if not have:
