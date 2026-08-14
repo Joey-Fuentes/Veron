@@ -14,7 +14,11 @@
 # files and hands back wl_buffers, which is the whole reason this backend does
 # not need its own image decoder for the pointer. The theme it reads is the one
 # veron-cursors generates.
-PKGS  = wpe-platform-2.0 wayland-client wayland-cursor glib-2.0 gobject-2.0 gio-2.0 gmodule-2.0 epoxy xkbcommon
+# gio-unix-2.0 FOR THE CLIPBOARD'S PIPE. Pasting reads the other client's
+# bytes off a file descriptor, and g_unix_input_stream_new plus
+# g_unix_open_pipe live in the gio-unix and glib-unix headers rather than in
+# plain gio-2.0.
+PKGS  = wpe-platform-2.0 wayland-client wayland-cursor glib-2.0 gobject-2.0 gio-2.0 gio-unix-2.0 gmodule-2.0 epoxy xkbcommon
 CFLAGS  += -O2 -g -fPIC -Wall $(shell pkg-config --cflags $(PKGS))
 # -soname SO THE BROWSER CAN LINK THIS. veron-browser calls
 # wpe_toplevel_veron_set_chrome_height and friends directly; without a soname
@@ -37,7 +41,7 @@ GEN = xdg-shell-client-protocol.h xdg-shell-protocol.c \
 
 OBJS = wpe-display-veron.o wpe-toplevel-veron.o wpe-view-veron.o \
        wpe-veron-seat.o wpe-veron-shm.o wpe-veron-source.o \
-       wpe-veron-cursor.o \
+       wpe-veron-cursor.o wpe-veron-clipboard.o \
        xdg-shell-protocol.o linux-dmabuf-unstable-v1-protocol.o \
        xdg-decoration-unstable-v1-protocol.o
 

@@ -47,12 +47,17 @@ struct _WPEDisplayVeron {
      * (WPEToplevelWayland.cpp:569). */
     struct zxdg_decoration_manager_v1 *xdgDecorationManager;
 
+    /* COPY AND PASTE. Without this bound the browser is sealed off from the
+     * system clipboard in both directions -- see wpe-veron-clipboard.c. */
+    struct wl_data_device_manager *dataDeviceManager;
+
     EGLDisplay eglDisplay;
     GSource   *eventSource;
     VeronSeat *seat;
     /* CREATED LAZILY, AFTER connect(), because wl_cursor_theme_load needs the
      * shm the registry supplies and the registry has not run at construction. */
     VeronCursor *cursor;
+    WPEClipboard *clipboard;
 };
 
 G_DEFINE_TYPE_WITH_CODE(WPEDisplayVeron, wpe_display_veron, WPE_TYPE_DISPLAY,
@@ -89,6 +94,13 @@ static void registryGlobal(void *data, struct wl_registry *registry, uint32_t na
          * this the browser is closed as unresponsive some seconds after it
          * starts, which looks like a crash and is not one. */
         xdg_wm_base_add_listener(display->xdgWMBase, &xdgWMBaseListener, display);
+    } else if (!strcmp(interface, "wl_data_device_manager")) {
+        /* VERSION 3, WHICH IS WHAT THE SELECTION PROTOCOL NEEDS. Later
+         * versions add drag-and-drop actions this backend does not implement;
+         * asking for more than we use would make a compositor offering only
+         * version 3 fail to bind at all. */
+        display->dataDeviceManager = wl_registry_bind(registry, name,
+            &wl_data_device_manager_interface, MIN(version, 3));
     } else if (!strcmp(interface, "zxdg_decoration_manager_v1")) {
         display->xdgDecorationManager = wl_registry_bind(registry, name,
             &zxdg_decoration_manager_v1_interface, 1);
@@ -230,6 +242,7 @@ static void wpe_display_veron_init(WPEDisplayVeron *self)
 static void wpe_display_veron_dispose(GObject *object)
 {
     WPEDisplayVeron *self = WPE_DISPLAY_VERON(object);
+    g_clear_object(&self->clipboard);
     g_clear_pointer(&self->cursor, wpeVeronCursorFree);
     g_clear_pointer(&self->seat, wpeVeronSeatFree);
     g_clear_pointer(&self->eventSource, wpeVeronEventSourceFree);
@@ -239,6 +252,18 @@ static void wpe_display_veron_dispose(GObject *object)
         self->wlDisplay = NULL;
     }
     G_OBJECT_CLASS(wpe_display_veron_parent_class)->dispose(object);
+}
+
+/* CREATED ON FIRST USE, NOT AT connect(). WPEClipboard's constructor needs
+ * the seat and the data device manager, and both arrive from the registry --
+ * so building it during connect() would race the roundtrip that populates
+ * them. WebKit asks for the clipboard the first time a page touches it. */
+static WPEClipboard *wpeDisplayVeronGetClipboard(WPEDisplay *display)
+{
+    WPEDisplayVeron *self = WPE_DISPLAY_VERON(display);
+    if (!self->clipboard)
+        self->clipboard = wpeVeronClipboardNew(self);
+    return self->clipboard;
 }
 
 static void wpe_display_veron_class_init(WPEDisplayVeronClass *klass)
@@ -251,6 +276,7 @@ static void wpe_display_veron_class_init(WPEDisplayVeronClass *klass)
     displayClass->create_toplevel = wpeDisplayVeronCreateToplevel;
     displayClass->get_egl_display = wpeDisplayVeronGetEGLDisplay;
     displayClass->get_keymap      = wpeDisplayVeronGetKeymap;
+    displayClass->get_clipboard   = wpeDisplayVeronGetClipboard;
 }
 
 /* ---- the GIO module entry points ------------------------------------
@@ -337,4 +363,9 @@ VeronCursor *wpeVeronDisplayGetCursor(WPEDisplayVeron *display)
 VeronSeat *wpeVeronDisplayGetVeronSeat(WPEDisplayVeron *display)
 {
     return display ? display->seat : NULL;
+}
+
+struct wl_data_device_manager *wpeVeronDisplayGetDataDeviceManager(WPEDisplayVeron *d)
+{
+    return d ? d->dataDeviceManager : NULL;
 }

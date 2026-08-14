@@ -827,6 +827,14 @@ guint32 wpeVeronSeatGetEnterSerial(VeronSeat *seat)
     return seat ? seat->enterSerial : 0;
 }
 
+/* THE MOST RECENT SERIAL FROM ANY INPUT EVENT, which is what
+ * wl_data_device.set_selection wants -- unlike set_cursor, which insists on
+ * the pointer ENTER serial specifically. */
+guint32 wpeVeronSeatGetLastSerial(VeronSeat *seat)
+{
+    return seat ? seat->lastSerial : 0;
+}
+
 WPEKeymap *wpeVeronSeatGetKeymap(VeronSeat *seat)
 {
     return seat ? seat->keymap : NULL;

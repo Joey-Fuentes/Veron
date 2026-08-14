@@ -30,6 +30,16 @@ struct wl_shm           *wpeVeronDisplayGetShm           (WPEDisplayVeron *displ
 struct wl_seat          *wpeVeronDisplayGetSeat          (WPEDisplayVeron *display);
 struct zwp_linux_dmabuf_v1 *wpeVeronDisplayGetLinuxDMABuf(WPEDisplayVeron *display);
 struct zxdg_decoration_manager_v1 *wpeVeronDisplayGetDecorationManager(WPEDisplayVeron *display);
+struct wl_data_device_manager *wpeVeronDisplayGetDataDeviceManager(WPEDisplayVeron *display);
+
+/* ---- the clipboard ---- */
+#define WPE_TYPE_CLIPBOARD_VERON (wpe_clipboard_veron_get_type())
+G_DECLARE_FINAL_TYPE(WPEClipboardVeron, wpe_clipboard_veron, WPE, CLIPBOARD_VERON, WPEClipboard)
+WPEClipboard *wpeVeronClipboardNew(WPEDisplayVeron *display);
+
+/* THE LAST INPUT SERIAL, WHICH set_selection REQUIRES. A compositor rejects a
+ * selection claimed with a serial it did not issue, and does so silently. */
+guint32 wpeVeronSeatGetLastSerial(VeronSeat *seat);
 
 struct wl_surface       *wpeVeronToplevelGetPageSurface  (WPEToplevelVeron *toplevel);
 void                     wpeVeronToplevelResizePage      (WPEToplevelVeron *toplevel,
