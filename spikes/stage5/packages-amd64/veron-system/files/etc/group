@@ -1,5 +1,8 @@
 root:x:0:
-tty:x:5:
+# tty ADMITS THE CONSOLE SHELL. devtmpfs leaves /dev/tty* as root:tty 0620,
+# and the getty runs as veron now -- so membership here is what lets it open
+# the terminal at all.
+tty:x:5:veron
 # video IS THE SEAT GROUP, AND THAT IS WHY IT MATTERS MOST. seatd runs as
 # `seatd -g video` (etc/dinit.d/seatd), so membership here is what lets the
 # compositor open /run/seatd.sock at all. Without it labwc reports no session

@@ -17,7 +17,28 @@
 # real kernel as PATH=/sbin:/usr/sbin:/bin:/usr/bin, which is busybox's
 # built-in default and the REVERSE of the one /etc/profile sets. See
 # scripts/console-shell for why that ordering matters.
+# run-as = veron, LIKE EVERYTHING ELSE A PERSON TOUCHES.
+#
+# This was the last thing in the session running as uid 0, and it was the
+# largest hole in moving the desktop off root: a shell on a VT with no
+# authentication in front of it is root for anyone who presses Ctrl+Alt+F2.
+# There is no su, no sudo and no doas in this image, and no /etc/shadow for
+# busybox su to consult, so the shell being unprivileged is the whole of the
+# boundary.
+#
+# THE RECOVERY PATH IS DELIBERATE AND IS NOT HERE. A machine that needs root
+# gets it from GRUB with `rdinit=/bin/busybox sh`, which requires physical
+# access and a reboot. Anything privileged the running system needs is a dinit
+# service in this directory -- root-owned, unwritable by veron, and startable
+# through /run/dinitctl by group power.
+#
+# IT NEEDS THE TTY TO BE OPENABLE. devtmpfs creates /dev/tty* as root:tty
+# 0620, which a non-root getty cannot use; the device-nodes service regroups
+# the one this will land on. If that service did not run, this fails to start
+# and says so rather than silently falling back to root.
 type = process
 command = /bin/busybox getty -n -l /etc/dinit.d/scripts/console-shell 115200 ttyAMA0
+run-as = veron
 restart = true
 depends-on = early-filesystems
+depends-on = device-nodes

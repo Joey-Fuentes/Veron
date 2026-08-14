@@ -80,6 +80,34 @@ if [ -S /run/dinitctl ]; then
     echo "  /run/dinitctl -> power 0660"
 fi
 
+# THE CONSOLE TTY, WHICH THE SHELL RUNS AS veron ON.
+#
+# devtmpfs creates /dev/tty* as root:tty 0620 -- writable by group tty, not
+# readable -- and a getty needs both. This regroups the device the console
+# service will actually use, which is tty2 when console= names a virtual
+# terminal (the compositor has the one console= points at) and the serial line
+# otherwise.
+#
+# THE SAME RULE THE SERVICE USES, DUPLICATED, AND THAT IS A REAL SMELL. If
+# scripts/console-getty changes which device it picks and this does not, the
+# console service fails to start with a permission error and nothing explains
+# why. The right shape is one script exporting the choice; this is the smaller
+# change and the duplication is written down rather than hidden.
+CTTY=
+for w in $(cat /proc/cmdline 2>/dev/null); do
+    case "$w" in console=*) CTTY="${w#console=}"; CTTY="${CTTY%%,*}" ;; esac
+done
+[ -n "$CTTY" ] || CTTY=tty1
+case "$CTTY" in tty0|tty1) CTTY=tty2 ;; esac
+
+if [ -c "/dev/$CTTY" ]; then
+    /bin/busybox chgrp tty "/dev/$CTTY" 2>/dev/null
+    /bin/busybox chmod 0660 "/dev/$CTTY" 2>/dev/null
+    echo "  /dev/$CTTY -> tty 0660 (console shell)"
+else
+    echo "  /dev/$CTTY absent -- the console service will report it"
+fi
+
 # THE HOME DIRECTORY, because /home is on the read-only image with a tmpfs
 # overlay and nothing has created it. Owned by the user or nothing they run
 # can write a config.

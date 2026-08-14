@@ -41,6 +41,21 @@ done
 # with no arguments ends up. Naming it beats exiting, which would loop.
 [ -n "$TTY" ] || TTY=tty1
 
+# A VIRTUAL TERMINAL IS SHARED WITH THE COMPOSITOR; A SERIAL LINE IS NOT.
+#
+# console=tty0 on a laptop means "the screen", and labwc takes that same VT --
+# so a getty following console= lands underneath the desktop and is
+# unreachable. Ctrl+Alt+F1 shows the compositor and F2 upward show nothing,
+# because nothing is running there. Moving the shell to tty2 gives the desktop
+# F1 and the shell F2, which is the arrangement every distribution uses.
+#
+# SERIAL IS LEFT ALONE. console=ttyS0 (CI, qemu) or ttyAMA0 (aarch64) is a real
+# separate device with no compositor on it, and the boot output and the shell
+# belong on the same line there. Only the VT case is redirected.
+case "$TTY" in
+    tty0|tty1) TTY=tty2 ;;
+esac
+
 # AND IT MUST EXIST. If the named tty is absent, say so ONCE rather than
 # failing and being restarted forever -- the loop is what made the original
 # bug invisible. Sleeping before exit turns a spin into something readable.
