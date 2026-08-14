@@ -28,27 +28,31 @@ set -u
 choice=$(printf 'Cancel\nShut Down\nRestart\n' \
          | fuzzel --dmenu --prompt 'Power: ' 2>/dev/null) || exit 0
 
-# dinit's OWN shutdown, BY ABSOLUTE PATH, AND NOT poweroff OR reboot.
+# dinit's OWN shutdown, BY ABSOLUTE PATH.
 #
-# The dinit package installs exactly one of these three: /usr/sbin/shutdown.
-# There is no poweroff and no reboot, so those names resolved to BUSYBOX
-# applets, which signal PID 1 the way sysvinit expects and dinit does not
-# answer -- the menu ran, the applet returned, and the machine sat there. It
-# looked like the menu was broken and the menu was fine.
+# THE ABSOLUTE PATH IS THE ENTIRE FIX, AND THE FIRST EXPLANATION WRITTEN HERE
+# WAS WRONG. It claimed this image has no poweroff or reboot. It does: dinit
+# installs both, as SYMLINKS to its own shutdown, and shutdown dispatches on
+# argv[0]. files.tsv says so plainly --
 #
-# `reboot -f` works from a shell for the same reason it is the wrong thing
-# here: -f skips init entirely and calls the syscall, so nothing gets a chance
-# to unmount or stop a service. Asking dinit to do it means the shutdown is
-# orderly.
+#     usr/sbin/poweroff  dinit  symlink -> shutdown
+#     usr/sbin/reboot    dinit  symlink -> shutdown
 #
-# BOTH FLAGS WERE TESTED ON THE MACHINE, not read from a man page this project
-# does not ship: `/usr/sbin/shutdown -r` and `/usr/sbin/shutdown -p` both work
-# from foot.
+# -- and the launcher's own Shut Down entry, which calls /usr/sbin/poweroff,
+# has always worked. The claim came from reading dinit's installs.txt, which
+# is one of the listings CI reports as stale; the image itself was never
+# consulted.
 #
-# THE ABSOLUTE PATH IS NOT TIDINESS. This runs from yambar, whose PATH is
-# whatever the session gave it rather than the login shell's, and /bin comes
-# before /usr/sbin in some of them -- which is how busybox won in the first
-# place.
+# WHAT ACTUALLY BROKE was the bare name. This runs from yambar, whose PATH is
+# whatever the session gave it rather than a login shell's, and /bin comes
+# first in some of them -- so `poweroff` found BUSYBOX's applet, which signals
+# PID 1 the way sysvinit expects and dinit does not answer. The menu ran, the
+# applet returned, and the machine sat there.
+#
+# BOTH FLAGS WERE TESTED ON THE MACHINE: `/usr/sbin/shutdown -r` and
+# `/usr/sbin/shutdown -p` both work from foot. Either spelling would do now
+# that the path is absolute; this one names the action rather than relying on
+# argv[0].
 case "$choice" in
     "Shut Down") exec /usr/sbin/shutdown -p ;;
     "Restart")   exec /usr/sbin/shutdown -r ;;

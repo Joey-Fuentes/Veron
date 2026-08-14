@@ -93,6 +93,31 @@ void wpeVeronCursorFree(VeronCursor *c)
     g_free(c);
 }
 
+/* THE POINTER JUST ENTERED AND WAYLAND HAS GIVEN US NO SHAPE.
+ *
+ * wl_pointer.enter does not come with a cursor. The protocol makes the CLIENT
+ * responsible for setting one, and until it does, whatever the compositor last
+ * drew stays on screen. So crossing into the window over a resize edge left
+ * the resize arrow up -- and it stayed up, because WebKit tracks its own
+ * cursor state and only pushes a CHANGE. From its point of view the cursor was
+ * already `default` and there was nothing to say. It corrected itself the
+ * moment the pointer hit a link, because that was a genuine change.
+ *
+ * THE STOCK BACKEND CALLS updateCursor() FROM ITS OWN enter HANDLER
+ * (WPEWaylandSeat.cpp:81) for exactly this reason.
+ *
+ * FORGETTING THE CACHED NAME IS HALF THE FIX. Setting `default` here without
+ * clearing `current` would make the next legitimate `default` request a no-op,
+ * so the arrow would not come back after leaving a link. */
+void wpeVeronCursorResetOnEnter(VeronCursor *c, struct wl_pointer *pointer,
+                                guint32 serial)
+{
+    if (!c)
+        return;
+    g_clear_pointer(&c->current, g_free);
+    wpeVeronCursorSetFromName(c, pointer, serial, "default");
+}
+
 void wpeVeronCursorSetFromName(VeronCursor *c, struct wl_pointer *pointer,
                                guint32 serial, const char *name)
 {

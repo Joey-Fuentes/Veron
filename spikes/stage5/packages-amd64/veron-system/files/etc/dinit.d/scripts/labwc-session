@@ -179,12 +179,24 @@ export XCURSOR_SIZE=24
 # inherits from here.
 export LANG=C.UTF-8
 
-# cd / BECAUSE EVERY CHILD INHERITS THIS PROCESS'S DIRECTORY. dinit runs its
+# cd $HOME BECAUSE EVERY CHILD INHERITS THIS PROCESS'S DIRECTORY. dinit runs its
 # services from /etc/dinit.d and labwc passes that to every terminal, editor
 # and browser launched from the bar. A foot window opening in /etc/dinit.d is
 # the visible symptom; the real one is that anything writing a relative path
 # writes it into the service directory.
-cd / || true
+#
+# THIS USED TO BE `cd /`, WHICH FIXED THE SERVICE DIRECTORY AND STOPPED THERE.
+# The root of a read-only filesystem is no better a place to land than
+# /etc/dinit.d: a terminal opens there, `ls` shows the whole system, and
+# anything saved with a relative path goes to the top of the tree. Setting HOME
+# does not move the working directory -- they are independent, which is why the
+# variable read /home/veron while foot still opened in /.
+#
+# THE FALLBACK MATTERS. If /home/veron does not exist -- device-nodes failed,
+# or this is a boot where the overlay is missing -- `cd` fails and the shell
+# keeps /etc/dinit.d, which is the case this line exists to prevent. So / is
+# the second choice rather than no choice.
+cd "$HOME" 2>/dev/null || cd / || true
 
 # TZ, BECAUSE WITHOUT IT EVERYTHING IS UTC AND ALMOST NOBODY IS.
 #

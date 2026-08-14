@@ -46,7 +46,12 @@ bar:
     - label:
         content:
           string:
-            text: " apps "
+            text: " Apps "
+            # A TINTED PANEL RATHER THAN BARE TEXT. yambar-decorations(5) gives
+            # background, and 55 alpha over the bar's own 1a1a1a reads as a
+            # button without shouting. This is the launcher, so it is the one
+            # left-hand entry that earns emphasis.
+            deco: {background: {color: 4a9eff55}}
             on-click: /usr/bin/fuzzel
     - label:
         content:
@@ -85,8 +90,49 @@ bar:
     # wlroots. Opening a terminal makes an entry appear here, which is the
     # cheapest end-to-end proof that the compositor, the protocol and the bar
     # are all talking.
+    # THE DIVIDER BETWEEN WHAT YOU CLICK AND WHAT YOU SWITCH TO. Everything
+    # left of this launches something; everything right of it is a window that
+    # already exists. They ran together as one undifferentiated row of words.
+    #
+    # U+2502 BOX DRAWINGS LIGHT VERTICAL, which is inside the 2500-269c range
+    # DejaVu covers -- checked with fc-query on the machine rather than hoped
+    # for. A glyph the font lacks would render as a box and look like a bug.
+    - label:
+        content:
+          string: {text: "│", foreground: 505050ff, margin: 6}
+
     - foreign-toplevel:
         content:
+          # THE app-id IS NOT A NAME, and showing it raw was the ugliest thing
+          # on the bar. A window list reading `foot fl_editor org.veron.Browser`
+          # tells the user about D-Bus naming conventions rather than about
+          # their own windows.
+          #
+          # THE LIST IS EXHAUSTIVE, NOT ILLUSTRATIVE, and that is the point.
+          # This image installs a fixed set of programs and only four of them
+          # can produce a toplevel window:
+          #
+          #   foot                        the terminal -- and also Files and
+          #                               Volume, which are `foot nnn` and
+          #                               `foot alsamixer`, so one app-id
+          #   fl_editor                   veron-edit, FLTK's editor example
+          #   org.veron.Browser           veron-browser
+          #   org.wpewebkit.MiniBrowser   WPE's own shell, when launched by hand
+          #
+          # Everything else on the bar and in the launcher is either a
+          # layer-shell surface (yambar, fuzzel, swaybg -- foreign-toplevel
+          # never sees those) or a script with no window at all. So `default`
+          # is a genuine fallback for something new, not the arm that quietly
+          # handles half the cases.
+          #
+          # NESTED MAPS, OUTER ON FOCUS AND INNER ON app-id. Colour and the
+          # underline belong to focus; the text belongs to the application, and
+          # one map cannot express both.
+          #
+          # THE STYLING IS REPEATED PER BRANCH AND THAT IS A REAL COST. yambar
+          # has no styling inheritance, so the accent colour appears in five
+          # places in the activated arm. Changing it means changing all five,
+          # and missing one is invisible until the wrong window is focused.
           map:
             conditions:
               ~activated:
@@ -95,9 +141,42 @@ bar:
                 # three open windows read `fl_editorfootfoot` as one word.
                 # yambar-particles(5) gives margin as shorthand for left-margin
                 # and right-margin.
-                - string: {text: "{app-id}", foreground: 909090ff, margin: 6}
+                - map:
+                    default: {string: {text: "{app-id}", foreground: 909090ff, margin: 8}}
+                    conditions:
+                      app-id == foot:
+                        - string: {text: "Terminal", foreground: 909090ff, margin: 8}
+                      app-id == fl_editor:
+                        - string: {text: "Text Editor", foreground: 909090ff, margin: 8}
+                      app-id == org.veron.Browser:
+                        - string: {text: "Veron Browser", foreground: 909090ff, margin: 8}
+                      app-id == org.wpewebkit.MiniBrowser:
+                        - string: {text: "MiniBrowser", foreground: 909090ff, margin: 8}
               activated:
-                - string: {text: "{app-id}", foreground: ffffffff, margin: 6}
+                # THE FOCUSED WINDOW IS UNDERLINED, NOT JUST BRIGHTER. A weight
+                # difference between 909090 and ffffff is easy to miss at a
+                # glance on a light wallpaper; a 2px rule under the name is not.
+                - map:
+                    default:
+                      string:
+                        text: "{app-id}"
+                        foreground: ffffffff
+                        margin: 8
+                        deco: {underline: {size: 2, color: 4a9effff}}
+                    conditions:
+                      app-id == foot:
+                        - string: {text: "Terminal", foreground: ffffffff, margin: 8,
+                                   deco: {underline: {size: 2, color: 4a9effff}}}
+                      app-id == fl_editor:
+                        - string: {text: "Text Editor", foreground: ffffffff, margin: 8,
+                                   deco: {underline: {size: 2, color: 4a9effff}}}
+                      app-id == org.veron.Browser:
+                        - string: {text: "Veron Browser", foreground: ffffffff, margin: 8,
+                                   deco: {underline: {size: 2, color: 4a9effff}}}
+                      app-id == org.wpewebkit.MiniBrowser:
+                        - string: {text: "MiniBrowser", foreground: ffffffff, margin: 8,
+                                   deco: {underline: {size: 2, color: 4a9effff}}}
+
 
   center:
     # THE CLOCK, IN THE FORM A PERSON READS RATHER THAN THE ONE A LOG USES.
@@ -221,6 +300,19 @@ bar:
         content:
           map:
             on-click: /etc/dinit.d/scripts/wifi-connect
+            # default, BECAUSE THE TAGS DO NOT EXIST YET AT STARTUP.
+            #
+            # A script module has no tags until its script prints its first
+            # set, and wifi-report sleeps 5 seconds between emissions. For
+            # that whole window every redraw produced
+            #
+            #     warn: particles/map.c:90: tag state not found
+            #
+            # scrolling the terminal yambar was started from. A map with no
+            # default has nothing to render and says so, repeatedly, which
+            # reads as a broken module rather than a module waiting.
+            default:
+              string: {text: "wifi", foreground: 707070ff, margin: 6}
             conditions:
               # THE TILE GETS ITS OWN, LARGER FONT. A domino carries up to
               # twelve pips and at the bar's 12px they are a grey smudge --
@@ -292,4 +384,8 @@ bar:
         content:
           string:
             text: " Shutdown "
+            # RED, BECAUSE IT ENDS THE SESSION. The panel is the warning the
+            # old left-click=poweroff binding never gave; the confirmation
+            # menu is the other half.
+            deco: {background: {color: ff000055}}
             on-click: /usr/share/veron/scripts/power-menu

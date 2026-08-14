@@ -49,6 +49,12 @@ void         wpeVeronCursorFree        (VeronCursor *cursor);
 void         wpeVeronCursorSetFromName (VeronCursor *cursor,
                                         struct wl_pointer *pointer,
                                         guint32 serial, const char *name);
+/* CALLED FROM wl_pointer.enter. The protocol hands the client no cursor, so
+ * without this the compositor's last shape persists -- a resize arrow, if the
+ * pointer crossed a window edge on the way in. */
+void         wpeVeronCursorResetOnEnter(VeronCursor *cursor,
+                                        struct wl_pointer *pointer,
+                                        guint32 serial);
 
 /* THE SEAT OWNS THE POINTER AND THE ENTER SERIAL, and set_cursor needs both.
  * The view has neither, which is why these exist rather than the view

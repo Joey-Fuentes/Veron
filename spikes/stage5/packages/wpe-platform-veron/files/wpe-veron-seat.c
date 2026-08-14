@@ -126,6 +126,15 @@ static void pointerEnter(void *data, struct wl_pointer *pointer, uint32_t serial
     seat->lastSerial     = serial;
     seat->enterSerial    = serial;
     seat->pointerSurface = surface;
+
+    /* SET A CURSOR NOW, BECAUSE WAYLAND HAS NOT. Until the client calls
+     * wl_pointer.set_cursor after an enter, whatever the compositor last drew
+     * stays -- so entering over a resize edge kept the resize arrow, and
+     * WebKit never corrected it because it only pushes CHANGES and believed
+     * the cursor was already default. Stock does the same from its own enter
+     * handler (WPEWaylandSeat.cpp:81). */
+    wpeVeronCursorResetOnEnter(wpeVeronDisplayGetCursor(seat->display),
+                               seat->pointer, serial);
     seat->pointerToplevel = wpeVeronToplevelForSurface(surface);
     seat->pointerX = wl_fixed_to_double(sx);
     seat->pointerY = wl_fixed_to_double(sy);
