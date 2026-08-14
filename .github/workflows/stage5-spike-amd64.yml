@@ -1171,6 +1171,7 @@ jobs:
           python3 guest/mkinitramfs.py sysroot out/initramfs.cpio.gz
 
       - name: 'Boot the stage-5 system and run its own tests'
+        id: boot
         if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot }}
         run: |
           set -eu
@@ -1511,6 +1512,7 @@ jobs:
       # gradient with a centred marker precisely so that a rendered desktop and
       # an untouched framebuffer cannot produce the same number.
       - name: 'Screenshot the desktop'
+        id: desktop
         if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot && inputs.boot_system }}
         run: |
           set -eu
@@ -1650,7 +1652,7 @@ jobs:
             printf 'echo ---BROWSER-MINI-VERON---\n'
             printf 'WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-veron.log 2>&1 &\n'
             sleep 40
-            printf 'pidof MiniBrowser > /dev/null && echo MINI-VERON-ALIVE || echo MINI-VERON-DEAD\n'
+            printf 'pidof MiniBrowser > /dev/null; printf "MINIVERON%s\\n" "$?"\n'
             printf 'cat /tmp/browser-mini-veron.log 2>/dev/null\n'
             #
             # RUN A2: THE SAME THING WITH THE MODULE FORCED RESIDENT, WHICH IS
@@ -1687,7 +1689,7 @@ jobs:
             printf 'echo ---BROWSER-MINI-PRELOAD---\n'
             printf 'if pidof MiniBrowser > /dev/null; then echo skipped -- the plain launch survived, residency is fixed; else LD_PRELOAD=/usr/lib/libwpe-display-veron.so WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-preload.log 2>&1 & fi\n'
             sleep 40
-            printf 'pidof MiniBrowser > /dev/null && echo MINI-PRELOAD-ALIVE || echo MINI-PRELOAD-DEAD\n'
+            printf 'pidof MiniBrowser > /dev/null; printf "MINIPRELOAD%s\\n" "$?"\n'
             printf 'cat /tmp/browser-mini-preload.log 2>/dev/null\n'
             # THE FIRST FRAME IS TAKEN HERE, WITH THIS RUN ON SCREEN. It
             # answers a second question the same launch happens to settle:
@@ -1727,7 +1729,7 @@ jobs:
             printf 'echo ---BROWSER-VERON-BROWSER---\n'
             printf '[ -x /usr/bin/veron-browser ] && /usr/bin/veron-browser /usr/share/veron/test.html > /tmp/browser-veron-browser.log 2>&1 &\n'
             sleep 40
-            printf 'pidof veron-browser > /dev/null && echo VERON-BROWSER-ALIVE || echo VERON-BROWSER-DEAD\n'
+            printf 'pidof veron-browser > /dev/null; printf "VERONBROWSER%s\\n" "$?"\n'
             printf 'cat /tmp/browser-veron-browser.log 2>/dev/null\n'
             sleep 5
             #
@@ -1965,11 +1967,68 @@ jobs:
             bad=1
           fi
 
+          # THE BROWSER MUST HAVE SURVIVED, AND THIS DID NOT USED TO CHECK.
+          #
+          # Run 86191621985 printed, for every single launch:
+          #
+          #     Failed to connect to display of type wpe-display-veron:
+          #     veron: no Wayland display
+          #
+          # and the step still passed, because the health check only asked
+          # whether labwc stayed up and no service exited nonzero -- both true.
+          # The whole point of this step is the browser, and the browser was
+          # the one thing it did not look at. The image published.
+          #
+          # THE BROWSER MUST HAVE SURVIVED, AND THE MARKER MUST BE UNFAKEABLE.
+          #
+          # Two things made the obvious version of this check useless. The
+          # serial console reproduces the COMMAND as well as its output, so a
+          # command containing both `echo X-ALIVE` and `echo X-DEAD` makes any
+          # grep for either match every time. And the console wraps at 80
+          # columns, so a marker can arrive split across two lines:
+          #
+          #     veron# pidof veron-browser > /dev/null && echo VERON-BROWSER-ALIVE || echo VERON
+          #     -BROWSER-DEAD
+          #
+          # The emitting side now prints an EXIT CODE into the marker --
+          # `printf "VERONBROWSER%s" "$?"` -- so the echoed command carries
+          # VERONBROWSER%s and only the result carries VERONBROWSER0 or
+          # VERONBROWSER1. Whitespace is stripped before matching so a wrap
+          # cannot hide it either.
+          _flat=$(tr -d ' \t\r\n' < "$O/desktop-console.log")
+          case "$_flat" in
+            *VERONBROWSER1*)
+              echo "  veron-browser DID NOT STAY UP"
+              grep -aE "Failed to connect|no Wayland display|Trace/breakpoint" \
+                "$O/desktop-console.log" | head -6 | sed 's/^/    /'
+              bad=1
+              ;;
+            *VERONBROWSER0*)
+              echo "  veron-browser: alive" ;;
+            *)
+              echo "  veron-browser: NO MARKER AT ALL -- the console script did"
+              echo "    not reach the check, which usually means the boot failed"
+              echo "    before the desktop came up."
+              bad=1
+              ;;
+          esac
+
+          # NO LAUNCH MAY DIE ON THE DISPLAY. A browser that cannot reach the
+          # compositor is the exact failure this step exists to catch, and it
+          # is worth naming separately from "did not stay up" because the cause
+          # is usually the session's environment rather than the browser.
+          if grep -aq "no Wayland display" "$O/desktop-console.log"; then
+            echo "  a launch could not reach the compositor:"
+            grep -a "no Wayland display" "$O/desktop-console.log" | head -3 | sed 's/^/    /'
+            echo "    XDG_RUNTIME_DIR in the shell must match the uid labwc runs as."
+            bad=1
+          fi
+
           if [ "$bad" != 0 ]; then
             echo "VERON-DESKTOP-FAIL  the frame was captured but the session was not healthy"
             exit 1
           fi
-          echo "VERON-DESKTOP-OK  labwc stayed up, the module loaded, no service exited nonzero"
+          echo "VERON-DESKTOP-OK  labwc stayed up, the module loaded, the browser ran"
 
       - name: 'Upload the desktop screenshot'
         if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot && inputs.boot_system }}
@@ -1983,6 +2042,7 @@ jobs:
           if-no-files-found: warn
 
       - name: 'VERON-DHCP -- two instances, one L2 segment'
+        id: nettest
         if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot && inputs.net_test }}
         run: |
           set -eu
@@ -2125,7 +2185,26 @@ jobs:
       # reproduced either way, and an image nobody can download is not more
       # useful for having failed a service.
       - name: 'Publish the image'
-        if: always()
+        # PUBLISHING IS GATED ON THE TESTS THAT RAN, AND IT WAS NOT.
+        #
+        # This said `if: always()`, which meant the image was published no
+        # matter what had failed before it. Run 86191621985 published an image
+        # in which every browser launch died with "no Wayland display" -- the
+        # desktop step did not catch it, and even when a step does fail,
+        # always() published anyway. Two independent holes, and the second one
+        # makes every other gate in this file advisory.
+        #
+        # `!= 'failure'` RATHER THAN `== 'success'`, DELIBERATELY. A step that
+        # was skipped -- boot_system=false, net_test=false, skip_boot=true --
+        # reports 'skipped', and a build that deliberately did not run the
+        # desktop test should still publish. Only a test that RAN AND FAILED
+        # blocks it. Choosing == 'success' here would mean no image could ever
+        # be published without running every optional test.
+        if: ${{ always()
+                && steps.build.outcome == 'success'
+                && steps.boot.outcome != 'failure'
+                && steps.desktop.outcome != 'failure'
+                && steps.nettest.outcome != 'failure' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

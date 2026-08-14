@@ -32,8 +32,20 @@ echo "device-nodes: regrouping for the desktop user"
 # the session depends on.
 if [ -d /dev/snd ]; then
     /bin/busybox chgrp -R audio /dev/snd 2>/dev/null
-    /bin/busybox chmod -R 0660 /dev/snd 2>/dev/null
-    echo "  /dev/snd -> audio 0660"
+    # THE DIRECTORY NEEDS ITS EXECUTE BIT AND THE DEVICES DO NOT.
+    #
+    # `chmod -R 0660 /dev/snd` applied 0660 to /dev/snd ITSELF, and a directory
+    # without +x cannot be traversed. The names still listed -- the directory
+    # was readable -- but every stat inside failed:
+    #
+    #     ls: /dev/snd/controlC0: Permission denied
+    #     alsamixer: cannot open mixer: Permission denied
+    #
+    # which reads as a device permission problem and is not one. 0750 on the
+    # directory, 0660 on the character devices.
+    /bin/busybox chmod 0750 /dev/snd 2>/dev/null
+    /bin/busybox find /dev/snd -type c -exec /bin/busybox chmod 0660 {} + 2>/dev/null
+    echo "  /dev/snd -> audio (dir 0750, nodes 0660)"
 fi
 
 # THE GPU RENDER NODE, which the browser's WebProcess opens for accelerated
@@ -107,6 +119,25 @@ if [ -c "/dev/$CTTY" ]; then
 else
     echo "  /dev/$CTTY absent -- the console service will report it"
 fi
+
+# THE COMPOSITOR LOG, WHICH THE PERSON DEBUGGING IT MUST BE ABLE TO READ.
+#
+# dinit creates /run/labwc.log itself, as root, before dropping to veron for
+# the service -- so the file is root-owned 0644 and the desktop user cannot
+# read it. The CI desktop step hit exactly that:
+#
+#     veron# cat /run/labwc.log
+#     cat: can't open '/run/labwc.log': Permission denied
+#
+# A log that only root can read, on a system with no way to become root, is a
+# log nobody reads. Created here with the right owner so dinit appends to an
+# existing file rather than making one.
+if [ ! -e /run/labwc.log ]; then
+    : > /run/labwc.log 2>/dev/null || true
+fi
+/bin/busybox chown veron:veron /run/labwc.log 2>/dev/null
+/bin/busybox chmod 0644 /run/labwc.log 2>/dev/null
+echo "  /run/labwc.log -> veron"
 
 # THE HOME DIRECTORY, because /home is on the read-only image with a tmpfs
 # overlay and nothing has created it. Owned by the user or nothing they run

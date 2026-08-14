@@ -5056,6 +5056,120 @@ def cmd_selftest(a):
     if not _bad:
         print("  ok    every dinit service file parses as dinit would")
 
+    # EVERY XDG_RUNTIME_DIR IN THE TREE MUST NAME THE SAME uid.
+    #
+    # The desktop moved to uid 1000 and three files were updated; /etc/profile
+    # was not, and kept exporting /run/user/0 -- a directory that no longer
+    # exists. A login shell then had the variable set to nothing useful, and
+    # anything launched from it that needs the compositor failed with a message
+    # about the display rather than the variable:
+    #
+    #     Failed to connect to display of type wpe-display-veron:
+    #     veron: no Wayland display
+    #
+    # The compositor was running fine. Only the shell could not find it. The
+    # uid also has to match the run-as user on the session service, or the
+    # directory is created for one uid and used by another.
+    _seen = {}
+    for _arch in ("packages", "packages-amd64"):
+        _root = f"{_arch}/veron-system/files"
+        if not os.path.isdir(_root):
+            continue
+        for _dir, _sub, _files in os.walk(_root):
+            for _fn in _files:
+                _p = os.path.join(_dir, _fn)
+                if os.path.islink(_p):
+                    continue
+                try:
+                    _t = open(_p, encoding="utf-8").read()
+                except (UnicodeDecodeError, OSError):
+                    continue
+                for _i, _ln in enumerate(_t.split("\n"), 1):
+                    if _ln.lstrip().startswith("#"):
+                        continue
+                    for _m in re.finditer(r"/run/user/(\d+)", _ln):
+                        _seen.setdefault(_m.group(1), []).append(f"{_p}:{_i}")
+    if len(_seen) > 1:
+        print(f"  FAIL  XDG_RUNTIME_DIR names more than one uid: "
+              f"{sorted(_seen)}")
+        for _uid, _where in sorted(_seen.items()):
+            for _w in _where[:4]:
+                print(f"          /run/user/{_uid}  {_w}")
+        ok = False
+    elif _seen:
+        _uid = next(iter(_seen))
+        print(f"  ok    every /run/user path names uid {_uid} "
+              f"({len(_seen[_uid])} reference(s))")
+
+    # `chmod -R <numeric>` ON A TREE STRIPS THE DIRECTORY'S EXECUTE BIT.
+    #
+    # `chmod -R 0660 /dev/snd` set 0660 on the DIRECTORY as well as the device
+    # nodes, and a directory without +x cannot be traversed. The names still
+    # listed and every stat inside failed:
+    #
+    #     ls: /dev/snd/controlC0: Permission denied
+    #     alsamixer: cannot open mixer: Permission denied
+    #
+    # which looks like a device permission bug and is a directory permission
+    # bug. The symbolic form `g+rwX` -- capital X, execute only where it
+    # already applies -- is safe; a numeric mode with -R is not.
+    _bad = 0
+    for _arch in ("packages", "packages-amd64"):
+        _root = f"{_arch}/veron-system/files"
+        if not os.path.isdir(_root):
+            continue
+        for _dir, _sub, _files in os.walk(_root):
+            for _fn in _files:
+                _p = os.path.join(_dir, _fn)
+                if os.path.islink(_p):
+                    continue
+                try:
+                    _t = open(_p, encoding="utf-8").read()
+                except (UnicodeDecodeError, OSError):
+                    continue
+                for _i, _ln in enumerate(_t.split("\n"), 1):
+                    if _ln.lstrip().startswith("#"):
+                        continue
+                    if re.search(r"chmod\s+-R\s+[0-7]{3,4}\b", _ln):
+                        print(f"  FAIL  {_p}:{_i}: `chmod -R` with a numeric "
+                              f"mode strips the execute bit from directories "
+                              f"-- use g+rwX, or chmod the directory and the "
+                              f"files separately")
+                        ok = False; _bad += 1
+    if not _bad:
+        print("  ok    no recursive numeric chmod can strip a directory's +x")
+
+    # A TLS CLIENT MUST BE TOLD WHERE THE TRUST STORE IS.
+    #
+    # curl was built --with-openssl and nothing else; OpenSSL then looks in its
+    # compiled-in OPENSSLDIR, which this image does not populate. The result
+    # was a failure that reads as a network fault on a machine with working
+    # network:
+    #
+    #     curl: (60) SSL certificate ... unable to get local issuer certificate
+    #
+    # WebKit was fine throughout, because glib-networking carries its own trust
+    # store. ca-certificates installs exactly one file and every TLS client
+    # that does not find it by itself has to name it.
+    _bundle = "/etc/ssl/certs/ca-certificates.crt"
+    for _pkg in ("curl",):
+        _r = f"packages/{_pkg}/recipe.toml"
+        if not os.path.exists(_r):
+            continue
+        _t = open(_r, encoding="utf-8").read()
+        _code = "\n".join(l for l in _t.split("\n")
+                          if not l.lstrip().startswith("#"))
+        if "--with-openssl" in _code and "--with-ca-bundle" not in _code:
+            print(f"  FAIL  {_r}: built --with-openssl but never names a CA "
+                  f"bundle -- add --with-ca-bundle={_bundle}")
+            ok = False
+        elif "--with-ca-bundle" in _code and _bundle not in _code:
+            print(f"  FAIL  {_r}: names a CA bundle that is not {_bundle}, "
+                  f"which is the only one ca-certificates installs")
+            ok = False
+        else:
+            print(f"  ok    {_pkg} names the CA bundle this image installs")
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 

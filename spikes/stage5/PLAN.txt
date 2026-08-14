@@ -735,7 +735,7 @@ package unifdef 2.12
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   35b11859d39f2989fc82b6c7326be57a9fde846651604faa4d82fadf8d45b06b
+  recipe-sha   972dad918f1b279d514a507733b514fef37113af3d1b92f90d635c23f50e56a0
 
   source
     url        this repository
@@ -1658,7 +1658,7 @@ package bash 5.3
 package curl 8.18.0
   group        build-substrate
   license      curl
-  recipe-sha   66e691b67c0ba57b88eaa69df0130545673c1048eeb6d4505c9f6722746e239a
+  recipe-sha   b6ac5527be37a73f9920fcddf3514f5879b2338ddf7e2a1274e4b389455e5bb9
 
   source
     url        https://curl.se/download/curl-8.18.0.tar.xz
@@ -1678,7 +1678,7 @@ package curl 8.18.0
          argv ["tar", "-xf", "dl/curl-8.18.0.tar.xz", "-C", "build/curl-8.18.0"]
     [02] configure
          cwd  build/curl-8.18.0/curl-8.18.0
-         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-openssl", "--with-zlib", "--with-zstd", "--without-libpsl", "--without-libidn2", "--without-brotli", "--without-nghttp2", "--without-librtmp", "--enable-threaded-resolver"]
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-openssl", "--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt", "--with-zlib", "--with-zstd", "--without-libpsl", "--without-libidn2", "--without-brotli", "--without-nghttp2", "--without-librtmp", "--enable-threaded-resolver"]
     [03] build
          cwd  build/curl-8.18.0/curl-8.18.0
          argv ["make", "-j1"]

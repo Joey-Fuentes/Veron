@@ -16,7 +16,18 @@ export TERM=${TERM:-linux}
 # other way would still fail. The service owns the directory; this exports
 # where it is. If the service failed, the variable points at nothing and
 # labwc says so -- which is better than this script silently making one.
-export XDG_RUNTIME_DIR=/run/user/0
+# /run/user/1000, MATCHING THE uid THE DESKTOP RUNS AS.
+#
+# This said /run/user/0 after the session moved to uid 1000, and the directory
+# it named no longer existed. A login shell therefore had XDG_RUNTIME_DIR
+# pointing at nothing, and anything launched from it that needs the compositor
+# failed with a message about the DISPLAY rather than about the variable:
+#
+#     Failed to connect to display of type wpe-display-veron:
+#     veron: no Wayland display
+#
+# The compositor was running the whole time. Only the shell could not find it.
+export XDG_RUNTIME_DIR=/run/user/1000
 
 # XDG_CONFIG_DIRS, BECAUSE labwc INSTALLS ITS CONFIG AS DOCUMENTATION.
 #

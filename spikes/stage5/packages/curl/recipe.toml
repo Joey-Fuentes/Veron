@@ -18,8 +18,23 @@ runtime      = ["zlib", "zstd"]
 optional_off = ["libpsl", "libidn2", "brotli", "nghttp2", "librtmp", "libssh2", "gssapi", "ldap"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--disable-static", "--with-openssl", "--with-zlib", "--with-zstd", "--without-libpsl", "--without-libidn2", "--without-brotli", "--without-nghttp2", "--without-librtmp", "--enable-threaded-resolver"]
+configure_flags = ["--prefix=/usr", "--disable-static", "--with-openssl", "--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt", "--with-zlib", "--with-zstd", "--without-libpsl", "--without-libidn2", "--without-brotli", "--without-nghttp2", "--without-librtmp", "--enable-threaded-resolver"]
 verification    = "none -- upstream suites are not run"
+# --with-ca-bundle IS NOT OPTIONAL ON THIS SYSTEM, and leaving it out produced
+# a failure that looked like a network fault:
+#
+#     curl: (60) SSL certificate ... unable to get local issuer certificate
+#
+# on a machine that was streaming video at the time. WebKit works because
+# glib-networking carries its own trust store; curl asks OpenSSL, and OpenSSL
+# looks in its compiled-in OPENSSLDIR, which nothing in this image populates.
+# The ca-certificates package installs exactly one file --
+# etc/ssl/certs/ca-certificates.crt, confirmed against files.tsv -- so the path
+# is named here rather than hoped for.
+#
+# NOTHING ELSE IN THE IMAGE USED curl AT RUNTIME until veron-about's update
+# check, which is why this went unnoticed: curl is a build-time fetcher
+# everywhere else, and the build container has its own certificates.
 deferral        = """
 Internals not reviewed.
 
@@ -55,7 +70,7 @@ run  = [["tar", "-xf", "$DL/curl-8.18.0.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "configure"
 cwd  = "$S"
-run  = [["./configure", "--prefix=/usr", "--disable-static", "--with-openssl", "--with-zlib", "--with-zstd", "--without-libpsl", "--without-libidn2", "--without-brotli", "--without-nghttp2", "--without-librtmp", "--enable-threaded-resolver"]]
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--with-openssl", "--with-ca-bundle=/etc/ssl/certs/ca-certificates.crt", "--with-zlib", "--with-zstd", "--without-libpsl", "--without-libidn2", "--without-brotli", "--without-nghttp2", "--without-librtmp", "--enable-threaded-resolver"]]
 
 [[steps]]
 name = "build"
