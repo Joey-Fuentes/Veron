@@ -1591,96 +1591,102 @@ jobs:
             # the settle below is real time rather than an echo race.
             # WHAT A PERSON DOES, AND NOTHING ELSE.
             #
-            # Every line below has an exact counterpart in someone sitting at
-            # the machine: wait for the desktop, press Super+Return, type
-            # `veron-browser`, look at the screen. The previous version of
-            # this block did none of those things and failed for reasons that
-            # had nothing to do with the browser -- which ran correctly on
-            # real hardware the whole time.
+            # Wait for the desktop, press Super+Return, type the command, look
+            # at the screen. Every line has a counterpart in someone sitting
+            # at the machine.
             #
-            # WHAT WAS REMOVED AND WHY EACH THING WAS WRONG:
+            # ONE CONNECTION FOR THE WHOLE LINE, NOT ONE PER CHARACTER. The
+            # first version of this called qemu-monitor.py once per keystroke,
+            # and that script slept 0.5s on connect and 2.0s after the
+            # command -- so typing a 40-character line cost forty processes,
+            # forty socket connections and about a hundred seconds of
+            # sleeping, for keystrokes that produce no output to wait for. The
+            # monitor echoed it back one character at a time while it
+            # happened. All the keys now go down a single connection.
             #
-            #   dinitctl start labwc
-            #     labwc IS in boot.d and the boot log says `[ OK ] labwc`
-            #     before this script types anything. The comment claiming it
-            #     is not a boot service was left over from when that was true.
-            #     Poking an already-running compositor is not a test step.
+            # THE WAITS ARE FOR SOMETHING, NOT FOR A DURATION. `sleep 45` for
+            # the desktop and `sleep 20` for the terminal were guesses that
+            # cost their full length on every run whether or not the thing had
+            # already happened. The compositor announces itself by creating
+            # its socket and the terminal by taking focus, so both are polled
+            # -- fast when they are ready, and with a ceiling so a genuine
+            # failure still ends the step.
             #
-            #   /usr/bin/foot &   typed at the serial console
-            #     A person opens a terminal through the compositor, so it is a
-            #     child of the session with the session's environment. Started
-            #     from a serial getty it is a child of an entirely different
-            #     process tree. Super+Return is the binding labwc already has
-            #     and is what actually gets exercised.
-            #
-            #   trailing &
-            #     Backgrounding from the serial shell put the browser in a
-            #     different process group with a different controlling
-            #     terminal, and the shell reported `Trace/breakpoint trap`.
-            #     Run in the foreground -- as a person runs it -- it works.
-            #
-            #   > /tmp/browser-*.log 2>&1
-            #     Capturing output that then had nothing in it, because the
-            #     process died from the scaffolding rather than from anything
-            #     the log would explain.
-            #
-            #   [ -x /usr/bin/veron-browser ] &&
-            #     Guarding against a binary this image always installs.
-            #
-            #   WPE_DISPLAY=... and the full /usr/libexec path
-            #     Nobody types those. `veron-browser` is the command, so
-            #     `veron-browser` is what this runs.
-            #
-            # THE KEYSTROKE GOES THROUGH THE MONITOR, NOT THE SERIAL LINE.
-            # qemu's `sendkey` delivers it to the guest's input device, which
-            # is how a real key reaches labwc. The same monitor socket already
-            # carries screendump, so this adds no new machinery.
-            sleep 45
+            # THE PAGE IS NAMED, OR THE BROWSER GOES TO ITS HOME PAGE. The
+            # first run of this test opened correctly and loaded
+            # duckduckgo.com, because that is veron-browser's default with no
+            # argument -- and this VM has `-nic none`, so it showed a name
+            # resolution error. A local file, never the network: a test that
+            # reaches the internet fails on a runner with no route and passes
+            # for the wrong reason on one behind a captive portal.
+
+            # THE COMPOSITOR IS UP WHEN ITS SOCKET EXISTS. Asked over the
+            # serial line, which is already connected and costs nothing.
+            printf 'for i in $(seq 1 60); do [ -S /run/user/1000/wayland-0 ] && break; sleep 1; done; echo VERON-WAYLAND-READY\n'
+            for _ in $(seq 1 70); do
+              grep -aq VERON-WAYLAND-READY "$O/desktop-console.log" && break
+              sleep 1
+            done
 
             # Super+Return, THE BINDING labwc ALREADY HAS. qemu spells the
             # left Super key `meta_l`.
             python3 "$S/tools/qemu-monitor.py" "$O/mon.sock" \
               "sendkey meta_l-ret" >> "$O/desktop-console.log" 2>&1 || true
-            sleep 20
 
-            # TYPING INTO foot, NOT INTO THE SERIAL SHELL. sendkey reaches
-            # whatever labwc has focused, which after Super+Return is the
-            # terminal a person just opened. type_string is not a human-monitor
-            # command, so the text is sent as individual keys.
-            send_string() {
-              _s=$1
-              while [ -n "$_s" ]; do
-                _c=${_s%"${_s#?}"}
-                _s=${_s#?}
-                case "$_c" in
-                  -) _k=minus ;;
-                  .) _k=dot ;;
-                  /) _k=slash ;;
-                  " ") _k=spc ;;
-                  *) _k=$_c ;;
-                esac
-                python3 "$S/tools/qemu-monitor.py" "$O/mon.sock" \
-                  "sendkey $_k" >> "$O/desktop-console.log" 2>&1 || true
-              done
-            }
+            # THE TERMINAL IS UP WHEN foot IS RUNNING. Same channel, same
+            # reason -- and this is the thing the keystrokes are about to be
+            # typed into, so it is worth confirming rather than assuming.
+            printf 'for i in $(seq 1 30); do pidof foot > /dev/null && break; sleep 1; done; echo VERON-FOOT-READY\n'
+            for _ in $(seq 1 40); do
+              grep -aq VERON-FOOT-READY "$O/desktop-console.log" && break
+              sleep 1
+            done
 
-            # THE PAGE IS NAMED, OR THE BROWSER GOES TO ITS HOME PAGE.
+            # EVERY KEY IN ONE ARGUMENT, ON ONE CONNECTION.
             #
-            # The first run of this test opened correctly and loaded
-            # duckduckgo.com, because that is veron-browser's default with no
-            # argument -- and this VM has `-nic none`, so it showed a name
-            # resolution error. The window was right and the content was not
-            # something this test can check.
+            # The run before this typed one character per process, at roughly
+            # 2.5 seconds each, and the screenshot caught the command
+            # half-written:
             #
-            # A LOCAL FILE, NEVER THE NETWORK. test.html ships in the image at
-            # /usr/share/veron/test.html and paints the #1e6f50 field the
-            # frame check counts. A test that reaches the internet would fail
-            # on a runner with no route and pass for the wrong reason on one
-            # with a captive portal.
-            send_string "veron-browser /usr/share/veron/test.html"
+            #     $ veron-browser /usr/share/veron/t
+            #
+            # -- no Return, no browser, nineteen minutes. The obvious fix,
+            # building `sendkey v sendkey e ...` and passing it unquoted,
+            # word-splits so that `sendkey` and `v` arrive as separate
+            # commands and qemu rejects both. The key names go inside a single
+            # --keys= argument instead, which takes the shell out of it.
+            _keys=""
+            _s="veron-browser /usr/share/veron/test.html"
+            while [ -n "$_s" ]; do
+              _c=${_s%"${_s#?}"}
+              _s=${_s#?}
+              case "$_c" in
+                -) _k=minus ;;
+                .) _k=dot ;;
+                /) _k=slash ;;
+                " ") _k=spc ;;
+                *) _k=$_c ;;
+              esac
+              _keys="$_keys,$_k"
+            done
             python3 "$S/tools/qemu-monitor.py" "$O/mon.sock" \
-              "sendkey ret" >> "$O/desktop-console.log" 2>&1 || true
-            sleep 40
+              "--keys=${_keys#,},ret" >> "$O/desktop-console.log" 2>&1 || true
+
+            # THE PAGE IS LOADED WHEN THE COLOUR IS ON SCREEN. This is the one
+            # wait that cannot be asked over the serial line -- the answer is
+            # in the framebuffer -- so the frame is grabbed and counted until
+            # the marker appears. A page that renders in four seconds costs
+            # four, not forty.
+            for _ in $(seq 1 45); do
+              python3 "$S/tools/qemu-monitor.py" "$O/mon.sock" --wait=0.5 \
+                "screendump $PWD/$O/probe.ppm" >/dev/null 2>&1 || true
+              [ -s "$O/probe.ppm" ] || { sleep 1; continue; }
+              _n=$(python3 "$S/tools/ppm2png.py" "$O/probe.ppm" \
+                     "$O/probe.png" 1e6f50 2>/dev/null \
+                   | sed -n 's/^ *\([0-9]*\) pixel(s) of #1e6f50/\1/p')
+              [ "${_n:-0}" -ge 20000 ] && break
+              sleep 1
+            done
 
             printf 'echo VERON-SHOT-READY\n'
             sleep 600 ) > "$O/console.in" &
