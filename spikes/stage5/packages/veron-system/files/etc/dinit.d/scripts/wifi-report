@@ -23,29 +23,66 @@ CTRL=/run/wpa_supplicant
 INTERVAL=5
 LAST=
 
-# THE SIGNAL BARS ARE BLOCK ELEMENTS, WHICH DejaVu ACTUALLY HAS. This system
-# ships DejaVu and nothing else -- no Nerd Font, no icon font -- so a glyph
-# from a private use area would render as a box. U+2581..U+2588 are Block
-# Elements and are covered, which is also what makes the ramp read as a ramp
-# rather than as three unrelated symbols.
+# THE SIGNAL IS A DOMINO THAT FILLS FROM THE BOTTOM UP.
 #
-# dBm RATHER THAN A PERCENTAGE, converted to four steps. wpa_cli reports RSSI
-# in dBm and there is no honest percentage to derive from it -- every vendor
-# invents a different curve. The thresholds below are the usual engineering
-# ones: -50 excellent, -60 good, -70 fair, worse than that is marginal.
-bars() {
+# THE BLOCK RAMP WAS WRONG FOR A REASON WORTH RECORDING. Four block elements
+# gave four levels, and the top one was U+2588 FULL BLOCK -- a filled
+# rectangle, which is also exactly what a MISSING glyph looks like. The bar
+# showed a solid white box at full signal and read as broken while working
+# perfectly. A glyph indistinguishable from tofu is a bad glyph however well
+# it renders.
+#
+# DejaVu HAS THE WHOLE DOMINO BLOCK. Confirmed on the machine, not assumed:
+#
+#     fc-query --format '%{charset}' DejaVuSans.ttf | tr ' ' '\n' | grep ^1f
+#     ...  1f030-1f093  ...
+#
+# VERTICAL TILES, NOT HORIZONTAL, AND THE ORDER IS THE POINT. Vertical tiles
+# start at U+1F063 = VERTICAL-00-00, seven per row, and the FIRST number is the
+# TOP half. So holding the bottom at six and raising the top gives a tile that
+# visibly fills upward as the signal improves:
+#
+#     1..6   00-01 .. 00-06   U+1F064..U+1F069   bottom half filling
+#     7..12  01-06 .. 06-06   U+1F070..U+1F093   top half filling
+#
+# Each of those eight boundary codepoints was checked against the arithmetic
+# rather than transcribed.
+#
+# THIRTEEN LEVELS IS MORE PRECISION THAN THE SIGNAL DESERVES, and that is the
+# right way round. Usable RSSI runs about -30 dBm (sitting on the router) to
+# -90 (unusable): 60 dB across 12 steps, 5 dB per pip. wpa_cli reports RSSI as
+# an integer dBm, so the input is 1 dB precise and the display is the coarser
+# of the two -- no invented resolution.
+#
+# For reference: -40 shows 10 pips, -60 shows 6, -70 shows 4, -80 shows 2.
+pips() {
     case "$1" in
-        ''|*[!0-9-]*) printf '▁' ;;
-        *) if   [ "$1" -ge -50 ]; then printf '█'
-           elif [ "$1" -ge -60 ]; then printf '▆'
-           elif [ "$1" -ge -70 ]; then printf '▄'
-           else                        printf '▂'
-           fi ;;
+        ''|*[!0-9-]*) printf '\360\237\201\242' ; return ;;
+    esac
+    # (RSSI + 90) / 5, clamped. Integer arithmetic only -- busybox ash has no
+    # floating point and this needs none.
+    n=$(( ($1 + 90) / 5 ))
+    [ "$n" -lt 0 ] && n=0
+    [ "$n" -gt 12 ] && n=12
+    case "$n" in
+        0) printf '🁣' ;;
+        1) printf '🁤' ;;
+        2) printf '🁥' ;;
+        3) printf '🁦' ;;
+        4) printf '🁧' ;;
+        5) printf '🁨' ;;
+        6) printf '🁩' ;;
+        7) printf '🁰' ;;
+        8) printf '🁷' ;;
+        9) printf '🁾' ;;
+        10) printf '🂅' ;;
+        11) printf '🂌' ;;
+        12) printf '🂓' ;;
     esac
 }
 
 while true; do
-    ICON='○'
+    ICON=$(printf '\360\237\201\242')   # U+1F062 vertical back -- no link
     TEXT='wifi off'
     STATE=down
 
@@ -61,24 +98,19 @@ while true; do
                 # costs a round trip to learn nothing.
                 RSSI=$(/usr/sbin/wpa_cli -p "$CTRL" signal_poll 2>/dev/null \
                        | awk -F= '$1 == "RSSI" { print $2 }')
-                ICON=$(bars "$RSSI")
+                ICON=$(pips "$RSSI")
                 TEXT="${SSID:-connected}"
                 STATE=up
                 ;;
             SCANNING|AUTHENTICATING|ASSOCIATING|ASSOCIATED|4WAY_HANDSHAKE|GROUP_HANDSHAKE)
-                # THE SAME CIRCLE AS `not connected`, AND THE COLOUR CARRIES
-                # THE DIFFERENCE. A distinct glyph would be better, but the
-                # only faces on this system are DejaVu and its coverage of the
-                # less common Geometric Shapes is not something this project
-                # can check without the font in the tree -- a missing glyph
-                # renders as a box, which is worse than a repeated one. Block
-                # Elements and U+25CB are certain; the rest is not.
-                ICON='○'
+                # DOUBLE BLANK: a tile that is face-up but has no pips, which
+                # is exactly what connecting is -- a link, no signal yet.
+                ICON=$(printf '\360\237\201\243')   # U+1F063
                 TEXT='connecting'
                 STATE=busy
                 ;;
             *)
-                ICON='○'
+                ICON=$(printf '\360\237\201\242')   # U+1F062 back
                 TEXT='not connected'
                 STATE=idle
                 ;;

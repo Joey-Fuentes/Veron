@@ -65,7 +65,6 @@ bar:
             # name here is one this set builds.
             on-click: /usr/bin/veron-edit
     - label:
-    - label:
         content:
           string:
             text: " Browser "
@@ -223,14 +222,24 @@ bar:
           map:
             on-click: /etc/dinit.d/scripts/wifi-connect
             conditions:
+              # THE TILE GETS ITS OWN, LARGER FONT. A domino carries up to
+              # twelve pips and at the bar's 12px they are a grey smudge --
+              # the whole point is being able to count them at a glance.
+              # yambar-particles(5) allows `font` per string, so the tile is a
+              # separate particle from the SSID rather than one string at one
+              # size.
               state == up:
-                - string: {text: "{icon} {ssid}", margin: 6}
+                - string: {text: "{icon}", font: "DejaVu Sans:pixelsize=17", margin: 4}
+                - string: {text: "{ssid}", right-margin: 6}
               state == busy:
-                - string: {text: "{icon} {ssid}", foreground: d0d0a0ff, margin: 6}
+                - string: {text: "{icon}", font: "DejaVu Sans:pixelsize=17", foreground: d0d0a0ff, margin: 4}
+                - string: {text: "{ssid}", foreground: d0d0a0ff, right-margin: 6}
               state == idle:
-                - string: {text: "{icon} {ssid}", foreground: 909090ff, margin: 6}
+                - string: {text: "{icon}", font: "DejaVu Sans:pixelsize=17", foreground: 909090ff, margin: 4}
+                - string: {text: "{ssid}", foreground: 909090ff, right-margin: 6}
               state == down:
-                - string: {text: "{icon} {ssid}", foreground: 707070ff, margin: 6}
+                - string: {text: "{icon}", font: "DejaVu Sans:pixelsize=17", foreground: 707070ff, margin: 4}
+                - string: {text: "{ssid}", foreground: 707070ff, right-margin: 6}
 
     - script:
         path: /etc/dinit.d/scripts/battery-estimate

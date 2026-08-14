@@ -4858,6 +4858,41 @@ def cmd_selftest(a):
             print(f"  ok    every source name matches a mirror row "
                   f"({len(_rows)} artifact(s) known)")
 
+    # EVERY BAR MODULE NEEDS A BODY, AND YAML WILL NOT SAY SO.
+    #
+    # Deleting a module's content and leaving its `- label:` behind produces
+    # {"label": None} -- valid YAML, parses clean, and yambar then fails to
+    # instantiate the module and DOES NOT START AT ALL. The bar was simply
+    # missing on the next boot. `yaml.safe_load` passed the broken file
+    # happily, so "the config parses" was never the check it looked like:
+    # exactly the shape AGENTS.md 2c warns about.
+    try:
+        import yaml as _yaml
+    except ImportError:
+        _yaml = None
+    if _yaml is None:
+        print("  skip  yambar config: no yaml module available here")
+    else:
+        _bad = 0
+        for _cfg in sorted(glob.glob("packages*/veron-system/files/etc/xdg/yambar/config.yml")):
+            _doc = _yaml.safe_load(open(_cfg)) or {}
+            for _side in ("left", "center", "right"):
+                for _i, _mod in enumerate(_doc.get("bar", {}).get(_side) or []):
+                    if not isinstance(_mod, dict) or len(_mod) != 1:
+                        print(f"  FAIL  {_cfg}: {_side}[{_i}] is not a single-key module")
+                        ok = False; _bad += 1
+                        continue
+                    _name, _body = next(iter(_mod.items()))
+                    if _body is None:
+                        print(f"  FAIL  {_cfg}: {_side}[{_i}] `{_name}` has no body "
+                              f"-- yambar will not start")
+                        ok = False; _bad += 1
+                    elif "content" not in _body:
+                        print(f"  FAIL  {_cfg}: {_side}[{_i}] `{_name}` has no content")
+                        ok = False; _bad += 1
+        if not _bad:
+            print("  ok    every yambar module has a body and content")
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 
