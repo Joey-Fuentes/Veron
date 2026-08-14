@@ -5950,6 +5950,15 @@ def build_parser():
                    help="directory to assemble into")
     p.set_defaults(fn=cmd_loginkit)
 
+    p = sub.add_parser("reachable",
+                       help="which packages does the running image reach")
+    p.add_argument("--sysroot", default="sysroot",
+                   help="the merged tree to measure")
+    p.add_argument("--entry", action="append",
+                   help="extra entry point, repeatable")
+    p.add_argument("--mode", choices=["warn", "fail"], default="warn")
+    p.set_defaults(fn=cmd_reachable)
+
     p = sub.add_parser("linked",
                        help="DT_NEEDED against deps.link, both directions")
     p.add_argument("--mode", choices=["warn", "fail"], default="warn")
@@ -5995,6 +6004,199 @@ def build_parser():
     p.set_defaults(fn=cmd_status)
 
     return ap
+
+
+def _install_owners(pkgdirs):
+    """path -> package, from every installs.txt.
+
+    BOTH LINE KINDS. `f <sha> <size> <path>` and `l <target> <path>` -- the
+    symlink form has three fields, not four, and reading it as four is how
+    usr/bin/python3 came back unowned while usr/bin/python3.14 was owned by
+    python. A resolver that misses symlinks misses most /usr/bin entries.
+    """
+    own = {}
+    for d in pkgdirs:
+        p = os.path.join(d, "installs.txt")
+        if not os.path.exists(p):
+            continue
+        pkg = os.path.basename(d)
+        for ln in open(p):
+            parts = ln.rstrip("\n").split(None, 3)
+            if not parts:
+                continue
+            if parts[0] == "f" and len(parts) == 4:
+                own[parts[3]] = pkg
+            elif parts[0] == "l" and len(parts) >= 3:
+                own[parts[2]] = pkg
+    return own
+
+
+def _refs_in_file(path, limit=4 * 1024 * 1024):
+    """Every path and soname this file names, whether it is ELF or text.
+
+    THREE SOURCES BECAUSE ONE IS NEVER ENOUGH:
+
+      DT_NEEDED   -- the shared libraries the linker recorded. Complete for
+                     linking, blind to everything else.
+      SHEBANG     -- `#!/usr/bin/python3` makes an interpreter a RUNTIME
+                     dependency of a package that links nothing. This is the
+                     only evidence that a scripting language must stay.
+      LITERALS    -- absolute paths and lib*.so* strings in the bytes. This
+                     is what catches dlopen, which every other detector in
+                     this tree is structurally blind to: gnupg reaches
+                     libpcsclite.so.1 through a string constant in
+                     scd/scdaemon.c and links nothing. It also catches exec --
+                     veron-browser spawning /usr/bin/veron-filechooser, pass
+                     calling gpg -- which is a real runtime edge with no ELF
+                     record at all.
+
+    LITERALS OVER-REPORT AND THAT IS THE RIGHT DIRECTION. A path in a help
+    string or a comment counts as a reference here. For a question of the form
+    "is it safe to delete this", a false edge keeps a package that could have
+    gone; a missed edge deletes one that was needed.
+    """
+    out = set()
+    soname, needed = elf_dynamic(path)
+    out.update(needed)
+
+    try:
+        with open(path, "rb") as f:
+            b = f.read(limit)
+    except OSError:
+        return out
+    if not b:
+        return out
+
+    if b[:2] == b"#!":
+        line = b.split(b"\n", 1)[0].decode("utf-8", "replace")
+        # `#!/usr/bin/env python3` names the interpreter in argv[1]
+        for tok in line[2:].replace("\t", " ").split():
+            t = tok.strip()
+            if t.startswith("/"):
+                out.add(t.lstrip("/"))
+            elif t and not t.startswith("-") and "/" not in t:
+                out.add(f"USRBIN:{t}")
+
+    for m in re.finditer(rb"/(?:usr/)?(?:bin|sbin|lib|libexec|share)/"
+                         rb"[A-Za-z0-9._/+-]{2,120}", b):
+        out.add(m.group(0).decode("ascii", "replace").lstrip("/"))
+    for m in re.finditer(rb"lib[A-Za-z0-9._+-]{1,60}\.so(?:\.[0-9]+)*", b):
+        out.add(m.group(0).decode("ascii", "replace"))
+    return out
+
+
+def cmd_reachable(a):
+    """Which packages does the RUNNING image actually need?
+
+    THE QUESTION THIS ANSWERS. Stage 5 builds 142 packages and ships nearly
+    all of them, but a package needed to BUILD something is not thereby needed
+    to RUN it. The sysroot's toolchain can rebuild any of them from the
+    recipes and sources, so anything the running system never reaches is an
+    intermediate that does not have to be on the machine.
+
+    IT MEASURES THE BUILT TREE, NOT THE RECIPES. An earlier pass at this
+    walked declared deps.runtime and deps.link, and it was too weak to trust:
+    those are statements of intent, and the ones that matter most -- an
+    interpreter named in a shebang, a library opened by dlopen -- are exactly
+    the ones nobody remembers to declare. This reads the files.
+
+    DECLARED EDGES STILL WIN WHERE THEY EXIST. They are added on top rather
+    than checked against, because a human who has read the source knows things
+    no scan does. gnupg -> pcsc-lite is in the recipe for that reason.
+
+    IT NAMES CANDIDATES AND CHANGES NOTHING. The output is a list to mark
+    build_only, which `merge` already honours, not a list to delete: the
+    recipe is what makes the rebuild possible and must stay either way.
+    """
+    recipes = load_recipes()
+    # THE OVERLAY COUNTS. packages-amd64 replaces recipes wholesale, so an
+    # installs.txt there is the authoritative one for that architecture.
+    bases = [PKGDIR] + ([OVERLAY] if OVERLAY else [])
+    pkgdirs = []
+    for b in bases:
+        if not os.path.isdir(b):
+            continue
+        pkgdirs += [os.path.join(b, n) for n in sorted(os.listdir(b))
+                    if os.path.isdir(os.path.join(b, n))]
+    own = _install_owners(pkgdirs)
+    if not own:
+        die("no installs.txt anywhere -- run a build first, this reads the "
+            "tree that build produced")
+
+    # A SONAME IS NOT A PATH. DT_NEEDED says libfoo.so.1; the map is keyed on
+    # usr/lib/libfoo.so.1. Index by basename so both resolve.
+    by_base = {}
+    for p, pkg in own.items():
+        by_base.setdefault(os.path.basename(p), pkg)
+
+    def owner(ref):
+        if ref.startswith("USRBIN:"):
+            return by_base.get(ref[7:])
+        return own.get(ref) or by_base.get(os.path.basename(ref))
+
+    root = a.sysroot
+    entry = set()
+    # .desktop Exec= -- what a person can launch from the menu
+    appdir = os.path.join(root, "usr/share/veron/applications")
+    if os.path.isdir(appdir):
+        for f in sorted(os.listdir(appdir)):
+            for ln in open(os.path.join(appdir, f), errors="replace"):
+                if ln.startswith("Exec="):
+                    entry.add(ln.split("=", 1)[1].split()[0].lstrip("/"))
+    # dinit command= -- what the init system starts
+    dd = os.path.join(root, "etc/dinit.d")
+    for dirpath, _, files in os.walk(dd):
+        for f in files:
+            try:
+                for ln in open(os.path.join(dirpath, f), errors="replace"):
+                    if ln.startswith("command"):
+                        parts = ln.split("=", 1)
+                        if len(parts) == 2 and parts[1].split():
+                            entry.add(parts[1].split()[0].lstrip("/"))
+            except OSError:
+                pass
+    for extra in a.entry or []:
+        entry.add(extra.lstrip("/"))
+
+    seen_paths, seen_pkgs, q = set(), set(), [e for e in entry]
+    while q:
+        rel = q.pop()
+        if rel in seen_paths:
+            continue
+        seen_paths.add(rel)
+        pkg = owner(rel)
+        if pkg:
+            if pkg not in seen_pkgs:
+                seen_pkgs.add(pkg)
+                # THE DECLARED EDGES OF A REACHED PACKAGE COUNT AS REACHED.
+                d = recipes.get(pkg, {}).get("deps", {})
+                for dep in set(d.get("runtime", [])) | set(d.get("link", [])):
+                    if dep in recipes and dep not in seen_pkgs:
+                        for p2, o2 in own.items():
+                            if o2 == dep:
+                                q.append(p2)
+                                break
+        full = os.path.join(root, rel)
+        if os.path.isfile(full) and not os.path.islink(full):
+            for ref in _refs_in_file(full):
+                if ref not in seen_paths:
+                    q.append(ref)
+
+    allp = set(recipes)
+    unreached = sorted(allp - seen_pkgs)
+    print(f"VERON-REACHABLE  {len(seen_pkgs)} of {len(allp)} packages reached "
+          f"from {len(entry)} entry point(s)")
+    for n in unreached:
+        bo = "  (declared build_only)" if recipes[n].get("build_only") else ""
+        print(f"  unreached  {n}{bo}")
+    undeclared = [n for n in unreached if not recipes[n].get("build_only")]
+    if undeclared:
+        print(f"\n  {len(undeclared)} package(s) ship but nothing running "
+              f"reaches them. Candidates for build_only:")
+        print("    " + " ".join(undeclared))
+    if a.mode == "fail" and undeclared:
+        return 1
+    return 0
 
 
 def main():

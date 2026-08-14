@@ -766,7 +766,10 @@ jobs:
           # the moment it lands.
           python3 tools/veron --overlay packages-amd64 --plan PLAN-amd64.txt plan --write
           python3 tools/veron --overlay packages-amd64 selftest
-          n=$(ls packages-amd64/*/installs.txt | wc -l)
+          # COUNT BOTH TREES. `ls packages-amd64/*/installs.txt` reported 13
+          # and passed, which is a guard that cannot tell a full seed from a
+          # near-empty one.
+          n=$(ls packages/*/installs.txt packages-amd64/*/installs.txt 2>/dev/null | wc -l)
           echo "VERON-INSTALLS-SEEDED  $n listing(s) written"
           [ "$n" -gt 0 ] || { echo "seed_installs wrote nothing"; exit 1; }
 
@@ -776,9 +779,19 @@ jobs:
         if: ${{ always() && steps.build.outcome == 'success' && inputs.seed_installs }}
         with:
           name: veron-stage5-installs-amd64-${{ github.run_id }}
+          # BOTH TREES, AND UPLOADING ONLY THE OVERLAY THREW AWAY 129 OF 142.
+          # `installs --write` writes beside the recipe it loaded, which for
+          # everything outside the 13-recipe overlay is packages/. So this run
+          # computed a listing for every package and the artifact carried the
+          # thirteen -- leaving the base tree stale, which is what it has been
+          # blamed for ever since. The aarch64 arm uploads packages/* and was
+          # the only reason seeding ever worked at all.
           path: |
+            spikes/stage5/packages/*/recipe.toml
+            spikes/stage5/packages/*/installs.txt
             spikes/stage5/packages-amd64/*/recipe.toml
             spikes/stage5/packages-amd64/*/installs.txt
+            spikes/stage5/PLAN.txt
             spikes/stage5/PLAN-amd64.txt
             spikes/stage5/out/installs-propose.txt
           if-no-files-found: error
