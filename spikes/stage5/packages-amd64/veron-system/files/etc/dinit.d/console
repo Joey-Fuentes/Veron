@@ -14,8 +14,7 @@
 # THE TTY IS NOT NAMED HERE ANY MORE. It was, and the name was wrong on two of
 # the three places this system boots: ttyAMA0 is the ARM PL011 UART, x86_64
 # under qemu needs ttyS0, and real hardware has no serial port and needs tty1.
-# getty cannot open a device that is not there, exits 1, and `run-as = veron
-restart = true`
+# getty cannot open a device that is not there, exits 1, and `restart = true`
 # loops forever -- correct behaviour, wrong argument.
 #
 # scripts/console-getty reads `console=` from /proc/cmdline, which is the
