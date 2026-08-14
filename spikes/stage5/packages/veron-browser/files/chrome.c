@@ -99,6 +99,23 @@ struct _VeronChrome {
     gboolean            canBack, canForward, loading;
     double              progress;
 
+    /* DOWNLOADS. `seen` is what decides whether the button exists at all --
+     * once a download has happened in this session the button stays, the way
+     * every browser does it, so the place to look for a finished file does not
+     * move around. `active` and `dlProgress` describe the newest transfer and
+     * `done` counts the finished ones since the tray was last opened. */
+    gboolean            dlSeen, dlActive;
+    double              dlProgress;
+    guint               dlDone;
+
+    /* THE WIDTH THE STRIP WAS LAST DRAWN AT. Hit-testing has to lay the strip
+     * out exactly as the paint did, and the right-hand buttons are positioned
+     * from the right edge -- so the width is no longer something only the
+     * painter needs to know. Recorded at the top of veron_chrome_draw, before
+     * the buffer is acquired, so a redraw deferred for a busy buffer still
+     * leaves clicks landing where the pixels currently are. */
+    int                 lastWidth;
+
     VeronChromeCallbacks cb;
     gpointer             userData;
 };
@@ -236,6 +253,35 @@ static gboolean selDelete(VeronChrome *c)
     return TRUE;
 }
 
+/* THE SELECTED TEXT, COPIED OUT. NULL rather than an empty string when there
+ * is no selection, so a caller can tell "nothing is selected" from "an empty
+ * span is selected" without asking twice.
+ *
+ * THE OFFSETS ARE BYTES, NOT CHARACTERS, and that is safe here rather than by
+ * luck: editing is a UTF-8 GString and every path that moves the caret or the
+ * anchor -- arrow keys, Home/End, pointer hit-testing, word select -- lands
+ * them on a character boundary. Slicing between two boundaries cannot split a
+ * multi-byte sequence, so the result is always valid UTF-8. */
+char *veron_chrome_selection(VeronChrome *c)
+{
+    if (!c || c->caret == c->anchor)
+        return NULL;
+    int from, to;
+    selRange(c, &from, &to);
+    return g_strndup(c->editing->str + from, to - from);
+}
+
+/* THE PUBLIC FACE OF selDelete, because cut needs it and nothing outside this
+ * file can reach a static. Deliberately a wrapper rather than a second
+ * implementation: the comment on selDelete is about the four editing paths
+ * that already share it, and cut is the fifth. */
+gboolean veron_chrome_delete_selection(VeronChrome *c)
+{
+    if (!c)
+        return FALSE;
+    return selDelete(c);
+}
+
 void veron_chrome_select_all(VeronChrome *c)
 {
     if (!c)
@@ -364,6 +410,118 @@ static void roundedRect(cairo_t *cr, double x, double y, double w, double h, dou
     cairo_close_path(cr);
 }
 
+/* ---- layout ---------------------------------------------------------- */
+
+/* ONE PLACE THAT DECIDES WHERE THINGS ARE, because three call sites need to
+ * agree and the comment on selOffsetForX already warns what happens when they
+ * drift: drawing, hit-testing and click-to-caret each re-derived the field's
+ * geometry from the same constants, and any change had to be made three times
+ * or the field would be drawn in one place and clicked in another.
+ *
+ * THE RIGHT-HAND BUTTONS ARE LAID OUT FROM THE RIGHT EDGE and the field takes
+ * what is left, so the field stretches with the window and the buttons stay
+ * pinned to the corner -- which is where every browser puts them and where a
+ * user's hand already goes.
+ *
+ * THE DOWNLOAD BUTTON MOVES THE FIELD'S RIGHT EDGE WHEN IT APPEARS. That is a
+ * visible reflow the first time something downloads, and it is the honest
+ * trade for not reserving 34 pixels forever on a machine that may never
+ * download anything. */
+typedef struct {
+    double fieldX, fieldW;
+    double downloadX, menuX;   /* left edge of each button */
+    gboolean showDownload;
+} ChromeLayout;
+
+static void chromeLayout(VeronChrome *c, int width, ChromeLayout *L)
+{
+    L->showDownload = c && c->dlSeen;
+
+    /* THE MENU IS ALWAYS THERE and always last, so its position never depends
+     * on anything else and the corner of the window is a stable target. */
+    L->menuX     = width - PAD - BTN_W;
+    L->downloadX = L->menuX - BTN_W;
+
+    double leftmost = L->showDownload ? L->downloadX : L->menuX;
+
+    L->fieldX = PAD + BTN_W * 3 + PAD;
+    L->fieldW = leftmost - PAD - L->fieldX;
+    if (L->fieldW < 40)
+        L->fieldW = 40;
+}
+
+/* A TRAY WITH AN ARROW COMING DOWN INTO IT. Drawn rather than shipped as an
+ * icon file because the whole strip is drawn -- adding an image loader and a
+ * theme lookup for two glyphs would be more machinery than the chrome has.
+ *
+ * WHILE A DOWNLOAD IS RUNNING the tray fills from the left in proportion to
+ * the transfer, so the button is the progress indicator and does not need a
+ * separate bar or a status line stealing height from the page. */
+static void drawDownload(cairo_t *cr, double cx, double cy,
+                         gboolean active, double progress, guint done)
+{
+    if (active && progress > 0.0 && progress < 1.0) {
+        cairo_save(cr);
+        cairo_rectangle(cr, cx - 9, cy + 3, 18 * progress, 5);
+        cairo_set_source_rgba(cr, 0.20, 0.45, 0.85, 0.35);
+        cairo_fill(cr);
+        cairo_restore(cr);
+    }
+
+    cairo_set_source_rgb(cr, 0.15, 0.15, 0.15);
+    cairo_set_line_width(cr, 2.0);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+
+    /* the shaft and its head */
+    cairo_move_to(cr, cx, cy - 7);
+    cairo_line_to(cr, cx, cy + 1);
+    cairo_stroke(cr);
+    cairo_move_to(cr, cx - 4, cy - 3);
+    cairo_line_to(cr, cx,     cy + 1);
+    cairo_line_to(cr, cx + 4, cy - 3);
+    cairo_stroke(cr);
+
+    /* the tray */
+    cairo_move_to(cr, cx - 7, cy + 4);
+    cairo_line_to(cr, cx - 7, cy + 7);
+    cairo_line_to(cr, cx + 7, cy + 7);
+    cairo_line_to(cr, cx + 7, cy + 4);
+    cairo_stroke(cr);
+
+    /* A DOT FOR FINISHED-AND-UNSEEN, not a number. A count needs a font, a
+     * measurement and a decision about what to do at ten; a dot answers the
+     * only question being asked, which is whether anything arrived. */
+    if (!active && done > 0) {
+        cairo_arc(cr, cx + 8, cy - 6, 3.0, 0, 2 * G_PI);
+        cairo_set_source_rgb(cr, 0.20, 0.55, 0.30);
+        cairo_fill(cr);
+    }
+}
+
+/* THREE LINES. The hamburger is the one control users find without a label,
+ * which is the entire argument for it over the word "Menu" in a strip this
+ * short. */
+static void drawMenu(cairo_t *cr, double cx, double cy, gboolean open)
+{
+    if (open) {
+        /* THE PRESSED STATE IS DRAWN, because a menu that opens somewhere the
+         * button cannot show would otherwise give no feedback at all. */
+        roundedRect(cr, cx - 13, cy - 13, 26, 26, 5);
+        cairo_set_source_rgba(cr, 0.20, 0.45, 0.85, 0.15);
+        cairo_fill(cr);
+    }
+
+    cairo_set_source_rgb(cr, 0.15, 0.15, 0.15);
+    cairo_set_line_width(cr, 2.0);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    for (int i = -1; i <= 1; i++) {
+        cairo_move_to(cr, cx - 7, cy + i * 5);
+        cairo_line_to(cr, cx + 7, cy + i * 5);
+    }
+    cairo_stroke(cr);
+}
+
 static void drawArrow(cairo_t *cr, double cx, double cy, gboolean forward, gboolean enabled)
 {
     cairo_set_source_rgb(cr, enabled ? 0.15 : 0.65, enabled ? 0.15 : 0.65, enabled ? 0.15 : 0.65);
@@ -418,6 +576,8 @@ void veron_chrome_draw(VeronChrome *c, int width)
      * single compositor frame. It is kept because rare is not never, and a
      * dropped frame here is invisible until someone photographs a stale URL
      * bar. */
+    c->lastWidth = width;
+
     ChromeBuffer *b = chromeAcquire(c, width, CHROME_HEIGHT);
     if (!b) {
         c->pending = TRUE;
@@ -437,10 +597,16 @@ void veron_chrome_draw(VeronChrome *c, int width)
     drawArrow(cr, PAD + BTN_W * 1.5,     y, TRUE,  c->canForward);
     drawReload(cr, PAD + BTN_W * 2.5,    y, c->loading);
 
-    double fx = PAD + BTN_W * 3 + PAD;
-    double fw = width - fx - PAD;
-    if (fw < 40)
-        fw = 40;
+    ChromeLayout L;
+    chromeLayout(c, width, &L);
+
+    if (L.showDownload)
+        drawDownload(cr, L.downloadX + BTN_W / 2.0, y,
+                     c->dlActive, c->dlProgress, c->dlDone);
+    drawMenu(cr, L.menuX + BTN_W / 2.0, y, FALSE);
+
+    double fx = L.fieldX;
+    double fw = L.fieldW;
 
     roundedRect(cr, fx, 6, fw, CHROME_HEIGHT - 12, 5);
     cairo_set_source_rgb(cr, 1, 1, 1);
@@ -537,7 +703,22 @@ VeronChromeHit veron_chrome_hit(VeronChrome *c, double x, double y)
     if (rel < BTN_W)     return VERON_CHROME_BACK;
     if (rel < BTN_W * 2) return VERON_CHROME_FORWARD;
     if (rel < BTN_W * 3) return VERON_CHROME_RELOAD;
-    if (x >= PAD + BTN_W * 3 + PAD) return VERON_CHROME_URL;
+
+    /* THE RIGHT-HAND BUTTONS ARE TESTED BEFORE THE FIELD, and the order is the
+     * whole of the fix: the field's test is "anything past the reload button",
+     * so a button sitting to its right is inside the field's range and a click
+     * on it would open the URL for editing instead. Narrowing the field's test
+     * to its measured width would work too and is more fragile -- this way the
+     * field stays the fallback and cannot be missed by a rounding error. */
+    ChromeLayout L;
+    chromeLayout(c, c->lastWidth, &L);
+
+    if (x >= L.menuX)
+        return VERON_CHROME_MENU;
+    if (L.showDownload && x >= L.downloadX)
+        return VERON_CHROME_DOWNLOADS;
+
+    if (x >= L.fieldX) return VERON_CHROME_URL;
     return VERON_CHROME_NONE;
 }
 
@@ -684,4 +865,55 @@ void veron_chrome_free(VeronChrome *c)
     g_string_free(c->editing, TRUE);
     g_free(c->url);
     g_free(c);
+}
+
+/* ---- downloads ------------------------------------------------------- */
+
+/* A DOWNLOAD STARTED. The button appears here and never goes away again for
+ * the life of the process -- see the comment on dlSeen. */
+void veron_chrome_download_started(VeronChrome *c)
+{
+    if (!c)
+        return;
+    c->dlSeen = TRUE;
+    c->dlActive = TRUE;
+    c->dlProgress = 0.0;
+}
+
+/* PROGRESS, CLAMPED. WebKit reports a fraction, and a transfer whose total
+ * length is unknown reports one that can sit at zero or overshoot; the tray
+ * fill is drawn from this directly, so it is bounded here rather than in the
+ * drawing code where a bad value would scribble outside the button. */
+void veron_chrome_download_progress(VeronChrome *c, double fraction)
+{
+    if (!c)
+        return;
+    c->dlActive = TRUE;
+    c->dlProgress = fraction < 0.0 ? 0.0 : (fraction > 1.0 ? 1.0 : fraction);
+}
+
+/* FINISHED OR FAILED. `ok` distinguishes them for the caller's own logging;
+ * the dot only counts successes, because a badge inviting you to open a tray
+ * and find nothing there is worse than no badge. */
+void veron_chrome_download_finished(VeronChrome *c, gboolean ok)
+{
+    if (!c)
+        return;
+    c->dlActive = FALSE;
+    c->dlProgress = 0.0;
+    if (ok)
+        c->dlDone++;
+}
+
+/* THE TRAY WAS OPENED, so the badge has done its job. */
+void veron_chrome_downloads_acknowledged(VeronChrome *c)
+{
+    if (!c)
+        return;
+    c->dlDone = 0;
+}
+
+gboolean veron_chrome_has_downloads(VeronChrome *c)
+{
+    return c && c->dlSeen;
 }

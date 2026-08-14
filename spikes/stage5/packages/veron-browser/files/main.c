@@ -249,6 +249,50 @@ static void onChromeEvent(WPEToplevelVeron *toplevel, guint type, guint time,
         wpe_toplevel_veron_set_chrome_focus(b->toplevel, TRUE);
         break;
     }
+    case VERON_CHROME_DOWNLOADS:
+        /* THE TRAY IS THE DOWNLOADS DIRECTORY, opened in the page. There is no
+         * download manager to show and writing one would mean a list widget, a
+         * model and per-item controls in a strip 40 pixels tall; the files are
+         * already on disk in one place, and WebKit renders a directory listing
+         * for a file:// URL without any of that.
+         *
+         * THE PATH IS BUILT THE SAME WAY onDecideDestination BUILDS IT, so the
+         * tray cannot open a different directory from the one downloads land
+         * in -- $HOME/Downloads, with the same /tmp fallback. */
+        veron_chrome_downloads_acknowledged(b->chrome);
+        {
+            const char *home = g_get_home_dir();
+            char *dir = g_build_filename(home ? home : "/tmp", "Downloads", NULL);
+            char *uri = g_filename_to_uri(dir, NULL, NULL);
+            if (uri) {
+                webkit_web_view_load_uri(b->webView, uri);
+                g_free(uri);
+            }
+            g_free(dir);
+        }
+        /* THE FIELD GIVES UP THE KEYBOARD, because the click navigated and a
+         * caret left blinking in a URL bar that no longer matches the page is
+         * the same stale-field problem Escape exists to avoid. */
+        veron_chrome_set_focused(b->chrome, FALSE);
+        wpe_toplevel_veron_set_chrome_focus(b->toplevel, FALSE);
+        break;
+
+    case VERON_CHROME_MENU:
+        /* NOT WIRED YET, AND INERT ON PURPOSE RATHER THAN GUESSING. A menu
+         * needs a panel taller than the strip, and the strip cannot currently
+         * draw one: the page is a sibling subsurface created AFTER the chrome,
+         * so Wayland stacks it above, and anything drawn below y=40 is painted
+         * behind the page. Making it visible is one call --
+         * wl_subsurface_place_above(chromeSubsurface, pageSurface) in
+         * wpe-toplevel-veron.c -- plus a taller chrome buffer while the menu
+         * is open, and that is a backend change rather than one this file can
+         * make on its own.
+         *
+         * It is drawn and hit-tested now so the layout is settled and the
+         * button will not move once it does something. */
+        g_message("veron-browser: menu (not implemented)");
+        break;
+
     default:
         /* A CLICK ON THE BAR BUT NOT ON ANYTHING GIVES THE PAGE ITS KEYBOARD
          * BACK, which is what every browser does and what a user expects from
@@ -715,12 +759,16 @@ static gboolean onDecideDestination(WebKitDownload *download,
     return TRUE;
 }
 
-static void onDownloadFinished(WebKitDownload *download, gpointer data)
-{
-    (void)data;
-    const char *dest = webkit_download_get_destination(download);
-    g_message("veron-download: finished %s", dest ? dest : "?");
-}
+/* "finished" IS EMITTED FOR FAILURES TOO, and that is the whole reason this
+ * pair needs a flag between them rather than a handler each.
+ * webkitDownloadFailed emits FAILED and then immediately emits FINISHED
+ * (WebKitDownload.cpp:419-420), so "finished" does not mean "succeeded" and
+ * counting it as one puts a green badge on a download that never arrived.
+ *
+ * THE FLAG LIVES ON THE DOWNLOAD OBJECT, not on the Browser, because several
+ * downloads can be in flight and a single "did the last one fail" field would
+ * be answered by whichever finished most recently. */
+#define VERON_DOWNLOAD_FAILED "veron-download-failed"
 
 static void onDownloadFailed(WebKitDownload *download, GError *error,
                              gpointer data)
@@ -728,15 +776,61 @@ static void onDownloadFailed(WebKitDownload *download, GError *error,
     (void)data;
     g_warning("veron-download: failed: %s",
               error ? error->message : "unknown");
+
+    g_object_set_data(G_OBJECT(download), VERON_DOWNLOAD_FAILED,
+                      GINT_TO_POINTER(1));
+    /* THE UI IS NOT TOUCHED HERE. "finished" follows this immediately and
+     * does the clearing and the redraw for both outcomes, so doing it twice
+     * would be two repaints and two chances to disagree. */
+}
+
+static void onDownloadFinished(WebKitDownload *download, gpointer data)
+{
+    Browser *b = data;
+    gboolean failed = g_object_get_data(G_OBJECT(download),
+                                        VERON_DOWNLOAD_FAILED) != NULL;
+
+    if (!failed) {
+        const char *dest = webkit_download_get_destination(download);
+        g_message("veron-download: finished %s", dest ? dest : "?");
+    }
+
+    veron_chrome_download_finished(b->chrome, !failed);
+    veron_chrome_draw(b->chrome, b->width);
+}
+
+/* THE FRACTION CHANGED. WebKitDownload has no progress signal; it has an
+ * "estimated-load-progress" PROPERTY, so this is a notify handler rather than
+ * a signal handler and the value is read back off the object. */
+static void onDownloadProgress(WebKitDownload *download, GParamSpec *spec,
+                               gpointer data)
+{
+    Browser *b = data;
+    (void)spec;
+
+    veron_chrome_download_progress(b->chrome,
+        webkit_download_get_estimated_progress(download));
+    veron_chrome_draw(b->chrome, b->width);
 }
 
 static void onDownloadStarted(WebKitWebContext *context,
                               WebKitDownload *download, gpointer data)
 {
+    Browser *b = data;
+
     g_signal_connect(download, "decide-destination",
                      G_CALLBACK(onDecideDestination), data);
     g_signal_connect(download, "finished", G_CALLBACK(onDownloadFinished), data);
     g_signal_connect(download, "failed",   G_CALLBACK(onDownloadFailed),   data);
+    g_signal_connect(download, "notify::estimated-progress",
+                     G_CALLBACK(onDownloadProgress), data);
+
+    /* THE BUTTON APPEARS HERE, NOT AT decide-destination. A download that is
+     * cancelled because its directory cannot be made never reaches a
+     * destination, and it is still a thing the user started and should be able
+     * to see the outcome of. */
+    veron_chrome_download_started(b->chrome);
+    veron_chrome_draw(b->chrome, b->width);
 }
 
 /* ---------------------------------------------------------------------------
