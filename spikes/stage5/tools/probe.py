@@ -293,7 +293,7 @@ def _looks_like_html(b):
     return b"<!doctype" in head or b"<html" in head
 
 
-def packager_source(name):
+def packager_source(name, aliases=None):
     """Where do Arch and Alpine actually FETCH this from?
 
     Some projects publish no release assets at all -- libinput is the case
@@ -331,6 +331,12 @@ def packager_source(name):
     # A recipe that says packaged_as is saying "our name is not their name",
     # so the default lookup must not run. A name collision is not a fallback;
     # it is a wrong answer that looks like a right one.
+    # aliases IS A PARAMETER AND WAS NOT. This line read a name that was
+    # never defined and never passed, so every call raised
+    # NameError: name 'aliases' is not defined -- reached the moment
+    # `probe mirrors` walked a recipe, and survived only because the
+    # workflow step ends in `|| true`. The whole discovery pass produced
+    # nothing and reported success.
     candidates = tuple(aliases) if aliases else (name,)
     for cand in candidates:
         arch = try_get("https://gitlab.archlinux.org/archlinux/packaging/"
@@ -1542,7 +1548,14 @@ def cmd_mirrors(a):
         src = r.get("source", {})
         if src.get("kind") == "git" or "sha256" not in src:
             continue
-        targets.append((r["name"], r["version"], src["sha256"], src["url"]))
+        # packaged_as IS CARRIED, NOT DROPPED. packager_source needs it to
+        # avoid looking a package up under a name that belongs to different
+        # software -- `mako` is the case its own comment describes, where
+        # ours is the Python template engine and Arch's is emersion's
+        # Wayland notification daemon. Building the target tuple without it
+        # is how the protection came to be unreachable.
+        targets.append((r["name"], r["version"], src["sha256"], src["url"],
+                        r.get("declared", {}).get("packaged_as") or None))
     seen_urls = {t[3] for t in targets}
     for lst in (a.urls or []):
         if not os.path.exists(lst):
@@ -1551,14 +1564,14 @@ def cmd_mirrors(a):
             u = ln.strip()
             if u.startswith("http") and u not in seen_urls:
                 seen_urls.add(u)
-                targets.append((os.path.basename(u), "", None, u))
+                targets.append((os.path.basename(u), "", None, u, None))
 
-    for pname, pver, sha, url in targets:
+    for pname, pver, sha, url, aliases in targets:
         fname = os.path.basename(url)
         r = {"name": pname, "version": pver}
 
         cands = mirror_candidates(url, fname)
-        d = packager_source(r["name"])
+        d = packager_source(r["name"], aliases)
         for who, v in sorted(d.items()):
             for u in v.get("urls", []):
                 if u.startswith(("http://", "https://")) and "$" not in u \
