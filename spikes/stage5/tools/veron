@@ -2109,6 +2109,17 @@ def file_manifest(root):
     parts[0..3] behind a `len(parts) >= 4` guard and selfrebuild.sh uses
     `cut -f2` -- both keep working. Inserting would have broken both silently,
     which is the shape of the `read` bug the selftest now watches for.
+
+    THE SIXTH COLUMN IS THE MODE, AND IT IS APPENDED FOR THE SAME REASON.
+    Without it the manifest can say WHAT a file contains and not whether it is
+    executable -- so a differential update could restore /usr/sbin/shutdown
+    with the right bytes and mode 0644, and every check would pass while the
+    machine could no longer shut down. Content and permission are separate
+    facts and a manifest that verifies an image needs both.
+
+    OCTAL, ZERO-PADDED TO FOUR DIGITS, so setuid and sticky bits survive the
+    round trip and a reader never has to guess whether 755 means 0755 or 0355.
+    Symlinks carry an empty field rather than a number: see below.
     """
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
@@ -2117,13 +2128,18 @@ def file_manifest(root):
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, root)
             if os.path.islink(full):
-                out.append((rel, "symlink", os.readlink(full), 0))
+                # A SYMLINK'S MODE IS NOT A FACT ABOUT IT. lstat reports 0777
+                # on Linux regardless of anything, and the kernel ignores it;
+                # recording it would put a number in the manifest that means
+                # nothing and would invite a verifier to check it.
+                out.append((rel, "symlink", os.readlink(full), 0, ""))
             else:
                 try:
+                    st = os.lstat(full)
                     out.append((rel, "file", sha256_file(full),
-                                os.path.getsize(full)))
+                                st.st_size, f"{st.st_mode & 0o7777:04o}"))
                 except OSError as e:
-                    out.append((rel, "unreadable", type(e).__name__, 0))
+                    out.append((rel, "unreadable", type(e).__name__, 0, ""))
     return sorted(out)
 
 
@@ -3157,6 +3173,111 @@ def cmd_isolate(a):
     return 0
 
 
+def read_manifest(path):
+    """files.tsv -> {path: (pkg, kind, value, size, mode)}.
+
+    TOLERANT OF THE COLUMN COUNT ON PURPOSE. A machine running an older image
+    diffs its own five-column manifest against a six-column one from a newer
+    release; refusing to parse the old one would make the first update after
+    this change impossible, which is exactly when an update tool needs to
+    work. A missing mode reads as unknown and is reported as unchanged rather
+    than as a difference, because "the old manifest did not record this" is
+    not the same claim as "the mode changed".
+    """
+    out = {}
+    with open(path, encoding="utf-8") as f:
+        for ln in f:
+            ln = ln.rstrip("\n")
+            if not ln:
+                continue
+            parts = ln.split("\t")
+            if len(parts) < 4:
+                continue
+            rel, pkg, kind, val = parts[0], parts[1], parts[2], parts[3]
+            size = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
+            mode = parts[5] if len(parts) > 5 else ""
+            out[rel] = (pkg, kind, val, size, mode)
+    return out
+
+
+def manifest_delta(old, new):
+    """What a machine holding `old` must fetch and remove to become `new`.
+
+    THE UNIT IS THE PATH AND THE CURRENCY IS THE BLOB. Two paths with the same
+    sha256 are one download; that is most of why a delta is small, since the
+    image carries 21,141 files and only 18,856 distinct contents.
+
+    A MODE CHANGE IS NOT A DOWNLOAD. If the content matches and only the
+    permission differs, the file is already on disk and needs a chmod -- which
+    is a different action with a different cost, so it is counted separately
+    rather than folded into the fetch list.
+    """
+    added, changed, chmodded, removed = [], [], [], []
+    for rel, n in new.items():
+        o = old.get(rel)
+        if o is None:
+            added.append(rel)
+        elif o[2] != n[2] or o[1] != n[1]:
+            changed.append(rel)
+        elif o[4] and n[4] and o[4] != n[4]:
+            chmodded.append(rel)
+    for rel in old:
+        if rel not in new:
+            removed.append(rel)
+
+    fetch = {}
+    for rel in added + changed:
+        pkg, kind, val, size, mode = new[rel]
+        if kind == "file":
+            fetch[val] = size
+    return {
+        "added": sorted(added), "changed": sorted(changed),
+        "chmod": sorted(chmodded), "removed": sorted(removed),
+        "blobs": fetch,
+    }
+
+
+def cmd_update(a):
+    """Report what an update would do. It fetches nothing and writes nothing.
+
+    THIS IS THE PIECE EVERY VERSION OF THE UPDATE STORY NEEDS, whichever way
+    the transport and the partitioning are settled: two manifests in, a list
+    of blobs out. It is written first because it is the only part that can be
+    tested without a blob store, without an A/B partition scheme and without
+    trusting anything -- and because knowing the real size of a delta is what
+    tells us whether any of the rest is worth building.
+    """
+    old = read_manifest(a.old)
+    new = read_manifest(a.new)
+    d = manifest_delta(old, new)
+
+    n_bytes = sum(d["blobs"].values())
+    print(f"VERON-UPDATE-DELTA  {a.old} -> {a.new}")
+    print(f"  paths      {len(old):>7,} -> {len(new):,}")
+    print(f"  added      {len(d['added']):>7,}")
+    print(f"  changed    {len(d['changed']):>7,}")
+    print(f"  chmod only {len(d['chmod']):>7,}")
+    print(f"  removed    {len(d['removed']):>7,}")
+    print(f"  to fetch   {len(d['blobs']):>7,} blob(s), "
+          f"{n_bytes / 1048576:.2f} MiB")
+
+    if a.verbose:
+        for label, key in (("+", "added"), ("~", "changed"),
+                           ("m", "chmod"), ("-", "removed")):
+            for rel in d[key]:
+                print(f"  {label} {rel}")
+
+    if a.blobs:
+        # ONE DIGEST PER LINE, WHICH IS WHAT A FETCHER WANTS ON STDIN. No
+        # sizes, no paths: the store is addressed by content and nothing else
+        # about the file is needed to ask for it.
+        with open(a.blobs, "w") as f:
+            for digest in sorted(d["blobs"]):
+                f.write(digest + "\n")
+        print(f"  wrote {a.blobs}")
+    return 0
+
+
 def cmd_manifest(a):
     recipes = load_recipes()
     roots = roots_from_args(a)
@@ -3172,20 +3293,20 @@ def cmd_manifest(a):
             # rather than merely absent from a list.
             skipped.append(name)
             continue
-        for rel, kind, val, size in file_manifest(d):
+        for rel, kind, val, size, mode in file_manifest(d):
             if rel in total:
                 # TWO PACKAGES CLAIMING ONE PATH. At n=2 this cannot happen and
                 # the check looks pointless; at n=200 it is how a file gets
                 # attributed to the wrong derivation and `veron why` starts
                 # lying. Loud now, cheap now.
                 die(f"path collision: {rel} claimed by {total[rel][0]} and {name}")
-            total[rel] = (name, kind, val, size)
+            total[rel] = (name, kind, val, size, mode)
     os.makedirs(roots["out"], exist_ok=True)
     mf = os.path.join(roots["out"], "files.tsv")
     with open(mf, "w") as f:
         for rel in sorted(total):
-            pkg, kind, val, size = total[rel]
-            f.write(f"{rel}\t{pkg}\t{kind}\t{val}\t{size}\n")
+            pkg, kind, val, size, mode = total[rel]
+            f.write(f"{rel}\t{pkg}\t{kind}\t{val}\t{size}\t{mode}\n")
     _bytes = sum(v[3] for v in total.values())
     print(f"VERON-MANIFEST-OK  {len(total)} paths, "
           f"{_bytes / 1048576:.1f} MiB, {mf}")
@@ -3301,7 +3422,7 @@ def cmd_ledger(a):
         # package's IDENTITY, content already determines size, and adding a
         # field would move every ledger hash in the tree for no new fact.
         outhash = sha256_bytes(
-            "\n".join(f"{p}\t{k}\t{v}" for p, k, v, _size in files).encode())
+            "\n".join(f"{p}\t{k}\t{v}" for p, k, v, _size, _mode in files).encode())
         rec = {
             "output_hash": outhash,
             "name": name,
@@ -3338,8 +3459,14 @@ def cmd_ledger(a):
             # The hash is identity and content already fixes size; the record
             # is an SBOM entry, and "how big is this file" is exactly the sort
             # of thing an SBOM is read for.
-            "files": [{"path": p, "kind": k, "value": v, "size": sz}
-                      for p, k, v, sz in files],
+            # THE MODE IS RECORDED HERE TOO. The ledger is what `veron why`
+            # and the update tooling read to answer "what did this package
+            # install and how", and a permission is part of that answer -- a
+            # binary restored with the right bytes and the wrong mode is not
+            # the same install.
+            "files": [{"path": p, "kind": k, "value": v, "size": sz,
+                       "mode": md}
+                      for p, k, v, sz, md in files],
         }
         path = os.path.join(a.ledger, f"{outhash}.json")
         with open(path, "w") as f:
@@ -5170,6 +5297,47 @@ def cmd_selftest(a):
         else:
             print(f"  ok    {_pkg} names the CA bundle this image installs")
 
+    # THE UPDATE DELTA IS EXERCISED, NOT INSPECTED.
+    #
+    # manifest_delta decides what a machine downloads to become a newer
+    # release. Getting it wrong is not a crash -- it is an update that omits a
+    # file, or one that re-downloads the whole image because a column moved.
+    # Both look fine until someone runs them, so the four cases are run here
+    # against manifests built in memory.
+    #
+    # THE VERSION-SKEW CASE IS THE ONE THAT MATTERS. A machine on an older
+    # image has a five-column files.tsv and will diff it against a six-column
+    # one. If the missing mode column read as a difference, the first update
+    # after that change would report every path as modified and fetch the
+    # entire image -- the exact moment the tool most needs to be right.
+    _m1 = {"a": ("p", "file", "aaa", 10, "0755"),
+           "b": ("p", "file", "bbb", 20, "0644"),
+           "gone": ("p", "file", "ccc", 30, "0644")}
+    _m2 = {"a": ("p", "file", "aaa", 10, "0644"),      # mode only
+           "b": ("p", "file", "BBB", 25, "0644"),      # content
+           "new": ("p", "file", "ddd", 40, "0755")}    # added
+    _d = manifest_delta(_m1, _m2)
+    _want = {"added": ["new"], "changed": ["b"], "chmod": ["a"],
+             "removed": ["gone"]}
+    for _k, _v in _want.items():
+        if _d[_k] != _v:
+            print(f"  FAIL  manifest_delta {_k}: {_d[_k]} != {_v}")
+            ok = False
+    if set(_d["blobs"]) != {"BBB", "ddd"}:
+        print(f"  FAIL  manifest_delta fetches {sorted(_d['blobs'])}, "
+              f"expected the changed and added blobs only")
+        ok = False
+
+    # FIVE COLUMNS MEETING SIX: no mode on the old side must mean no chmod.
+    _old5 = {k: v[:4] + ("",) for k, v in _m1.items()}
+    _d5 = manifest_delta(_old5, {k: v for k, v in _m1.items()})
+    if _d5["chmod"] or _d5["changed"] or _d5["added"]:
+        print(f"  FAIL  a five-column manifest reports differences against "
+              f"the same tree with modes: {_d5['chmod']} {_d5['changed']}")
+        ok = False
+    else:
+        print("  ok    update delta: add, change, chmod, remove, and column skew")
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 
@@ -5303,6 +5471,13 @@ def build_parser():
 
     p = sub.add_parser("manifest", help="every installed path -> its package")
     p.set_defaults(fn=cmd_manifest)
+
+    p = sub.add_parser("update", help="what an update between two manifests would do")
+    p.add_argument("--old", required=True, help="the running system's files.tsv")
+    p.add_argument("--new", required=True, help="the published files.tsv")
+    p.add_argument("--blobs", help="write the sha256 list a fetcher needs")
+    p.add_argument("--verbose", action="store_true", help="list every path")
+    p.set_defaults(fn=cmd_update)
 
     p = sub.add_parser("merge", help="merge every DESTDIR into the system root")
     p.set_defaults(fn=cmd_merge)
