@@ -285,6 +285,109 @@ static void onChromeKey(WPEToplevelVeron *toplevel, guint type, guint time,
         veron_chrome_draw(b->chrome, b->width);
         return;
     }
+    /* CUT, COPY AND PASTE, ABOVE THE BLANKET REJECTION for the same reason
+     * Ctrl-A is: everything below this point treats a control combination as
+     * something to discard, and these three are the exceptions that carry
+     * data.
+     *
+     * THE CLIPBOARD BELONGS TO THE DISPLAY, NOT TO THE VIEW. WebKit's own copy
+     * and paste inside the page go through this same WPEClipboard, so the URL
+     * bar and the page share one selection rather than each having a private
+     * one -- which is what makes "copy a link from the page, paste it in the
+     * bar" work without a line of code joining them.
+     *
+     * THERE IS NO wpe_clipboard_set_text. Putting text on the clipboard means
+     * building a WPEClipboardContent and handing that over; wpe_clipboard_set_
+     * content advertises both text/plain and text/plain;charset=utf-8 on our
+     * behalf (WPEClipboard.cpp:227), so neither is named here. */
+    if (ctrl && (keyval == XKB_KEY_c || keyval == XKB_KEY_C ||
+                 keyval == XKB_KEY_x || keyval == XKB_KEY_X)) {
+        gboolean cut = (keyval == XKB_KEY_x || keyval == XKB_KEY_X);
+
+        char *text = veron_chrome_selection(b->chrome);
+        if (!text)
+            return;
+
+        WPEClipboard *clip = wpe_display_get_clipboard(WPE_DISPLAY(b->display));
+        if (clip) {
+            WPEClipboardContent *content = wpe_clipboard_content_new();
+            wpe_clipboard_content_set_text(content, text);
+            wpe_clipboard_set_content(clip, content);
+            wpe_clipboard_content_unref(content);
+        }
+        g_free(text);
+
+        /* CUT COPIES FIRST AND DELETES SECOND, and the order is the whole
+         * safety argument: a clipboard that could not be reached leaves the
+         * text still in the field rather than destroying it. */
+        if (cut && clip) {
+            veron_chrome_delete_selection(b->chrome);
+            veron_chrome_draw(b->chrome, b->width);
+        }
+        return;
+    }
+
+    if (ctrl && (keyval == XKB_KEY_v || keyval == XKB_KEY_V)) {
+        WPEClipboard *clip = wpe_display_get_clipboard(WPE_DISPLAY(b->display));
+        if (!clip)
+            return;
+
+        /* READ AS BYTES, NOT AS TEXT, AND wpe_clipboard_read_text IS THE TRAP.
+         * Its name promises a string and it does not return one: it is
+         * read_bytes followed by g_bytes_unref_to_data (WPEClipboard.cpp:310),
+         * handing back the raw buffer with a length beside it. Nothing on
+         * either path terminates that buffer -- a remote paste is whatever the
+         * other client wrote down the pipe, and the local path is a plain
+         * write_all of content->text->data() for exactly length() bytes
+         * (WPEClipboard.cpp:456). So strlen or strpbrk on that pointer reads
+         * off the end of the allocation, and does it invisibly, because
+         * allocator slack usually happens to supply a zero.
+         *
+         * Taking the bytes and copying exactly as many as arrived is correct
+         * by construction and costs one allocation.
+         *
+         * THE UTF-8 FORM IS ASKED FOR FIRST and the short name second. A
+         * format the offer does not carry returns NULL rather than failing
+         * (the g_ptr_array_find at WPEClipboard.cpp:272), so trying both costs
+         * a pointer comparison and covers clients that advertise only one. */
+        GBytes *bytes = wpe_clipboard_read_bytes(clip, "text/plain;charset=utf-8");
+        if (!bytes)
+            bytes = wpe_clipboard_read_bytes(clip, "text/plain");
+        if (!bytes)
+            return;
+
+        gsize len = 0;
+        const char *data = g_bytes_get_data(bytes, &len);
+        if (!data || !len) {
+            g_bytes_unref(bytes);
+            return;
+        }
+
+        char *text = g_strndup(data, len);
+        g_bytes_unref(bytes);
+
+        /* A URL BAR IS ONE LINE. A multi-line paste keeps the first line
+         * rather than embedding a newline in a field with no way to draw one
+         * -- and a trailing newline is precisely what copying a URL out of a
+         * terminal produces, so this is the common case and not the odd one.
+         *
+         * The NUL is a cut too: bytes past an embedded NUL are not text this
+         * field can hold, and g_strndup already stopped there. */
+        char *nl = strpbrk(text, "\r\n");
+        if (nl)
+            *nl = '\0';
+
+        /* THE INSERT REPLACES THE SELECTION, because veron_chrome_insert
+         * begins with selDelete -- so pasting over a selected URL does what a
+         * user means without this having to clear the field first. */
+        if (*text)
+            veron_chrome_insert(b->chrome, text);
+        g_free(text);
+
+        veron_chrome_draw(b->chrome, b->width);
+        return;
+    }
+
     /* ANY OTHER CONTROL COMBINATION IS NOT TEXT and must not be typed. Without
      * this, Ctrl-C would insert a control character into the field. */
     if (ctrl)
