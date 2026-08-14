@@ -5675,6 +5675,36 @@ def cmd_selftest(a):
     if not _bad:
         print("  ok    a login shell gets both the runtime dir and the display")
 
+    # A SIGNAL COMPILED OUT OF THE API IS A HANDLER THAT NEVER RUNS.
+    #
+    # veron-browser connected to WebKitWebContext::download-started, which
+    # exists in the source and the documentation -- inside
+    # `#if !ENABLE(2022_GLIB_API)`. WPE 2.52 builds WITH that API, so the
+    # signal is not there, g_signal_connect found nothing to connect to, and
+    # the handler was silently never called. Downloads landed in $HOME by
+    # WebKit's own fallback and everything looked like it worked.
+    #
+    # THE SIGNAL MOVED TO WebKitNetworkSession IN 2.40. This checks the
+    # browser connects it there, because the failure mode is invisible: no
+    # error at build time, no error at runtime, just a feature that quietly
+    # is not wired up.
+    _mc = "packages/veron-browser/files/main.c"
+    if os.path.exists(_mc):
+        _t = open(_mc, encoding="utf-8").read()
+        _code = "\n".join(l for l in _t.split("\n")
+                           if not l.lstrip().startswith(("*", "/*", "//")))
+        if 'get_context(b.webView), "download-started"' in _code:
+            print(f"  FAIL  {_mc}: connects download-started on the web "
+                  f"context, where the 2022 GLib API does not define it -- "
+                  f"it is on WebKitNetworkSession")
+            ok = False
+        elif '"download-started"' not in _code:
+            print(f"  FAIL  {_mc}: never connects download-started, so a "
+                  f"download has no destination handler")
+            ok = False
+        else:
+            print("  ok    download-started is connected where 2.52 emits it")
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 

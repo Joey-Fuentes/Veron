@@ -119,11 +119,18 @@ static void dataSourceSend(void *data, struct wl_data_source *source,
 
 /* THE COMPOSITOR GAVE THE SELECTION TO SOMEBODY ELSE. Our source is dead and
  * must be destroyed; the data it was holding can go. */
+/* LOSING THE SELECTION HAS TO BE REPORTED, NOT JUST CLEANED UP.
+ *
+ * Destroying the source without telling WPE leaves it believing it still owns
+ * local content, so the next paste is answered from a clipboard the
+ * compositor gave to somebody else. Stock notifies here too
+ * (WPEClipboardWayland.cpp:84). */
 static void dataSourceCancelled(void *data, struct wl_data_source *source)
 {
     WPEClipboardVeron *priv = PRIV(data);
     g_clear_pointer(&priv->source, wl_data_source_destroy);
     g_clear_pointer(&priv->content, wpe_clipboard_content_unref);
+    WPE_CLIPBOARD_GET_CLASS(data)->changed(WPE_CLIPBOARD(data), NULL, FALSE, NULL);
 }
 
 static void dataSourceTarget(void *data, struct wl_data_source *s, const char *m) { }
@@ -142,11 +149,36 @@ static const struct wl_data_source_listener dataSourceListener = {
 
 /* ---- receiving what others offer (paste) ----------------------------- */
 
+/* THE FORMAT STRINGS MUST BE INTERNED, NOT COPIED, AND THIS IS WHY PASTING
+ * DID NOTHING AT ALL.
+ *
+ * wpe_clipboard_read_bytes (WPEClipboard.cpp:272) looks the requested format
+ * up like this:
+ *
+ *     const auto* internalFormat = g_intern_string(format);
+ *     if (!priv->formats || !g_ptr_array_find(priv->formats.get(),
+ *                                             internalFormat, nullptr))
+ *         return nullptr;
+ *
+ * g_ptr_array_find compares POINTERS. An interned string has one address for
+ * a given value, so the comparison works -- but only if what went into the
+ * array was interned too. This used g_strdup, so every entry was a fresh
+ * allocation that could never match, the lookup failed, and read() was never
+ * even reached. The clipboard looked wired up and returned NULL every time.
+ *
+ * THE DUPLICATE CHECK AND THE OFFER CHECK ARE STOCK'S
+ * (WPEClipboardWayland.cpp:99-107). A compositor may announce the same type
+ * twice, and offers for a drag-and-drop arrive on the same listener as the
+ * selection. */
 static void dataOfferOffer(void *data, struct wl_data_offer *offer, const char *mimeType)
 {
     WPEClipboardVeron *priv = PRIV(data);
-    if (priv->offerFormats)
-        g_ptr_array_add(priv->offerFormats, g_strdup(mimeType));
+    if (priv->offer != offer || !priv->offerFormats)
+        return;
+
+    const char *format = g_intern_string(mimeType);
+    if (!g_ptr_array_find(priv->offerFormats, format, NULL))
+        g_ptr_array_add(priv->offerFormats, (gpointer)format);
 }
 
 static void dataOfferSourceActions(void *data, struct wl_data_offer *o, uint32_t a) { }
@@ -169,7 +201,10 @@ static void dataDeviceDataOffer(void *data, struct wl_data_device *device,
     g_clear_pointer(&priv->offer, wl_data_offer_destroy);
     if (priv->offerFormats)
         g_ptr_array_unref(priv->offerFormats);
-    priv->offerFormats = g_ptr_array_new_with_free_func(g_free);
+    /* NO FREE FUNC. The entries are interned strings owned by glib for the
+     * life of the process; freeing them would be a double free of memory
+     * this code does not own. */
+    priv->offerFormats = g_ptr_array_new();
 
     priv->offer = offer;
     wl_data_offer_add_listener(offer, &dataOfferListener, data);
@@ -275,17 +310,27 @@ static void wpeClipboardVeronChanged(WPEClipboard *clipboard, GPtrArray *formats
 {
     WPEClipboardVeron *priv = PRIV(clipboard);
 
-    WPE_CLIPBOARD_CLASS(wpe_clipboard_veron_parent_class)
-        ->changed(clipboard, formats, isLocal, content);
-
-    if (!isLocal || !content || !formats)
+    /* THE PARENT IS CALLED LAST, AS STOCK DOES (WPEClipboardWayland.cpp:230).
+     * It records the formats and content that the read path then consults, so
+     * claiming the selection first keeps the compositor's view and WPE's view
+     * in the same order they are established. */
+    if (!isLocal || !content || !formats) {
+        WPE_CLIPBOARD_CLASS(wpe_clipboard_veron_parent_class)
+            ->changed(clipboard, formats, isLocal, content);
         return;
+    }
 
     struct wl_data_device_manager *mgr =
         wpeVeronDisplayGetDataDeviceManager(priv->display);
     if (!mgr || !priv->dataDevice)
         return;
 
+    /* THE INCOMING OFFER IS DROPPED TOO. We are taking ownership, so whatever
+     * another client was offering is no longer what the clipboard holds --
+     * keeping it would let a later read answer from the wrong side. */
+    g_clear_pointer(&priv->offer, wl_data_offer_destroy);
+    if (priv->offerFormats)
+        g_clear_pointer(&priv->offerFormats, g_ptr_array_unref);
     g_clear_pointer(&priv->source, wl_data_source_destroy);
     g_clear_pointer(&priv->content, wpe_clipboard_content_unref);
 
@@ -308,9 +353,14 @@ static void wpeClipboardVeronChanged(WPEClipboard *clipboard, GPtrArray *formats
     /* THE SERIAL MUST BE A REAL INPUT EVENT'S. A compositor rejects
      * set_selection with a serial it did not issue, silently, which is how a
      * copy that looks correct produces nothing on the other side. */
+    /* THE KEYBOARD SERIAL, NOT THE LAST ONE. A pointer serial here is
+     * silently refused -- see wpeVeronSeatGetKeyboardSerial. */
     wl_data_device_set_selection(priv->dataDevice, priv->source,
-                                 wpeVeronSeatGetLastSerial(
+                                 wpeVeronSeatGetKeyboardSerial(
                                      wpeVeronDisplayGetVeronSeat(priv->display)));
+
+    WPE_CLIPBOARD_CLASS(wpe_clipboard_veron_parent_class)
+        ->changed(clipboard, formats, isLocal, content);
 }
 
 static void wpeClipboardVeronConstructed(GObject *object)

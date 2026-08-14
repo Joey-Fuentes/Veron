@@ -497,6 +497,7 @@ static void keyboardEnter(void *data, struct wl_keyboard *kb, uint32_t serial,
                           struct wl_surface *surface, struct wl_array *keys)
 {
     VeronSeat *seat = data;
+    seat->keyboardSerial = serial;
     seat->lastSerial       = serial;
     seat->keyboardSurface  = surface;
     seat->keyboardToplevel = surface ? wpeVeronToplevelForSurface(surface) : NULL;
@@ -519,6 +520,7 @@ static void keyboardKey(void *data, struct wl_keyboard *kb, uint32_t serial,
                         uint32_t time, uint32_t key, uint32_t state)
 {
     VeronSeat *seat = data;
+    seat->keyboardSerial = serial;
     seat->lastSerial = serial;
 
     if (!seat->keyboardToplevel || !seat->keymap)
@@ -577,6 +579,7 @@ static void keyboardModifiers(void *data, struct wl_keyboard *kb, uint32_t seria
                               uint32_t group)
 {
     VeronSeat *seat = data;
+    seat->keyboardSerial = serial;
     seat->lastSerial = serial;
     if (!seat->keymap)
         return;
@@ -833,6 +836,13 @@ guint32 wpeVeronSeatGetEnterSerial(VeronSeat *seat)
 guint32 wpeVeronSeatGetLastSerial(VeronSeat *seat)
 {
     return seat ? seat->lastSerial : 0;
+}
+
+/* THE SERIAL FROM THE MOST RECENT KEYBOARD EVENT, which is what
+ * wl_data_device.set_selection requires. */
+guint32 wpeVeronSeatGetKeyboardSerial(VeronSeat *seat)
+{
+    return seat ? seat->keyboardSerial : 0;
 }
 
 WPEKeymap *wpeVeronSeatGetKeymap(VeronSeat *seat)

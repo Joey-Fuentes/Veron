@@ -857,9 +857,23 @@ int main(int argc, char **argv)
     g_signal_connect(b.webView, "run-file-chooser",
                      G_CALLBACK(onRunFileChooser), &b);
 
-    /* THE DOWNLOAD SIGNAL IS ON THE CONTEXT, NOT THE VIEW, because a download
-     * outlives the page that started it -- and may outlive the view. */
-    g_signal_connect(webkit_web_view_get_context(b.webView), "download-started",
+    /* THE DOWNLOAD SIGNAL IS ON THE NETWORK SESSION, AND WAS ON THE CONTEXT.
+     *
+     * WebKitWebContext::download-started still exists in the documentation
+     * and in the source -- inside `#if !ENABLE(2022_GLIB_API)`. WPE 2.52
+     * builds WITH that API, so the signal is compiled out of the context
+     * entirely and connecting to it does nothing at all: no error, no
+     * warning, just a handler that is never called.
+     *
+     * The visible result was a download landing in /home/veron rather than
+     * /home/veron/Downloads -- which is WebKit's own fallback
+     * (G_USER_DIRECTORY_DOWNLOAD, and with no user-dirs.dirs in this image
+     * glib resolves that to $HOME). The download worked; our handler simply
+     * was not in the path.
+     *
+     * WebKitNetworkSession::download-started, since 2.40, is where it lives
+     * now. `session` is the one this browser already created. */
+    g_signal_connect(session, "download-started",
                      G_CALLBACK(onDownloadStarted), &b);
 
     const char *start = argc > 1 ? argv[1] : "https://duckduckgo.com";

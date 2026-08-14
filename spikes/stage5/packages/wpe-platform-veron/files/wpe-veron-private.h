@@ -84,6 +84,7 @@ guint32            wpeVeronSeatGetEnterSerial  (VeronSeat *seat);
  * Grouping by what a function is for is worth less than declaring it after
  * the types it mentions. */
 guint32            wpeVeronSeatGetLastSerial   (VeronSeat *seat);
+guint32            wpeVeronSeatGetKeyboardSerial(VeronSeat *seat);
 
 VeronSeat *wpeVeronSeatNew        (WPEDisplayVeron *display, struct wl_seat *seat);
 void       wpeVeronSeatFree       (VeronSeat *seat);

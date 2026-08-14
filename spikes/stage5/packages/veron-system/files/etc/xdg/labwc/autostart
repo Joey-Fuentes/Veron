@@ -47,5 +47,33 @@ fi
 # labwc reads /etc/xdg through XDG_CONFIG_DIRS and yambar does not; assuming
 # one spec-adjacent behaviour implies the other is what cost this. -c names
 # the path outright (main.c:220, which stats it before accepting).
-[ -x /usr/bin/yambar ] && [ -f /etc/xdg/yambar/config.yml ] && \
-    /usr/bin/yambar -c /etc/xdg/yambar/config.yml &
+# THE BAR IS SUPERVISED, BECAUSE IT DOES NOT SURVIVE A VT SWITCH.
+#
+# Ctrl+Alt+F2 and back leaves the desktop running -- the browser keeps going,
+# the wallpaper is still there -- and the bar is gone. A layer-shell surface
+# does not survive the compositor's output being taken away and given back,
+# and yambar exits rather than reconnecting. Started once from here, nothing
+# brought it back and the only remedy was to type the command again.
+#
+# A LOOP, NOT A dinit SERVICE. The bar needs the session's environment --
+# WAYLAND_DISPLAY, XDG_RUNTIME_DIR, the uid labwc runs as -- and it is part of
+# the session rather than part of the boot. dinit would need all of that
+# passed across for no benefit.
+#
+# THE SLEEP IS NOT POLITENESS, IT IS A BRAKE. Without it a config error makes
+# this spin at whatever rate the process can fail, which fills the log and
+# heats the machine. One second is imperceptible after a VT switch and stops
+# a broken config from becoming a busy loop.
+#
+# THE OUTPUT IS KEPT. yambar says why it exited -- a parse error names the
+# line -- and that message went nowhere before, which is how a config that
+# could not start looked like a bar that simply was not there.
+if [ -x /usr/bin/yambar ] && [ -f /etc/xdg/yambar/config.yml ]; then
+    (
+        while :; do
+            /usr/bin/yambar -c /etc/xdg/yambar/config.yml \
+                >> "${XDG_STATE_HOME:-/tmp}/yambar.log" 2>&1
+            sleep 1
+        done
+    ) &
+fi
