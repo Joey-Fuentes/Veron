@@ -1,0 +1,97 @@
+#!/bin/busybox sh
+# What the wifi is doing, for the bar.
+#
+# THE BAR HAD NO WIFI STATUS AT ALL. It had a "Wi-Fi" label on the left next to
+# the launchers, which ran the connect script -- an action, not an indicator.
+# So the one thing a person actually wants from a bar, "am I connected and to
+# what", was the one thing it could not answer, and the only way to find out
+# was to open the connect menu and read it.
+#
+# A script MODULE RATHER THAN A wifi ONE, because yambar has no wifi module.
+# It has `network`, which reports link state and addresses from rtnetlink and
+# knows nothing about SSIDs or signal strength. The information wanted here
+# comes from wpa_supplicant, so it is read the same way everything else about
+# wifi in this system is read: wpa_cli over its control socket.
+#
+# THE PROTOCOL IS THE SAME ONE backlight-report USES -- `name|type|value` lines
+# terminated by a blank line, per yambar-modules-script(5) -- and the same
+# only-emit-on-change rule, because yambar repaints the bar for every set it
+# reads and a poll that prints the same thing forever repaints forever.
+set -u
+
+CTRL=/run/wpa_supplicant
+INTERVAL=5
+LAST=
+
+# THE SIGNAL BARS ARE BLOCK ELEMENTS, WHICH DejaVu ACTUALLY HAS. This system
+# ships DejaVu and nothing else -- no Nerd Font, no icon font -- so a glyph
+# from a private use area would render as a box. U+2581..U+2588 are Block
+# Elements and are covered, which is also what makes the ramp read as a ramp
+# rather than as three unrelated symbols.
+#
+# dBm RATHER THAN A PERCENTAGE, converted to four steps. wpa_cli reports RSSI
+# in dBm and there is no honest percentage to derive from it -- every vendor
+# invents a different curve. The thresholds below are the usual engineering
+# ones: -50 excellent, -60 good, -70 fair, worse than that is marginal.
+bars() {
+    case "$1" in
+        ''|*[!0-9-]*) printf '▁' ;;
+        *) if   [ "$1" -ge -50 ]; then printf '█'
+           elif [ "$1" -ge -60 ]; then printf '▆'
+           elif [ "$1" -ge -70 ]; then printf '▄'
+           else                        printf '▂'
+           fi ;;
+    esac
+}
+
+while true; do
+    ICON='○'
+    TEXT='wifi off'
+    STATE=down
+
+    if /usr/sbin/wpa_cli -p "$CTRL" ping >/dev/null 2>&1; then
+        S=$(/usr/sbin/wpa_cli -p "$CTRL" status 2>/dev/null)
+        WPA=$(printf '%s\n' "$S" | awk -F= '$1 == "wpa_state" { print $2 }')
+        SSID=$(printf '%s\n' "$S" | awk -F= '$1 == "ssid" { print $2 }')
+
+        case "$WPA" in
+            COMPLETED)
+                # THE SIGNAL IS A SECOND CALL AND ONLY WHEN CONNECTED, because
+                # signal_poll on an unassociated interface returns an error and
+                # costs a round trip to learn nothing.
+                RSSI=$(/usr/sbin/wpa_cli -p "$CTRL" signal_poll 2>/dev/null \
+                       | awk -F= '$1 == "RSSI" { print $2 }')
+                ICON=$(bars "$RSSI")
+                TEXT="${SSID:-connected}"
+                STATE=up
+                ;;
+            SCANNING|AUTHENTICATING|ASSOCIATING|ASSOCIATED|4WAY_HANDSHAKE|GROUP_HANDSHAKE)
+                # THE SAME CIRCLE AS `not connected`, AND THE COLOUR CARRIES
+                # THE DIFFERENCE. A distinct glyph would be better, but the
+                # only faces on this system are DejaVu and its coverage of the
+                # less common Geometric Shapes is not something this project
+                # can check without the font in the tree -- a missing glyph
+                # renders as a box, which is worse than a repeated one. Block
+                # Elements and U+25CB are certain; the rest is not.
+                ICON='○'
+                TEXT='connecting'
+                STATE=busy
+                ;;
+            *)
+                ICON='○'
+                TEXT='not connected'
+                STATE=idle
+                ;;
+        esac
+    fi
+
+    OUT="$ICON|$TEXT|$STATE"
+    if [ "$OUT" != "$LAST" ]; then
+        echo "icon|string|$ICON"
+        echo "ssid|string|$TEXT"
+        echo "state|string|$STATE"
+        echo ""
+        LAST=$OUT
+    fi
+    sleep "$INTERVAL"
+done

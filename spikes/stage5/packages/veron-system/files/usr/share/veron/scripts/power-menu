@@ -28,8 +28,29 @@ set -u
 choice=$(printf 'Cancel\nShut Down\nRestart\n' \
          | fuzzel --dmenu --prompt 'Power: ' 2>/dev/null) || exit 0
 
+# dinit's OWN shutdown, BY ABSOLUTE PATH, AND NOT poweroff OR reboot.
+#
+# The dinit package installs exactly one of these three: /usr/sbin/shutdown.
+# There is no poweroff and no reboot, so those names resolved to BUSYBOX
+# applets, which signal PID 1 the way sysvinit expects and dinit does not
+# answer -- the menu ran, the applet returned, and the machine sat there. It
+# looked like the menu was broken and the menu was fine.
+#
+# `reboot -f` works from a shell for the same reason it is the wrong thing
+# here: -f skips init entirely and calls the syscall, so nothing gets a chance
+# to unmount or stop a service. Asking dinit to do it means the shutdown is
+# orderly.
+#
+# BOTH FLAGS WERE TESTED ON THE MACHINE, not read from a man page this project
+# does not ship: `/usr/sbin/shutdown -r` and `/usr/sbin/shutdown -p` both work
+# from foot.
+#
+# THE ABSOLUTE PATH IS NOT TIDINESS. This runs from yambar, whose PATH is
+# whatever the session gave it rather than the login shell's, and /bin comes
+# before /usr/sbin in some of them -- which is how busybox won in the first
+# place.
 case "$choice" in
-    "Shut Down") exec poweroff ;;
-    "Restart")   exec reboot ;;
+    "Shut Down") exec /usr/sbin/shutdown -p ;;
+    "Restart")   exec /usr/sbin/shutdown -r ;;
     *)           exit 0 ;;
 esac

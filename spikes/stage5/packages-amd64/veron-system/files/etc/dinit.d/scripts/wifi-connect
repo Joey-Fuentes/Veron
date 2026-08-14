@@ -67,18 +67,83 @@ if ! /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" ping >/dev/null 2>&1; then
     sleep 2
 fi
 
-if ! /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan 2>&1 | grep -q OK; then
-    die "the supplicant would not scan -- is it running on $IFACE?"
-fi
-sleep 3
-
 # ONE LINE PER SSID, STRONGEST FIRST, DUPLICATES REMOVED. scan_results is
 # tab-separated: bssid / frequency / signal / flags / ssid. A network with no
 # SSID is hidden and cannot be joined from a list.
-SSID=$(/usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan_results 2>/dev/null \
-       | awk -F'\t' 'NR>2 && $5 != "" { if (!seen[$5]++) print $5 }' \
+ssid_list() {
+    /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan_results 2>/dev/null \
+        | awk -F'\t' 'NR>2 && $5 != "" { if (!seen[$5]++) print $5 }'
+}
+
+# WHAT THE SUPPLICANT ALREADY KNOWS, BEFORE ASKING IT FOR MORE.
+#
+# THE OLD ORDER WAS scan, sleep 3, scan_results, AND IT WAS WRONG TWICE.
+#
+# Wrong the first time because a cold radio does not finish a scan in three
+# seconds, so scan_results returned the cache from BEFORE the scan -- which on
+# a fresh boot is empty. The menu came up with no networks. Clicking again
+# showed the results the FIRST click had eventually produced, which is exactly
+# the "close it and open it again and now it works" everyone hit.
+#
+# Wrong the second time because those three seconds were spent even when the
+# supplicant already had perfectly good results. wpa_supplicant scans on its
+# own while associated, so the cache is usually warm and the menu could have
+# been instant.
+#
+# So: read the cache first and only wait if it is empty.
+CACHED=$(ssid_list)
+
+/usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan >/dev/null 2>&1 || \
+    die "the supplicant would not scan -- is it running on $IFACE?"
+
+if [ -z "$CACHED" ]; then
+    # POLLED, NOT SLEPT, AND WITH A DEADLINE. A fixed sleep is simultaneously
+    # too long when the answer arrives in 400 ms and too short when the radio
+    # is cold, which is how one number managed to cause both complaints.
+    n=0
+    while [ "$n" -lt 16 ]; do
+        CACHED=$(ssid_list)
+        [ -n "$CACHED" ] && break
+        sleep 0.5
+        n=$((n + 1))
+    done
+fi
+
+# THE CURRENT CONNECTION IS THE FIRST THING THE MENU SAYS, because "am I on
+# wifi" is the question a bar click is usually asking, and the answer used to
+# be nowhere in this interface at all.
+CUR=$(/usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" status 2>/dev/null \
+      | awk -F= '$1 == "ssid" { print $2 }')
+STATE=$(/usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" status 2>/dev/null \
+        | awk -F= '$1 == "wpa_state" { print $2 }')
+
+MENU=""
+if [ -n "$CUR" ] && [ "$STATE" = "COMPLETED" ]; then
+    MENU="Connected: $CUR
+Disconnect from $CUR"
+elif [ -n "$STATE" ] && [ "$STATE" != "INACTIVE" ] && [ "$STATE" != "DISCONNECTED" ]; then
+    MENU="Status: $STATE"
+fi
+[ -z "$CACHED" ] && MENU="${MENU:+$MENU
+}No networks found -- choose Rescan"
+
+SSID=$(printf '%s%s%s\nRescan\n' "${MENU:+$MENU
+}" "$CACHED" "${CACHED:+
+}" \
        | fuzzel --dmenu --prompt 'Wi-Fi: ' 2>/dev/null) || exit 0
 [ -n "$SSID" ] || exit 0
+
+case "$SSID" in
+    "Connected: "*|"Status: "*|"No networks found"*)
+        exit 0 ;;
+    "Disconnect from "*)
+        /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" disconnect >/dev/null 2>&1
+        exit 0 ;;
+    Rescan)
+        # THE RESCAN IS THE SAME SCRIPT AGAIN, and by then the scan this run
+        # already issued has had the time the user spent reading the menu.
+        exec "$0" ;;
+esac
 
 # fuzzel HAS NO PASSWORD FIELD, and pretending otherwise would be worse than
 # saying so. The passphrase is typed into a normal dmenu prompt, which means it

@@ -65,13 +65,6 @@ bar:
             # name here is one this set builds.
             on-click: /usr/bin/veron-edit
     - label:
-        content:
-          string:
-            text: " Wi-Fi "
-            # THE ONE THING A PERSON DOES BY HAND, and it is a click. A machine
-            # with a saved network never needs it; a fresh one needs it once,
-            # and after that /persist carries the network across reboots.
-            on-click: /etc/dinit.d/scripts/wifi-connect
     - label:
         content:
           string:
@@ -208,6 +201,37 @@ bar:
     # IT SHOWS NOTHING UNTIL IT HAS SOMETHING. Blank on AC, blank for the first
     # minute of a discharge, and blank if the rate implies more than a day. A
     # missing estimate is honest; 99:00 was not.
+    # THE WIFI, MOVED HERE FROM THE LEFT AND TURNED INTO A STATUS.
+    #
+    # It used to be a " Wi-Fi " label sitting among the launchers -- an ACTION,
+    # next to Terminal and Browser, which is where you put a thing you run and
+    # not a thing you read. So the bar could not answer "am I connected and to
+    # what", and the only way to find out was to open the connect menu and look.
+    #
+    # It belongs with cpu, mem, battery and backlight because it is the same
+    # kind of thing: a property of the machine that changes on its own. It is
+    # still clickable and still runs the same script, so nothing is lost --
+    # a status that is also the control, which is what every other bar does.
+    #
+    # THE MAP IS ON `state`, NOT ON THE TEXT. wifi-report emits state as up,
+    # busy, idle or down, so the colour is decided by a value chosen for that
+    # purpose rather than by matching on an SSID that could be anything.
+    - script:
+        path: /etc/dinit.d/scripts/wifi-report
+        args: []
+        content:
+          map:
+            on-click: /etc/dinit.d/scripts/wifi-connect
+            conditions:
+              state == up:
+                - string: {text: "{icon} {ssid}", margin: 6}
+              state == busy:
+                - string: {text: "{icon} {ssid}", foreground: d0d0a0ff, margin: 6}
+              state == idle:
+                - string: {text: "{icon} {ssid}", foreground: 909090ff, margin: 6}
+              state == down:
+                - string: {text: "{icon} {ssid}", foreground: 707070ff, margin: 6}
+
     - script:
         path: /etc/dinit.d/scripts/battery-estimate
         args: []
