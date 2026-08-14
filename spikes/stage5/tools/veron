@@ -4963,6 +4963,37 @@ def cmd_selftest(a):
     if not _bad:
         print("  ok    every backend source that calls wl_* includes wayland-client.h")
 
+    # A MAP CONDITION'S VALUE MUST BE QUOTED IF IT CONTAINS A DOT.
+    #
+    # yambar's map expression parser reads a bare value up to the first
+    # character it does not recognise, so `app-id == org.veron.Browser` parses
+    # `org` and then fails on the dot:
+    #
+    #     151:22: ...map.conditions: expected [end of file, ||, &&], found .
+    #
+    # The bar does not start, and the whole desktop looks broken over one
+    # missing pair of quotes. The empty-module check above could not see this
+    # -- the YAML is valid either way; the fault is inside a string yambar
+    # parses itself.
+    if _yaml is not None:
+        _bad = 0
+        _cond = re.compile(r"^\s*([a-z][a-z0-9_-]*)\s*(==|!=)\s*([^\s:][^:]*?)\s*:\s*$")
+        for _cfg in sorted(glob.glob("packages*/veron-system/files/etc/xdg/yambar/config.yml")):
+            for _i, _ln in enumerate(open(_cfg, encoding="utf-8"), 1):
+                _m = _cond.match(_ln)
+                if not _m:
+                    continue
+                _val = _m.group(3)
+                if _val.startswith('"') and _val.endswith('"'):
+                    continue
+                if "." in _val:
+                    print(f"  FAIL  {_cfg}:{_i}: map condition value `{_val}` "
+                          f"contains a dot and is not quoted -- yambar will "
+                          f"fail to parse it")
+                    ok = False; _bad += 1
+        if not _bad:
+            print("  ok    every dotted map condition value is quoted")
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 
