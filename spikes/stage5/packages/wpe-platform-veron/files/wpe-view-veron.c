@@ -283,9 +283,32 @@ static void wpe_view_veron_dispose(GObject *object)
     G_OBJECT_CLASS(wpe_view_veron_parent_class)->dispose(object);
 }
 
+/* THE POINTER SHAPE, WHICH THIS CLASS DID NOT IMPLEMENT AT ALL.
+ *
+ * WPEViewClass offers set_cursor_from_name and set_cursor_from_bytes; neither
+ * was installed, so every request WebKit made was discarded and the pointer
+ * kept whatever the compositor last set. Entering the window over an edge left
+ * a resize arrow up permanently; links never produced a hand.
+ *
+ * THE CURSOR LIVES ON THE DISPLAY, NOT THE VIEW, because the theme and its
+ * surface are per-connection and every view shares one pointer.
+ */
+static void wpeViewVeronSetCursorFromName(WPEView *view, const char *name)
+{
+    WPEDisplayVeron *display = WPE_DISPLAY_VERON(wpe_view_get_display(view));
+    VeronCursor *cursor = wpeVeronDisplayGetCursor(display);
+    VeronSeat *seat = wpeVeronDisplayGetVeronSeat(display);
+    if (!cursor || !seat)
+        return;
+
+    wpeVeronCursorSetFromName(cursor, wpeVeronSeatGetPointer(seat),
+                              wpeVeronSeatGetEnterSerial(seat), name);
+}
+
 static void wpe_view_veron_class_init(WPEViewVeronClass *klass)
 {
     G_OBJECT_CLASS(klass)->constructed = wpeViewVeronConstructed;
     G_OBJECT_CLASS(klass)->dispose = wpe_view_veron_dispose;
     WPE_VIEW_CLASS(klass)->render_buffer = wpeViewVeronRenderBuffer;
+    WPE_VIEW_CLASS(klass)->set_cursor_from_name = wpeViewVeronSetCursorFromName;
 }

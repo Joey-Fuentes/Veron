@@ -10,7 +10,11 @@
 # WPE_DISPLAY names the extension -- WPEDisplay.cpp:272 -- and without it the
 # highest-priority extension that connects wins, which is this one at 100.
 
-PKGS  = wpe-platform-2.0 wayland-client glib-2.0 gobject-2.0 gio-2.0 gmodule-2.0 epoxy xkbcommon
+# wayland-cursor IS PART OF wayland AND NOT A NEW PACKAGE. It parses XCursor
+# files and hands back wl_buffers, which is the whole reason this backend does
+# not need its own image decoder for the pointer. The theme it reads is the one
+# veron-cursors generates.
+PKGS  = wpe-platform-2.0 wayland-client wayland-cursor glib-2.0 gobject-2.0 gio-2.0 gmodule-2.0 epoxy xkbcommon
 CFLAGS  += -O2 -g -fPIC -Wall $(shell pkg-config --cflags $(PKGS))
 # -soname SO THE BROWSER CAN LINK THIS. veron-browser calls
 # wpe_toplevel_veron_set_chrome_height and friends directly; without a soname
@@ -33,6 +37,7 @@ GEN = xdg-shell-client-protocol.h xdg-shell-protocol.c \
 
 OBJS = wpe-display-veron.o wpe-toplevel-veron.o wpe-view-veron.o \
        wpe-veron-seat.o wpe-veron-shm.o wpe-veron-source.o \
+       wpe-veron-cursor.o \
        xdg-shell-protocol.o linux-dmabuf-unstable-v1-protocol.o \
        xdg-decoration-unstable-v1-protocol.o
 

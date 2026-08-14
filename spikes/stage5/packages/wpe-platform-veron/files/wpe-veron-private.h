@@ -37,6 +37,25 @@ void                     wpeVeronToplevelResizePage      (WPEToplevelVeron *topl
 
 typedef struct _VeronSeat VeronSeat;
 
+/* ---- the pointer shape ---- */
+typedef struct _VeronCursor VeronCursor;
+struct wl_pointer;
+
+VeronCursor *wpeVeronDisplayGetCursor  (WPEDisplayVeron *display);
+VeronSeat   *wpeVeronDisplayGetVeronSeat(WPEDisplayVeron *display);
+
+VeronCursor *wpeVeronCursorNew         (WPEDisplayVeron *display);
+void         wpeVeronCursorFree        (VeronCursor *cursor);
+void         wpeVeronCursorSetFromName (VeronCursor *cursor,
+                                        struct wl_pointer *pointer,
+                                        guint32 serial, const char *name);
+
+/* THE SEAT OWNS THE POINTER AND THE ENTER SERIAL, and set_cursor needs both.
+ * The view has neither, which is why these exist rather than the view
+ * reaching into the seat struct. */
+struct wl_pointer *wpeVeronSeatGetPointer      (VeronSeat *seat);
+guint32            wpeVeronSeatGetEnterSerial  (VeronSeat *seat);
+
 VeronSeat *wpeVeronSeatNew        (WPEDisplayVeron *display, struct wl_seat *seat);
 void       wpeVeronSeatFree       (VeronSeat *seat);
 WPEKeymap *wpeVeronSeatGetKeymap  (VeronSeat *seat);

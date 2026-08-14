@@ -53,6 +53,9 @@ struct _VeronSeat {
     WPEToplevelVeron   *pointerToplevel;
     double              pointerX, pointerY;
     guint32             lastSerial;
+    /* THE POINTER ENTER SERIAL, kept apart from lastSerial because
+     * wl_pointer.set_cursor will only accept this one. */
+    guint32             enterSerial;
 
     struct wl_surface  *keyboardSurface;
     WPEToplevelVeron   *keyboardToplevel;
@@ -121,6 +124,7 @@ static void pointerEnter(void *data, struct wl_pointer *pointer, uint32_t serial
         return;
 
     seat->lastSerial     = serial;
+    seat->enterSerial    = serial;
     seat->pointerSurface = surface;
     seat->pointerToplevel = wpeVeronToplevelForSurface(surface);
     seat->pointerX = wl_fixed_to_double(sx);
@@ -797,6 +801,21 @@ void wpeVeronSeatFree(VeronSeat *seat)
     g_clear_pointer(&seat->touchPoints, g_hash_table_destroy);
     g_clear_object(&seat->keymap);
     g_free(seat);
+}
+
+/* THE ENTER SERIAL, NOT THE LATEST ONE. wl_pointer.set_cursor is only
+ * accepted with the serial from the most recent wl_pointer.enter; passing the
+ * serial of a button or key event makes the compositor ignore the request
+ * without saying anything. So this is tracked separately from lastSerial,
+ * which every event overwrites. */
+struct wl_pointer *wpeVeronSeatGetPointer(VeronSeat *seat)
+{
+    return seat ? seat->pointer : NULL;
+}
+
+guint32 wpeVeronSeatGetEnterSerial(VeronSeat *seat)
+{
+    return seat ? seat->enterSerial : 0;
 }
 
 WPEKeymap *wpeVeronSeatGetKeymap(VeronSeat *seat)

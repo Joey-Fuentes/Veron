@@ -50,6 +50,9 @@ struct _WPEDisplayVeron {
     EGLDisplay eglDisplay;
     GSource   *eventSource;
     VeronSeat *seat;
+    /* CREATED LAZILY, AFTER connect(), because wl_cursor_theme_load needs the
+     * shm the registry supplies and the registry has not run at construction. */
+    VeronCursor *cursor;
 };
 
 G_DEFINE_TYPE_WITH_CODE(WPEDisplayVeron, wpe_display_veron, WPE_TYPE_DISPLAY,
@@ -154,6 +157,9 @@ static gboolean wpeDisplayVeronConnect(WPEDisplay *display, GError **error)
      * and refusing to connect over it would be wrong. */
     if (self->wlSeat)
         self->seat = wpeVeronSeatNew(self, self->wlSeat);
+        self->cursor = wpeVeronCursorNew(self);
+        if (!self->cursor)
+            g_warning("veron: no cursor theme -- the pointer will not change shape");
 
     self->eventSource = wpeVeronEventSourceNew(self->wlDisplay);
     wl_display_roundtrip(self->wlDisplay);
@@ -224,6 +230,7 @@ static void wpe_display_veron_init(WPEDisplayVeron *self)
 static void wpe_display_veron_dispose(GObject *object)
 {
     WPEDisplayVeron *self = WPE_DISPLAY_VERON(object);
+    g_clear_pointer(&self->cursor, wpeVeronCursorFree);
     g_clear_pointer(&self->seat, wpeVeronSeatFree);
     g_clear_pointer(&self->eventSource, wpeVeronEventSourceFree);
     if (self->wlDisplay) {
@@ -320,4 +327,14 @@ G_MODULE_EXPORT char **g_io_module_query(void)
 {
     char *eps[] = { (char *)WPE_DISPLAY_EXTENSION_POINT_NAME, NULL };
     return g_strdupv(eps);
+}
+
+VeronCursor *wpeVeronDisplayGetCursor(WPEDisplayVeron *display)
+{
+    return display ? display->cursor : NULL;
+}
+
+VeronSeat *wpeVeronDisplayGetVeronSeat(WPEDisplayVeron *display)
+{
+    return display ? display->seat : NULL;
 }
