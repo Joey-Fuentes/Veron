@@ -1664,7 +1664,20 @@ jobs:
               done
             }
 
-            send_string "veron-browser"
+            # THE PAGE IS NAMED, OR THE BROWSER GOES TO ITS HOME PAGE.
+            #
+            # The first run of this test opened correctly and loaded
+            # duckduckgo.com, because that is veron-browser's default with no
+            # argument -- and this VM has `-nic none`, so it showed a name
+            # resolution error. The window was right and the content was not
+            # something this test can check.
+            #
+            # A LOCAL FILE, NEVER THE NETWORK. test.html ships in the image at
+            # /usr/share/veron/test.html and paints the #1e6f50 field the
+            # frame check counts. A test that reaches the internet would fail
+            # on a runner with no route and pass for the wrong reason on one
+            # with a captive portal.
+            send_string "veron-browser /usr/share/veron/test.html"
             python3 "$S/tools/qemu-monitor.py" "$O/mon.sock" \
               "sendkey ret" >> "$O/desktop-console.log" 2>&1 || true
             sleep 40
@@ -1693,11 +1706,13 @@ jobs:
             sleep 1
           done
 
-          # ONE CAPTURE PATH, CALLED TWICE. Two frames are needed now -- the
-          # MiniBrowser/LD_PRELOAD run and the veron-browser run answer
-          # different questions and cannot share a frame -- and writing the
-          # screendump twice by hand is how the second copy drifts from the
-          # first. Arguments: the marker to wait for, and the png to write.
+          # ONE CAPTURE PATH. It was written when this step launched three
+          # browsers and needed a frame for each; only veron-browser is
+          # launched now, so it is called once for the frame that matters.
+          # The function stays because writing a screendump by hand is how
+          # copies drift, and because a second capture will be wanted again
+          # the moment anything else needs looking at.
+          # Arguments: the marker to wait for, and the png to write.
           veron_capture() {
             _marker=$1
             _png=$2
