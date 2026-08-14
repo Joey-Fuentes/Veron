@@ -1,0 +1,92 @@
+name    = "veron-about"
+version = "1"
+group   = "desktop"
+license = "MIT"
+srcdir  = "."
+
+[source]
+kind      = "local"
+path      = "packages/veron-about/files"
+url       = "this repository"
+sha256    = "n/a -- the program is this repository's own source, carried in files/"
+signature = "n/a -- the provenance is the commit that carries the source"
+crosschecked_against = []
+
+[deps]
+build        = ["fltk", "pkgconf"]
+link         = ["fltk"]
+# curl AT RUNTIME AND NOT AT LINK TIME. The update check shells out to the
+# curl BINARY rather than linking libcurl, so nothing here has a DT_NEEDED on
+# it -- but an image without curl has an About window whose one button always
+# fails, which is worse than not having the button.
+runtime      = ["fltk", "curl", "ca-certificates"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "the binary exists and is executable; the window is interactive"
+packaged_as     = ["veron-about"]
+deferral        = """
+NOTHING IN A RUNNING VERON COULD SAY WHICH COMMIT BUILT IT, and that cost a \
+whole evening once. Answering "is my fix in this image" took three \
+photographs, a comparison of module file sizes across builds, and finally \
+`eu-nm -D -u` against the deployed library to see whether it referenced a \
+symbol the fix introduced. Every one of those is archaeology standing in for \
+a fact the image should simply state.
+
+THE RELEASE PAGE MAKES IT WORSE RATHER THAN BETTER. Assets are replaced with \
+`gh release upload --clobber`, which never touches the tag, so the page \
+permanently reports the commit its release object was first created at. It \
+read `9560d44` and "3 days ago" while carrying artifacts built minutes \
+earlier from a different commit. A reader who trusts the header is misled, \
+and a reader who does not has nothing else to consult.
+
+WHAT THIS FIXES AND WHAT IT DOES NOT. /etc/veron-release is written by the \
+workflow at image-assembly time and carries the commit, the build date, the \
+CI run id, the architecture and the image sha256. This program reads that \
+file. It does not verify anything: a file inside the image cannot attest to \
+the image, and the honest check remains comparing the published IMAGE-SHA256 \
+against the partition. What it provides is the ANSWER TO "WHICH COMMIT AM I", \
+which nothing previously did.
+
+THE UPDATE CHECK IS DELIBERATELY MINIMAL. It asks GitHub's compare API how \
+many commits `main` is ahead of the recorded commit and prints the number. It \
+does not download, verify, or install anything, and says so in the window -- \
+"rebuild and re-flash". An updater that silently replaced a hermetically \
+built image would need to answer questions about signing and rollback that \
+this project has not yet answered, and a button that pretends otherwise would \
+be a promise the system cannot keep.
+
+FLTK BECAUSE IT IS ALREADY BUILT. veron-edit compiles FLTK's own editor \
+example, so the toolkit is present, installed and known to run under labwc. A \
+GTK application would add a dependency tree for one window.
+
+CURL BY SUBPROCESS RATHER THAN libcurl. The program makes exactly one HTTPS \
+request, on a button press, and parsing its own TLS session would mean linking \
+a library and carrying its error handling for one field. `curl` is already in \
+the package set for the mirror fetches. The cost is that the check reports \
+"could not reach GitHub" rather than a specific network error, which is the \
+right amount of detail for a person deciding whether to connect wifi.
+"""
+
+[installs]
+prefixes = ["usr/bin/veron-about", "usr/share/veron/applications"]
+
+[[steps]]
+name = "compile"
+# -std=c++17 IS NOT DECORATION. The Close button uses a captureless lambda as
+# an Fl_Callback, which is a C++11 conversion; fltk-config does not add a
+# standard flag, and a toolchain defaulting to an older mode would fail here
+# with a message about converting a lambda to a function pointer.
+cwd  = "$B"
+run  = [["sh", "-c", "cp /packages/veron-about/files/about.cxx . && c++ -O2 -std=c++17 -o veron-about about.cxx $(fltk-config --cxxflags --ldflags)"]]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+run  = [["sh", "-c", "mkdir -p $D/usr/bin $D/usr/share/veron/applications && cp veron-about $D/usr/bin/veron-about && chmod 0755 $D/usr/bin/veron-about && printf '[Desktop Entry]\\nType=Application\\nName=About Veron\\nComment=Which commit built this machine, and whether it is current\\nExec=/usr/bin/veron-about\\nTerminal=false\\nCategories=System;\\n' > $D/usr/share/veron/applications/veron-about.desktop"]]
+
+[guest]
+# THE BINARY EXISTS AND IS EXECUTABLE. Running it would open a window.
+test   = [["/bin/sh", "-c", "test -x /usr/bin/veron-about && echo present"]]
+expect = ["present"]

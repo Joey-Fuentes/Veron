@@ -925,6 +925,40 @@ jobs:
           # its test, in the same file as its pin and its flags.
           python3 tools/veron --overlay packages-amd64 guest-tests --out sysroot/usr/bin/veron-stage5-test
 
+          # /etc/veron-release -- WHICH COMMIT BUILT THIS MACHINE.
+          #
+          # Nothing in a running Veron could answer that. Establishing whether
+          # a fix was in a booted image took, on one evening, three photographs
+          # and finally `eu-nm -D -u` against the deployed module to see
+          # whether it referenced a symbol the fix had introduced. The release
+          # page cannot help: assets are replaced with `--clobber`, which never
+          # moves the tag, so it permanently reports the commit its release
+          # object was created at rather than the one whose artifacts it holds.
+          #
+          # WRITTEN HERE AND NOT IN A RECIPE, because a package build is sealed
+          # and has no business knowing about git. The merged tree is the first
+          # point where the image exists and the workflow's own environment is
+          # still in reach.
+          #
+          # IT DOES NOT BREAK REPRODUCIBILITY. VERON-IMAGE-REPRO-OK builds the
+          # image twice within one run, and every value here is constant across
+          # those two builds. Two runs of the SAME commit also agree, because
+          # GITHUB_SHA is the input. Two runs of DIFFERENT commits producing
+          # different images is the point.
+          #
+          # SOURCEABLE, IN THE SHAPE os-release USES, so a script can read it
+          # with `. /etc/veron-release` and veron-about can parse it with
+          # nothing more than fgets.
+          {
+            echo "VERON_COMMIT=${GITHUB_SHA}"
+            echo "VERON_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "VERON_RUN_ID=${GITHUB_RUN_ID}"
+            echo "VERON_ARCH=x86_64"
+            echo "VERON_REPO=${GITHUB_REPOSITORY}"
+          } > sysroot/etc/veron-release
+          echo "  wrote /etc/veron-release:"
+          sed 's/^/    /' sysroot/etc/veron-release
+
           # THE SELF-REBUILD PAYLOAD IS NOT PART OF THE OPERATING SYSTEM.
           #
           # This used to `cp -a dl packages policy tools sysroot/veron/`, which

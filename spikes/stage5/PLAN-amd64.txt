@@ -145,10 +145,11 @@ between this file and the recipes fails the run.
   123. gst-libav
   124. gst-plugins-bad
   125. gst-plugins-good
-  126. veron-edit
-  127. wpewebkit
-  128. wpe-platform-veron
-  129. veron-browser
+  126. veron-about
+  127. veron-edit
+  128. wpewebkit
+  129. wpe-platform-veron
+  130. veron-browser
 
 ======================================================================
 package bzip2 1.0.8
@@ -4495,6 +4496,32 @@ package gst-plugins-good 1.28.1
          cwd  build/gst-plugins-good-1.28.1/gst-plugins-good-1.28.1
          env  DESTDIR=dest/gst-plugins-good
          argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package veron-about 1
+  group        desktop
+  license      MIT
+  recipe-sha   50cde9b040774a15ae86e8308f3e31894d8719d5cd724f0c583d5313e4205e79
+
+  source
+    url        this repository
+    sha256     n/a -- the program is this repository's own source, carried in files/
+    signature  n/a -- the provenance is the commit that carries the source
+    correspond none
+
+  deps
+    build        fltk, pkgconf
+    link         fltk
+    runtime      ca-certificates, curl, fltk
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] compile
+         cwd  build/veron-about-1
+         argv ["sh", "-c", "cp /packages/veron-about/files/about.cxx . && c++ -O2 -std=c++17 -o veron-about about.cxx $(fltk-config --cxxflags --ldflags)"]
+    [02] install
+         cwd  build/veron-about-1
+         argv ["sh", "-c", "mkdir -p dest/veron-about/usr/bin dest/veron-about/usr/share/veron/applications && cp veron-about dest/veron-about/usr/bin/veron-about && chmod 0755 dest/veron-about/usr/bin/veron-about && printf '[Desktop Entry]\\nType=Application\\nName=About Veron\\nComment=Which commit built this machine, and whether it is current\\nExec=/usr/bin/veron-about\\nTerminal=false\\nCategories=System;\\n' > dest/veron-about/usr/share/veron/applications/veron-about.desktop"]
 
 ======================================================================
 package veron-edit 1.4.5
