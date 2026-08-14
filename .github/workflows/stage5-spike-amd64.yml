@@ -1500,11 +1500,16 @@ jobs:
       # the FIFO drives it and the redirect captures it, which is how the
       # two-VM network test has always worked.
       #
-      # labwc IS STARTED BY HAND, NOT FROM boot.d. It is deliberately not a
-      # boot service -- a compositor that fails during a package test would
-      # look like a broken system -- so this sends `dinitctl start labwc` down
-      # the serial line, the same way the two-VM network test drives its
-      # guests.
+      # labwc STARTS ITSELF. It IS in boot.d -- the boot log says
+      # `[ OK ] labwc` before this step types anything -- and this comment
+      # used to claim the opposite, left over from when it was true. The test
+      # sent `dinitctl start labwc` at an already-running compositor for
+      # months on the strength of it.
+      #
+      # THE SERIAL LINE IS STILL USED, for the diagnostics that follow the
+      # screenshot. The browser itself is launched the way a person launches
+      # it: Super+Return for a terminal, then the command typed into that
+      # terminal, both delivered through qemu's sendkey.
       #
       # THE FRAME IS CHECKED, NOT JUST UPLOADED. A screenshot nobody looks at
       # proves nothing, and a black one looks like a small file rather than a
@@ -1584,195 +1589,86 @@ jobs:
             #
             # dinitctl start returns immediately, so the shell stays live and
             # the settle below is real time rather than an echo race.
-            printf 'dinitctl start labwc\n'
+            # WHAT A PERSON DOES, AND NOTHING ELSE.
+            #
+            # Every line below has an exact counterpart in someone sitting at
+            # the machine: wait for the desktop, press Super+Return, type
+            # `veron-browser`, look at the screen. The previous version of
+            # this block did none of those things and failed for reasons that
+            # had nothing to do with the browser -- which ran correctly on
+            # real hardware the whole time.
+            #
+            # WHAT WAS REMOVED AND WHY EACH THING WAS WRONG:
+            #
+            #   dinitctl start labwc
+            #     labwc IS in boot.d and the boot log says `[ OK ] labwc`
+            #     before this script types anything. The comment claiming it
+            #     is not a boot service was left over from when that was true.
+            #     Poking an already-running compositor is not a test step.
+            #
+            #   /usr/bin/foot &   typed at the serial console
+            #     A person opens a terminal through the compositor, so it is a
+            #     child of the session with the session's environment. Started
+            #     from a serial getty it is a child of an entirely different
+            #     process tree. Super+Return is the binding labwc already has
+            #     and is what actually gets exercised.
+            #
+            #   trailing &
+            #     Backgrounding from the serial shell put the browser in a
+            #     different process group with a different controlling
+            #     terminal, and the shell reported `Trace/breakpoint trap`.
+            #     Run in the foreground -- as a person runs it -- it works.
+            #
+            #   > /tmp/browser-*.log 2>&1
+            #     Capturing output that then had nothing in it, because the
+            #     process died from the scaffolding rather than from anything
+            #     the log would explain.
+            #
+            #   [ -x /usr/bin/veron-browser ] &&
+            #     Guarding against a binary this image always installs.
+            #
+            #   WPE_DISPLAY=... and the full /usr/libexec path
+            #     Nobody types those. `veron-browser` is the command, so
+            #     `veron-browser` is what this runs.
+            #
+            # THE KEYSTROKE GOES THROUGH THE MONITOR, NOT THE SERIAL LINE.
+            # qemu's `sendkey` delivers it to the guest's input device, which
+            # is how a real key reaches labwc. The same monitor socket already
+            # carries screendump, so this adds no new machinery.
             sleep 45
-            printf '/usr/bin/foot &\n'
+
+            # Super+Return, THE BINDING labwc ALREADY HAS. qemu spells the
+            # left Super key `meta_l`.
+            python3 "$S/tools/qemu-monitor.py" "$O/mon.sock" \
+              "sendkey meta_l-ret" >> "$O/desktop-console.log" 2>&1 || true
             sleep 20
-            # THE BROWSER, ON THE RUNNING DESKTOP, GUARDED SO THIS STEP STILL
-            # WORKS WHEN wpewebkit IS NOT BUILT.
-            #
-            # MiniBrowser IS A REAL WAYLAND CLIENT HERE, NOT HEADLESS.
-            # main.cpp:615 is
-            #   WPEDisplay* wpeDisplay = useHeadlessMode ? wpe_display_headless_new() : nullptr;
-            # and a null display makes WPEPlatform pick its default, which
-            # under a Wayland session is the Wayland backend. So it opens a
-            # toplevel on labwc and appears in the frame as a window -- which
-            # is the point. --headless renders into an offscreen buffer that
-            # screendump cannot see.
-            #
-            # WAYLAND_DISPLAY IS DETECTED, NOT ASSUMED. labwc calls
-            # wl_display_add_socket_auto (server.c:714): wayland-0 on a fresh
-            # boot, wayland-1 if something already holds it. Hardcoding the
-            # first would fail silently on the second.
-            #
-            # A BARE PATH IS ENOUGH -- main.cpp:696 runs the argument through
-            # g_file_new_for_commandline_arg, which makes it a file:// URL.
-            # With NO argument MiniBrowser loads https://wpewebkit.org, a
-            # network fetch this test must never make.
-            printf 'export XDG_RUNTIME_DIR=/run/user/0\n'
-            printf 'export WAYLAND_DISPLAY=$(ls /run/user/0 | grep -m1 wayland-)\n'
-            printf 'echo ---BROWSER--- display=$WAYLAND_DISPLAY\n'
-            # G_MESSAGES_DEBUG SO GIO SAYS WHY. The module loader reports a
-            # rejected module through g_warning/g_debug; without this a module
-            # that fails to load is indistinguishable from one that loaded and
-            # declined to connect, and both end with the stock backend.
-            printf 'export G_MESSAGES_DEBUG=all\n'
-            #
-            # `2>&1 | head -30 &` WAS THE REASON THE LAST RUN SAID NOTHING.
-            # Three faults in one line. The pipeline is backgrounded, so its
-            # output raced the tty with everything else the feeder was typing.
-            # head closed the pipe after 30 lines, so a browser that lived
-            # would take SIGPIPE on its 31st. And the process died before
-            # printing anything at all, so the ONLY record of the crash was
-            # the shell's own `Segmentation fault` line -- no stderr, no
-            # faulting address, no library. Each run now goes to its own file
-            # in /tmp, which is a tmpfs, and is read back deliberately.
-            printf 'ulimit -c unlimited\n'
-            printf 'echo /tmp/core.%%e.%%p > /proc/sys/kernel/core_pattern\n'
-            printf 'echo ---MODULE-DIR---\n'
-            printf 'ls -lL /usr/lib/wpe-platform-2.0/modules 2>&1\n'
-            printf 'ls -l /usr/bin/veron-browser 2>&1\n'
-            #
-            # RUN A: MiniBrowser ON OUR BACKEND, UNCONDITIONALLY, AND THEN
-            # KILLED. It is not what the desktop ships -- veron-browser is --
-            # but it has to work anyway, and it is the FIRST milestone rather
-            # than a lesser version of the second. wpe-toplevel-veron.c says it
-            # outright: chrome height defaults to zero, "at zero the subsurface
-            # covers the whole toplevel and this backend is behaviourally the
-            # stock one; that is the first thing to verify, before any chrome
-            # exists, because it separates 'the backend loads and renders' from
-            # 'the split works'." MiniBrowser IS that first milestone. Testing
-            # only veron-browser would leave a failure unattributable between
-            # the two.
-            #
-            # WPE_DISPLAY IS NAMED RATHER THAN LEFT TO PRIORITY. Run
-            # 31722362111 inferred the selection from the crash; if the module
-            # ever fails to load, priority selection falls through to the stock
-            # backend silently and this run would pass while testing nothing.
-            printf 'echo ---BROWSER-MINI-VERON---\n'
-            printf 'WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-veron.log 2>&1 &\n'
+
+            # TYPING INTO foot, NOT INTO THE SERIAL SHELL. sendkey reaches
+            # whatever labwc has focused, which after Super+Return is the
+            # terminal a person just opened. type_string is not a human-monitor
+            # command, so the text is sent as individual keys.
+            send_string() {
+              _s=$1
+              while [ -n "$_s" ]; do
+                _c=${_s%"${_s#?}"}
+                _s=${_s#?}
+                case "$_c" in
+                  -) _k=minus ;;
+                  .) _k=dot ;;
+                  /) _k=slash ;;
+                  " ") _k=spc ;;
+                  *) _k=$_c ;;
+                esac
+                python3 "$S/tools/qemu-monitor.py" "$O/mon.sock" \
+                  "sendkey $_k" >> "$O/desktop-console.log" 2>&1 || true
+              done
+            }
+
+            send_string "veron-browser"
+            python3 "$S/tools/qemu-monitor.py" "$O/mon.sock" \
+              "sendkey ret" >> "$O/desktop-console.log" 2>&1 || true
             sleep 40
-            printf 'pidof MiniBrowser > /dev/null; printf "MINIVERON%%s\\n" "$?"\n'
-            printf 'cat /tmp/browser-mini-veron.log 2>/dev/null\n'
-            #
-            # RUN A2: THE SAME THING WITH THE MODULE FORCED RESIDENT, WHICH IS
-            # A ONE-LINE TEST OF A SPECIFIC HYPOTHESIS AND NOT A FIX.
-            #
-            # Three cores from three runs put the faulting PC at 0x7f317c0f2980,
-            # 0x7f37418cd980 and 0x7f0e2c866980 -- three ASLR bases, and all
-            # three end in 980. Same function, same library, different load
-            # address. And `eu-unstrip -n --core` answered where that library
-            # went:
-            #
-            #     libwpe-display-veron.so IS NOT IN THIS CORE MODULE LIST
-            #
-            # It is not mapped at the moment of the crash. The module registers
-            # its GTypes with G_DEFINE_TYPE_WITH_CODE -- STATIC registration --
-            # from inside a GIOModule, which is a GTypeModule. A static type
-            # survives its module being unloaded, but its class vfunc pointers
-            # do not: they keep pointing into an address range that has been
-            # munmapped, and the next vfunc call jumps into a hole. That is
-            # exactly a wild PC below every library with no unwind information.
-            #
-            # AND IT EXPLAINS WHY veron-browser LIVES ON THE SAME BACKEND.
-            # veron-browser LINKS the library -- dc68313 added
-            # -lwpe-display-veron so it can call wpe_toplevel_veron_* directly
-            # -- so ld.so holds it resident for the life of the process no
-            # matter what GIO does with its dlopen handle. MiniBrowser only
-            # ever reaches it through the module scan. One binary is protected
-            # by accident and the other is not.
-            #
-            # LD_PRELOAD REPRODUCES THAT ACCIDENT WITHOUT TOUCHING THE SOURCE.
-            # If this run survives where A1 died, the diagnosis is settled and
-            # the fix is residency in g_io_module_load. If it dies the same
-            # way, the theory is wrong and costs one launch.
-            printf 'echo ---BROWSER-MINI-PRELOAD---\n'
-            printf 'if pidof MiniBrowser > /dev/null; then echo skipped -- the plain launch survived, residency is fixed; else LD_PRELOAD=/usr/lib/libwpe-display-veron.so WPE_DISPLAY=wpe-display-veron /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-mini-preload.log 2>&1 & fi\n'
-            sleep 40
-            printf 'pidof MiniBrowser > /dev/null; printf "MINIPRELOAD%%s\\n" "$?"\n'
-            printf 'cat /tmp/browser-mini-preload.log 2>/dev/null\n'
-            # THE FIRST FRAME IS TAKEN HERE, WITH THIS RUN ON SCREEN. It
-            # answers a second question the same launch happens to settle:
-            # MiniBrowser never calls wpe_toplevel_veron_set_chrome_height, so
-            # chromeHeight stays 0, and wpe-toplevel-veron.c says that case
-            # outright -- "at zero the subsurface covers the whole toplevel and
-            # this backend is behaviourally the stock one; that is the first
-            # thing to verify". A page in this frame means our render_buffer
-            # and our page subsurface work, and the blank page under
-            # veron-browser is the SPLIT rather than the rendering. A blank
-            # frame here means the opposite. There is no way to read that off
-            # the console, so it needs its own screendump.
-            printf 'echo VERON-SHOT-1-READY\n'
-            sleep 5
-            # KILLED WHETHER OR NOT IT LIVED, so it is not in the frame and not
-            # holding a toplevel when veron-browser opens its own. The children
-            # go too: WebKit is three processes and an orphaned WPEWebProcess
-            # keeps its share of a 4 GB guest.
-            printf 'killall MiniBrowser WPEWebProcess WPENetworkProcess 2>/dev/null; echo killed-minibrowser\n'
-            sleep 10
-            #
-            # RUN B: veron-browser -- THE BROWSER THIS PROJECT IS BUILDING, and
-            # the one the frame should show. The step has only ever launched
-            # MiniBrowser, which is WPE's demo shell: no URL bar, no back
-            # button, and it reaches our backend only by PRIORITY ACCIDENT.
-            # veron-browser names the backend outright -- main.c:318
-            # g_setenv("WPE_DISPLAY", "wpe-display-veron") -- and refuses to
-            # start with a printed reason if it did not load, so a fallback
-            # cannot pass silently. It is also the only thing that exercises
-            # the chrome strip, the wl_shm chrome buffer and the
-            # chrome-event/chrome-key signals, which is most of what c5688e4
-            # made reachable for the first time.
-            #
-            # THE ARGUMENT IS NOT OPTIONAL. main.c:402 defaults to
-            # https://duckduckgo.com when argc == 1, and this harness has no
-            # network and must never attempt one.
-            printf 'echo ---BROWSER-VERON-BROWSER---\n'
-            printf '[ -x /usr/bin/veron-browser ] && /usr/bin/veron-browser /usr/share/veron/test.html > /tmp/browser-veron-browser.log 2>&1 &\n'
-            sleep 40
-            printf 'pidof veron-browser > /dev/null; printf "VERONBROWSER%%s\\n" "$?"\n'
-            printf 'cat /tmp/browser-veron-browser.log 2>/dev/null\n'
-            sleep 5
-            #
-            # RUN C: THE STOCK WAYLAND BACKEND, only if veron-browser died.
-            # WPE_DISPLAY names an extension directly -- WPEDisplay.cpp:272 --
-            # so this bypasses ours without uninstalling it. Run 31722362111
-            # already showed it renders, which is what proved everything BELOW
-            # the module healthy; it stays as the thing that puts a page in the
-            # frame when the two above cannot.
-            printf 'echo ---BROWSER-STOCK---\n'
-            printf 'if pidof veron-browser > /dev/null; then echo skipped -- veron-browser is up; else WPE_DISPLAY=wpe-display-wayland /usr/libexec/wpe-webkit-2.0/MiniBrowser /usr/share/veron/test.html > /tmp/browser-stock.log 2>&1 & fi\n'
-            sleep 40
-            printf 'pidof veron-browser MiniBrowser > /dev/null && echo BROWSER-RUNNING || echo NO-BROWSER-RUNNING\n'
-            printf 'head -20 /tmp/browser-stock.log 2>/dev/null\n'
-            #
-            # THE BACKTRACES, LAST, so every core from every run above is on
-            # disk before this reads them.
-            #
-            # eu-unstrip -n IS THE PART RUN 31722362111 LACKED. Its backtrace
-            # was one line and a shrug:
-            #
-            #   TID 459: #0 0x00007f7108799980
-            #   eu-stack: ... in <unknown>: No DWARF information found
-            #
-            # Every OTHER thread unwound with real symbols, so the tooling
-            # works -- the faulting PC simply belongs to no module eu-stack
-            # could name. `eu-unstrip -n --core` prints every module in the
-            # core with its address range, which says in one line whether that
-            # address is inside libwpe-display-veron.so, inside an anonymous
-            # mapping, or in the gap between two libraries. Without it there is
-            # nothing to reason from.
-            printf 'echo ---BACKTRACE---\n'
-            # THE EXECUTABLE COMES FROM THE CORE NAME, NOT FROM AN ASSUMPTION.
-            # core_pattern writes %e, and there are four names that can dump:
-            # veron-browser in /usr/bin, and MiniBrowser, WPEWebProcess and
-            # WPENetworkProcess in the libexec directory. A core resolved
-            # against the wrong binary prints confident nonsense rather than an
-            # obvious mismatch, so each is resolved by name.
-            #
-            # -m PRINTS THE MODULE PER FRAME, which is what turns a bare
-            # address into an attribution for the frames that DO resolve.
-            printf 'for c in /tmp/core.*; do [ -e "$c" ] || continue; n=${c#/tmp/core.}; n=${n%%.*}; e=/usr/libexec/wpe-webkit-2.0/$n; [ -x "$e" ] || e=/usr/bin/$n; echo "=== core $c  exe $e"; eu-stack -m -a --core "$c" -e "$e" 2>&1 | head -40; echo "--- is the veron module mapped at all"; eu-unstrip -n --core "$c" 2>&1 | grep -i veron || echo "  libwpe-display-veron.so IS NOT IN THIS CORE MODULE LIST"; echo "--- modules"; eu-unstrip -n --core "$c" 2>&1 | sort | head -200; done\n'
-            sleep 15
+
             printf 'echo VERON-SHOT-READY\n'
             sleep 600 ) > "$O/console.in" &
           feeder=$!
@@ -1902,7 +1798,11 @@ jobs:
             echo "VERON-SHOT-FAIL  no frame captured"
             exit 1
           fi
-          python3 "$S/tools/ppm2png.py" "$O/desktop.ppm" "$O/desktop.png"
+          # THE MARKER COLOUR IS COUNTED IN THE FRAME. test.html paints a large
+          # flat field of #1e6f50, a value that appears nowhere else on this
+          # desktop. Its presence is the proof that the browser rendered.
+          python3 "$S/tools/ppm2png.py" "$O/desktop.ppm" "$O/desktop.png" 1e6f50 \
+            | tee "$O/frame-colours.txt"
           rm -f "$O/desktop.ppm" "$O/mon.sock" "$O/console.in"
           echo "VERON-SHOT-OK  $O/desktop.png"
 
@@ -1979,48 +1879,35 @@ jobs:
           # The whole point of this step is the browser, and the browser was
           # the one thing it did not look at. The image published.
           #
-          # THE BROWSER MUST HAVE SURVIVED, AND THE MARKER MUST BE UNFAKEABLE.
+          # THE VERDICT COMES FROM THE SCREEN.
           #
-          # Two things made the obvious version of this check useless. The
-          # serial console reproduces the COMMAND as well as its output, so a
-          # command containing both `echo X-ALIVE` and `echo X-DEAD` makes any
-          # grep for either match every time. And the console wraps at 80
-          # columns, so a marker can arrive split across two lines:
+          # Everything before this asked a serial shell whether a process
+          # existed. That was answering a question nobody has: a person does
+          # not check pidof, they look at the display. And the markers it
+          # relied on were typed into a shell that was not the one running the
+          # browser, so they failed for reasons the browser had nothing to do
+          # with -- while the same image ran correctly on real hardware.
           #
-          #     veron# pidof veron-browser > /dev/null && echo VERON-BROWSER-ALIVE || echo VERON
-          #     -BROWSER-DEAD
+          # #1e6f50 IN QUANTITY MEANS WebKit PAINTED. test.html fills its body
+          # with that colour precisely so this check can exist; it is in
+          # neither the wallpaper gradient, nor foot's 242424, nor the bar's
+          # 1a1a1b. Pixels of it on screen mean layout, paint, buffer
+          # handover and compositing all worked.
           #
-          # The emitting side now prints an EXIT CODE into the marker --
-          # `printf "VERONBROWSER%s" "$?"` -- so the echoed command carries
-          # VERONBROWSER%s and only the result carries VERONBROWSER0 or
-          # VERONBROWSER1. Whitespace is stripped before matching so a wrap
-          # cannot hide it either.
-          _flat=$(tr -d ' \t\r\n' < "$O/desktop-console.log")
-          case "$_flat" in
-            *VERONBROWSER1*)
-              echo "  veron-browser DID NOT STAY UP"
-              grep -aE "Failed to connect|no Wayland display|Trace/breakpoint" \
-                "$O/desktop-console.log" | head -6 | sed 's/^/    /'
-              bad=1
-              ;;
-            *VERONBROWSER0*)
-              echo "  veron-browser: alive" ;;
-            *)
-              echo "  veron-browser: NO MARKER AT ALL -- the console script did"
-              echo "    not reach the check, which usually means the boot failed"
-              echo "    before the desktop came up."
-              bad=1
-              ;;
-          esac
-
-          # NO LAUNCH MAY DIE ON THE DISPLAY. A browser that cannot reach the
-          # compositor is the exact failure this step exists to catch, and it
-          # is worth naming separately from "did not stay up" because the cause
-          # is usually the session's environment rather than the browser.
-          if grep -aq "no Wayland display" "$O/desktop-console.log"; then
-            echo "  a launch could not reach the compositor:"
-            grep -a "no Wayland display" "$O/desktop-console.log" | head -3 | sed 's/^/    /'
-            echo "    XDG_RUNTIME_DIR in the shell must match the uid labwc runs as."
+          # THE THRESHOLD IS DELIBERATELY LOW. A browser window that opened
+          # small, or is partly behind the terminal, still proves the path
+          # works; requiring most of the screen would fail on a window
+          # placement change. 20000 pixels is about 2% of 1280x800 -- far more
+          # than antialiasing could produce by accident, far less than a
+          # maximised window.
+          _green=$(sed -n 's/^ *\([0-9]*\) pixel(s) of #1e6f50/\1/p' \
+                   "$O/frame-colours.txt" | head -1)
+          _green=${_green:-0}
+          echo "  #1e6f50 in the frame: $_green pixel(s)"
+          if [ "$_green" -lt 20000 ]; then
+            echo "  THE BROWSER DID NOT RENDER. The desktop came up -- the"
+            echo "    frame was captured -- but the test page's colour is not"
+            echo "    on screen, so no browser window is showing it."
             bad=1
           fi
 
@@ -2200,6 +2087,20 @@ jobs:
         # desktop test should still publish. Only a test that RAN AND FAILED
         # blocks it. Choosing == 'success' here would mean no image could ever
         # be published without running every optional test.
+        # EVERY TEST THAT RAN MUST NOT HAVE FAILED.
+        #
+        # steps.desktop WAS BRIEFLY REMOVED FROM THIS LIST and is back. It was
+        # taken out because the desktop test failed on images that ran
+        # correctly on real hardware -- but the answer to a test that lies is
+        # to fix the test, not to stop listening to it. That test now launches
+        # the browser the way a person does and judges the result from the
+        # pixels on screen, so it is worth blocking a publish again.
+        #
+        # `!= 'failure'` RATHER THAN `== 'success'`, DELIBERATELY. A step that
+        # was skipped -- boot_system=false, net_test=false, skip_boot=true --
+        # reports 'skipped', and a build that deliberately did not run the
+        # desktop test should still publish. Only a test that RAN AND FAILED
+        # blocks it.
         if: ${{ always()
                 && steps.build.outcome == 'success'
                 && steps.boot.outcome != 'failure'

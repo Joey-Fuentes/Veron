@@ -42,4 +42,25 @@ open(dst, "wb").write(
 # A FRAME THAT IS ALL ONE COLOUR IS NOT A DESKTOP, and is what you get if the
 # compositor never started. Counting distinct colours is the cheapest way to
 # tell a rendered screen from a blank one.
-print(f"  {w}x{h}, {len(set(px[k:k+3] for k in range(0, len(px), 3)))} distinct colour(s)")
+_pixels = [px[k:k + 3] for k in range(0, len(px), 3)]
+print(f"  {w}x{h}, {len(set(_pixels))} distinct colour(s)")
+
+# COUNT ONE EXACT COLOUR, IF ASKED. `ppm2png.py in.ppm out.png 1e6f50` also
+# reports how many pixels are precisely that value.
+#
+# THIS IS HOW THE BROWSER TEST KNOWS THE PAGE RENDERED. test.html paints a
+# large flat field of #1e6f50, chosen because it appears nowhere else on the
+# desktop -- not in the wallpaper gradient, not foot's 242424, not the bar's
+# 1a1a1b. A few thousand pixels of it in the frame means WebKit laid out,
+# painted, and got its buffer onto the compositor: the whole path, proved by
+# what is on the screen rather than by a marker echoed into a log.
+#
+# EXACT MATCH, NOT NEAREST. The frame comes from screendump, which is the
+# compositor's own output with no scaling or colour management in the way, so
+# the value that went in is the value that comes out. A tolerance would only
+# hide a rendering path that is subtly wrong.
+if len(sys.argv) > 3:
+    _want = sys.argv[3].lstrip("#")
+    _rgb = bytes.fromhex(_want)
+    _n = sum(1 for _p in _pixels if _p == _rgb)
+    print(f"  {_n} pixel(s) of #{_want}")
