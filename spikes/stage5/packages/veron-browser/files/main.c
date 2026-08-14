@@ -14,6 +14,7 @@
  * that belonged to the page.
  */
 #include "chrome.h"
+#include "settings.h"
 
 #include <wpe/wpe-platform.h>
 #include <wpe/webkit.h>
@@ -35,6 +36,12 @@ typedef struct {
      * end the process except a signal, which is why the close button did
      * nothing. */
     GMainLoop        *loop;
+
+    /* THE SETTINGS ARE HELD HERE, NOT RE-READ PER USE. They are consulted on
+     * every download and every settings navigation; loading the file each time
+     * would make a toggle's effect depend on the filesystem being writable at
+     * that instant rather than on what the user chose. */
+    VeronSettings     settings;
 } Browser;
 
 /* ---- the address the user typed --------------------------------------- */
@@ -278,19 +285,17 @@ static void onChromeEvent(WPEToplevelVeron *toplevel, guint type, guint time,
         break;
 
     case VERON_CHROME_MENU:
-        /* NOT WIRED YET, AND INERT ON PURPOSE RATHER THAN GUESSING. A menu
-         * needs a panel taller than the strip, and the strip cannot currently
-         * draw one: the page is a sibling subsurface created AFTER the chrome,
-         * so Wayland stacks it above, and anything drawn below y=40 is painted
-         * behind the page. Making it visible is one call --
-         * wl_subsurface_place_above(chromeSubsurface, pageSurface) in
-         * wpe-toplevel-veron.c -- plus a taller chrome buffer while the menu
-         * is open, and that is a backend change rather than one this file can
-         * make on its own.
+        /* THE MENU IS THE SETTINGS PAGE, and for now that is all it is. A
+         * dropdown would need a panel taller than the strip, which cannot be
+         * drawn: the page is a sibling subsurface created after the chrome, so
+         * Wayland stacks it above and anything painted below y=40 is hidden
+         * behind it. A page needs none of that and has room to grow.
          *
-         * It is drawn and hit-tested now so the layout is settled and the
-         * button will not move once it does something. */
-        g_message("veron-browser: menu (not implemented)");
+         * IT IS A REAL NAVIGATION, so back returns to where you were and the
+         * URL bar shows where you are. */
+        webkit_web_view_load_uri(b->webView, VERON_SETTINGS_URI);
+        veron_chrome_set_focused(b->chrome, FALSE);
+        wpe_toplevel_veron_set_chrome_focus(b->toplevel, FALSE);
         break;
 
     default:
@@ -662,6 +667,105 @@ static void browserSetUserAgent(WebKitWebView *view)
 
 
 /* ---------------------------------------------------------------------------
+ * Settings: applying them, and the page that edits them.
+ * ------------------------------------------------------------------------ */
+
+/* THE ENVIRONMENT'S COOKIE POLICY, IN ONE PLACE. This used to be read inline
+ * where the session is built, which was fine while it was read once; the
+ * settings page re-asserts the policy every time cookies are switched back on,
+ * and a second copy of this ladder is how the two would come to disagree.
+ *
+ *   VERON_COOKIE_POLICY=always          accept everything
+ *   VERON_COOKIE_POLICY=no-third-party  first-party only (the default)
+ *   VERON_COOKIE_POLICY=never           accept none
+ */
+static WebKitCookieAcceptPolicy veronCookiePolicy(void)
+{
+    const char *policy = g_getenv("VERON_COOKIE_POLICY");
+    if (policy && !g_strcmp0(policy, "always"))
+        return WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS;
+    if (policy && !g_strcmp0(policy, "never"))
+        return WEBKIT_COOKIE_POLICY_ACCEPT_NEVER;
+    return WEBKIT_COOKIE_POLICY_ACCEPT_NO_THIRD_PARTY;
+}
+
+/* APPLY EVERYTHING, EVERY TIME, rather than applying the one thing that
+ * changed. There are four switches; re-asserting all of them costs nothing and
+ * removes the class of bug where a setting is correct in the file, correct on
+ * the page, and never actually reached WebKit because the toggle that changed
+ * it had its own apply path. */
+static void browserApplySettings(Browser *b)
+{
+    WebKitSettings *ws = webkit_web_view_get_settings(b->webView);
+    webkit_settings_set_enable_javascript(ws, b->settings.javascript);
+    webkit_settings_set_enable_html5_local_storage(ws, b->settings.localStorage);
+
+    /* THE COOKIE POLICY KEEPS ITS ENVIRONMENT OVERRIDE when cookies are on.
+     * VERON_COOKIE_POLICY exists because which policy a site needs is an
+     * empirical question; the setting answers a different one -- whether to
+     * accept any at all -- so "off" wins and "on" defers to the override
+     * rather than overwriting it with a third opinion. */
+    WebKitCookieManager *cm = webkit_network_session_get_cookie_manager(
+        webkit_web_view_get_network_session(b->webView));
+    if (!b->settings.cookies)
+        webkit_cookie_manager_set_accept_policy(cm, WEBKIT_COOKIE_POLICY_ACCEPT_NEVER);
+    else
+        webkit_cookie_manager_set_accept_policy(cm, veronCookiePolicy());
+
+    /* THE BUTTON FOLLOWS THE SWITCH. Turning downloads off takes the button
+     * out of the strip immediately, which is the visible confirmation that the
+     * setting did something. */
+    veron_chrome_set_downloads_enabled(b->chrome, b->settings.downloads);
+    veron_chrome_draw(b->chrome, b->width);
+}
+
+/* THE SETTINGS PAGE IS SERVED, NOT LOADED FROM DISK. It is generated from the
+ * current values, so it cannot disagree with them, and there is no file to
+ * install, keep in step with the code, or find missing at runtime.
+ *
+ * A TOGGLE AND THE PAGE ARE THE SAME URL. `veron:settings` renders; the same
+ * URL with ?set=&value= applies first and then renders. That is what makes the
+ * page work with JavaScript off: a toggle is an ordinary link, and what comes
+ * back is the page with the new state already in it. */
+static void onVeronScheme(WebKitURISchemeRequest *request, gpointer data)
+{
+    Browser *b = data;
+    const char *uri = webkit_uri_scheme_request_get_uri(request);
+
+    const char *q = uri ? strchr(uri, '?') : NULL;
+    if (q) {
+        /* g_uri_parse_params RATHER THAN SPLITTING BY HAND, because it decodes
+         * percent-escapes and rejects a malformed query instead of silently
+         * yielding a key that matches nothing. */
+        GHashTable *params = g_uri_parse_params(q + 1, -1, "&",
+                                                G_URI_PARAMS_NONE, NULL);
+        if (params) {
+            const char *key = g_hash_table_lookup(params, "set");
+            const char *val = g_hash_table_lookup(params, "value");
+            if (key && val) {
+                gboolean on = (g_strcmp0(val, "0") != 0);
+                if (veron_settings_set(&b->settings, key, on)) {
+                    veron_settings_save(&b->settings);
+                    browserApplySettings(b);
+                }
+            }
+            g_hash_table_unref(params);
+        }
+    }
+
+    char *html = veron_settings_html(&b->settings);
+    gsize len = strlen(html);
+
+    /* THE STREAM TAKES THE STRING. g_memory_input_stream_new_from_data with
+     * g_free as the notify means the HTML is freed when WebKit is done with
+     * it, not when this function returns -- the request is served
+     * asynchronously and freeing here would hand it a dangling buffer. */
+    GInputStream *stream = g_memory_input_stream_new_from_data(html, (gssize)len, g_free);
+    webkit_uri_scheme_request_finish(request, stream, (gint64)len, "text/html");
+    g_object_unref(stream);
+}
+
+/* ---------------------------------------------------------------------------
  * Downloads.
  *
  * WebKit DOES THE TRANSFER AND WE ONLY CHOOSE WHERE IT LANDS. Without a
@@ -818,6 +922,16 @@ static void onDownloadStarted(WebKitWebContext *context,
 {
     Browser *b = data;
 
+    /* DOWNLOADS OFF MEANS THE TRANSFER DOES NOT HAPPEN, not merely that the
+     * button is hidden. Cancelling here is before any byte is written and
+     * before a destination is chosen, so nothing lands in the filesystem and
+     * no partial file is left to explain. */
+    if (!b->settings.downloads) {
+        g_message("veron-download: refused -- downloads are turned off");
+        webkit_download_cancel(download);
+        return;
+    }
+
     g_signal_connect(download, "decide-destination",
                      G_CALLBACK(onDecideDestination), data);
     g_signal_connect(download, "finished", G_CALLBACK(onDownloadFinished), data);
@@ -939,33 +1053,63 @@ int main(int argc, char **argv)
      * binding -- Tools/MiniBrowser/wpe/main.cpp:411 uses the same one. WebKit
      * builds its own WPEView and WPEToplevel on it, which is why nothing here
      * creates either. */
-    /* EPHEMERAL BY CHOICE, AND EXPLICITLY RATHER THAN BY ACCIDENT.
-     *
-     * The default session is persistent and writes to the XDG directories,
-     * which on this system land on the tmpfs overlay -- so nothing survives a
-     * reboot anyway. Relying on that would be depending on a property of the
-     * root filesystem rather than on a decision: mount /persist over the wrong
-     * path, or change XDG_DATA_HOME, and the browser silently starts keeping
-     * history it was never meant to keep.
-     *
-     * webkit_network_session_new_ephemeral() is the same thing MiniBrowser's
-     * --private uses (main.cpp:478). Nothing is written to disk: no cookie
-     * jar, no cache, no local storage, no IndexedDB, no credentials.
-     *
-     * IT COSTS CAPTCHAS AND THAT IS ACCEPTED. A browser arriving with no
-     * cookies on every request looks like automation, and Google will ask more
-     * often because of it. The alternative is a disk that remembers where the
-     * machine has been, which is the thing being declined. */
-    WebKitNetworkSession *session = webkit_network_session_new_ephemeral();
+    /* THE SETTINGS ARE READ BEFORE THE SESSION IS BUILT, because which kind of
+     * session this is cannot be changed afterwards -- it is a construct
+     * property of the web view. Everything else on this struct is applied
+     * later, once there is a view and a chrome to apply it to. */
+    veron_settings_load(&b.settings);
 
-    /* ITP OFF. Intelligent Tracking Prevention profiles which sites are
-     * tracking you and keeps that assessment -- state, in a session whose
-     * whole point is having none. It also does nothing useful when every
-     * cookie dies at exit. */
+    /* INCOGNITO BY DEFAULT, ORDINARY ON REQUEST.
+     *
+     * EPHEMERAL IS THE DEFAULT AND IT IS A DECISION, not an accident of the
+     * filesystem. The stock session is persistent and writes to the XDG
+     * directories, which on this system land on the tmpfs overlay -- so
+     * nothing would survive a reboot anyway. Relying on that would be
+     * depending on where /persist happens to be mounted: change it, or change
+     * XDG_DATA_HOME, and the browser silently starts keeping history it was
+     * never meant to keep. webkit_network_session_new_ephemeral() is the same
+     * thing MiniBrowser's --private uses (main.cpp:478).
+     *
+     * PERSISTENT COSTS THE PRIVACY AND BUYS THE CAPTCHAS BACK. A browser
+     * arriving with no cookies on every request looks like automation, and
+     * Google will challenge it more often for that reason alone. That is the
+     * trade this setting exists to let the user make, in one direction or the
+     * other, rather than having it made for them.
+     *
+     * THE DIRECTORIES ARE NAMED RATHER THAN DEFAULTED. Passing NULL would take
+     * WebKit's own XDG defaults, which is the arrangement the paragraph above
+     * declines to depend on; naming them puts the jar somewhere this code
+     * chose, under the home directory that /persist actually backs. */
+    WebKitNetworkSession *session;
+    char *dataDir = NULL;
+
+    if (b.settings.persistent) {
+        dataDir = g_build_filename(g_get_user_data_dir(), "veron", "browser", NULL);
+        char *cacheDir = g_build_filename(g_get_user_cache_dir(), "veron", "browser", NULL);
+        g_mkdir_with_parents(dataDir, 0700);
+        g_mkdir_with_parents(cacheDir, 0700);
+        session = webkit_network_session_new(dataDir, cacheDir);
+        g_free(cacheDir);
+    } else {
+        session = webkit_network_session_new_ephemeral();
+    }
+
+    /* ITP OFF IN BOTH MODES, FOR TWO DIFFERENT REASONS. Ephemerally it is
+     * pointless state in a session that is supposed to have none. Persistently
+     * it is worse than pointless: while ITP is on, a cookie policy of
+     * ACCEPT_NO_THIRD_PARTY is ignored and ACCEPT_ALWAYS is used instead
+     * (WebKitNetworkSession.cpp:354), so leaving it enabled would quietly
+     * overrule the cookie setting on the page. */
     webkit_network_session_set_itp_enabled(session, FALSE);
 
-    /* NO SAVED PASSWORDS. Ephemeral already implies it; saying so means a
-     * future change to the session type cannot quietly turn it on. */
+    /* NO SAVED PASSWORDS, IN EITHER MODE, AND THIS COMMENT USED TO SAY THAT A
+     * FUTURE CHANGE TO THE SESSION TYPE MUST NOT QUIETLY TURN IT ON. That
+     * change is the line above, so the reason has to stand on its own now:
+     * there is no UI anywhere in this browser to list, inspect or delete a
+     * stored credential. Writing them to disk would create state the user
+     * cannot see and cannot remove, which is a worse bargain than retyping a
+     * password. Cookies are different -- they are what "stay signed in" means,
+     * and clearing them is one switch on the settings page. */
     webkit_network_session_set_persistent_credential_storage_enabled(session, FALSE);
 
     /* COOKIES, EXPLICITLY, AND EPHEMERAL DOES NOT MEAN WITHOUT THEM.
@@ -997,14 +1141,31 @@ int main(int argc, char **argv)
      *   VERON_COOKIE_POLICY=no-third-party  first-party only (the default)
      *   VERON_COOKIE_POLICY=never           the old behaviour, for comparison
      */
+    /* THE LADDER MOVED TO veronCookiePolicy() so the settings page can
+     * re-assert exactly this when cookies are switched back on. */
     WebKitCookieManager *cookies = webkit_network_session_get_cookie_manager(session);
-    const char *policy = g_getenv("VERON_COOKIE_POLICY");
-    WebKitCookieAcceptPolicy accept = WEBKIT_COOKIE_POLICY_ACCEPT_NO_THIRD_PARTY;
-    if (policy && !g_strcmp0(policy, "always"))
-        accept = WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS;
-    else if (policy && !g_strcmp0(policy, "never"))
-        accept = WEBKIT_COOKIE_POLICY_ACCEPT_NEVER;
-    webkit_cookie_manager_set_accept_policy(cookies, accept);
+    webkit_cookie_manager_set_accept_policy(cookies, veronCookiePolicy());
+
+    /* A PERSISTENT SESSION STILL DOES NOT SAVE COOKIES BY ITSELF, and this is
+     * the line that would have been missing. WebKitCookieManager.cpp:191 says
+     * it outright: the manager does not store cookies persistently unless this
+     * is called. So "keep me signed in" would have produced a session that
+     * writes a cache and a history to disk and still loses every login at
+     * exit -- the one symptom the setting exists to fix.
+     *
+     * SQLITE RATHER THAN TEXT because it is what the format is for, and the
+     * jar is read once at startup and appended to on every change.
+     *
+     * NEVER ON AN EPHEMERAL MANAGER. The call has a g_return_if_fail on
+     * exactly that (:200), so this is inside the branch rather than guarded
+     * after the fact. */
+    if (b.settings.persistent && dataDir) {
+        char *jar = g_build_filename(dataDir, "cookies.sqlite", NULL);
+        webkit_cookie_manager_set_persistent_storage(
+            cookies, jar, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+        g_free(jar);
+    }
+    g_free(dataDir);
 
     b.webView = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
         "display", display,
@@ -1072,6 +1233,20 @@ int main(int argc, char **argv)
      * now. `session` is the one this browser already created. */
     g_signal_connect(session, "download-started",
                      G_CALLBACK(onDownloadStarted), &b);
+
+    /* APPLIED BEFORE THE FIRST PAGE LOADS. Doing it after would let one page
+     * run with JavaScript the user turned off, which is precisely the page a
+     * person disabling JavaScript is worried about. The load happened earlier,
+     * before the session was built. */
+    browserApplySettings(&b);
+
+    /* THE SCHEME IS REGISTERED ON THE CONTEXT, not on the view: it has to
+     * exist before anything navigates to it, and the context outlives any one
+     * view. NULL destroy notify because `b` is on main's stack and outlives
+     * every request. */
+    webkit_web_context_register_uri_scheme(
+        webkit_web_view_get_context(b.webView), VERON_SCHEME,
+        onVeronScheme, &b, NULL);
 
     const char *start = argc > 1 ? argv[1] : "https://duckduckgo.com";
     char *uri = veronResolveInput(start);

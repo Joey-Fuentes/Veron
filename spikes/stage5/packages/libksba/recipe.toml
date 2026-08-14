@@ -1,0 +1,69 @@
+name    = "libksba"
+version = "1.8.0"
+group   = "tls"
+license = "LGPL-3.0-or-later OR GPL-2.0-or-later"
+srcdir  = "libksba-1.8.0"
+
+[source]
+url       = "https://www.gnupg.org/ftp/gcrypt/libksba/libksba-1.8.0.tar.bz2"
+sha256    = "296b9db9095749f2aa104202d7ab7fd09ad10710e00780a709c9754b1a1d9292"
+signature = "https://www.gnupg.org/ftp/gcrypt/libksba/libksba-1.8.0.tar.bz2.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "libgpg-error"]
+link         = ["libgpg-error"]
+runtime      = ["libgpg-error"]
+optional_off = ["doc", "static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--disable-doc"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libksba"]
+deferral        = """
+ASN.1 AND X.509, FOR A SYSTEM THAT WANTS NEITHER -- AND IT IS STILL REQUIRED. \
+libksba parses the certificate structures gpgsm needs for S/MIME and dirmngr \
+needs for CRLs and OCSP. This image builds gnupg for one reason, `pass`, which \
+uses OpenPGP and touches none of that.
+
+THE OBVIOUS SAVING DOES NOT EXIST, AND IT WAS CHECKED RATHER THAN ASSUMED. \
+Disabling gpgsm and dirmngr does not make this optional: configure.ac tests \
+have_ksba independently of either, and sets die=yes when it is missing. So the \
+library is built and linked even though the two programs that use it are \
+switched off. That is a real cost of using upstream gnupg rather than a \
+narrower OpenPGP implementation, and it is recorded here rather than \
+rediscovered by whoever next tries to trim this chain.
+
+LGPL-3.0, NOT LGPL-2.1. The rest of the gnupg support libraries in this set \
+are 2.1-or-later; this one moved to 3. Worth naming because the licence per \
+node is the ledger's whole point and the family resemblance makes it easy to \
+copy the wrong string.
+
+--disable-doc, matching libgcrypt and libassuan."""
+
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libksba-1.8.0.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--disable-doc"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "ksba"]]
+expect = ["1.8.0"]

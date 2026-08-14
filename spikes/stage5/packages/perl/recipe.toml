@@ -1,0 +1,85 @@
+name       = "perl"
+version    = "5.44.0"
+group      = "build-substrate"
+license    = "Artistic-1.0-Perl OR GPL-1.0-or-later"
+srcdir     = "perl-5.44.0"
+build_only = true
+
+[source]
+url       = "https://www.cpan.org/src/5.0/perl-5.44.0.tar.gz"
+sha256    = "3b855066b92491cb40e86affb1ca57d1a388aa43e51b91c7806a32c2f65f96c3"
+signature = "none -- cpan.org publishes checksums beside the tarball rather than detached signatures"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = ["threads", "shared-libperl", "man-pages"]
+
+[declared]
+configure_flags = ["-des", "-Dprefix=/usr", "-Dman1dir=none", "-Dman3dir=none"]
+verification    = "none -- perl's own suite takes longer than everything else in this set combined"
+packaged_as     = ["perl"]
+deferral        = """
+THE LARGEST PACKAGE IN THIS SET ADDED FOR THE SMALLEST REASON: one script. \
+The CCID driver's meson.build:182 calls find_program('perl', required : true) \
+and then runs src/create_Info_plist.pl to generate the driver bundle's \
+Info.plist -- the file pcscd reads to learn which USB vendor and product IDs \
+this driver claims. Without it pcscd loads no driver and no reader is ever \
+seen, so the requirement is real rather than cosmetic, and the check is \
+unconditional rather than guarded behind an option that could be turned off.
+
+build_only, WHICH IS THE WHOLE MITIGATION. perl is used during the build and \
+excluded from the image, exactly as ruby is for wpewebkit. Nothing in the \
+running system invokes it, so the cost is build time and cache size rather \
+than attack surface on the device.
+
+REWRITING THE SCRIPT WAS CONSIDERED AND DECLINED. create_Info_plist.pl reads \
+readers/supported_readers.txt and emits a plist; it could be reimplemented in \
+shell or in the Python this project already builds. That would be a carried \
+downstream patch against a file upstream regenerates whenever the supported \
+reader list changes -- a permanent maintenance cost, taken to avoid a \
+build-only dependency that is already the accepted pattern here. If perl's \
+build time later becomes the reason a run does not fit the runner cap, this \
+is the first thing to revisit.
+
+-des IS THE NON-INTERACTIVE FORM. perl's Configure is a shell script that \
+asks questions; -d takes the defaults, -e proceeds without confirmation and \
+-s keeps it quiet. Without these it blocks on stdin forever inside a sandbox \
+with no terminal, which presents as a build that hangs rather than fails.
+
+-Dman1dir=none AND -Dman3dir=none. perl installs several thousand man pages, \
+which for a package excluded from the image is pure build time and cache \
+weight. Threads and a shared libperl are left at their defaults rather than \
+requested: nothing here embeds perl, and the flags that would matter to an \
+embedder are choices this package has no reason to make."""
+
+[installs]
+prefixes = ["usr/bin", "usr/lib/perl5"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/perl-5.44.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./Configure", "-des", "-Dprefix=/usr", "-Dman1dir=none", "-Dman3dir=none"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+# build_only, SO THIS NEVER RUNS. Whether perl works is asserted by ccid
+# building at all -- if create_Info_plist.pl fails, that build fails.
+test   = []
+expect = []

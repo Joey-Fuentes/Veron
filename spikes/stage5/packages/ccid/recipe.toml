@@ -1,0 +1,100 @@
+name    = "ccid"
+version = "1.8.2"
+group   = "system"
+license = "LGPL-2.1-or-later"
+srcdir  = "ccid-1.8.2"
+
+[source]
+kind      = "git"
+commit    = "035f6658ac2cdd401851687eaf8496e9ad6ae401"
+url       = "https://github.com/LudovicRousseau/CCID"
+sha256    = "9cfaa8310d7e95ec9673e369364c9449d4ef81622cef7788f10dbc21aa9eb1f6"
+signature = "none -- the pin is the commit, which is a hash over the tree and its history"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "flex", "perl", "pcsc-lite",
+                "libusb", "zlib"]
+link         = ["libusb", "zlib"]
+runtime      = ["pcsc-lite", "libusb", "zlib"]
+optional_off = ["udev-rules", "enable-extras", "serial"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback",
+                   "-Dudev-rules=false"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["ccid"]
+deferral        = """
+THE DRIVER THAT ACTUALLY TALKS TO THE READER. pcscd is middleware and speaks \
+to hardware through a driver bundle; this is that bundle for every USB CCID \
+reader, which is the class a YubiKey's smartcard interface belongs to. \
+pcsc-lite without it is a daemon that enumerates nothing.
+
+THE PIN IS A COMMIT AND THE DIGEST IS OBSERVED, NOT DERIVED. The commit is \
+confirmed independently -- `git archive` writes it into the pax_global_header \
+and GitHub's export carries exactly 035f6658 -- and the sha256 is of the \
+uncompressed tar fetch-git.sh produced from a real clone.
+
+AN EARLIER DIGEST HERE WAS DERIVED FROM GitHub's EXPORT AND WAS WRONG, the \
+same way pcsc-lite's was; that recipe's deferral carries the argument. This \
+one deserves its own note because it was the case that looked SAFEST. \
+Rewriting CCID-1.8.2/ to ccid-1.8.2/ is a pure change of case, so not one \
+path length changed and no header could cross an encoding boundary. It \
+predicted b6914454; the real archive is 9cfaa831. A derivation being \
+obviously safe is not evidence that it is correct.
+
+-Dudev-rules=false IS REQUIRED, NOT PREFERRED. It defaults to TRUE -- \
+meson.options gives it value: true explicitly -- and the branch it guards \
+calls dependency('udev') to find udevdir. This image has libudev-zero, which \
+ships no udev.pc with a udevdir variable, so configure fails outright rather \
+than skipping the rules. The rules themselves set device permissions for a \
+udev this system does not run; pcscd opens the device itself.
+
+perl IS A BUILD DEPENDENCY BECAUSE OF ONE SCRIPT, AND IT IS NOT OPTIONAL. \
+meson.build:182 calls find_program('perl', required : true) unconditionally \
+and then runs src/create_Info_plist.pl to generate the bundle's Info.plist \
+from readers/supported_readers.txt -- the file pcscd reads to learn which USB \
+vendor and product IDs this driver claims. Without it pcscd loads no driver \
+and no reader is ever seen, so the largest build-only package in this set is \
+here for a file that is a few kilobytes of XML.
+
+IT INSTALLS INTO pcsc-lite's DIRECTORY, READ FROM ITS pkg-config FILE. \
+meson.build:67 takes PCSCLITE_HP_DROPDIR from \
+pcsc_dep.get_variable('usbdropdir') rather than from an option of its own, so \
+the two packages cannot disagree about where a driver lives. Overriding the \
+path here would be the way to break that, and it is not overridden.
+
+flex IS SHARED WITH pcsc-lite and generates a parser for the reader \
+description files. Neither package ships a runtime dependency on it."""
+
+[installs]
+prefixes = ["usr/lib/pcsc", "usr/share/man"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/ccid-1.8.2.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback", "-Dudev-rules=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+# NO pkg-config FILE AND NO BINARY -- this package installs a driver bundle
+# and nothing else, so the only thing assertable without a reader attached is
+# that the shared object landed where pcscd will look for it.
+test   = [["/bin/sh", "-c", "test -e /usr/lib/pcsc/drivers/ifd-ccid.bundle/Contents/Info.plist && echo present"]]
+expect = ["present"]

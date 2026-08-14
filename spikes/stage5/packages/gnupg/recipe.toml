@@ -1,0 +1,133 @@
+name    = "gnupg"
+version = "2.5.21"
+group   = "tls"
+license = "GPL-3.0-or-later"
+srcdir  = "gnupg-2.5.21"
+
+[source]
+url       = "https://www.gnupg.org/ftp/gcrypt/gnupg/gnupg-2.5.21.tar.bz2"
+sha256    = "e3af2c8caa46a66a9329fa7c6880af260451914d819595beabc2c26597b31352"
+signature = "https://www.gnupg.org/ftp/gcrypt/gnupg/gnupg-2.5.21.tar.bz2.sig"
+crosschecked_against = []
+
+# pcsc-lite IS DECLARED runtime AND NO DETECTOR IN THIS TREE COULD HAVE FOUND
+# IT. scdaemon does not link libpcsclite; it dlopens it by soname. See the
+# deferral. It is here because a human read scd/scdaemon.c, and it must not be
+# removed by a sweep that finds nothing referencing it.
+[deps]
+build        = ["pkgconf", "libgpg-error", "libgcrypt", "libassuan", "libksba",
+                "npth", "sqlite", "gnutls", "zlib", "bzip2"]
+link         = ["libgpg-error", "libgcrypt", "libassuan", "libksba", "npth",
+                "sqlite", "gnutls", "zlib", "bzip2"]
+runtime      = ["libgpg-error", "libgcrypt", "libassuan", "libksba", "npth",
+                "sqlite", "gnutls", "zlib", "bzip2", "pcsc-lite"]
+optional_off = ["doc", "ntbtls", "ccid-driver", "photo-viewers", "wks-tools",
+                "tpm2d", "libdns"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--sysconfdir=/etc", "--localstatedir=/var",
+                   "--disable-doc", "--disable-ntbtls", "--disable-ccid-driver",
+                   "--disable-photo-viewers", "--disable-wks-tools",
+                   "--disable-tpm2d",
+                   "--with-pinentry-pgm=/usr/bin/veron-pinentry"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["gnupg"]
+deferral        = """
+GnuPG IS HERE TO SERVE `pass`, AND `pass` IS HERE BECAUSE THIS SYSTEM HAS NO \
+CREDENTIAL STORE AT ALL. The browser was disabling WebKit's own persistent \
+credential storage precisely because there was no UI to list, inspect or \
+delete what it held. This chain ends in a store whose contents are files, \
+whose format is OpenPGP, and whose front end is ours.
+
+THE MINIMUMS WERE READ, NOT INFERRED, AND THAT CHANGED THE SCOPE. Published \
+build guides list the newest of everything, which suggested libgcrypt 1.12 and \
+a bump touching every existing consumer. configure.ac says \
+NEED_LIBGCRYPT_VERSION=1.11.0, and this set has 1.11.3. NEED_GPGRT_VERSION is \
+1.56 and this set has exactly 1.56 -- satisfied, with no margin, so a \
+libgpg-error downgrade would break gnupg and nothing would say why. \
+NEED_SQLITE_VERSION is 3.27 and NEED_GNUTLS_VERSION is 3.2; both are already \
+past. Three new packages, not a tree-wide upgrade.
+
+--disable-ccid-driver IS THE SMARTCARD DECISION AND IT IS NOT A SAVING. \
+scdaemon can reach a reader two ways: its own internal CCID driver over \
+libusb, or PC/SC through pcscd. They contend for the same device, and a reader \
+held open by one is unavailable to the other -- the single most common cause \
+of a YubiKey that works until something else touches it. This system wants \
+several applets on one key: OpenPGP for the vault, OATH if TOTP is kept on the \
+token, and anything reading OATH goes through PC/SC. So PC/SC is chosen for \
+everything and the internal driver is switched off, leaving exactly one path \
+to the device. FIDO2 is unaffected either way: veron-login talks to \
+/dev/hidraw directly and never involves scdaemon.
+
+AND SO libpcsclite IS INVISIBLE TO EVERY DETECTOR THIS PROJECT HAS. scdaemon \
+does not link it. scd/scdaemon.c:223 sets DEFAULT_PCSC_DRIVER to \
+"libpcsclite.so.1" and the library is dlopened at run time; configure only \
+ever checks for dlopen. DT_NEEDED reports what linked, and nothing linked. A \
+static scan for link flags finds nothing either, because the dependency is a \
+string constant in a source file. This is the mirror image of the bzip2 case \
+in AMD64.md -- there the code was present with no DT_NEEDED naming it; here \
+there is no code and no linkage at all. It is declared runtime by hand, and \
+the note exists so that a future sweep finding "undeclared" or "unused" here \
+reads this before deleting it.
+
+--with-pinentry-pgm NAMES A PROGRAM THAT DOES NOT EXIST YET, DELIBERATELY. \
+gpg-agent invokes a pinentry by path to collect the passphrase. Naming \
+/usr/bin/veron-pinentry now fixes the contract this system's factor UI has to \
+satisfy -- Assuan on stdin and stdout -- so the FLTK program that derives a \
+passphrase from a key file, a YubiKey challenge-response, or both can be \
+dropped in without rebuilding gnupg. Until it exists, gpg-agent will fail to \
+start a pinentry and any operation needing a passphrase will fail with a \
+clear error rather than silently falling back to a curses prompt on a system \
+with no terminal to show it on.
+
+--disable-ntbtls, BECAUSE gnutls IS ALREADY HERE. gnupg accepts either TLS \
+library for dirmngr; picking the one this set already builds avoids a second \
+implementation of the same thing for one consumer.
+
+WHAT IS LEFT ENABLED AND WHY. gpgsm and dirmngr are NOT disabled: libksba is \
+required by configure whether or not they are built, so switching them off \
+saves two programs and no dependency. keyboxd and gpgtar likewise cost \
+nothing beyond their own object files. If this set is ever trimmed, the \
+measurement to make first is whether anything regressed, not whether the \
+tree got smaller.
+
+THE SESSION THIS SERVES IS NOT THE BROWSER'S. gnupg writes to \
+$GNUPGHOME (~/.gnupg by default), which on this image is under the home \
+directory /persist backs. That is intended: the vault must survive a reboot \
+where the browsing session deliberately must not."""
+
+[installs]
+prefixes = ["usr/bin", "usr/lib/gnupg", "usr/libexec", "usr/share/gnupg",
+            "usr/share/man", "usr/share/locale"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/gnupg-2.5.21.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--sysconfdir=/etc",
+         "--localstatedir=/var", "--disable-doc", "--disable-ntbtls",
+         "--disable-ccid-driver", "--disable-photo-viewers",
+         "--disable-wks-tools", "--disable-tpm2d",
+         "--with-pinentry-pgm=/usr/bin/veron-pinentry"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+# --version, NOT A KEY OPERATION. gpg with no keyring and no pinentry can
+# still report its version, and that is what this asserts: the binary links
+# and runs. Whether it can decrypt is a question for hardware, not for a
+# package test with no card reader and no agent.
+test   = [["/usr/bin/gpg", "--version"]]
+expect = ["gpg (GnuPG) 2.5.21"]

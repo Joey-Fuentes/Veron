@@ -1,0 +1,74 @@
+name    = "libassuan"
+version = "3.0.2"
+group   = "tls"
+license = "LGPL-2.1-or-later"
+srcdir  = "libassuan-3.0.2"
+
+[source]
+url       = "https://www.gnupg.org/ftp/gcrypt/libassuan/libassuan-3.0.2.tar.bz2"
+sha256    = "d2931cdad266e633510f9970e1a2f346055e351bb19f9b78912475b8074c36f6"
+signature = "https://www.gnupg.org/ftp/gcrypt/libassuan/libassuan-3.0.2.tar.bz2.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "libgpg-error"]
+link         = ["libgpg-error"]
+runtime      = ["libgpg-error"]
+optional_off = ["doc", "static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--disable-doc"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libassuan"]
+deferral        = """
+THE PIPE BETWEEN gpg AND ITS HELPERS. Assuan is the request/response protocol \
+that gpg speaks to gpg-agent, gpg-agent speaks to scdaemon, and gpg-agent \
+speaks to pinentry. Every one of those is a separate process, which is the \
+design decision this library implements: the thing holding the secret is not \
+the thing parsing the network.
+
+THAT PROTOCOL IS WHY veron-pinentry IS POSSIBLE AT ALL. A pinentry is not a \
+plugin and links nothing -- it is a program that reads Assuan requests on \
+stdin and writes responses on stdout, named to gpg-agent by path. So the \
+factor UI planned for this system (key file, YubiKey challenge-response, TOTP \
+gate) is an ordinary program on the far side of a documented protocol, not a \
+patch against gnupg.
+
+THIS IS API 3, A NEW MAJOR VERSION. gnupg 2.5.21 asks for NEED_LIBASSUAN_API=3 \
+and NEED_LIBASSUAN_VERSION=3.0.0, so the 2.x series will not satisfy it. \
+Nothing else in this set links libassuan today; if something later does, it \
+must be checked against API 3 rather than assumed compatible with what \
+distributions shipped for years.
+
+libgpg-error IS ALREADY IN THE SET at 1.56 and satisfies this. It is the same \
+dependency libgcrypt already declares.
+
+--disable-doc, matching libgcrypt: the info pages are not installed anywhere \
+this image reads them."""
+
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libassuan-3.0.2.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--disable-doc"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libassuan"]]
+expect = ["3.0.2"]

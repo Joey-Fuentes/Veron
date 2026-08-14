@@ -1,0 +1,69 @@
+name    = "npth"
+version = "1.8"
+group   = "tls"
+license = "LGPL-2.1-or-later"
+srcdir  = "npth-1.8"
+
+[source]
+url       = "https://www.gnupg.org/ftp/gcrypt/npth/npth-1.8.tar.bz2"
+sha256    = "8bd24b4f23a3065d6e5b26e98aba9ce783ea4fd781069c1b35d149694e90ca3e"
+signature = "https://www.gnupg.org/ftp/gcrypt/npth/npth-1.8.tar.bz2.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["tests", "static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--disable-tests"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["npth"]
+deferral        = """
+THE FIRST OF FOUR PACKAGES THAT EXIST ONLY TO REACH gnupg, which in turn \
+exists only to reach `pass`. npth is a cooperative threading library: it does \
+not preempt, it hands control over at explicit points, which is what lets \
+gpg-agent multiplex several clients without becoming a threaded program with \
+threaded-program failure modes.
+
+IT IS REQUIRED, NOT OPTIONAL. gnupg 2.5.21's configure sets NEED_NPTH_VERSION \
+to 1.2 and dies without it, so this is not a feature that could be declined.
+
+NO DEPENDENCIES BEYOND libc, which is why it is first in the chain and why \
+this recipe is the shortest of the four.
+
+--disable-tests IS NAMED RATHER THAN LEFT ALONE. The test directory builds \
+programs that are then not run by this recipe, so building them is time spent \
+on artifacts nobody inspects. Consistent with the rest of the set, where \
+`verification` says plainly that upstream suites are not run.
+
+--disable-static, because everything in this set links shared and a static \
+archive would be an installed file with no consumer."""
+
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/npth-1.8.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--disable-tests"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "npth"]]
+expect = ["1.8"]

@@ -32,8 +32,8 @@ CFLAGS  += -O2 -g -Wall $(shell pkg-config --cflags $(PKGS)) -I.
 # second copy with its own GTypes.
 LIBS     = $(shell pkg-config --libs $(PKGS)) -lwpe-display-veron
 
-veron-browser: main.o chrome.o
-	$(CC) -o $@ main.o chrome.o $(LIBS)
+veron-browser: main.o chrome.o settings.o
+	$(CC) -o $@ main.o chrome.o settings.o $(LIBS)
 
 clean:
 	rm -f *.o veron-browser

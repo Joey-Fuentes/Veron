@@ -1,0 +1,96 @@
+name       = "flex"
+version    = "2.6.4"
+group      = "build-substrate"
+license    = "BSD-2-Clause"
+srcdir     = "flex-2.6.4"
+build_only = true
+
+[source]
+url       = "https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz"
+sha256    = "e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995"
+signature = "https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["m4"]
+link         = []
+runtime      = ["m4"]
+optional_off = ["nls", "shared", "bootstrap"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-nls", "--disable-shared"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["flex"]
+deferral        = """
+A LEXER GENERATOR, NEEDED BY TWO PACKAGES AND SHIPPED BY NEITHER. pcsc-lite's \
+meson.build:64 and the CCID driver's meson.build:63 both call \
+find_program('flex') to build a generator for their configuration parsers. \
+Neither produces a runtime dependency on flex; what they ship is the C it \
+emitted. So this is build_only, on the same argument as ruby.
+
+m4 IS A RUNTIME DEPENDENCY OF flex, NOT ONLY A BUILD ONE, AND THAT IS EASY TO \
+GET WRONG. flex does not contain its scanner skeleton -- it invokes m4 to \
+expand one every time it generates a scanner. configure.ac:98 makes the point \
+explicitly by checking for an m4 that supports -P, and records the path it \
+found. A flex installed without m4 beside it builds fine and then fails the \
+first time anything asks it for a scanner. m4 is already in this set.
+
+VERSION 2.6.4 IS FROM 2017 AND THAT LOOKS LIKE A PROBLEM AND IS NOT. It is \
+still what upstream's release page offers and what every distribution ships; \
+the project has been quiet rather than abandoned.
+
+THE reallocarray CLASH WAS CHECKED AND DOES NOT APPLY. flex 2.6.4 is widely \
+reported to fail against modern glibc, which provides reallocarray, because \
+flexdef.h declares it too. The declaration is guarded: flexdef.h:634 wraps it \
+in #ifndef HAVE_REALLOCARRAY, and configure.ac:169 probes for the function. \
+Against this image's glibc the probe succeeds, the guard suppresses the \
+declaration, and there is nothing to collide. No patch is carried, and this \
+paragraph exists so that nobody adds one on the strength of the reports.
+
+AC_PROG_YACC IS CALLED AND bison IS NOT A DEPENDENCY. The tarball ships \
+pre-generated src/parse.c and src/scan.c, so yacc is only reached if make \
+decides to regenerate them -- which happens when extraction leaves the \
+timestamps out of order. tar preserves mtimes from the archive, so the \
+shipped order is preserved and the rule does not fire. If a future run fails \
+looking for a yacc, that ordering is the thing to look at, not a missing \
+package.
+
+--disable-nls, BECAUSE gettext IS NOT IN THIS SET. configure.ac:40 declares \
+AM_GNU_GETTEXT([external]), which uses a system gettext when there is one. \
+Turning NLS off means the question is never asked, rather than answered by \
+whatever the build root happens to contain.
+
+--disable-shared, BECAUSE libfl HAS NO CONSUMER HERE. Neither pcsc-lite nor \
+ccid links flex's runtime library; they compile the generated C into their \
+own binaries. Building a shared libfl would install a library nothing loads."""
+
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/share/man/man1",
+            "usr/share/doc"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/flex-2.6.4.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-nls", "--disable-shared"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+# build_only, SO THIS NEVER RUNS -- there is no guest to test it in. Whether
+# flex works is asserted by pcsc-lite and ccid building at all, which is the
+# only thing that consumes it.
+test   = []
+expect = []

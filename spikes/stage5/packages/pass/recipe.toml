@@ -1,0 +1,94 @@
+name    = "pass"
+version = "1.7.4"
+group   = "system"
+license = "GPL-2.0-or-later"
+srcdir  = "password-store-1.7.4"
+
+[source]
+url       = "https://git.zx2c4.com/password-store/snapshot/password-store-1.7.4.tar.xz"
+sha256    = "4c2d0a8b99df8915a87099607a8d912fd05d30651b6f014745c14e4ca8dbbfb7"
+signature = "https://git.zx2c4.com/password-store/snapshot/password-store-1.7.4.tar.xz.asc"
+crosschecked_against = []
+
+# NO BUILD DEPENDENCIES AT ALL, because there is no build: `make all` prints a
+# sentence saying so. The install step is a sed and a handful of `install`
+# calls, which is why this recipe has no configure phase.
+[deps]
+build        = []
+link         = []
+runtime      = ["bash", "gnupg", "wl-clipboard"]
+optional_off = ["WITH_ZSHCOMP", "WITH_FISHCOMP", "qrencode", "git"]
+
+[declared]
+configure_flags = []
+verification    = "none -- upstream sharness suite is not run"
+packaged_as     = ["pass"]
+deferral        = """
+THE CREDENTIAL STORE THIS SYSTEM DID NOT HAVE. The browser was disabling \
+WebKit's persistent credential storage because nothing could list, inspect or \
+delete what it held. `pass` answers that at the storage layer: one \
+GPG-encrypted file per entry under a directory the user can see, back up and \
+copy. The inspection UI is a separate FLTK program and is not this package.
+
+IT IS A SHELL SCRIPT, AND THAT IS THE ARGUMENT FOR IT. The entire program is \
+one bash script that this project can read end to end -- which is the same \
+standard the rest of the tree is held to, and a standard no other password \
+manager considered here meets. The alternative that came closest, KeePassXC, \
+would have brought Qt5 in four packages for one application on an FLTK \
+desktop, with its headline auto-type feature non-functional on Wayland.
+
+WAYLAND IS SUPPORTED UPSTREAM, NOT PATCHED IN. src/password-store.sh:158 \
+checks $WAYLAND_DISPLAY and uses wl-copy; xclip is only the X11 fallback. \
+wl-clipboard is already in this set, so `pass -c` works with no local change \
+and xclip is not a dependency.
+
+THERE IS NO linux.sh PLATFORM FILE AND THAT IS THE NORMAL PATH. The Makefile \
+looks for src/platform/$(uname).sh -- cygwin, darwin, freebsd and openbsd \
+exist; linux does not. So the else branch runs, the PLATFORM_FUNCTION_FILE \
+line is deleted from the installed script, and no platform.sh is installed. \
+That is upstream's intended behaviour on Linux and not a missing file.
+
+THE COMPLETION FLAGS ARE PASSED EXPLICITLY BECAUSE THE DEFAULT IS A PROBE OF \
+THE BUILD ROOT. WITH_BASHCOMP is decided by $(wildcard $(BASHCOMPDIR)) -- \
+whether that directory happens to exist where the build runs. A recipe whose \
+output depends on the state of the machine building it is exactly what this \
+project's reproducibility work exists to remove, so all three are stated: \
+bash yes, zsh and fish no, matching the shells this image ships. The two \
+that are switched off are recorded in optional_off under their variable \
+names, which is what the flag gate matches on -- WITH_ZSHCOMP normalises to \
+with-zshcomp, and a friendlier "zsh-completion" does not match and fails the \
+run.
+
+THE UTILITIES IT SHELLS OUT TO ARE BUSYBOX APPLETS AND ARE NOT DECLARED AS \
+PACKAGES, because busybox is not a stage-5 package -- it comes from stage 4 \
+and is in the sysroot. tree, shred, getopt and base64 were confirmed present \
+in this image's applet set. If a future busybox config drops any of them, \
+`pass ls` and `pass find` are what break first, and no dependency check in \
+this tree will have predicted it.
+
+GnuPG IS THE ONLY REAL DEPENDENCY and the whole reason the four packages \
+below it were added. The key that decrypts the store is expected to live on a \
+smartcard, which is why pcsc-lite and the CCID driver follow; a passphrase-only \
+key works today without them."""
+
+[installs]
+prefixes = ["usr/bin", "usr/lib/password-store", "usr/share/man/man1",
+            "usr/share/bash-completion/completions"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/password-store-1.7.4.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "PREFIX=/usr", "DESTDIR=$D",
+         "WITH_BASHCOMP=yes", "WITH_ZSHCOMP=no", "WITH_FISHCOMP=no"]]
+
+[guest]
+# `pass version` NEEDS NO STORE AND NO KEY, which is the only thing that can
+# be asserted here: there is no GPG key in a package test and creating one
+# would need entropy, an agent and a pinentry.
+test   = [["/usr/bin/pass", "version"]]
+expect = ["v1.7.4"]

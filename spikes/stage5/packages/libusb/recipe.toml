@@ -1,0 +1,78 @@
+name    = "libusb"
+version = "1.0.30"
+group   = "system"
+license = "LGPL-2.1-or-later"
+srcdir  = "libusb-1.0.30"
+
+[source]
+url       = "https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2"
+sha256    = "fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf"
+signature = "https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2.asc"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["udev", "static", "examples", "tests", "debug-log"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--disable-udev"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libusb"]
+deferral        = """
+USB FROM USERSPACE, FOR ONE CONSUMER CHAIN: pcscd needs it to notice a reader \
+being plugged in, and the CCID driver needs it to talk to the reader once it \
+is there. Nothing else in this set uses it.
+
+--disable-udev IS THE DECISION IN THIS RECIPE AND IT IS NOT THE DEFAULT. \
+configure defaults to --enable-udev and, worse, ERRORS OUT rather than falling \
+back: "udev support requested but libudev header not installed". This image \
+has libudev-zero, which provides libudev.h, so the probe would succeed and \
+libusb would link a stub implementation of the very interface it depends on \
+for hotplug.
+
+THAT WOULD UNDO THE REASON libusb IS HERE. pcsc-lite is being built with \
+-Dlibudev=false -Dlibusb=true precisely to route hotplug through libusb \
+instead of through libudev-zero. Letting libusb then reach libudev-zero \
+underneath would put the stub back in the path, one layer down, where it is \
+harder to see. With udev off, libusb uses its own Linux backend: sysfs for \
+enumeration and a netlink socket for hotplug, neither of which needs a \
+udev daemon or a udev library.
+
+WHAT IS GIVEN UP is udev's device permissions and naming, which this system \
+does not use for readers anyway -- access is decided by the device node's \
+mode, and pcscd is a service started by dinit rather than a desktop process \
+racing a udev rule.
+
+--disable-static, matching the rest of the set. Examples and tests are off by \
+default and are named in optional_off rather than passed, because passing a \
+flag that is already the default is a claim that could silently stop being \
+true."""
+
+[installs]
+prefixes = ["usr/include", "usr/include/libusb-1.0", "usr/lib", "usr/lib/pkgconfig"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libusb-1.0.30.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--disable-udev"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libusb-1.0"]]
+expect = ["1.0.30"]

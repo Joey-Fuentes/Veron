@@ -104,6 +104,12 @@ struct _VeronChrome {
      * every browser does it, so the place to look for a finished file does not
      * move around. `active` and `dlProgress` describe the newest transfer and
      * `done` counts the finished ones since the tray was last opened. */
+    /* dlEnabled IS THE SETTING; dlSeen only records that something has been
+     * downloaded this session. The button is visible whenever downloads are
+     * enabled, whether or not anything has arrived -- an empty tray still
+     * answers "where do my files go", and a control that materialises only
+     * after you have already needed it is no help the one time it matters. */
+    gboolean            dlEnabled;
     gboolean            dlSeen, dlActive;
     double              dlProgress;
     guint               dlDone;
@@ -423,10 +429,10 @@ static void roundedRect(cairo_t *cr, double x, double y, double w, double h, dou
  * pinned to the corner -- which is where every browser puts them and where a
  * user's hand already goes.
  *
- * THE DOWNLOAD BUTTON MOVES THE FIELD'S RIGHT EDGE WHEN IT APPEARS. That is a
- * visible reflow the first time something downloads, and it is the honest
- * trade for not reserving 34 pixels forever on a machine that may never
- * download anything. */
+ * THE DOWNLOAD BUTTON MOVES THE FIELD'S RIGHT EDGE WHEN IT IS SWITCHED OFF,
+ * and only then. It is present by default, so the layout is stable through
+ * normal use and changes exactly once, at the moment the user asks for it to
+ * change -- which is the one time a reflow is not a surprise. */
 typedef struct {
     double fieldX, fieldW;
     double downloadX, menuX;   /* left edge of each button */
@@ -435,7 +441,7 @@ typedef struct {
 
 static void chromeLayout(VeronChrome *c, int width, ChromeLayout *L)
 {
-    L->showDownload = c && c->dlSeen;
+    L->showDownload = c && c->dlEnabled;
 
     /* THE MENU IS ALWAYS THERE and always last, so its position never depends
      * on anything else and the corner of the window is a stable target. */
@@ -853,6 +859,11 @@ VeronChrome *veron_chrome_new(struct wl_surface *surface, struct wl_shm *shm)
     c->shm     = shm;
     c->editing = g_string_new("");
     c->url     = g_strdup("");
+    /* g_new0 ZEROES, AND THE DEFAULT HERE IS NOT ZERO. Downloads are on until
+     * a stored setting says otherwise; main() overwrites this immediately
+     * after loading the settings file, and this line is what makes the window
+     * between construction and that call show the right thing. */
+    c->dlEnabled = TRUE;
     return c;
 }
 
@@ -869,8 +880,8 @@ void veron_chrome_free(VeronChrome *c)
 
 /* ---- downloads ------------------------------------------------------- */
 
-/* A DOWNLOAD STARTED. The button appears here and never goes away again for
- * the life of the process -- see the comment on dlSeen. */
+/* A DOWNLOAD STARTED. The button is already visible; this only records that
+ * the session has seen one, and starts the progress indication. */
 void veron_chrome_download_started(VeronChrome *c)
 {
     if (!c)
@@ -911,6 +922,27 @@ void veron_chrome_downloads_acknowledged(VeronChrome *c)
     if (!c)
         return;
     c->dlDone = 0;
+}
+
+/* THE DOWNLOADS SETTING CHANGED. Switching downloads off also clears the
+ * badge and any in-flight indication: the button is about to disappear, and
+ * leaving state behind it would have the count reappear, stale, if downloads
+ * were switched back on later in the session. */
+void veron_chrome_set_downloads_enabled(VeronChrome *c, gboolean enabled)
+{
+    if (!c || c->dlEnabled == enabled)
+        return;
+    c->dlEnabled = enabled;
+    if (!enabled) {
+        c->dlActive = FALSE;
+        c->dlProgress = 0.0;
+        c->dlDone = 0;
+    }
+}
+
+gboolean veron_chrome_downloads_enabled(VeronChrome *c)
+{
+    return c && c->dlEnabled;
 }
 
 gboolean veron_chrome_has_downloads(VeronChrome *c)

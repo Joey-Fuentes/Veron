@@ -1,0 +1,48 @@
+# The PC/SC daemon, without which a smartcard is invisible to gpg.
+#
+# WHY IT IS A SERVICE AND NOT SOMETHING gpg STARTS. scdaemon does not spawn
+# pcscd and cannot: it dlopens libpcsclite.so.1 and that library connects to a
+# socket somebody else is already listening on. So the package can be built,
+# installed and correct, and every smartcard operation still fails with no
+# reader found -- which is the same shape as the seatd bug, where the binary
+# was installed and nothing started it, and the error named DRM rather than
+# the daemon that was missing.
+#
+# type = process BECAUSE IT MUST KEEP RUNNING, and --foreground is what makes
+# that true. pcscd daemonises by default; under dinit that would fork, exit,
+# and be treated as a service that terminated immediately. -f keeps it in the
+# foreground where dinit can supervise it.
+#
+# NO ready-notification, AND UNLIKE seatd THAT IS FINE. seatd needed one
+# because labwc started the instant dinit saw the fork and then found no
+# socket. Nothing here starts at boot that needs pcscd: it is consulted the
+# first time a person runs gpg against a card, which is minutes into a
+# session rather than milliseconds into a boot. There is also no fd-notify
+# option to use -- that path in pcscd is systemd's sd_notify, and this build
+# passes -Dlibsystemd=false.
+#
+# --hotplug IS NOT PASSED AND THE DEFAULT IS WHAT WE WANT. pcscd rescans the
+# USB bus on its own; `pcscd --hotplug` is a one-shot command that tells an
+# already-running daemon to rescan, not a mode to start it in. Passing it here
+# would make this service a request to a daemon that does not exist yet.
+#
+# THE SOCKET DIRECTORY IS pcscd's TO MAKE. pcscdaemon.c:626 creates
+# /run/pcscd with mode 0755 and chmods it afterwards so a restrictive umask
+# cannot make it unreachable. That is what lets the unprivileged veron user
+# talk to a daemon running as root -- the same boundary the rest of this
+# system draws: privilege lives in a root-owned service file, and the desktop
+# reaches it through a socket rather than by becoming root.
+#
+# depends-on early-filesystems BECAUSE /run MUST BE A tmpfs FIRST. The image
+# root is read-only and pcscd creates its directory under /run.
+#
+# depends-on device-nodes BECAUSE libusb NEEDS /dev/bus/usb. This build of
+# libusb has udev disabled and enumerates through sysfs, but it still opens
+# the character devices under /dev/bus/usb, and those come from devtmpfs
+# being mounted. Without this, pcscd starts, finds no bus to scan, and
+# reports no readers on a machine that has one plugged in.
+type = process
+command = /usr/sbin/pcscd --foreground
+restart = true
+depends-on = early-filesystems
+depends-on = device-nodes

@@ -1,0 +1,122 @@
+name    = "pcsc-lite"
+version = "2.5.1"
+group   = "system"
+license = "BSD-3-Clause"
+srcdir  = "pcsc-lite-2.5.1"
+
+# kind = "git" IS A TRAVELLED PATH, AND fetch-git.sh's OWN COMMENT SAYS
+# OTHERWISE. That comment -- "no recipe uses kind = git yet ... the three that
+# will -- libxkbcommon, dinit, libsfdo" -- was true when written and is not
+# now: all three exist and carry pinned archive digests. `veron git-sources`
+# lists them beside this one. Worth recording because the stale comment reads
+# as a warning that this package is breaking new ground, and it is not.
+[source]
+kind      = "git"
+commit    = "09138d7f7d02c714b004d9850f28727fbcc48a97"
+url       = "https://github.com/LudovicRousseau/PCSC"
+sha256    = "4bf4741dc5a90412c500fcbb95104e4f6edbee42bd38f2132bcaf51a88530126"
+signature = "none -- the pin is the commit, which is a hash over the tree and its history"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "flex", "libusb"]
+link         = ["libusb"]
+runtime      = ["libusb"]
+optional_off = ["polkit", "libsystemd", "libudev"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback",
+                   "-Dpolkit=false", "-Dlibsystemd=false",
+                   "-Dlibudev=false", "-Dlibusb=true"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["pcsc-lite"]
+deferral        = """
+THE MIDDLEWARE BETWEEN scdaemon AND A CARD READER. gnupg's scdaemon reaches \
+the reader through PC/SC rather than through its own CCID driver -- see that \
+recipe for why -- and this is the daemon that PC/SC talks to. Without it \
+gpg finds no smartcard, and the vault falls back to a passphrase-only key.
+
+WHY THE PIN IS A COMMIT AND NOT A TARBALL. Upstream publishes release \
+tarballs, so this could have been an ordinary sha256 pin. It is not, because \
+what was to hand was GitHub's generated "Source code" archive, and \
+sources/MIRROR.md already records why that is the wrong thing to pin: a forge \
+synthesises it on request with its own git and its own gzip, and GitHub's \
+output shifted for the entire ecosystem once already. The commit is a Merkle \
+hash over the tree and its history and cannot be regenerated differently.
+
+THE DIGEST CAME FROM A REAL `git archive`, AND THE FIRST ATTEMPT DID NOT. \
+That is recorded because the first attempt looked sound and was wrong. No \
+clone was available when this recipe was drafted, so the digest was DERIVED \
+from GitHub's generated export: the prefix was rewritten in every tar header \
+in place -- PCSC-2.5.1/ to pcsc-lite-2.5.1/ -- and every header checksum \
+recomputed. Each check that could be made passed. The commit was confirmed \
+independently, because `git archive` records it in the pax_global_header and \
+the export carried exactly 09138d7f. The extracted trees matched under \
+diff -r. No path reached the 100-byte limit that would force a different \
+header encoding; the longest became 84. The result was a valid tar.
+
+IT WAS STILL WRONG. fetch-git.sh against a real clone produced 4bf4741d \
+where the derivation predicted 5345b953. Compressed, the two differ by under \
+200 bytes, so the trees are identical and the difference is in the tar \
+headers -- a git version emitting them differently from the one GitHub used, \
+which is exactly what the script's mismatch message names as the suspect. \
+The value above is the observed one.
+
+THE LESSON IS WHAT fetch-git.sh WAS WRITTEN FOR. A forge's generated archive \
+is not the artifact this build derives, and it cannot be converted into one \
+by reasoning about the difference -- not even when every observable property \
+agrees. The pin caught it, which is why the digest is compared rather than \
+printed for a human to copy.
+
+-Dlibudev=false AND -Dlibusb=true ARE ONE DECISION. libudev is the preferred \
+hotplug backend upstream and defaults on. This image has libudev-zero, a stub, \
+and hotplug is exactly where a stub is most likely to be incomplete -- a \
+reader plugged in after pcscd starts would simply never appear, with nothing \
+logged. libusb is the supported alternative, is needed by the CCID driver \
+regardless, and is built here with --disable-udev so the stub is not reached \
+one layer down either.
+
+-Dpolkit=false AND -Dlibsystemd=false ARE BOOLEANS WITH NO DEFAULT IN \
+meson.options, WHICH MEANS THEY DEFAULT TRUE. Neither polkit nor systemd \
+exists in this image, so both would fail at dependency() rather than degrade. \
+pcscd's access control becomes the socket's file mode, and its startup becomes \
+a dinit service.
+
+THE DAEMON IS NOT STARTED BY THIS PACKAGE. pcscd needs a dinit service file in \
+veron-system, and until one exists nothing launches it -- scdaemon will \
+dlopen libpcsclite successfully and then find no daemon on the socket. \
+usbdropdir defaults to /usr/lib/pcsc/drivers and ipcdir to /run/pcscd; the \
+CCID driver reads the first out of this package's pkg-config file rather than \
+being told separately, so the two cannot disagree."""
+
+[installs]
+prefixes = ["usr/sbin", "usr/include", "usr/lib", "usr/lib/pkgconfig",
+            "usr/lib/pcsc", "usr/share/man"]
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/pcsc-lite-2.5.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dpolkit=false", "-Dlibsystemd=false",
+         "-Dlibudev=false", "-Dlibusb=true"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libpcsclite"]]
+expect = ["2.5.1"]

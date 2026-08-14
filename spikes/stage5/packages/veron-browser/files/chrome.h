@@ -63,6 +63,11 @@ gboolean  veron_chrome_delete_selection (VeronChrome *chrome);
 /* DOWNLOADS. The chrome owns no WebKit state and is only told what happened,
  * so these are four announcements rather than a query interface. The button
  * appears on the first `started` and stays for the life of the process. */
+/* THE DOWNLOADS SETTING. Off removes the button from the strip entirely and
+ * widens the URL field to fill the space. */
+void     veron_chrome_set_downloads_enabled (VeronChrome *chrome, gboolean enabled);
+gboolean veron_chrome_downloads_enabled     (VeronChrome *chrome);
+
 void     veron_chrome_download_started      (VeronChrome *chrome);
 void     veron_chrome_download_progress     (VeronChrome *chrome, double fraction);
 void     veron_chrome_download_finished     (VeronChrome *chrome, gboolean ok);
