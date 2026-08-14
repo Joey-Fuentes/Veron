@@ -1566,6 +1566,24 @@ def cmd_mirrors(a):
                 seen_urls.add(u)
                 targets.append((os.path.basename(u), "", None, u, None))
 
+    # rows ACCUMULATES ACROSS EVERY TARGET AND WAS NEVER INITIALISED. The
+    # loop below appends to it twice -- once for upstream, once per verified
+    # candidate -- and the merge at the end reads it, so it has to exist
+    # before the first iteration rather than inside one.
+    #
+    # THIS WAS THE SECOND NameError IN THIS FUNCTION AND THE FIRST ONE HID IT.
+    # packager_source() raised on the first target, so the loop never reached
+    # an append and this line was never executed. Fixing that got one package
+    # further and stopped here, at `autoconf`, which is simply the first name
+    # in the sorted set with a candidate route to record. Two independent
+    # defects on the same code path, both invisible because the workflow step
+    # ends in `|| true`.
+    # checked AND found ARE RUN-WIDE TOTALS, printed after the loop, so
+    # they are initialised here for the same reason rows is. All three
+    # were missing: the function could never have completed a single
+    # target, and the first NameError masked the next two.
+    rows, checked, found = [], 0, 0
+
     for pname, pver, sha, url, aliases in targets:
         fname = os.path.basename(url)
         r = {"name": pname, "version": pver}
