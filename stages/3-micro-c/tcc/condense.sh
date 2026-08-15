@@ -23,7 +23,17 @@
 #      byte-identical to the series-patched tree (diff -r)
 #   6. print the patch sha256 + patch counts for the commit message
 set -eu
-HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/../.." && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# Find the repo root by looking for the pin manifest itself, not by counting
+# directory levels -- this script sits one level deeper than the stage
+# scripts, and the first release counted levels and read sources/tcc.toml
+# from the wrong directory.
+ROOT="$HERE"
+while [ ! -f "$ROOT/sources/tcc.toml" ] && [ "$ROOT" != / ]; do
+  ROOT="$(dirname "$ROOT")"
+done
+[ -f "$ROOT/sources/tcc.toml" ] || {
+  echo "FAIL: cannot find repo root (no sources/tcc.toml above $HERE)"; exit 1; }
 cd "$ROOT"
 
 SHA=$(sed -n 's/^commit *= *"\([0-9a-f]*\)".*/\1/p' sources/tcc.toml | head -1)
