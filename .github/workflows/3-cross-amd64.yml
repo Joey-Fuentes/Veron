@@ -1,0 +1,85 @@
+name: 3-cross-amd64
+# THE CROSS, then THE PROOF: job 1 (native aarch64) runs the whole ladder
+# from tcc-arm64 to tcc-amd64; job 2 (plain x86_64 runner) downloads the
+# artifact and EXECUTES the compiler natively -- builds and runs an exit-42
+# program with a tcc that has no host gcc anywhere in its history.
+# Attestation only after both jobs pass.
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'stages/3-micro-c/**'
+      - '.github/workflows/3-cross-amd64.yml'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+jobs:
+  cross:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3 git patch file curl make
+      - name: 'PREREQS: stages 2 and 3 aarch64, rebuilt to their records'
+        run: |
+          ./stages/2-pico-c/verify.sh
+          sh stages/3-micro-c/build.sh in
+          sh stages/3-micro-c/build.sh chain
+      - name: 'CROSS in/: the musl source, mirrored, digest-pinned'
+        run: sh stages/3-micro-c/cross-amd64.sh in
+      - name: 'CROSS chain: rung, cross 1-3, tcc-amd64'
+        run: sh stages/3-micro-c/cross-amd64.sh chain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage-3-x86_64
+          path: out/3/x86_64/
+          retention-days: 14
+  verify-native:
+    needs: cross
+    runs-on: ubuntu-24.04     # x86_64: the target architecture itself
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage-3-x86_64
+          path: x
+      - name: 'THE PROOF: the cross-built compiler runs and compiles, natively'
+        run: |
+          set -eu
+          chmod +x x/tcc-amd64
+          ./x/tcc-amd64 -v
+          mkdir sys && tar -xzf x/sys-x86_64.tar.gz -C sys
+          printf 'int main() { return 42; }\n' > t.c
+          ./x/tcc-amd64 -o t -static -nostdinc -nostdlib \
+            -Isys/sys-x86_64/include \
+            sys/sys-x86_64/lib/crt1.o sys/sys-x86_64/lib/crti.o t.c \
+            sys/sys-x86_64/lib/libc.a x/x86_64-libtcc1.a \
+            sys/sys-x86_64/lib/crtn.o
+          set +e; ./t; rc=$?; set -e
+          [ "$rc" = 42 ] || { echo "FAIL: exit $rc, wanted 42"; exit 1; }
+          echo "PASS: tcc-amd64 compiled and ran a program natively (exit 42)"
+          printf 'tcc-amd64  %s bytes  sha256 %s\n' \
+            "$(wc -c < x/tcc-amd64)" "$(sha256sum x/tcc-amd64 | cut -d' ' -f1)"
+  attest:
+    needs: [cross, verify-native]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage-3-x86_64
+          path: x
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            x/tcc-amd64
+            x/tcc-arm64-to-amd64
+            x/substages.toml
