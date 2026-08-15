@@ -39,7 +39,22 @@ ORACLE_S1="$ROOT/spikes/stage1-as/stage1-as.s0"
 ORACLE_S2="$ROOT/spikes/stage2-pico-c/stage2-pico-c.s1"
 
 # Run-an-aarch64-binary shim: native, binfmt, or the committed toolbox qemu.
-if [ "$(uname -m)" = aarch64 ]; then RUN=""
+# RUNNER SELECTION. Three worlds:
+#   - plain aarch64 linux: direct exec
+#   - Android/Termux: the app cannot execve from home, so Termux routes
+#     through linker64, which loads only PIE -- our static ET_EXEC trust
+#     root is refused with "unexpected e_type: 2". proot's own loader
+#     handles static ELFs; require it there. (pkg install proot)
+#   - anything else: the toolbox qemu
+# VERON_RUNNER overrides all three.
+if [ -n "${VERON_RUNNER:-}" ]; then RUN="$VERON_RUNNER"
+elif [ "$(uname -o 2>/dev/null)" = Android ]; then
+  command -v proot >/dev/null 2>&1 || {
+    echo "FAIL: Android blocks direct exec of static binaries (linker64"
+    echo "      loads only PIE). Install the loader:  pkg install proot"
+    echo "      or set VERON_RUNNER to a loader of your choice."; exit 1; }
+  RUN=proot
+elif [ "$(uname -m)" = aarch64 ]; then RUN=""
 elif [ -x "$ROOT/spikes/toolbox/qemu-aarch64-static" ]; then
   RUN="$ROOT/spikes/toolbox/qemu-aarch64-static"
 elif command -v qemu-aarch64-static >/dev/null 2>&1; then

@@ -7,7 +7,22 @@ HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/../.." && pwd)"
 cd "$ROOT"
 SA=stages/1-self-assembly/self-assembler-arm64
 EW=stages/1-self-assembly/elf-wrapper-arm64
-if [ "$(uname -m)" = aarch64 ]; then RUN=""
+# RUNNER SELECTION. Three worlds:
+#   - plain aarch64 linux: direct exec
+#   - Android/Termux: the app cannot execve from home, so Termux routes
+#     through linker64, which loads only PIE -- our static ET_EXEC trust
+#     root is refused with "unexpected e_type: 2". proot's own loader
+#     handles static ELFs; require it there. (pkg install proot)
+#   - anything else: the toolbox qemu
+# VERON_RUNNER overrides all three.
+if [ -n "${VERON_RUNNER:-}" ]; then RUN="$VERON_RUNNER"
+elif [ "$(uname -o 2>/dev/null)" = Android ]; then
+  command -v proot >/dev/null 2>&1 || {
+    echo "FAIL: Android blocks direct exec of static binaries (linker64"
+    echo "      loads only PIE). Install the loader:  pkg install proot"
+    echo "      or set VERON_RUNNER to a loader of your choice."; exit 1; }
+  RUN=proot
+elif [ "$(uname -m)" = aarch64 ]; then RUN=""
 elif [ -x spikes/toolbox/qemu-aarch64-static ]; then RUN="$ROOT/spikes/toolbox/qemu-aarch64-static"
 else echo "FAIL: need aarch64 or the toolbox qemu"; exit 1; fi
 run() { ${RUN:+"$RUN"} "$@"; }
