@@ -1,6 +1,6 @@
 name: 3-micro-c-build
 # THE REAL STAGE-3 CHAIN, natively: pico-c compiles micro-c, pico-c builds
-# M1 and hex2, micro-c compiles tcc, our M1 and hex2 link it -> mc-tcc.
+# M1 and hex2, micro-c compiles tcc, our M1 and hex2 link it -> tcc-arm64.
 # Extracted from stage0-stage4-complete-amd64.yml (the TRUE zero-budget
 # form); the workflow is a caller of stages/3-micro-c/build.sh, the same
 # script that runs on a laptop or a phone.
@@ -41,19 +41,19 @@ jobs:
         run: ./stages/2-pico-c/verify.sh
       - name: 'STAGE 3 in/: materialize inputs (adopted-first; else pin-true fetch)'
         run: sh stages/3-micro-c/build.sh in
-      - name: 'STAGE 3 chain: seed-rooted micro-c, M1, hex2, then mc-tcc'
+      - name: 'STAGE 3 chain: seed-rooted micro-c, M1, hex2, then tcc-arm64'
         run: sh stages/3-micro-c/build.sh chain
       - name: 'THE NUMBERS: every artifact, exact size, sha, mode'
         run: |
           set -eu
           echo "  stage-3 artifact ladder (builders above, outputs below):"
           for f in out/3/aarch64/micro-c out/3/aarch64/M1 \
-                   out/3/aarch64/hex2 out/3/aarch64/mc-tcc; do
+                   out/3/aarch64/hex2 out/3/aarch64/tcc-arm64; do
             printf '    %-12s %10s bytes  sha256 %s  mode %s\n' \
               "$(basename "$f")" "$(wc -c < "$f")" \
               "$(sha256sum "$f" | cut -d' ' -f1)" "$(stat -c %04a "$f")"
           done
-          file -b out/3/aarch64/mc-tcc | cut -c1-70
+          file -b out/3/aarch64/tcc-arm64 | cut -c1-70
       - name: 'Collect the artifacts (for records + off-runner comparison)'
         uses: actions/upload-artifact@v4
         with:
@@ -68,7 +68,7 @@ jobs:
         uses: actions/attest-build-provenance@v3
         with:
           subject-path: |
-            out/3/aarch64/mc-tcc
+            out/3/aarch64/tcc-arm64
             out/3/aarch64/micro-c
             out/3/aarch64/M1
             out/3/aarch64/hex2

@@ -315,26 +315,26 @@ do_chain() {
            -o tcc-all.hex2
   run ./hex2 --architecture aarch64 --little-endian \
              --base-address 0x400000 -f "$A/ELF-aarch64.hex2" \
-             -f tcc-all.hex2 -o mc-tcc
+             -f tcc-all.hex2 -o tcc-arm64
   # MODE IS CONTRACT (design D4): hex2 has no fchmod, so the file arrives
   # with hex2's creation mode (0751 on the first CI run). Set it
   # deliberately, the way the elf-wrapper does for everything it emits.
-  chmod 0755 mc-tcc
-  [ -x mc-tcc ] || { echo "FAIL: no mc-tcc"; exit 1; }
+  chmod 0755 tcc-arm64
+  [ -x tcc-arm64 ] || { echo "FAIL: no tcc-arm64"; exit 1; }
 
   # ---- gates: it runs, and it is a compiler ----
-  v=$(run ./mc-tcc -v 2>&1 | head -1)
-  echo "    mc-tcc -v: $v"
-  case "$v" in *tcc*) : ;; *) echo "FAIL: mc-tcc does not announce itself"; exit 1 ;; esac
+  v=$(run ./tcc-arm64 -v 2>&1 | head -1)
+  echo "    tcc-arm64 -v: $v"
+  case "$v" in *tcc*) : ;; *) echo "FAIL: tcc-arm64 does not announce itself"; exit 1 ;; esac
 
   # micro-c, M1 and hex2 are CONTRACTS -- they are recorded builders of
-  # mc-tcc -- so they publish to out/ beside it, not just scratch.
-  cp micro-c M1 hex2 mc-tcc "$OUT/"
+  # tcc-arm64 -- so they publish to out/ beside it, not just scratch.
+  cp micro-c M1 hex2 tcc-arm64 "$OUT/"
   echo
   echo "== STAGE 3 (aarch64 leg) OUTPUT =="
-  printf '  %-10s %10s bytes  sha256 %s  mode %s\n' mc-tcc \
-    "$(wc -c < "$OUT/mc-tcc")" "$(sha256sum "$OUT/mc-tcc" | cut -d' ' -f1)" \
-    "$(stat -c %04a "$OUT/mc-tcc")"
+  printf '  %-10s %10s bytes  sha256 %s  mode %s\n' tcc-arm64 \
+    "$(wc -c < "$OUT/tcc-arm64")" "$(sha256sum "$OUT/tcc-arm64" | cut -d' ' -f1)" \
+    "$(stat -c %04a "$OUT/tcc-arm64")"
   emit_records
   if [ "$PINTRUE" = yes ]; then
     echo "  PIN-TRUE run: these are official numbers."
@@ -394,7 +394,7 @@ emit_records() {
   printf '\n[[substage.input]]\nrole   = "builder"\nref    = "2/2/pico-c"\nsha256 = "%s"\n' "$PC_SHA"
   outp "out/3/aarch64/hex2" "$OUT/hex2"
 
-  printf '\n[[substage]]\nid = "3/4/mc-tcc"\nstage = 3\narch = "aarch64"\nflavor = "trunk"\nroot = "repo"\n'
+  printf '\n[[substage]]\nid = "3/4/tcc-arm64"\nstage = 3\narch = "aarch64"\nflavor = "trunk"\nroot = "repo"\n'
   inp source "tcc.c (pinned tree + tcc-veron.patch)" "$IN/tcc-src/tcc.c"
   inp source "m2libc/aarch64_defs.M1" "$IN/m2libc-veron/aarch64/aarch64_defs.M1"
   inp source "m2libc/libc-full.M1" "$IN/m2libc-veron/aarch64/libc-full.M1"
@@ -404,7 +404,7 @@ emit_records() {
   printf '\n[[substage.input]]\nrole   = "builder"\nref    = "3/1/micro-c"\nsha256 = "%s"\n' "$(sha256sum "$B/micro-c" | cut -d' ' -f1)"
   printf '\n[[substage.input]]\nrole   = "builder"\nref    = "3/2/M1"\nsha256 = "%s"\n' "$(sha256sum "$B/M1" | cut -d' ' -f1)"
   printf '\n[[substage.input]]\nrole   = "builder"\nref    = "3/3/hex2"\nsha256 = "%s"\n' "$(sha256sum "$B/hex2" | cut -d' ' -f1)"
-  outp "out/3/aarch64/mc-tcc" "$OUT/mc-tcc"
+  outp "out/3/aarch64/tcc-arm64" "$OUT/tcc-arm64"
   } > "$RT"
   echo "  records emitted: $RT ($(grep -c '^\[\[substage\]\]' "$RT") substages, $(wc -l < "$RT") lines)"
   # THE COMPARE GATE: once a record is committed, every pin-true run must

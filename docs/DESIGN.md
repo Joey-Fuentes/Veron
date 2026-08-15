@@ -106,7 +106,7 @@ stages/3-micro-c/
                              tarball (sources/ manifest) + ONE condensed
                              veron patch, applied normally by the build
                              system. tcc is stage 3's OUTPUT — the artifact
-                             handed off to stage 4 (mc-tcc → x86_64-tcc +
+                             handed off to stage 4 (tcc-arm64 → x86_64-tcc +
                              musl in artifact.tar.zst).
 ```
 
@@ -552,7 +552,7 @@ designs rot:
   `substage_arch != host_arch` the driver runs the substage under `qemu-user` and
   records `emulated = true`. Emulation is a *declared input*, never a hidden
   one — the repo has already measured that native and emulated execution can
-  disagree (mc-tcc once ran under qemu and segfaulted natively), so repro
+  disagree (tcc-arm64 once ran under qemu and segfaulted natively), so repro
   attestations compare native-vs-emulated runs as an explicit pair, not as
   interchangeable.
 
@@ -562,7 +562,7 @@ designs rot:
 policy/arches.toml
 [aarch64]  origin = "native"               # stages 1–3 native from self-assembler-arm64
 [x86_64]   origin = "cross-from-aarch64"   # aarch64 substages 1–3, cross at 3/2:
-                                           # mc-tcc → x86_64-tcc → native tcc + musl
+                                           # tcc-arm64 → x86_64-tcc → native tcc + musl
 [riscv64]  origin = "cross-from-aarch64"   # same shape, riscv64 cross substage
 ```
 
@@ -631,7 +631,7 @@ releases/<N>/latest-<arch>/          — and locally: out/<N>/<arch>/
   the ledger. Stages 1–3 share one boundary and one release (§5);
   `chain-<arch>.yml` is *only* a convenience caller with zero logic of its
   own.
-- The stage-3 handoff facts (`built-by mc-tcc -> x86_64-tcc -> tcc-x86_64`,
+- The stage-3 handoff facts (`built-by tcc-arm64 -> x86_64-tcc -> tcc-x86_64`,
   the musl line) stop being log output and become substage records in stage 3's
   `substages.toml` — STAGE6 §2.1 already observed the content is correct and
   only the destination is wrong.
@@ -730,7 +730,7 @@ intermediate — the trunk's stages hand off to each other inside one sealed
 box, and the first externally-consumed output is tcc. So the trunk is one
 job and one release, `3/latest-<arch>`, whose artifact is exactly what stage
 4 needs: tcc — plus musl for cross targets, since the non-aarch64 handoff is
-`mc-tcc → <arch>-tcc → tcc + musl`. **The whole trunk exists to yield one
+`tcc-arm64 → <arch>-tcc → tcc + musl`. **The whole trunk exists to yield one
 thing: a tcc built by no host tool other than the bootstrap system itself.**
 The release should look like that fact.
 
