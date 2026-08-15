@@ -47,8 +47,8 @@ jobs:
         run: |
           set -eu
           echo "  stage-3 artifact ladder (builders above, outputs below):"
-          for f in build/3/aarch64/micro-c build/3/aarch64/M1 \
-                   build/3/aarch64/hex2 out/3/aarch64/mc-tcc; do
+          for f in out/3/aarch64/micro-c out/3/aarch64/M1 \
+                   out/3/aarch64/hex2 out/3/aarch64/mc-tcc; do
             printf '    %-12s %10s bytes  sha256 %s  mode %s\n' \
               "$(basename "$f")" "$(wc -c < "$f")" \
               "$(sha256sum "$f" | cut -d' ' -f1)" "$(stat -c %04a "$f")"
@@ -58,11 +58,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: stage-3-aarch64
-          path: |
-            out/3/aarch64/mc-tcc
-            build/3/aarch64/micro-c
-            build/3/aarch64/M1
-            build/3/aarch64/hex2
+          path: out/3/aarch64/
           retention-days: 14
       # Provenance after the gates, main only -- same honesty split as
       # stages 1 and 2: the attestation says who/where; the records (minted
@@ -73,6 +69,7 @@ jobs:
         with:
           subject-path: |
             out/3/aarch64/mc-tcc
-            build/3/aarch64/micro-c
-            build/3/aarch64/M1
-            build/3/aarch64/hex2
+            out/3/aarch64/micro-c
+            out/3/aarch64/M1
+            out/3/aarch64/hex2
+            out/3/aarch64/substages.toml
