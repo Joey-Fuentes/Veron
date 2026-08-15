@@ -1,22 +1,17 @@
-# stages/3-micro-c — micro-c, and the tcc it hands to stage 4
+# stages/3-micro-c — micro-c, and the handoff to tcc — SOURCE ADOPTED
 
-Two components, deliberately in the only two postures amended invariant 6
-allows (design doc D2):
+Stage 3 is where the ladder leaves its own dialects: pico-c builds micro-c,
+micro-c builds tcc, and tcc is the first stone of stage 4.
 
-- **`micro-c/` — Veron source, adopted in-tree.** The exact micro-c source,
-  already patched, exactly as the build needs it. Not a pin: no fetch, no
-  patch step, no upstream copy to drift against. Slated for a rewrite that
-  abandons the M2-Planet lineage; until inherited lines are gone, `ORIGIN.md`
-  records the fork point and upstream license (criterion 7). Every file here
-  is a `repo` trace root.
-- **`tcc/` — a pinned package.** A pinned RELEASE tarball (named in
-  `sources/`) plus **ONE condensed veron patch**, applied normally by the
-  build system like any stage-4/5 package. tcc is stage 3's OUTPUT — the
-  artifact handed to stage 4 (`mc-tcc → <arch>-tcc → tcc + musl` for cross
-  targets) inside `3/latest-<arch>`.
+| piece | status |
+|---|---|
+| `micro-c/` | **adopted in-tree source** (design D2): the exact patched tree the build needs — M2-Planet `bd2fe4b` (Release_1.13.1) + the 77-patch series, materialized by the spike's own procedure, plus `bootstrappable.c` so nothing official builds from `spikes/`. Provenance, license (GPL-3.0-or-later) and the fork-point declaration live in `micro-c/ORIGIN.md`. **Verified at adoption: micro-c rebuilt from this exact tree is byte-identical to the spike-materialized build.** Slated for a rewrite that retires the inherited lineage; ORIGIN.md holds until then. |
+| `micro-c-libc/` | the freestanding libc micro-c hands to tcc, adopted verbatim from the spike. |
+| `tcc/` | pin + ONE condensed patch (see `tcc/README.md`); `condense.sh` generates and proves `tcc-veron.patch` on a networked machine. |
 
-**Status: NOT YET ADOPTED.** Adoption = copy the exact micro-c tree from
-`spikes/stage3` at a pinned commit + write `ORIGIN.md` + condense the tcc
-patch series into one patch and pin the tcc release in `sources/`. The stale
-vendor copy at `spikes/reference/` retires only at cutover; spikes stay
-untouched until then (§7.0).
+**Substage records are deliberately absent here for now.** The ledger's
+builder edges must name the artifact that actually built each output, and in
+the trunk that is pico-c-built micro-c — not a host-gcc dev build. Records
+for 3/x land with the trunk extraction (§7 step 3), produced by the real
+chain, never faked from a convenience build. The dev build's only role is
+verification, and its byte-identity check lives in ORIGIN.md.

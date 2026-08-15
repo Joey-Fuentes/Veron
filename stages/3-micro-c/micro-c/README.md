@@ -1,4 +1,10 @@
-# micro-c — placeholder until adoption
+# M2-Planet
+The PLAtform NEutral Transpiler, when combined with mescc-tools;
+allows one to compile a subset of the C language into working binaries
+with introspective steps inbetween.
 
-The exact patched micro-c source lands here (see ../README.md). Write
-ORIGIN.md in the same commit that adopts it.
+A lovely set of examples of M2-Planet programs are in tests but the most
+surprising part of all M2-Planet can self-host M2-Planet.
+
+Further more M2-Planet is cross-platform and self-hosting across platforms
+with fully deterministic builds enabling perfect reproducibility.
