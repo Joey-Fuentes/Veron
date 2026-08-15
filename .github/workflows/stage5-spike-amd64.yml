@@ -938,23 +938,6 @@ jobs:
           # its test, in the same file as its pin and its flags.
           python3 tools/veron --overlay packages-amd64 guest-tests --out sysroot/usr/bin/veron-stage5-test
 
-          # STRIP, AND STAGE 5 NEVER DID. stage4/bridge/sysroot-trim.sh strips
-          # the sysroot it publishes; stage 5 merges INTO that sysroot
-          # afterwards, so everything stage 5 builds arrives unstripped and
-          # nothing removes it. Measured on this build: git installs 65
-          # distinct executables at 10-18 MB each where a stripped git is 3-4
-          # MB, and the 52 stage-5 packages over 1 MB come to 508 MB.
-          #
-          # AFTER guest-tests, BEFORE THE IMAGE. The test binary is generated
-          # into the sysroot above, so stripping earlier would miss it; the
-          # image is built from this tree, so stripping later would miss the
-          # image entirely.
-          #
-          # IT EXITS NON-ZERO RATHER THAN REPORTING A SIZE THAT OMITS THE CUT.
-          # That is stage 4's lesson restated: a run that finds no usable strip
-          # and prints "0 MB removed" is the failure this step exists to
-          # prevent, so it fails the job instead.
-          STRIP_LOG=out/strip.txt sh tools/stage5-strip.sh sysroot
 
           # /etc/veron-release -- WHICH COMMIT BUILT THIS MACHINE.
           #
@@ -2123,6 +2106,107 @@ jobs:
       # `always()` so a red boot still publishes: the image built and
       # reproduced either way, and an image nobody can download is not more
       # useful for having failed a service.
+      # STRIP LAST, AFTER EVERYTHING HAS BEEN TESTED UNSTRIPPED.
+      #
+      # The first version stripped inside the merge step, before the image was
+      # ever built -- so every test above ran against a stripped tree, and when
+      # stripping went wrong the failure surfaced as 151 failing package tests
+      # with no obvious cause. Testing the tree you built and then shipping a
+      # DIFFERENT tree is the thing to avoid; testing first and stripping last
+      # means a strip that breaks something is attributable to the strip.
+      #
+      # SO THE IMAGE IS BUILT TWICE, DELIBERATELY. The unstripped image is what
+      # the full suite above ran against -- guest tests, desktop screenshot,
+      # two-instance DHCP. This rebuilds it from the stripped tree and re-runs
+      # only what can still be asserted about a tree whose debug sections are
+      # gone: that it boots, and that its own package tests pass.
+      - name: 'Strip, rebuild the image, and re-verify it still boots'
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
+        run: |
+          set -eu
+          cd spikes/stage5
+
+          # THE TEST BINARY IS GENERATED INTO THE SYSROOT AND MUST SURVIVE.
+          # veron-stage5-test is a shell script, so strip skips it by
+          # extension -- but the packages it exercises are what is being
+          # stripped, which is the point of running it again below.
+          STRIP_LOG=out/strip.txt sh tools/stage5-strip.sh sysroot
+
+          cd out
+          SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
+          build_img() {
+            rm -f "$1"
+            /sbin/mke2fs -q -t ext4 -d ../sysroot \
+              -U 00000000-0000-4000-8000-000000000001 \
+              -E hash_seed=00000000-0000-4000-8000-000000000002 \
+              -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
+              -m 0 -b 4096 "$1" "${SZ}M"
+            python3 ../tools/normalize-ext4.py "$1"
+          }
+          # THE PUBLISHED DIGEST IS THE STRIPPED IMAGE'S. IMAGE-SHA256 was
+          # written for the unstripped build above; leaving it would publish a
+          # checksum that does not match the artifact beside it.
+          build_img rootfs.img
+          sha256sum rootfs.img | tee IMAGE-SHA256
+          cp rootfs.img /tmp/img-stripped
+          build_img rootfs.img
+          if cmp -s /tmp/img-stripped rootfs.img; then
+            echo "VERON-IMAGE-REPRO-OK  two builds of the stripped tree, identical bytes"
+          else
+            echo "VERON-IMAGE-REPRO-DIFF  the stripped container did not reproduce"
+            cmp -l /tmp/img-stripped rootfs.img > image-diff-stripped.txt 2>&1 || true
+            printf '  %s differing byte(s)\n' "$(wc -l < image-diff-stripped.txt)"
+          fi
+
+      # DOES IT STILL BOOT, AND DO ITS OWN TESTS STILL PASS. This is the check
+      # that would have caught the stripped loader immediately: that run booted
+      # and reported pass=25 fail=151, because ld.so had been rewritten and
+      # most dynamically linked binaries could no longer start.
+      # DOES IT STILL BOOT, AND DO ITS OWN TESTS STILL PASS. This is the check
+      # that would have caught the stripped loader immediately: that run booted
+      # and reported pass=25 fail=151, because ld.so had been rewritten and
+      # most dynamically linked binaries could no longer start. A boot marker
+      # alone is not enough -- the image DID boot; what broke was every
+      # dynamically linked binary after init.
+      #
+      # THE INVOCATION MIRRORS THE HARNESS BOOT ABOVE and is not written from
+      # memory: -cpu qemu64 because x86 has a default aarch64 lacks, -nic none
+      # because this boot needs no network, the 9p mount because guest/init
+      # expects it, and a COPY of the image because the boot writes to it.
+      - name: 'Boot the STRIPPED image and re-run its package tests'
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
+        timeout-minutes: 20
+        run: |
+          set -eu
+          O=spikes/stage5/out
+          cp "$O/rootfs.img" "$O/rootfs-stripped-boot.img"
+          set +e
+          timeout 900 qemu-system-x86_64 \
+            -cpu qemu64 -smp 4 -m 4096 \
+            -nographic -no-reboot -nic none \
+            -drive file=$O/rootfs-stripped-boot.img,format=raw,if=virtio \
+            -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
+            -device virtio-9p-pci,fsdev=vs,mount_tag=veronsysroot \
+            -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
+            -append "console=ttyS0 earlycon rdinit=/init panic=1 loglevel=7" \
+            > "$O/boot-stripped.log" 2>&1
+          rc=$?
+          set -e
+          echo "  qemu rc=$rc"
+
+          if ! grep -q "VERON-BOOT-OK" "$O/boot-stripped.log"; then
+            echo "VERON-STRIPPED-BOOT-FAIL  the stripped image did not boot"
+            tail -40 "$O/boot-stripped.log" | sed 's/^/    /'
+            exit 1
+          fi
+          grep -E "VERON-STAGE5-TESTS" "$O/boot-stripped.log" | tail -2 | sed 's/^/    /'
+          if grep -q "VERON-STAGE5-FAIL" "$O/boot-stripped.log"; then
+            echo "VERON-STRIPPED-TESTS-FAIL  stripping broke something that worked"
+            grep -E "^\s+FAIL|bad " "$O/boot-stripped.log" | head -25 | sed 's/^/    /'
+            exit 1
+          fi
+          echo "VERON-STRIPPED-OK  boots and passes its own tests after stripping"
+
       - name: 'Publish the image'
         # PUBLISHING IS GATED ON THE TESTS THAT RAN, AND IT WAS NOT.
         #

@@ -636,12 +636,6 @@ jobs:
           # its test, in the same file as its pin and its flags.
           python3 tools/veron guest-tests --out sysroot/usr/bin/veron-stage5-test
 
-          # STRIP -- SEE THE AMD64 WORKFLOW FOR THE ARGUMENT. Both arms merge
-          # stage 5 into a sysroot stage 4 already stripped, so both leave
-          # stage 5's own output unstripped. Adding it to one arm only would
-          # make the two images differ for a reason that has nothing to do
-          # with the architecture.
-          STRIP_LOG=out/strip.txt sh tools/stage5-strip.sh sysroot
 
           # THE SELF-REBUILD PAYLOAD IS NOT PART OF THE OPERATING SYSTEM.
           #

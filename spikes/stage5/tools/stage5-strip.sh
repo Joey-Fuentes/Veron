@@ -154,6 +154,28 @@ count=0
 find "$ROOT/usr/bin" "$ROOT/usr/sbin" "$ROOT/usr/libexec" "$ROOT/usr/lib" \
      -type f ! -type l 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
     case "$f" in *.py|*.sh|*.pl|*.a) continue ;; esac
+
+    # NEVER STRIP THE TOOLCHAIN THIS SCRIPT IS STANDING ON, AND THE FIRST RUN
+    # PROVED WHY. The walk is alphabetical, so it reached /usr/bin/strip and
+    # asked it to strip itself ("Text file busy"), then reached
+    # /usr/lib/ld-linux-x86-64.so.2 -- the dynamic loader -- and SUCCEEDED.
+    # From that point bwrap could not exec anything at all inside the sysroot:
+    #
+    #     FAILED /usr/sbin/pcscd   bwrap: execvp /usr/bin/strip: I/O error
+    #
+    # 694 files failed after it, and the booted image reported
+    # VERON-STAGE5-TESTS pass=25 fail=151 -- because most dynamically linked
+    # binaries could no longer start. Stripping a loader is not a size
+    # optimisation, it is a way to destroy an image and report success.
+    #
+    # ld.so IS EXCLUDED PERMANENTLY, not merely while we are running under it.
+    # Its debug sections are small and the downside is unbounded.
+    case "${f#$ROOT}" in
+        /usr/lib/ld-*.so*|/usr/lib64/ld-*.so*|/lib/ld-*.so*|/lib64/ld-*.so*)
+            continue ;;
+        /usr/bin/strip|/usr/bin/*-strip|/usr/bin/objcopy|/usr/bin/*-objcopy)
+            continue ;;
+    esac
     head -c4 "$f" 2>/dev/null | od -An -c 2>/dev/null | grep -q 'E   L   F' || continue
     s1=$(wc -c < "$f")
     chmod u+w "$f" 2>/dev/null || true
@@ -180,6 +202,22 @@ emit "  stripped: $((before / 1024)) MB -> $((after / 1024)) MB  ($(( (before - 
 # the bug lesson 2 records.
 if [ "$before" -le "$after" ]; then
     emit "VERON-STRIP-NOTHING  a working strip removed no bytes"
+    exit 1
+fi
+
+# BYTES REMOVED IS NOT THE SAME AS THE RUN HAVING WORKED, and the first run is
+# the proof: 133 MB came off before the loader was stripped, 694 files failed
+# afterwards, and this script printed VERON-STRIP-OK over the top of a broken
+# image. Checking only that the tree shrank is checking the easy half.
+#
+# A FEW FAILURES ARE TOLERABLE -- a file locked or genuinely unstrippable --
+# and a wall of them means the tool stopped working partway through, which is
+# a different thing and must fail the build.
+if [ "$nfail" -gt 20 ]; then
+    emit "VERON-STRIP-BROKEN  $nfail file(s) failed -- the tool stopped working"
+    emit "  A large failure count means strip died partway through rather than"
+    emit "  meeting a handful of odd files. The tree is now PARTLY stripped,"
+    emit "  which is worse than untouched: do not ship this image."
     exit 1
 fi
 echo "VERON-STRIP-OK  $(( (before - after) / 1024 )) MB"

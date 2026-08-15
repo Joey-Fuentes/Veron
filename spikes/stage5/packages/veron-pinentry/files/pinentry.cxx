@@ -69,6 +69,8 @@ static char g_error[512];
 static char g_ok[64];
 static char g_cancel[64];
 static char g_result[1024];
+static char g_repeat[128];        /* SETREPEAT's label; empty means no repeat */
+static char g_repeat_err[256];    /* SETREPEATERROR's text                    */
 static int  g_confirmed;
 
 /* ---- Assuan line coding ---------------------------------------------- */
@@ -327,6 +329,10 @@ int main(int argc, char **argv)
         }
         if (starts(line, "RESET", &rest)) {
             g_error[0] = g_result[0] = '\0';
+            /* THE REPEAT IS PER REQUEST. Left set, the next ordinary unlock --
+             * which has no SETREPEAT -- would ask for the passphrase twice and
+             * send a PIN_REPEATED nobody asked for. */
+            g_repeat[0] = g_repeat_err[0] = '\0';
             g_confirmed = 0;
             reply("OK");
             continue;
@@ -358,6 +364,38 @@ int main(int argc, char **argv)
         if (starts(line, "SETCANCEL", &rest) || starts(line, "SETNOTOK", &rest)) {
             snprintf(g_cancel, sizeof g_cancel, "%s", rest);
             unescape(g_cancel);
+            reply("OK");
+            continue;
+        }
+        /* SETREPEAT IS A CAPABILITY CLAIM, NOT AN ACKNOWLEDGEMENT, AND
+         * ANSWERING OK WITHOUT MEANING IT BREAKS EVERY NEW PASSPHRASE.
+         *
+         * call-pinentry.c:1573 sends SETREPEAT when a passphrase is being
+         * SET rather than merely entered, and :1630 then accepts the result
+         * only if the pinentry reported `S PIN_REPEATED`. Answering OK says
+         * "I will ask twice and check"; not sending the status afterwards
+         * says "they did not match". So a pinentry that treats SETREPEAT as
+         * just another unknown option rejects every passphrase the user
+         * types, forever, with `Bad Passphrase (try 2 of 3)` and no way
+         * through -- which is exactly what it did.
+         *
+         * The blanket OK for unrecognised commands is still right; this is
+         * the case where OK is a promise rather than a receipt. */
+        if (starts(line, "SETREPEAT", &rest)) {
+            snprintf(g_repeat, sizeof g_repeat, "%s", rest);
+            unescape(g_repeat);
+            if (!g_repeat[0])
+                snprintf(g_repeat, sizeof g_repeat, "Repeat:");
+            reply("OK");
+            continue;
+        }
+        if (starts(line, "SETREPEATERROR", &rest)) {
+            snprintf(g_repeat_err, sizeof g_repeat_err, "%s", rest);
+            unescape(g_repeat_err);
+            reply("OK");
+            continue;
+        }
+        if (starts(line, "SETREPEATOK", &rest)) {
             reply("OK");
             continue;
         }
@@ -405,8 +443,52 @@ int main(int argc, char **argv)
                 reply(ERR_CANCELED);
                 continue;
             }
-            const char *v = g_input ? g_input->value() : "";
-            send_data(v ? v : "");
+            char first[1024];
+            snprintf(first, sizeof first, "%s",
+                     g_input && g_input->value() ? g_input->value() : "");
+
+            /* THE REPEAT, WHEN ONE WAS ASKED FOR. Prompt a second time, compare,
+             * and say so with `S PIN_REPEATED` -- which is the status
+             * call-pinentry.c:1630 checks before it will accept the passphrase
+             * at all. A mismatch re-prompts rather than failing outright,
+             * because gpg-agent counts a failure against its three tries and a
+             * typo in the confirmation is not a wrong passphrase. */
+            if (g_repeat[0]) {
+                for (;;) {
+                    char save_prompt[256];
+                    snprintf(save_prompt, sizeof save_prompt, "%s", g_prompt);
+                    snprintf(g_prompt, sizeof g_prompt, "%s", g_repeat);
+
+                    int got = ask(1);
+                    char again[1024];
+                    snprintf(again, sizeof again, "%s",
+                             g_input && g_input->value() ? g_input->value() : "");
+                    snprintf(g_prompt, sizeof g_prompt, "%s", save_prompt);
+
+                    if (!got) {
+                        explicit_bzero(first, sizeof first);
+                        explicit_bzero(again, sizeof again);
+                        reply(ERR_CANCELED);
+                        goto next_command;
+                    }
+                    if (!strcmp(first, again)) {
+                        explicit_bzero(again, sizeof again);
+                        /* THE STATUS LINE COMES BEFORE THE DATA, as a status
+                         * always does: gpg-agent reads status callbacks during
+                         * the transaction and the D line ends it. */
+                        reply("S PIN_REPEATED");
+                        break;
+                    }
+                    explicit_bzero(again, sizeof again);
+                    snprintf(g_error, sizeof g_error, "%s",
+                             g_repeat_err[0] ? g_repeat_err
+                                             : "The passphrases do not match");
+                }
+                g_error[0] = '\0';
+            }
+
+            send_data(first);
+            explicit_bzero(first, sizeof first);
             reply("OK");
             /* THE WIDGET IS GONE BY NOW -- ask() returned and its window went
              * out of scope -- so there is nothing left to wipe here. That is
@@ -421,6 +503,15 @@ int main(int argc, char **argv)
          * formatted-passphrase is how a pinentry gets abandoned by an agent
          * that would otherwise have worked. */
         reply("OK");
+        continue;
+
+        /* THE LABEL SITS PAST THE CATCH-ALL, AND THAT PLACEMENT IS THE POINT.
+         * Put before it, a cancel during the repeat prompt would jump here,
+         * fall into reply("OK"), and send OK immediately after ERR_CANCELED --
+         * two responses to one command, which desynchronises the protocol for
+         * every request after it. */
+    next_command:
+        continue;
     }
     return 0;
 }
