@@ -56,8 +56,8 @@ emit() { echo "$1"; [ "$LOG" = /dev/null ] || echo "$1" >> "$LOG"; }
 
 [ -d "$ROOT" ] || { emit "  no such tree: $ROOT"; exit 1; }
 
-TMPERR=$(mktemp); TMPFAIL=$(mktemp)
-trap 'rm -f "$TMPERR" "$TMPFAIL" "$ROOT/.strip-probe"' EXIT
+TMPERR=$(mktemp); TMPFAIL=$(mktemp); TMPINO=$(mktemp)
+trap 'rm -f "$TMPERR" "$TMPFAIL" "$TMPINO" "$ROOT/.strip-probe"' EXIT
 
 STRIP=""
 STRIP_WRAP=""
@@ -257,6 +257,37 @@ find "$ROOT/usr/bin" "$ROOT/usr/sbin" "$ROOT/usr/libexec" "$ROOT/usr/lib" \
             continue ;;
     esac
     head -c4 "$f" 2>/dev/null | od -An -c 2>/dev/null | grep -q 'E   L   F' || continue
+    # HARDLINKS MUST SURVIVE STRIPPING, AND THE RENAME BROKE THEM.
+    #
+    # do_strip writes a new file and renames it over the old path -- which is
+    # what stops strip destroying its own libraries mid-walk. But a rename
+    # replaces one directory entry, so the OTHER names for that inode keep
+    # pointing at the unstripped original, and each in turn gets its own
+    # stripped copy. git has 147 names for one builtin: the merge preserved
+    # them, and stripping re-expanded them.
+    #
+    # Measured: the tree GREW during stripping, 1490 MB -> 1832 MB, and the
+    # "removed no bytes" guard caught it.
+    #
+    # So the first link is stripped and the rest are re-linked to the result.
+    # The inode is read BEFORE stripping, because the rename changes it.
+    ino=$(stat -c '%i %h' "$f" 2>/dev/null) || ino=""
+    nlink=${ino#* }
+    ino=${ino%% *}
+    # THE LOOKUP IS NOT GATED ON nlink, AND GATING IT LEFT ONE FILE BEHIND.
+    # Each relink moves a name off the original inode, so its link count falls
+    # as the walk proceeds -- by the last name it is 1, which a `nlink > 1`
+    # test reads as "not shared" and strips independently. Measured on 13
+    # links: twelve relinked, `git-status` came out with its own inode.
+    # Recording still checks nlink, because a genuinely unshared file has
+    # nothing to record.
+    if [ -n "$ino" ]; then
+        prev=$(sed -n "s/^$ino //p" "$TMPINO" | head -1)
+        if [ -n "$prev" ] && [ -e "$prev" ]; then
+            ln -f "$prev" "$f" 2>/dev/null && continue
+        fi
+    fi
+
     s1=$(wc -c < "$f")
     chmod u+w "$f" 2>/dev/null || true
     if ! do_strip "$f" 2>"$TMPERR"; then
@@ -268,6 +299,9 @@ find "$ROOT/usr/bin" "$ROOT/usr/sbin" "$ROOT/usr/libexec" "$ROOT/usr/lib" \
     if [ "$s2" -lt "$s1" ]; then
         echo "$((s1 - s2))" >> "$TMPFAIL.saved"
     fi
+    # OLD INODE -> THE PATH NOW HOLDING THE STRIPPED CONTENT. Every other name
+    # for that old inode is still unstripped and will find this entry.
+    [ -n "$ino" ] && [ "${nlink:-1}" -gt 1 ] && echo "$ino $f" >> "$TMPINO"
 done
 
 after=$(sz "$ROOT")
@@ -280,6 +314,13 @@ emit "  stripped: $((before / 1024)) MB -> $((after / 1024)) MB  ($(( (before - 
 # found and probed, and the tree did not shrink, something is wrong with the
 # walk rather than with the tool -- and reporting success would repeat exactly
 # the bug lesson 2 records.
+if [ "$after" -gt "$before" ]; then
+    emit "VERON-STRIP-GREW  the tree got BIGGER: $(( (after - before) / 1024 )) MB"
+    emit "  Stripping cannot add bytes. Something is breaking hardlinks --"
+    emit "  every extra name for a shared inode becoming its own copy is the"
+    emit "  one way this number goes up."
+    exit 1
+fi
 if [ "$before" -le "$after" ]; then
     emit "VERON-STRIP-NOTHING  a working strip removed no bytes"
     exit 1
