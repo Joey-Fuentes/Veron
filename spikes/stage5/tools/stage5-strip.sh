@@ -282,9 +282,16 @@ find "$ROOT/usr/bin" "$ROOT/usr/sbin" "$ROOT/usr/libexec" "$ROOT/usr/lib" \
     # Recording still checks nlink, because a genuinely unshared file has
     # nothing to record.
     if [ -n "$ino" ]; then
-        prev=$(sed -n "s/^$ino //p" "$TMPINO" | head -1)
+        prev=$(sed -n "s/^$ino //p" "$TMPINO" | head -1) || prev=""
         if [ -n "$prev" ] && [ -e "$prev" ]; then
-            ln -f "$prev" "$f" 2>/dev/null && continue
+            # AN if, NOT `ln ... && continue`. Under `set -e` an AND-list whose
+            # last command fails takes the whole script down -- and inside a
+            # `find | while read` pipeline it dies without printing anything at
+            # all. A failed ln must fall through to a normal strip, not end the
+            # run.
+            if ln -f "$prev" "$f" 2>/dev/null; then
+                continue
+            fi
         fi
     fi
 
@@ -301,8 +308,23 @@ find "$ROOT/usr/bin" "$ROOT/usr/sbin" "$ROOT/usr/libexec" "$ROOT/usr/lib" \
     fi
     # OLD INODE -> THE PATH NOW HOLDING THE STRIPPED CONTENT. Every other name
     # for that old inode is still unstripped and will find this entry.
-    [ -n "$ino" ] && [ "${nlink:-1}" -gt 1 ] && echo "$ino $f" >> "$TMPINO"
+    #
+    # AN if, FOR THE REASON ABOVE, AND THIS IS THE ONE THAT ACTUALLY KILLED A
+    # RUN. Written as `[ -n "$ino" ] && [ "$nlink" -gt 1 ] && echo ...`, every
+    # file with a single link -- which is nearly all of them -- made the
+    # AND-list return non-zero, and `set -e` ended the script mid-walk with no
+    # output whatsoever: the step logged the trim, then exit 1, then nothing.
+    if [ -n "$ino" ] && [ "${nlink:-1}" -gt 1 ]; then
+        echo "$ino $f" >> "$TMPINO"
+    fi
 done
+
+# THE WALK MUST ANNOUNCE THAT IT FINISHED. A `set -e` fault inside the
+# `find | while read` pipeline ends the script with no output at all -- the
+# step logged the trim and then exit 1, and there was nothing to read to find
+# out why. This marker is the difference between "the walk ended" and "the
+# script vanished".
+echo "  walk complete"
 
 after=$(sz "$ROOT")
 nfail=$(wc -l < "$TMPFAIL" 2>/dev/null || echo 0)
