@@ -8,27 +8,25 @@
 # to stay the thing that always works, so labwc is its own service and the
 # getty keeps running.
 #
-# # RESTART, BECAUSE A STOPPED COMPOSITOR IS A MACHINE WITH NO DESKTOP AND NO
-# WAY BACK TO ONE.
+# restart = true, AND THE ARGUMENT THAT SAID false IS WORTH KEEPING IN VIEW.
+# It read: "dinit would otherwise respawn a compositor that cannot start, once
+# per second, filling the console with the same error and hiding the boot. One
+# attempt, one message, and `dinitctl start labwc` to try again after fixing
+# something."
 #
-# This said `restart = false`. Killing labwc -- which is what recovering from
-# a wedged lock screen required -- left `[STOPPD] labwc` and a blank tty1,
-# with no path to a session short of a reboot. On a system with no root, no
-# display manager and no login screen, that is unrecoverable from the desktop
-# side entirely.
+# THAT REASONING ASSUMED A PERSON WHO CAN REACH dinitctl, and the assumption
+# broke on hardware. Killing labwc to recover from a wedged lock screen left
+# `[STOPPD] labwc` and a blank tty1; `dinitctl start labwc` then failed
+# because dinitctl defaults to the USER socket, which this system does not
+# have. Two documented mechanisms, neither of which worked, and no desktop.
 #
-# THE ARGUMENT AGAINST IS A CRASH LOOP, and it is a real one: a compositor
-# that dies immediately will be restarted forever. dinit's restart limits are
-# what bound that -- after `restart-limit-count` failures inside
-# `restart-limit-interval` the service is left stopped, which is the same
-# state as before but only after genuinely trying.
-restart = true
-restart-delay = 2.0
-restart-limit-count = 5
-restart-limit-interval = 60.0 FOR THE SAME REASON. dinit would otherwise respawn a
-# compositor that cannot start, once per second, filling the console with the
-# same error and hiding the boot. One attempt, one message, and `dinitctl start
-# labwc` to try again after fixing something.
+# THE CRASH-LOOP FEAR IS HANDLED WITHOUT A SETTING. dinit(8) describes
+# "automatic rate-limited restart of failing processes" as built in, so a
+# compositor that cannot start is retried at a bounded rate rather than once
+# per second. Nothing here configures that, and an earlier attempt to
+# configure it invented two setting names dinit does not have --
+# restart-limit-count and restart-limit-interval -- which made the service
+# description fail to load and took the whole boot with it.
 #
 # WHAT IT DEPENDS ON, and each is a real failure this ordering prevents:
 #   seatd         no session, no DRM device
@@ -54,9 +52,10 @@ restart-limit-interval = 60.0 FOR THE SAME REASON. dinit would otherwise respawn
 # started by hand on a laptop, repeatedly, since.
 #
 # THE FALLBACK IS WHAT MAKES IT SAFE, and it is the paragraph above rather
-# than anything added here. restart = false plus a console service that runs
-# independently means a compositor that cannot start costs one error message
-# and leaves a shell.
+# than anything added here: a console service that runs independently means a
+# compositor which cannot start still leaves a shell. That was true when this
+# service did not restart and it is true now -- restarting changes how long
+# the desktop stays gone, not whether there is a way in.
 # run-as = veron IS THE WHOLE POINT OF THIS SERVICE FILE NOW.
 #
 # The compositor, the bar, the terminal and the browser are all children of
@@ -78,7 +77,7 @@ restart-limit-interval = 60.0 FOR THE SAME REASON. dinit would otherwise respawn
 type = process
 command = /bin/busybox sh /etc/dinit.d/scripts/labwc-session
 run-as = veron
-restart = false
+restart = true
 
 # logfile SO A FAILURE SAYS WHY. labwc terminated with exit code 1 on the boot
 # of run 85938164747 and started fine from dinitctl a moment later; the console

@@ -5410,6 +5410,21 @@ def cmd_selftest(a):
         "log-type", "log-buffer-size", "max-restarts", "nice", "rlimit-nofile",
     }
     _restart_ok = {"yes", "true", "no", "false", "on-failure"}
+    # SETTINGS WHOSE VALUE IS A NUMBER. dinit takes integers or decimal
+    # seconds for these; anything else is a load error, and a load error on a
+    # service `boot` depends on is a system that does not come up.
+    _numeric = {
+        "restart-delay", "restart-limit-interval", "restart-limit-count",
+        "start-timeout", "stop-timeout", "max-restarts", "nice",
+        "rlimit-nofile", "log-buffer-size", "socket-uid", "socket-gid",
+        "socket-permissions",
+    }
+    def _isnum(v):
+        try:
+            float(v)
+            return True
+        except ValueError:
+            return False
     _bad = 0
     for _arch in ("packages", "packages-amd64"):
         _dir = f"{_arch}/veron-system/files/etc/dinit.d"
@@ -5436,6 +5451,20 @@ def cmd_selftest(a):
                 elif _k == "restart" and _v not in _restart_ok:
                     print(f"  FAIL  {_p}:{_i}: restart = `{_v}` must be one of "
                           f"{sorted(_restart_ok)}")
+                    ok = False; _bad += 1
+                elif _k in _numeric and not _isnum(_v):
+                    # THE VALUE MATTERS TOO, AND CHECKING ONLY THE KEY LET A
+                    # BROKEN FILE THROUGH. A multi-line edit landed inside a
+                    # comment and produced
+                    #
+                    #   restart-limit-interval = 60.0 FOR THE SAME REASON. ...
+                    #
+                    # The key was known, so this gate passed it; dinit rejected
+                    # the value, could not load the service, and `boot` -- which
+                    # depends on it -- never started. The run reported
+                    # VERON-DINIT-FAIL with no indication of which file was at
+                    # fault, because by then nothing had started to say so.
+                    print(f"  FAIL  {_p}:{_i}: {_k} = `{_v}` is not a number")
                     ok = False; _bad += 1
     if not _bad:
         print("  ok    every dinit service file parses as dinit would")
