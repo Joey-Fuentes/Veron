@@ -360,7 +360,7 @@ inp() { # role name file
 outp() { # path file
   printf '\n[[substage.output]]\npath   = "%s"\n' "$1"
   fact "$2"
-  printf 'mode   = "%s"\n' "$(stat -c %%04a "$2")"
+  printf 'mode   = "%s"\n' "$(stat -c %04a "$2")"
 }
 emit_records() {
   RT="$OUT/substages.toml"
@@ -407,6 +407,21 @@ emit_records() {
   outp "out/3/aarch64/mc-tcc" "$OUT/mc-tcc"
   } > "$RT"
   echo "  records emitted: $RT ($(grep -c '^\[\[substage\]\]' "$RT") substages, $(wc -l < "$RT") lines)"
+  # THE COMPARE GATE: once a record is committed, every pin-true run must
+  # reproduce it byte-for-byte -- generated, then frozen, then enforced.
+  # Fallback runs print the drift as information (their input shas differ
+  # by construction) but only pin-true drift is a failure.
+  if [ -f "$HERE/substages.toml" ]; then
+    if cmp -s "$RT" "$HERE/substages.toml"; then
+      echo "  records MATCH the committed stages/3-micro-c/substages.toml"
+    elif [ "$PINTRUE" = yes ]; then
+      echo "  FAIL: pin-true emission drifted from the committed record:"
+      diff "$HERE/substages.toml" "$RT" | head -20
+      exit 1
+    else
+      echo "  (fallback run: emission differs from committed record, expected)"
+    fi
+  fi
 }
 
 case "$PHASE" in
