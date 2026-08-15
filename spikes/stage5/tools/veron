@@ -1567,12 +1567,47 @@ def cmd_build(a):
         name = p["pkg"]
         if name in resume:
             d = os.path.join(roots["dest"], name)
-            learn(name, d)
-            if a.stage and not a.dry_run:
-                n = stage_into(d, roots["sysroot"])
-                print(f"== {name} {p['recipe']['version']}  RESTORED "
-                      f"({n} paths staged, not rebuilt)")
-            continue
+
+            # A MATCHING KEY IS NOT A VALID DESTDIR, AND TRUSTING IT COST A
+            # BUILD. The key says "this package was built from these inputs";
+            # it says nothing about whether the files survived. A run that was
+            # cut short banked libvpx with an EMPTY dest, the next run restored
+            # it as a cache hit -- `RESTORED (0 paths staged)` -- and the
+            # failure surfaced forty packages later as
+            #
+            #     ffmpeg: libvpx enabled but no supported decoders found
+            #
+            # which points at ffmpeg and has nothing to do with ffmpeg.
+            #
+            # THE DIGEST TO CHECK ALREADY EXISTS. `[installs].digest` is
+            # recorded in the recipe and verified after every build -- the
+            # `[pinned: matches]` in the log. It simply was not checked on the
+            # restore path. Checking it here turns a silent wrong answer into
+            # a rebuild of one package.
+            want = p["recipe"].get("installs", {}).get("digest")
+            if want and not a.dry_run:
+                _lines, got = install_listing(d)
+                if got != want:
+                    print(f"== {name} {p['recipe']['version']}  CHECKPOINT "
+                          f"REJECTED (digest {got[:16]} != {want[:16]})")
+                    print(f"     the banked DESTDIR does not match what this "
+                          f"package installs -- rebuilding")
+                    shutil.rmtree(d, ignore_errors=True)
+                    resume.discard(name)
+                else:
+                    learn(name, d)
+                    if a.stage:
+                        n = stage_into(d, roots["sysroot"])
+                        print(f"== {name} {p['recipe']['version']}  RESTORED "
+                              f"({n} paths staged, not rebuilt)")
+                    continue
+            else:
+                learn(name, d)
+                if a.stage and not a.dry_run:
+                    n = stage_into(d, roots["sysroot"])
+                    print(f"== {name} {p['recipe']['version']}  RESTORED "
+                          f"({n} paths staged, not rebuilt)")
+                continue
         idx = plan.index(p) + 1
         src = p["recipe"]["source"]
         print(f"\n[{idx}/{len(plan)}] {name} {p['recipe']['version']}"
