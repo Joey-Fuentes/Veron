@@ -145,11 +145,8 @@ name the same version."""
 
 [installs]
 prefixes = ["usr/bin", "usr/include/freetype2", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/man"]
-# files/digest DELIBERATELY ABSENT. They are a per-file
-# sha256 measured on aarch64; the same source compiled
-# for x86_64 cannot match them. prefixes is kept because
-# it is architecture-independent and still enforced.
-
+files    = 63
+digest   = "dfc615968686d56496db2d9cf0a8b474211341ef24db415cb26b31e2553cfcfa"
 [[steps]]
 name = "unpack"
 cwd  = "$B"

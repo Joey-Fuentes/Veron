@@ -198,11 +198,8 @@ feature rather than anything these flags need."""
 
 [installs]
 prefixes = ["usr/include", "usr/include/EGL", "usr/include/GL", "usr/include/GLES2", "usr/include/GLES3", "usr/include/KHR", "usr/lib", "usr/lib/gbm", "usr/lib/pkgconfig", "usr/share/drirc.d"]
-# files/digest DELIBERATELY ABSENT. They are a per-file sha256
-# measured on aarch64; the same source compiled for x86_64 with an
-# extra gallium driver cannot match them. prefixes is kept because it
-# is architecture-independent and still enforced.
-
+files    = 36
+digest   = "55370d17948041d3c5337902019370a61cdd43197a9ea8a333e98079b1695c19"
 [[steps]]
 name = "unpack"
 cwd  = "$B"

@@ -94,11 +94,8 @@ disagrees across machines, this flag is the first thing to remove."""
 
 [installs]
 prefixes = ["usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/info", "usr/share/man"]
-# files/digest DELIBERATELY ABSENT. They are a per-file sha256
-# measured on aarch64; the same source compiled for x86_64 cannot
-# match them. prefixes is kept because it is architecture-independent
-# and still enforced.
-
+files    = 12
+digest   = "a5872888e24603b799d02343dabeb532ff2087cd0501d7f1a854815159fb7caa"
 [[steps]]
 name = "unpack"
 cwd  = "$B"

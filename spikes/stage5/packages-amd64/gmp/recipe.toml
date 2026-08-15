@@ -168,11 +168,8 @@ recipient's choice."""
 
 [installs]
 prefixes = ["usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/info"]
-# files/digest DELIBERATELY ABSENT. They are a per-file
-# sha256 measured on aarch64; the same source compiled
-# for x86_64 cannot match them. prefixes is kept because
-# it is architecture-independent and still enforced.
-
+files    = 9
+digest   = "f930a7f25690d738bc72dc8609d8972b5287c720c3f375d26456f63fab90b911"
 [[steps]]
 name = "unpack"
 cwd  = "$B"

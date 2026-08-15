@@ -74,11 +74,8 @@ HDR and 10-bit content, which the web does serve."""
 
 [installs]
 prefixes = ["usr/include/dav1d", "usr/lib", "usr/lib/pkgconfig"]
-# files/digest DELIBERATELY ABSENT. They are a per-file
-# sha256 measured on aarch64; the same source compiled
-# for x86_64 cannot match them. prefixes is kept because
-# it is architecture-independent and still enforced.
-
+files    = 10
+digest   = "f5e8f18e2de3f29d634a819eb609dc904515a6ae54beb2498d989c40fd9be271"
 [[steps]]
 name = "unpack"
 cwd  = "$B"

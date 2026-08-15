@@ -146,13 +146,8 @@ would leave the package built and unused."""
 
 [installs]
 prefixes = ["usr/bin", "usr/include", "usr/include/alsa", "usr/include/sys", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/alsa"]
-# files/digest DELIBERATELY ABSENT UNTIL THE FIRST RUN ON THIS VERSION.
-# They were 134 files and 30abbc03 for 1.2.14, and a version bump changes
-# both -- a pin carried across would report INSTALL-SET-CHANGED on every run
-# and mean nothing. The run prints the new pair; paste them back here.
-# prefixes stays: it is the shape of the install, not its contents, and it
-# is still enforced.
-
+files    = 134
+digest   = "1a7dfba145afb54e26f7be0c15014fa52f2763b86379a4256db0fb6308d3c4ae"
 [[steps]]
 name = "unpack"
 cwd  = "$B"

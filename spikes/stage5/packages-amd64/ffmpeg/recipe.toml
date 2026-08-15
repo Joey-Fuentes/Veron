@@ -132,11 +132,8 @@ linkable into gst-libav's plugin."""
 
 [installs]
 prefixes = ["usr/include/libavcodec", "usr/include/libavdevice", "usr/include/libavfilter", "usr/include/libavformat", "usr/include/libavutil", "usr/include/libswresample", "usr/include/libswscale", "usr/lib", "usr/lib/pkgconfig", "usr/share/ffmpeg"]
-# files/digest DELIBERATELY ABSENT. They are a per-file
-# sha256 measured on aarch64; the same source compiled
-# for x86_64 cannot match them. prefixes is kept because
-# it is architecture-independent and still enforced.
-
+files    = 198
+digest   = "9d17d3c7a3c85db3bac13f062b797accde7014403a629827041017f3f62b5a95"
 [[steps]]
 name = "unpack"
 cwd  = "$B"

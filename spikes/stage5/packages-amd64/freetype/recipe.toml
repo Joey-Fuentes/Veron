@@ -128,11 +128,8 @@ browser without WOFF2 cannot load a large fraction of web fonts."""
 
 [installs]
 prefixes = ["usr/bin", "usr/include/freetype2", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/man"]
-# files/digest DELIBERATELY ABSENT. They are a per-file
-# sha256 measured on aarch64; the same source compiled
-# for x86_64 cannot match them. prefixes is kept because
-# it is architecture-independent and still enforced.
-
+files    = 63
+digest   = "1d5cd564d81e1338375b7222f069cf39dcdd5966e4330353ef52ccf050fa7520"
 [[steps]]
 name = "unpack"
 cwd  = "$B"

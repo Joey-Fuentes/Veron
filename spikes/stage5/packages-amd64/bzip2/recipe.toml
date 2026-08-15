@@ -123,12 +123,8 @@ package when there is a reason to; the step is one block."""
 
 [installs]
 prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/man/man1"]
-# files/digest DELIBERATELY ABSENT. They are a per-file sha256
-# measured on aarch64; the same source compiled for x86_64 cannot
-# match them, and this overlay stages three paths the base does not.
-# prefixes is kept because it is architecture-independent and still
-# enforced -- the new files land in usr/lib, already declared.
-
+files    = 24
+digest   = "461dbd5fd256cc282895064e2d0687c952a61c29b789a0f4e515f3986096e96e"
 [[steps]]
 name = "unpack"
 cwd  = "$B"

@@ -104,11 +104,8 @@ that looks like a regression later."""
 
 [installs]
 prefixes = ["usr/include/vpx", "usr/lib", "usr/lib/pkgconfig"]
-# files/digest DELIBERATELY ABSENT. They are a per-file
-# sha256 measured on aarch64; the same source compiled
-# for x86_64 cannot match them. prefixes is kept because
-# it is architecture-independent and still enforced.
-
+files    = 16
+digest   = "bd527cb210444c942f55fd0bda85daf99956669162d87048257597d049abb895"
 [[steps]]
 name = "unpack"
 cwd  = "$B"

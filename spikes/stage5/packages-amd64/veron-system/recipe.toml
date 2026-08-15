@@ -256,11 +256,9 @@ run  = [["sh", "-c", "mkdir -p \"$D\" && cp -a /packages-amd64/veron-system/file
         ["sh", "-c", "mkdir -p \"$D/var/lib/chrony\""]]
 
 [installs]
-prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts", "etc/xdg/labwc", "etc/xdg/yambar", "usr/lib/locale", "usr/share/veron", "var/lib/chrony", "var/run"]
-# files/digest DELIBERATELY ABSENT. One shipped file differs from
-# the base by one word, so the listing cannot match. prefixes is
-# kept because it is architecture-independent and still enforced.
-
+prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts", "etc/xdg/labwc", "etc/xdg/yambar", "usr/lib/locale", "usr/share/veron", "var"]
+files    = 73
+digest   = "522266703c1145b4d5c0b9a413b1a6cf80425549c45bca9d71030c16fe43911e"
 [guest]
 test   = [["/bin/sh", "-c", "cat /etc/os-release | grep -c veron"]]
 expect = ["1"]

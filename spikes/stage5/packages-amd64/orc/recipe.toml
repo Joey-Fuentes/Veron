@@ -104,11 +104,8 @@ much and would break a consumer."""
 
 [installs]
 prefixes = ["usr/bin", "usr/include/orc-0.4", "usr/lib", "usr/lib/pkgconfig"]
-# files/digest DELIBERATELY ABSENT. They are a per-file sha256
-# measured on aarch64; the same source compiled for x86_64 cannot
-# match them. prefixes is kept because it is architecture-independent
-# and still enforced.
-
+files    = 35
+digest   = "0646fb5348e5dbc0f2a66d60be974e21dedd45bc5f187a715c222bceb337881a"
 [[steps]]
 name = "unpack"
 cwd  = "$B"
