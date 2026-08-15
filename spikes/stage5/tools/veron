@@ -1584,14 +1584,43 @@ def cmd_build(a):
             # `[pinned: matches]` in the log. It simply was not checked on the
             # restore path. Checking it here turns a silent wrong answer into
             # a rebuild of one package.
-            want = p["recipe"].get("installs", {}).get("digest")
-            if want and not a.dry_run:
-                _lines, got = install_listing(d)
-                if got != want:
+            # COMPARE THE PATHS, NOT THE BYTES, AND THE FIRST VERSION GOT
+            # THIS WRONG.
+            #
+            # Two different things can make a restored DESTDIR disagree with
+            # the recipe, and only one of them is a cache problem:
+            #
+            #   FILES MISSING     a run cut short banked an empty or partial
+            #                     dest. libvpx came back with 0 paths, and
+            #                     ffmpeg failed forty packages later with
+            #                     "libvpx enabled but no supported decoders
+            #                     found". This is the bug worth catching.
+            #
+            #   SAME FILES, DIFFERENT BYTES   the package does not build
+            #                     reproducibly. perl embeds build-time facts
+            #                     and hashed differently on two consecutive
+            #                     builds -- f705b122 then 646c2610, neither
+            #                     matching its pinned 57dbc863. Nothing is
+            #                     wrong with the cache; the package is simply
+            #                     not bit-identical run to run.
+            #
+            # Checking the content digest rejects BOTH, so perl was rebuilt
+            # every single run and would have been forever. Checking the path
+            # set catches a truncated bank exactly and leaves a
+            # non-reproducible build alone.
+            want_paths = installed_paths(name)
+            if want_paths and not a.dry_run:
+                got_paths = {ln.split(None, 3)[3].strip()
+                             for ln in install_listing(d)[0]
+                             if len(ln.split(None, 3)) == 4}
+                missing = want_paths - got_paths
+                if missing:
                     print(f"== {name} {p['recipe']['version']}  CHECKPOINT "
-                          f"REJECTED (digest {got[:16]} != {want[:16]})")
-                    print(f"     the banked DESTDIR does not match what this "
-                          f"package installs -- rebuilding")
+                          f"REJECTED ({len(missing)} of {len(want_paths)} "
+                          f"path(s) missing)")
+                    for m in sorted(missing)[:3]:
+                        print(f"     missing  {m}")
+                    print(f"     the banked DESTDIR is incomplete -- rebuilding")
                     shutil.rmtree(d, ignore_errors=True)
                     resume.discard(name)
                 else:
@@ -2807,6 +2836,35 @@ def install_prefixes(destdir, depth=3):
         parts = rel.split(os.sep)
         out.add("/".join(parts[:depth]))
     return sorted(out)
+
+
+def installed_paths(name):
+    """The paths packages/<name>/installs.txt says this package installs.
+
+    THE COMMITTED LISTING IS THE REFERENCE, not the recipe's digest. It names
+    every path; the digest only summarises their contents. A restored DESTDIR
+    that is missing paths is a broken cache entry, which is the thing worth
+    catching -- and one whose bytes merely differ is a package that does not
+    build reproducibly, which is a separate matter and not this function's.
+    """
+    try:
+        recipes = load_recipes()
+        d = recipes.get(name, {}).get("_dir")
+        if not d:
+            return set()
+        f = os.path.join(d, "installs.txt")
+        if not os.path.isfile(f):
+            return set()
+        out = set()
+        for ln in open(f):
+            parts = ln.split(None, 3)
+            if len(parts) == 4 and parts[0] in ("f", "l", "d"):
+                out.add(parts[3].strip())
+        return out
+    except Exception:
+        # A LISTING THAT CANNOT BE READ MUST NOT REJECT A GOOD CHECKPOINT.
+        # Returning empty means "no opinion", and the restore proceeds.
+        return set()
 
 
 def install_listing(destdir):
