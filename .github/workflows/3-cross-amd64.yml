@@ -83,3 +83,33 @@ jobs:
             x/tcc-amd64
             x/tcc-arm64-to-amd64
             x/substages.toml
+
+  publish:
+    needs: [cross, verify-native]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write     # release upload -- this job only
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage-3-x86_64
+          path: a
+      # Same boundary rule as the aarch64 leg. tcc-arm64-to-amd64 rides
+      # along as the recorded builder (audit); the sysroot fixtures do NOT
+      # -- the contract is the compiler.
+      - name: 'PUBLISH: 3/latest-x86_64 (tcc-amd64 + records + digests)'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir rel && cp a/tcc-amd64 a/tcc-arm64-to-amd64 a/substages.toml rel/
+          ( cd rel && sha256sum tcc-amd64 tcc-arm64-to-amd64 substages.toml > ARTIFACT-SHA256 )
+          cat rel/ARTIFACT-SHA256
+          gh release view 3/latest-x86_64 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create 3/latest-x86_64 --repo "$GITHUB_REPOSITORY" \
+                 --latest=false \
+                 --title "3/latest-x86_64: the stage-3 handoff" \
+                 --notes "The stage 3 -> stage 4 contract for x86_64: tcc-amd64 (natively verified: it compiled and ran a program on this architecture before publishing), tcc-arm64-to-amd64 as the recorded builder, the run-emitted records, and ARTIFACT-SHA256. Assets update on every green main build; identity is the content, never the tag."
+          gh release upload 3/latest-x86_64 --repo "$GITHUB_REPOSITORY" \
+            --clobber rel/tcc-amd64 rel/tcc-arm64-to-amd64 rel/substages.toml rel/ARTIFACT-SHA256

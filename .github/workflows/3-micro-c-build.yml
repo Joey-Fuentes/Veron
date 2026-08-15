@@ -73,3 +73,34 @@ jobs:
             out/3/aarch64/M1
             out/3/aarch64/hex2
             out/3/aarch64/substages.toml
+
+  publish:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write     # release upload -- this job only
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage-3-aarch64
+          path: a
+      # THE CONSUMPTION BOUNDARY (design: publish where the next stage
+      # consumes): 3/latest-aarch64 carries the CONTRACT -- the compiler,
+      # the records that prove it, and the digest file consumers verify.
+      # The tag stays fixed; assets clobber; identity is content, not tag.
+      - name: 'PUBLISH: 3/latest-aarch64 (tcc-arm64 + records + digests)'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir rel && cp a/tcc-arm64 a/substages.toml rel/
+          ( cd rel && sha256sum tcc-arm64 substages.toml > ARTIFACT-SHA256 )
+          cat rel/ARTIFACT-SHA256
+          gh release view 3/latest-aarch64 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create 3/latest-aarch64 --repo "$GITHUB_REPOSITORY" \
+                 --latest=false \
+                 --title "3/latest-aarch64: the stage-3 handoff" \
+                 --notes "The stage 3 -> stage 4 contract for aarch64: tcc-arm64, its run-emitted substage records, and ARTIFACT-SHA256. Consumers fetch these into in/, verify the digests, and cross-check substages.toml against the committed record. Assets update on every green main build; identity is the content, never the tag."
+          gh release upload 3/latest-aarch64 --repo "$GITHUB_REPOSITORY" \
+            --clobber rel/tcc-arm64 rel/substages.toml rel/ARTIFACT-SHA256
