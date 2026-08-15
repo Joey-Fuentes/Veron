@@ -1,0 +1,49 @@
+## Copyright (C) 2020 deesix <deesix@tuta.io>
+## This file is part of M2-Planet.
+##
+## M2-Planet is free software: you can redistribute it and/or modify
+## it under the terms of the GNU General Public License as published by
+## the Free Software Foundation, either version 3 of the License, or
+## (at your option) any later version.
+##
+## M2-Planet is distributed in the hope that it will be useful,
+## but WITHOUT ANY WARRANTY; without even the implied warranty of
+## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+## GNU General Public License for more details.
+##
+## You should have received a copy of the GNU General Public License
+## along with M2-Planet.  If not, see <http://www.gnu.org/licenses/>.
+
+:_start
+	mov_x18,sp
+	ldr_x0,[x18]
+	add_x1,x18,8
+	mov_x17,x18
+	str_x0,[x18,-8]!
+	str_x1,[x18,-8]!
+	mov_x1,2
+	add_x0,x1,x0
+	mov_x1,8
+	mul_x0,x1,x0
+	add_x0,x17,x0
+	str_x0,[x18,-8]!
+
+	ldr_w16,8
+	b_8
+	&FUNCTION_main
+	blr_x16
+
+	ldr_x1,[x18],8
+	ldr_x1,[x18],8
+	ldr_x1,[x18],8
+	str_x0,[x18,-8]!                     ; Put return on the stack
+	str_x0,[x18,-8]!                     ; So that _exit has it
+	str_x0,[x18,-8]!                     ; So that _exit has it
+
+:FUNCTION_exit
+:FUNCTION__exit
+	mov_x0,x17
+	sub_x0,x0,8
+	ldr_x0,[x0]
+	mov_x8,93
+	svc_0
