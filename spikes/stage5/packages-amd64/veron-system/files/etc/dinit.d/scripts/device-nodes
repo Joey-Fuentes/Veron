@@ -120,6 +120,21 @@ else
     echo "  /dev/$CTTY absent -- the console service will report it"
 fi
 
+# AND tty3, WHICH console-auth USES. devtmpfs makes every /dev/tty* root:tty
+# 0620 -- group-writable, not group-readable -- and a getty needs to read as
+# well as write. The console service's own tty is regrouped above; this is the
+# same treatment for the authenticated console beside it, and leaving it out
+# is a getty that dies with a permission error naming a device that plainly
+# exists.
+#
+# NOT DERIVED FROM console=, DELIBERATELY. This one is a fixed VT precisely so
+# that it cannot collide with whatever the console service picked.
+if [ -c /dev/tty3 ]; then
+    /bin/busybox chgrp tty /dev/tty3 2>/dev/null
+    /bin/busybox chmod 0660 /dev/tty3 2>/dev/null
+    echo "  /dev/tty3 -> tty 0660 (authenticated console)"
+fi
+
 # THE COMPOSITOR LOG, WHICH THE PERSON DEBUGGING IT MUST BE ABLE TO READ.
 #
 # dinit creates /run/labwc.log itself, as root, before dropping to veron for

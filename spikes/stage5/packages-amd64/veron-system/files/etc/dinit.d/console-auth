@@ -1,0 +1,26 @@
+# A second console, behind veron-login, on a VT the normal one does not use.
+#
+# WHY A SPARE VT AND NOT THE REAL CONSOLE. Putting an authentication gate on
+# the only console is how a machine becomes unreachable: if the factor is
+# misconfigured, the key file is not plugged in, or veron-login has a bug,
+# there is nothing left to fix it from. So the existing console service is
+# untouched and this is additional -- Ctrl+Alt+F2 stays exactly as it was and
+# Ctrl+Alt+F3 is the one that asks.
+#
+# WHEN IT HAS BEEN PROVEN, the console service's own getty line is the thing
+# to change, and this file becomes redundant. Not before.
+#
+# run-as = veron, THE SAME AS THE console SERVICE, and that is why veron-login
+# contains no setuid code at all. getty, the gate and the shell are one
+# unprivileged user throughout. Moving this to a root getty would make
+# veron-login a privilege boundary and it is not written to be one.
+#
+# -n SKIPS getty's OWN login PROMPT, and -l names what to run instead. Without
+# -n, busybox getty would ask for a username first and then hand it to
+# veron-login as an argument it has no use for.
+type = process
+command = /bin/busybox getty -n -l /usr/bin/veron-login 38400 tty3
+run-as = veron
+restart = true
+depends-on = early-filesystems
+depends-on = device-nodes

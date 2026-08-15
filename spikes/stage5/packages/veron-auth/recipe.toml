@@ -1,0 +1,108 @@
+name    = "veron-auth"
+version = "1.0"
+group   = "desktop"
+license = "BSD-2-Clause"
+srcdir  = "."
+
+[source]
+kind      = "local"
+path      = "packages/veron-auth/files"
+url       = "this repository"
+sha256    = "n/a -- the source is in this repository; the commit is the pin"
+signature = "n/a -- provenance is the commit that carries these files"
+crosschecked_against = []
+
+[deps]
+build        = ["wayland", "wayland-protocols", "cairo", "libxkbcommon",
+                "libgcrypt", "pkgconf"]
+link         = ["wayland", "cairo", "libxkbcommon", "libgcrypt"]
+runtime      = ["wayland", "cairo", "libxkbcommon", "libgcrypt", "labwc"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "none -- it locks a session and gates a console, neither of which a package test can undo"
+packaged_as     = ["veron-auth"]
+deferral        = """
+NO NEW PACKAGES. Every dependency is already in this set for the desktop: \
+wayland and wayland-protocols for the protocol, cairo for drawing, \
+libxkbcommon for turning key codes into characters, libgcrypt for the factor \
+checks. That was the requirement this design was chosen to meet.
+
+NOT FLTK, AND NOT BY PREFERENCE. A lock surface is a distinct surface role in \
+ext-session-lock-v1; FLTK creates ordinary xdg toplevels and cannot produce \
+one. So this is wayland-client plus Cairo drawn by hand, which is the same \
+shape as veron-browser's chrome.c -- the existing precedent in this tree for \
+exactly that.
+
+WHY THIS PROTOCOL RATHER THAN LAYER SHELL. Older lockers covered the screen \
+with layer-shell surfaces, so a crashed locker meant the surfaces went away \
+and the desktop was simply there for whoever was standing in front of it. \
+ext-session-lock-v1 locks the SESSION: the compositor keeps it locked whether \
+or not this process survives. labwc 0.9.1 on wlroots 0.19.1 supports it, and \
+wayland-protocols already installs the XML this builds against -- verified in \
+its installs listing at share/wayland-protocols/staging/ext-session-lock/.
+
+THE SEQUENCE IS UNFORGIVING AND MOST OF ITS ERRORS ARE FATAL. Committing \
+before the first ack_configure, committing a null buffer, or committing a \
+buffer whose size does not match the configure are each a protocol error that \
+kills the client -- and a killed client here leaves the session locked with \
+nothing drawn on it. destroy() and unlock_and_destroy() are also not \
+interchangeable: which one is correct depends on whether `locked` was \
+received, and using the wrong one is likewise an error. The ordering was read \
+from the protocol specification rather than remembered.
+
+A CRASH FAILS SAFE AND ALSO FAILS HARD. The specification says a compositor \
+should keep the session locked if the lock client dies, and that it is \
+acceptable for the session to be permanently locked. So a bug here cannot \
+expose the desktop -- it strands the GUI until a VT switch. That is why \
+Ctrl+Alt+F2 must keep working and why there is deliberately no attempt limit; \
+both are argued at the foot of lock.c rather than left to be inferred.
+
+THE VERIFIER IS SHARED AND ITS SHAPE IS THE POINT. verify.h offers GATE \
+functions and DERIVE functions and deliberately has no TOTP derive: verifying \
+a six-digit code needs the seed already in hand, which before a disk is \
+unlocked would mean the seed sitting in the initramfs in the clear. So TOTP \
+can gate a screen and can never release a disk key. Encoding that in the \
+header means full-disk encryption, when it is written, cannot reach for the \
+wrong factor by accident.
+
+WHAT IS NOT DONE. No idle trigger yet -- ext-idle-notify-v1 is available in \
+this wayland-protocols and in labwc, and binding it is the next piece; today \
+this runs from a labwc keybind. No YubiKey challenge-response, only presence \
+via `gpg --card-status`, which proves A card is present rather than YOURS. \
+Both limits are stated in the source at the point they matter."""
+
+[installs]
+prefixes = ["usr/bin"]
+
+[[steps]]
+name = "protocol"
+cwd  = "$B"
+# THE STUBS ARE GENERATED, NOT VENDORED, for the same reason
+# wpe-platform-veron generates its own: a checked-in copy of a protocol header
+# drifts from the XML the system actually installs, and nothing notices.
+run  = [["sh", "-c", "cp /packages/veron-auth/files/*.c /packages/veron-auth/files/*.h . && WLPROTO=$(pkg-config --variable=pkgdatadir wayland-protocols) && wayland-scanner client-header \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-protocol.c"]]
+
+[[steps]]
+name = "build"
+cwd  = "$B"
+# THREE BINARIES, ONE VERIFIER. veron-lock, veron-login and veron-enroll all
+# link the same verify.c, which is the point of shipping them together: a
+# factor cannot mean one thing to the lock screen and another to the console.
+# Only veron-lock needs Wayland; the other two are libgcrypt alone.
+run  = [["sh", "-c", "GC=$(pkgconf --cflags --libs libgcrypt 2>/dev/null || libgcrypt-config --cflags --libs) && cc -O2 -Wall -std=c11 -I. -o veron-lock lock.c verify.c ext-session-lock-v1-protocol.c $(pkg-config --cflags --libs wayland-client cairo xkbcommon) $GC && cc -O2 -Wall -std=c11 -I. -o veron-login login.c verify.c $GC && cc -O2 -Wall -std=c11 -I. -o veron-enroll enroll.c verify.c $GC"]]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+# NO .desktop ENTRY. Locking the screen from an application menu is a control
+# that only ever gets pressed by accident; it belongs on a keybind and on an
+# idle timer, which is where labwc puts it.
+run  = [["sh", "-c", "mkdir -p $D/usr/bin && for b in veron-lock veron-login veron-enroll; do cp $b $D/usr/bin/$b && chmod 0755 $D/usr/bin/$b; done"]]
+
+[guest]
+# --version, BECAUSE ANYTHING ELSE LOCKS THE SESSION. There is no compositor
+# at package-test time and no way to unlock one if there were.
+test   = [["/bin/sh", "-c", "/usr/bin/veron-lock --version && /usr/bin/veron-login --version && /usr/bin/veron-enroll --version"]]
+expect = ["veron-enroll 1.0"]

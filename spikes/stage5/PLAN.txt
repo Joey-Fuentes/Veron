@@ -149,20 +149,21 @@ between this file and the recipes fails the run.
   127. fuzzel
   128. pango
   129. swaybg
-  130. yambar
-  131. fltk
-  132. gst-plugins-base
-  133. labwc
-  134. gst-libav
-  135. gst-plugins-bad
-  136. gst-plugins-good
-  137. veron-about
-  138. veron-edit
-  139. veron-filechooser
-  140. veron-pinentry
-  141. wpewebkit
-  142. wpe-platform-veron
-  143. veron-browser
+  130. veron-auth
+  131. yambar
+  132. fltk
+  133. gst-plugins-base
+  134. labwc
+  135. gst-libav
+  136. gst-plugins-bad
+  137. gst-plugins-good
+  138. veron-about
+  139. veron-edit
+  140. veron-filechooser
+  141. veron-pinentry
+  142. wpewebkit
+  143. wpe-platform-veron
+  144. veron-browser
 
 ======================================================================
 package bzip2 1.0.8
@@ -830,7 +831,7 @@ package veron-fltk-style 1
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   2fe3912523aac4edd583132911d36112e0c0b2a30e2ced0a5be0983b1ecc13bc
+  recipe-sha   31142b6a7827e1d922122ad5e7dcf086ee342fc5c569d8fc8b9959c0e91ab223
 
   source
     url        this repository
@@ -4610,6 +4611,35 @@ package swaybg 1.2.2
          cwd  build/swaybg-1.2.2/swaybg-1.2.2
          env  DESTDIR=dest/swaybg
          argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package veron-auth 1.0
+  group        desktop
+  license      BSD-2-Clause
+  recipe-sha   f0de15985ff87576c4cdca781112801a522518bc994385d49b7a7be477874a50
+
+  source
+    url        this repository
+    sha256     n/a -- the source is in this repository; the commit is the pin
+    signature  n/a -- provenance is the commit that carries these files
+    correspond none
+
+  deps
+    build        cairo, libgcrypt, libxkbcommon, pkgconf, wayland, wayland-protocols
+    link         cairo, libgcrypt, libxkbcommon, wayland
+    runtime      cairo, labwc, libgcrypt, libxkbcommon, wayland
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] protocol
+         cwd  build/veron-auth-1.0
+         argv ["sh", "-c", "cp /packages/veron-auth/files/*.c /packages/veron-auth/files/*.h . && WLPROTO=$(pkg-config --variable=pkgdatadir wayland-protocols) && wayland-scanner client-header \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-protocol.c"]
+    [02] build
+         cwd  build/veron-auth-1.0
+         argv ["sh", "-c", "GC=$(pkgconf --cflags --libs libgcrypt 2>/dev/null || libgcrypt-config --cflags --libs) && cc -O2 -Wall -std=c11 -I. -o veron-lock lock.c verify.c ext-session-lock-v1-protocol.c $(pkg-config --cflags --libs wayland-client cairo xkbcommon) $GC && cc -O2 -Wall -std=c11 -I. -o veron-login login.c verify.c $GC && cc -O2 -Wall -std=c11 -I. -o veron-enroll enroll.c verify.c $GC"]
+    [03] install
+         cwd  build/veron-auth-1.0
+         argv ["sh", "-c", "mkdir -p dest/veron-auth/usr/bin && for b in veron-lock veron-login veron-enroll; do cp $b dest/veron-auth/usr/bin/$b && chmod 0755 dest/veron-auth/usr/bin/$b; done"]
 
 ======================================================================
 package yambar 1.11.0

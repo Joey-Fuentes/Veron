@@ -49,6 +49,19 @@
     <keybind key="W-q">
       <action name="Close" />
     </keybind>
+    <!-- W-l LOCKS THE SESSION. Deliberately a keybind and not a menu entry:
+         a lock control on a menu is one that gets pressed by accident, and
+         the way back is an authentication rather than an undo.
+
+         THE ESCAPE HATCH IS Ctrl+Alt+F2. ext-session-lock-v1 keeps the
+         session locked even if veron-lock dies, so a locker that cannot be
+         satisfied strands the desktop; a text VT with veron-login on it is
+         what makes that recoverable rather than fatal. Do not disable VT
+         switching until full-disk encryption and a recovery key both
+         exist. -->
+    <keybind key="W-l">
+      <action name="Execute" command="/usr/bin/veron-lock" />
+    </keybind>
         <!-- A-Tab AND A-S-Tab, WHICH ARE THE ONLY WAY BACK FROM Iconify.
          The client menu offers Minimize and nothing restores it: the window
          vanishes, so it is no longer focused and W-q cannot reach it, and the
