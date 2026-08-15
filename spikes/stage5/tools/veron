@@ -1073,6 +1073,7 @@ def stage_into(destdir, sysroot):
             f"visible in ('/' inside the sandbox).")
 
     n = 0
+    seen = {}
     for dirpath, _, files in os.walk(destdir):
         rel = os.path.relpath(dirpath, destdir)
         target = sysroot if rel == "." else os.path.join(sysroot, rel)
@@ -1102,7 +1103,37 @@ def stage_into(destdir, sysroot):
             if os.path.islink(src):
                 os.symlink(os.readlink(src), dst)
             else:
-                shutil.copy2(src, dst)
+                # HARDLINKS ARE PRESERVED, AND copy2 ALONE DESTROYED THEM.
+                # Each file was copied independently, so a package whose
+                # install hardlinks one binary to many names arrived as
+                # many full copies. git is the extreme case and not a
+                # small one: 147 names for one 17.9 MB builtin became 147
+                # real files -- about 2.6 GB of identical bytes in a 4.7
+                # GB tree, which is most of the tree.
+                #
+                # REMEMBER INODES RATHER THAN SPECIAL-CASING git.
+                # st_nlink > 1 in the DESTDIR means the package linked
+                # them deliberately; the first copy is real and the rest
+                # link to it. A file with one link is copied exactly as
+                # before, so the busybox lesson above is untouched --
+                # the unlink still happens first, and os.link creates a
+                # new entry rather than writing through anything.
+                #
+                # os.link CAN FAIL (a filesystem without hardlink
+                # support, a target across a mount) so it falls back to a
+                # plain copy rather than aborting a merge over a saving.
+                st = os.lstat(src)
+                key = (st.st_dev, st.st_ino)
+                first = seen.get(key) if st.st_nlink > 1 else None
+                if first is not None:
+                    try:
+                        os.link(first, dst)
+                    except OSError:
+                        shutil.copy2(src, dst)
+                else:
+                    shutil.copy2(src, dst)
+                    if st.st_nlink > 1:
+                        seen[key] = dst
             n += 1
     return n
 
