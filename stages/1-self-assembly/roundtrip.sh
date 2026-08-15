@@ -100,12 +100,9 @@ else
   # digest at all; here the first fetch records PINS.sha256 and every later
   # cold cache must reproduce it. Pre-seed the file from a trusted source to
   # remove even the first-fetch trust.
+  (cd "$P/src" && sha256sum binutils.tar.xz llvm.tar.xz) > "$P/PINS.sha256"
   if [ -f "$HERE/PINS.sha256" ]; then
     (cd "$P/src" && sha256sum -c "$HERE/PINS.sha256")
-  else
-    (cd "$P/src" && sha256sum binutils.tar.xz llvm.tar.xz) > "$HERE/PINS.sha256"
-    echo "  RECORDED first-fetch digests -> PINS.sha256 (commit it):"
-    sed 's/^/    /' "$HERE/PINS.sha256"
   fi
   tar -C "$P/src" -xf "$P/src/binutils.tar.xz"
   mkdir -p "$P/src/b" && ( cd "$P/src/b" && \
@@ -127,6 +124,21 @@ else
     cp "$(find "$P/src" -name "$t" -type f | head -1)" "$P/bin/"
   done
   rm -rf "$P/src/binutils-$BINUTILS_VER" "$P/src/b" "$P"/src/LLVM-*
+fi
+# The digest record lives IN the cache so warm runs still have it; enforce
+# against the committed copy whenever one exists, and keep telling the
+# maintainer to commit it until they do.
+if [ -f "$P/PINS.sha256" ]; then
+  if [ -f "$HERE/PINS.sha256" ]; then
+    diff -u "$HERE/PINS.sha256" "$P/PINS.sha256" || {
+      echo "FAIL: cached toolchain digests differ from committed PINS.sha256"; exit 1; }
+    echo "  toolchain digests match committed PINS.sha256"
+  else
+    cp "$P/PINS.sha256" "$HERE/PINS.sha256"
+    echo "  RECORDED toolchain digests -> stages/1-self-assembly/PINS.sha256"
+    echo "  COMMIT IT so every later cold cache must reproduce these:"
+    sed 's/^/    /' "$HERE/PINS.sha256"
+  fi
 fi
 echo "  --- versions now pinned ---"
 "$P/bin/as" --version | head -1 | sed 's/^/    /'
@@ -171,7 +183,15 @@ for pair in "sa $SA_SRC $SA_BIN" "ew $EW_SRC $EW_BIN"; do
   echo "  ...B against llvm-objdump $LLVM_VER:"
   ( cd "$ROOT" && python3 tools/s0_roundtrip.py "$SRC" "$W/$N.llvm.dis" \
       --budget "$ROUNDTRIP_BUDGET" ); rc_llvm=$?
-  echo "  --- E under llvm-objdump, canonicalised ---"
+  # E GATES AGAINST ONE DECODER (GNU), BY DESIGN -- the spike gate's own
+  # words: if the two decoders do not agree character for character, "no
+  # source text exists that both will diff clean against, and the plain-diff
+  # goal has to pick one decoder and say so." They do not (llvm prints svc
+  # immediates in decimal and high-bit constants as negative hex), so the
+  # llvm plain-diff below is MEASURED as the spec for our own decoder, never
+  # gated; llvm agreement is gated at the instruction level (check B, budget
+  # 0) and decoder-vs-decoder at check C.
+  echo "  --- E under llvm-objdump, canonicalised (measured, not gating) ---"
   "$P/bin/llvm-objdump" -d --no-show-raw-insn --no-leading-addr \
     "$N-ref" > "$N.canon.llvm.dis" 2>/dev/null || \
     "$P/bin/llvm-objdump" -d --no-show-raw-insn "$N-ref" > "$N.canon.llvm.dis"
@@ -182,10 +202,10 @@ for pair in "sa $SA_SRC $SA_BIN" "ew $EW_SRC $EW_BIN"; do
   if [ "$ndd" = 0 ]; then
     echo "    IDENTICAL ($(wc -l < "$N.canon.src") canonical lines)"
   else
-    echo "    $ndd differing canonical lines vs llvm-objdump:"
+    echo "    $ndd differing canonical lines vs llvm-objdump (decoder"
+    echo "    formatting classes -- the spec for our own decoder):"
     ( cd "$ROOT" && python3 tools/s0_canon.py classify \
         "$W/$N.canon.src" "$W/$N.canon.llvm.txt" ) | sed 's/^/      /'
-    fail=$((fail+1))
   fi
   echo "  --- verbatim, both decoders ---"
   ( cd "$ROOT" && python3 tools/s0_roundtrip.py verbatim "$SRC" "$W/$N.dis" )

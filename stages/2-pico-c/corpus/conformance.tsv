@@ -1,0 +1,426 @@
+0int main(){int a=2000; return a*a*a/1000;}
+82int main(){int a=3000; int b=3000; return a*b/7;}
+30int main(){int a[3]; a[0]=10; a[1]=20; a[2]=30; int* p; p=a; p=p+2; return *p;}
+20int main(){int a[3]; a[0]=10; a[1]=20; a[2]=30; int* p; p=a; p=p+1; return *p;}
+30int main(){int a[3]; a[0]=10; a[1]=20; a[2]=30; int* p; p=a; p=2+p; return *p;}
+20int main(){int a[3]; a[0]=10; a[1]=20; a[2]=30; int* p; p=a; p=p+2; p=p-1; return *p;}
+67int main(){char s[3]; s[0]=65; s[1]=66; s[2]=67; char* q; q=s; q=q+2; return *q;}
+3int main(){int a[5]; int* p; p=a; int* q; q=a; q=q+3; return q-p;}
+5int main(){char s[8]; char* p; p=s; char* q; q=s; q=q+5; return q-p;}
+10int main(){int a[4]; a[0]=1; a[1]=2; a[2]=3; a[3]=4; int* p; p=a; int s; s=0; int i; i=0; while(i<4){ s=s+*p; p=p+1; i=i+1; } return s;}
+5int slen(char* s){int n; n=0; while(*s){ n=n+1; s=s+1; } return n;} int main(){return slen("hello");}
+13int g[3]; int main(){g[0]=4; g[1]=9; g[2]=13; int* p; p=g; p=p+2; return *p;}
+2int* gp; int a[3]; int main(){a[0]=1; a[1]=2; a[2]=3; gp=a; gp=gp+1; return *gp;}
+8int at(int* p,int i){p=p+i; return *p;} int main(){int a[4]; a[0]=5; a[1]=6; a[2]=7; a[3]=8; return at(a,3);}
+7int main(){if(0){return 5;}else{return 7;}return 9;}
+5int main(){if(1){return 5;}else{return 7;}return 9;}
+8int max(int a,int b){if(a>b){return a;}else{return b;}} int main(){return max(3,8);}
+2int sign(int x){if(x>0){return 1;}else{if(x<0){return 2;}else{return 0;}}} int main(){return sign(-3);}
+10int main(){int i; int s; s=0; i=0; while(i<5){if(i>2){s=s+i;}else{s=s+1;} i=i+1;} return s;}
+3int main(){int x; x=5; return -x+8;}
+1int main(){return !0;}
+250int main(){return ~5;}
+8int main(){return 12&10;}
+15int main(){return 12|3;}
+16int main(){return 1<<4;}
+10int main(){int a; a=6; return a&3|8;}
+1int main(){return !(3>5);}
+255int main(){int i; int s; s=0; i=0; while(i<8){s=s|1<<i; i=i+1;} return s;}
+5int g; int main(){g=5; return g;}
+9int g; int set(){g=9; return 0;} int main(){set(); return g;}
+10int a[3]; int main(){a[0]=4; a[1]=6; return a[0]+a[1];}
+3int counter; int inc(){counter=counter+1; return 0;} int main(){inc(); inc(); inc(); return counter;}
+42int g; int main(){int* p; p=&g; *p=42; return g;}
+65int main(){char* s; s="A"; return s[0];}
+99int main(){char* s; s="abc"; return s[2];}
+5int len(char* p){int n; n=0; while(p[n]){n=n+1;} return n;} int main(){return len("hello");}
+131int sum(char* p){int s; int i; s=0; i=0; while(p[i]){s=s+p[i]; i=i+1;} return s;} int main(){return sum("AB");}
+165int f(char* a,char* b){return a[0]+b[0];} int main(){return f("MN","XY");}
+65int main(){char c; c='A'; return c;}
+177int main(){char s[4]; s[0]=72; s[1]=105; return s[0]+s[1];}
+88int main(){char s[4]; char* p; s[0]=88; p=s; return *p;}
+68int main(){char s[8]; int i; i=0; while(i<8){s[i]=i+65; i=i+1;} return s[3];}
+244int main(){char a[3]; a[0]=250; a[1]=250; return a[0]+a[1];}
+3int len(char* p){int n; n=0; while(p[n]){n=n+1;} return n;} int main(){char s[8]; s[0]=97; s[1]=98; s[2]=99; s[3]=0; return len(s);}
+12int main(){int a[3]; a[0]=5; a[1]=7; return a[0]+a[1];}
+9int main(){int a[5]; int i; i=0; while(i<5){a[i]=i*i; i=i+1;} return a[3];}
+99int main(){int a[3]; a[2]=99; int* p; p=a; return p[2];}
+10int sum(int* p,int n){int s; int i; s=0; i=0; while(i<n){s=s+p[i]; i=i+1;} return s;} int main(){int a[4]; a[0]=1; a[1]=2; a[2]=3; a[3]=4; return sum(a,4);}
+32int dot(int* a,int* b,int n){int s; int i; s=0; i=0; while(i<n){s=s+a[i]*b[i]; i=i+1;} return s;} int main(){int x[3]; int y[3]; x[0]=1; x[1]=2; x[2]=3; y[0]=4; y[1]=5; y[2]=6; return dot(x,y,3);}
+5int main(){int x=5; int* p; p=&x; return *p;}
+42int main(){int x=0; int* p; p=&x; *p=42; return x;}
+9int set(int* q){*q=9; return 0;} int main(){int x=0; set(&x); return x;}
+83int swap(int* a,int* b){int t=*a; *a=*b; *b=t; return 0;} int main(){int x=3; int y=8; swap(&x,&y); return x*10+y;}
+43int inc(int* q){*q=*q+1; return 0;} int main(){int c=41; inc(&c); inc(&c); return c;}
+5int main(){int a=2; int b=3; return a+b;}
+100int main(){int a=10; return a*a;}
+30int main(){int a=5; int b=a+1; return a*b;}
+16int main(){int x=7; return (x+1)*2;}
+14int main(){int a=2; int b=3; int c=4; return a+b*c;}
+15int main(){int a=1; int b=2; int c=3; int d=4; int e=5; return a+b+c+d+e;}
+100int main(){int z=25; return z*4;}
+8int main(){int a=5; a=a+3; return a;}
+30int main(){int a=1; a=2; a=3; return a*10;}
+6int main(){int a=5; if(a){ a=a+1; } return a;}
+7int main(){int a=0; if(a){ a=99; } return a+7;}
+3int main(){int a=3; if(a-3){ a=99; } return a;}
+55int main(){int n=10; int s=0; while(n){ s=s+n; n=n-1; } return s;}
+24int main(){int n=4; int f=1; while(n){ f=f*n; n=n-1; } return f;}
+9int main(){int a=0; while(a){ a=a-1; } return a+9;}
+6int main(){int i=3; int t=0; while(i){ int j=2; while(j){ t=t+1; j=j-1; } i=i-1; } return t;}
+12int main(){int a=6; int c=0; while(a){ if(a){ c=c+2; } a=a-1; } return c;}
+5int main(){int a=1; int b=1; int r=0; if(a){ if(b){ r=5; } } return r;}
+45int main(){int i=0; int s=0; while(i<10){ s=s+i; i=i+1; } return s;}
+24int main(){int i=1; int f=1; while(i<5){ f=f*i; i=i+1; } return f;}
+15int main(){int n=5; int s=0; while(n>0){ s=s+n; n=n-1; } return s;}
+1int main(){int a=3; int b=5; if(a<b){ return 1; } return 0;}
+0int main(){int a=5; int b=5; if(a<b){ return 1; } return 0;}
+9int main(){int a=7; int b=2; if(a>b){ return 9; } return 0;}
+1int main(){int a=3; int b=4; return (a<b)+(b<a);}
+0int main(){return 2*2<3;}
+6int main(){int i=0; int t=0; while(i<3){ int j=0; while(j<2){ t=t+1; j=j+1; } i=i+1; } return t;}
+1int main(){int a=5; int b=5; return a==b;}
+0int main(){int a=5; int b=6; return a==b;}
+1int main(){int a=5; int b=6; return a!=b;}
+0int main(){int a=5; int b=5; return a!=b;}
+1int main(){int a=4; int b=5; return a<=b;}
+0int main(){int a=6; int b=5; return a<=b;}
+1int main(){int a=5; int b=5; return a>=b;}
+0int main(){int a=4; int b=5; return a>=b;}
+1int main(){return 2+3==5;}
+1int main(){int a=1; int b=2; int c=3; return a==b<c;}
+15int main(){int i=1; int s=0; while(i<=5){ s=s+i; i=i+1; } return s;}
+55int main(){int i=10; int s=0; while(i>=1){ s=s+i; i=i-1; } return s;}
+3int main(){int a=7; if(a==7){ return 3; } return 9;}
+9int main(){int a=7; if(a!=7){ return 3; } return 9;}
+42int main(){int a=8; int b=8; int c=0; if(a==b){ if(a>=b){ c=42; } } return c;}
+3int main(){return 17/5;}
+2int main(){return 17%5;}
+14int main(){return 100/7;}
+2int main(){return 100%7;}
+21int main(){int a=84; int b=4; return a/b;}
+7int main(){return 2+10/2;}
+1int main(){return 20/4/5;}
+6int main(){return 3*4/2;}
+20int main(){int n=20; int d=6; return n/d*d+n%d;}
+12int gcd(int a,int b){while(b){ int t=a%b; a=b; b=t; } return a;} int main(){return gcd(48,36);}
+5int add(int a,int b){return a+b;} int main(){return add(2,3);}
+81int sq(int x){int y=x*x; return y;} int main(){return sq(9);}
+10int inc(int a){return a+1;} int dbl(int a){return a*2;} int main(){return dbl(inc(4));}
+10int add(int a,int b){return a+b;} int main(){return add(add(1,2),add(3,4));}
+123int f(int aa,int bb,int cc){return aa*100+bb*10+cc;} int main(){return f(1,2,3);}
+30int f(int n){n=n+5; return n*2;} int main(){return f(10);}
+120int fact(int n){if(n){return n*fact(n-1);} return 1;} int main(){return fact(5);}
+55int sum(int n){if(n){return n+sum(n-1);} return 0;} int main(){return sum(10);}
+55int fib(int n){if(n<2){return n;} return fib(n-1)+fib(n-2);} int main(){return fib(10);}
+128int pw(int b,int e){if(e){return b*pw(b,e-1);} return 1;} int main(){return pw(2,7);}
+55int tri(int n){int s=0; int i=1; while(i<=n){ s=s+i; i=i+1; } return s;} int main(){return tri(10);}
+1int ev(int n){if(n){return od(n-1);} return 1;} int od(int n){if(n){return ev(n-1);} return 0;} int main(){return ev(10);}
+9int ack(int m,int n){if(m){if(n){return ack(m-1,ack(m,n-1));} return ack(m-1,1);} return n+1;} int main(){return ack(2,3);}
+30int compute(int count,int step){int total=count*step; return total+count;} int main(){return compute(6,4);}
+16struct P{int x;int y;};int main(){return sizeof(struct P);}
+24struct P{int x;int y;int z;};int main(){return sizeof(struct P);}
+16struct C{char a;int b;};int main(){return sizeof(struct C);}
+16struct N{int v;struct N* nx;};int main(){return sizeof(struct N);}
+3struct P{int x;int y;int z;};int main(){int n; n=sizeof(struct P)/sizeof(int); return n;}
+16struct P{int x;int y;};int main(){struct P p; p.x=7; p.y=9; return p.x+p.y;}
+6struct P{int x;int y;int z;};int main(){struct P p; p.x=1; p.y=2; p.z=3; return p.x+p.y+p.z;}
+165struct C{char a;int b;};int main(){struct C c; c.a=65; c.b=100; return c.a+c.b;}
+15struct P{int x;int y;};int main(){struct P p; p.x=5; p.y=p.x+10; return p.y;}
+30struct P{int x;int y;};int main(){struct P p; p.x=10; struct P q; q.x=20; return p.x+q.x;}
+42struct P{int x;int y;};int main(){struct P p; struct P* q; q=&p; q->x=17; q->y=25; return p.x+p.y;}
+7struct P{int x;int y;};int main(){struct P p; p.y=7; struct P* q; q=&p; return q->y;}
+99struct N{int v;struct N* nx;};int main(){struct N b; b.v=99; struct N a; a.nx=&b; return a.nx->v;}
+77struct N{int v;struct N* nx;};int main(){struct N b; struct N a; a.nx=&b; a.nx->v=77; return b.v;}
+3struct N{int v;struct N* nx;};int main(){struct N c; c.v=3; struct N b; b.nx=&c; struct N a; a.nx=&b; return a.nx->nx->v;}
+8struct P{int x;int y;};int main(){struct P p; p.x=8; int* q; q=&p.x; return *q;}
+7struct P{int x;int y;};int main(){struct P p; p.y=7; int* q; q=&p.y; return *q;}
+42struct P{int x;int y;};int main(){struct P p; int* q; q=&p.x; *q=42; return p.x;}
+65struct C{char a;int b;};int main(){struct C c; c.a=65; char* q; q=&c.a; return *q;}
+9struct P{int x;int y;};int main(){struct P p; p.y=9; struct P* r; r=&p; int* q; q=&r->y; return *q;}
+30struct P{int x;int y;};int gv(struct P* p){return p->x+p->y;} int main(){struct P p; p.x=10; p.y=20; return gv(&p);}
+6struct N{int v;struct N* nx;};int sm(struct N* p){int s; s=0; while(p){ s=s+p->v; p=p->nx; } return s;} int main(){struct N c; c.v=3; c.nx=0; struct N b; b.v=2; b.nx=&c; struct N a; a.v=1; a.nx=&b; return sm(&a);}
+3struct N{int v;struct N* nx;};int cnt(struct N* p){int n; n=0; while(p){ n=n+1; p=p->nx; } return n;} int main(){struct N c; c.nx=0; struct N b; b.nx=&c; struct N a; a.nx=&b; return cnt(&a);}
+7struct N{int v;struct N* nx;};int last(struct N* p){while(p->nx){ p=p->nx; } return p->v;} int main(){struct N c; c.v=7; c.nx=0; struct N b; b.nx=&c; struct N a; a.nx=&b; return last(&a);}
+17struct P{int x;int y;};struct P g; int main(){g.x=13; g.y=4; return g.x+g.y;}
+42struct C{char a;int b;};struct C gc; int main(){gc.a=9; gc.b=33; return gc.a+gc.b;}
+42struct N{int v;struct N* nx;};struct N n; struct N* gp; int main(){n.v=42; gp=&n; return gp->v;}
+5struct N{int v;struct N* nx;};struct N a; struct N b; int main(){b.v=5; a.v=10; a.nx=&b; return a.nx->v;}
+42int inc(int n){return n+1;} int main(){int (*fp)(int); fp=inc; return fp(41);}
+42int inc(int n){return n+1;} int apply(int (*f)(int),int x){return f(x);} int main(){return apply(inc,41);}
+7int seven(){return 7;} int callit(int (*f)()){return f();} int main(){return callit(seven);}
+42int add(int a,int b){return a+b;} int main(){int (*fp)(int,int); fp=add; return fp(30,12);}
+100int inc(int n){return n+1;} int (*gp)(int); int main(){gp=inc; return gp(99);}
+62int add1(int n){return n+1;} int dbl(int n){return n*2;} int main(){int (*fp)(int); int acc; int i; acc=0; i=0; while(i<5){fp=add1; acc=fp(acc); fp=dbl; acc=fp(acc); i=i+1;} return acc;}
+2int counter; int bump(){counter=counter+1; return counter;} int twice(int (*f)()){f(); f(); return counter;} int main(){counter=0; return twice(bump);}
+255int main(){return 262143;}
+0int main(){return 262144;}
+64int main(){return 1000000;}
+112int main(){return 70000 - 65536;}
+44int main(){int a=100000; int b=3; return a*b/1000;}
+42int main(){int* p=calloc(100000,8); p[99999]=42; return p[99999];}
+30int main(){int* p=calloc(4,8); p[0]=10; p[1]=20; return p[0]+p[1];}
+0int main(){int* p=calloc(3,8); return p[0]+p[1]+p[2];}
+131int main(){char* s=calloc(10,1); s[0]=65; s[1]=66; return s[0]+s[1];}
+12int main(){int* a=calloc(2,8); int* b=calloc(2,8); a[0]=5; b[0]=7; return a[0]+b[0];}
+55int main(){int* p=calloc(3,8); p[2]=55; return p[2];}
+123int main(){int* p=calloc(1000,8); p[999]=123; return p[999];}
+7int main(){char* b=calloc(65536,1); b[65535]=7; return b[65535];}
+9int main(){char* b=calloc(262144,1); b[262143]=9; return b[262143];}
+42struct T{int k; int t; struct T* nx;}; int main(){struct T* t=calloc(1,sizeof(struct T)); t->k=40; t->t=2; return t->k+t->t;}
+42int main(){int* p=calloc(2,8); p[0]=40; p[1]=2; int r=p[0]; int q=p[1]; return r+q;}
+9int main(){int* p=calloc(1,8); p[0]=9; int r=p[0]; free(p); return r;}
+50int main(){int i=0; int last=0; while(i<50){int* p=calloc(1,8); p[0]=i+1; last=p[0]; i=i+1;} return last;}
+6struct N{int v; struct N* nx;};int sm(struct N* p){int s; s=0; while(p){s=s+p->v; p=p->nx;} return s;} int main(){struct N* a=calloc(1,sizeof(struct N)); struct N* b=calloc(1,sizeof(struct N)); struct N* c=calloc(1,sizeof(struct N)); a->v=1; a->nx=b; b->v=2; b->nx=c; c->v=3; c->nx=0; return sm(a);}
+3struct N{int v; struct N* nx;};int cnt(struct N* p){int n; n=0; while(p){n=n+1; p=p->nx;} return n;} int main(){struct N* a=calloc(1,sizeof(struct N)); struct N* b=calloc(1,sizeof(struct N)); struct N* c=calloc(1,sizeof(struct N)); a->nx=b; b->nx=c; c->nx=0; return cnt(a);}
+77int calloc(int a, int b){return 77;} int main(){return calloc(1,2);}
+9int main(){exit(9); return 0;}
+7int main(){/* hi */ return 7;}
+4int main(){return 12/3;}
+7int main(){{return 7;}}
+10int main(){int i;i=0;while(i<3){i=i+1;}{int fd;fd=7;return fd+i;}}
+5int main(){int a;{a=2;}{int b;b=3;return a+b;}}
+3int main(){int i;int s;i=0;s=0;while(i<3){{s=s+1;}i=i+1;}return s;}
+65char A[16];int main(){A[0]=65;return A[0];}
+3char A[8192];char B[16384];int main(){return 3;}
+1int main(){return 1&&1;}
+0int main(){return 1&&0;}
+1int main(){return 5&&3;}
+0int main(){return 0||0;}
+1int main(){return 0||7;}
+1int main(){return 1&&1&&1;}
+1int main(){return 0||0||3;}
+1int main(){return 1||0&&0;}
+0int main(){return (1||0)&&0;}
+1int main(){return 1|2&&1;}
+1int main(){return 1|2^3;}
+7int main(){return 6^3&1;}
+0int main(){return 1^1==1;}
+11int f(int a,int b){return a+b*10;}int main(){return f(1&&1,0||5);}
+1int one(){return 1;}int zero(){return 0;}int main(){return one()&&zero()||one();}
+42int main(){return 0x2A;}
+255int main(){return 0xff;}
+255int main(){return 0XFF;}
+0int main(){return 0x0;}
+0int main(){return 0;}
+10int main(){return 10;}
+65int main(){int c;c=321;return c&0xFF;}
+69int main(){return 0x12345&0xFF;}
+7int main(){int a[0x10];a[15]=7;return a[15];}
+7int main(){int a[16];a[15]=7;return a[15];}
+6int main(){return 12^10;}
+0int main(){int x;x=93;return x^x;}
+23int main(){return (12|3)+(12&8);}
+10int main(){int i;int s;i=0;s=0;top: i=i+1;s=s+i;if(i<4){goto top;}return s;}
+5int main(){int a;a=1;goto done;a=99;done: return a+4;}
+10int f(int n){int s;s=0;again: s=s+n;n=n-1;if(n>0){goto again;}return s;}int main(){return f(4);}
+13int main(){int i;i=0;top: i=i+1;if(i<20){if(i<10){while(i<50){i=i+3;goto top;}}}return i;}
+6int main(){int i;i=0;while(1){i=i+1;if(i>5){goto out;}}out: return i;}
+4int main(){int a;a=0;top: a=a+1;if(a>3){return a;}else{goto top;}return 99;}
+32int main(){int a;a=0;one: a=a+1;if(a<2){goto one;}two: a=a+10;if(a<30){goto two;}return a;}
+11int a(){int i;i=0;lp: i=i+1;if(i<3){goto lp;}return i;}int b(){int j;j=0;lp: j=j+2;if(j<8){goto lp;}return j;}int main(){return a()+b();}
+37int g(){int i;i=0;lp: i=i+1;if(i<3){goto lp;}return i;}int later(){int k;k=0;while(k<7){k=k+1;}return k;}int main(){return g()*10+later();}
+7int add(int a,int b);int main(){return add(3,4);}int add(int a,int b){return a+b;}
+42int add(int,int);int main(){return add(20,22);}int add(int a,int b){return a+b;}
+9struct N{int v;struct N* nx;};struct N* mk(int v);int main(){struct N* p;p=mk(9);return p->v;}struct N* mk(int v){struct N* n;n=calloc(1,sizeof(struct N));n->v=v;return n;}
+6void bump(void);int G;int main(){bump();bump();return G;}void bump(void){G=G+3;}
+120int fact(int n);int main(){return fact(5);}int fact(int n){if(n<2){return 1;}return n*fact(n-1);}
+2int odd(int n);int even(int n){if(n==0){return 1;}return odd(n-1);}int odd(int n){if(n==0){return 0;}return even(n-1);}int main(){return even(10)+odd(7);}
+3int add(int a,int b){return a+b;}int main(){return add(1,2);}
+5int main(){int a;a=1;if(a) return 5;return 9;}
+9int main(){int a;a=0;if(a) return 5;return 9;}
+7int main(){int a;a=0;if(1) a=7;return a;}
+4int G;int bump(){G=G+4;return 0;}int main(){if(1) bump();return G;}
+5int main(){int i;i=0;while(i<5) i=i+1;return i;}
+8int main(){int a;a=0;if(a) return 1;else return 8;}
+20int f(int n){if(n<1) return 10;else if(n<2) return 20;else return 30;}int main(){return f(1);}
+6int main(){int a;a=0;if(a){a=1;}else a=6;return a;}
+3int main(){int a;a=1;if(a) a=3;else{a=9;}return a;}
+7int main(){int a;int b;a=1;b=1;if(a) if(b) return 7;return 2;}
+2int f(int a,int b){if(a) if(b) return 1;else return 2;return 3;}int main(){return f(1,0);}
+6int main(){int i;i=0;if(1) while(i<6){i=i+1;}return i;}
+4int main(){int a;a=0;if(1) {a=4;}return a;}
+4int main(){int i;i=0;top: i=i+1;if(i<4) goto top;return i;}
+5int main(){int a;a=5;if(a) ;return a;}
+3int f(int c){if(c==40) return 3;return 9;}int main(){return f(40);}
+6int p(int n){return n;}int main(){if(p(1)) return 6;return 0;}
+4int main(){int a;a=2;if(((a+1)*2)==6) return 4;return 0;}
+5int main(){int a;int b;a=1;b=0;if(a&&!b) return 5;return 0;}
+10int main(){char c;c='\n';return c;}
+9int main(){char c;c='\t';return c;}
+13int main(){char c;c='\r';return c;}
+92int main(){char c;c='\\';return c;}
+39int main(){char c;c='\'';return c;}
+34int main(){char c;c='\"';return c;}
+7int main(){char c;c='\0';return c+7;}
+65int main(){char c;c='A';return c;}
+10int main(){char* s;s="a\nb";return s[1];}
+9int main(){char* s;s="a\tb";return s[1];}
+13int main(){char* s;s="a\rb";return s[1];}
+92int main(){char* s;s="a\\b";return s[1];}
+34int main(){char* s;s="a\"b";return s[1];}
+10int main(){char* s;s="\nx";return s[0];}
+10int main(){char* s;s="x\n";return s[1];}
+6int main(){char c;c='\n';if(c=='\n') return 6;return 0;}
+3char A[8192];char B[16384];int main(){return 3;}
+3int main(){int i;i=0;while(i<3){i=i+1;}return i;}
+45int main(){int i;int s;i=0;s=0;while(i<10){s=s+i;i=i+1;}return s;}
+2int main(){int a;a=1;if(a){a=2;}else{a=3;}return a;}
+6int main(){int i;int t;i=0;t=0;while(i<3){int j;j=0;while(j<2){t=t+1;j=j+1;}i=i+1;}return t;}
+120int f(int n){if(n<2){return 1;}return n*f(n-1);}int main(){return f(5);}
+5int main(){int a;int b;a=1;b=0;if(a&&!b) return 5;return 0;}
+4int main(){int i;i=0;top: i=i+1;if(i<4) goto top;return i;}
+20int f(int n){if(n<1) return 10;else if(n<2) return 20;else return 30;}int main(){return f(1);}
+1int main(){int i;i=0;do{i=i+1;}while(i>99);return i;}
+10int main(){int i;i=9;do{i=i+1;}while(0);return i;}
+5int main(){int i;i=0;do{i=i+1;}while(i<5);return i;}
+24int main(){int n;int f;n=4;f=1;do{f=f*n;n=n-1;}while(n);return f;}
+7int main(){int i;i=0;do i=i+1; while(i<7);return i;}
+6int main(){int a;int i;a=0;i=0;do{int j;j=0;do{j=j+1;a=a+1;}while(j<3);i=i+1;}while(i<2);return a;}
+10int f(int n){int s;s=0;do{s=s+n;n=n-1;}while(n);return s;}int main(){return f(4);}
+3int main(){int i;i=0;do{i=i+1;if(i==3){goto out;}}while(i<9);out: return i;}
+4int main(){int a;int i;a=1;i=0;if(a) do{i=i+1;}while(i<4); else i=99;return i;}
+3int main(){int i;i=0;do{i=i+1;if(i==3){break;}}while(i<9);return i;}
+7int main(){int i;i=0;while(1){i=i+1;if(i>6){break;}}return i;}
+13int main(){int i;int s;i=0;s=0;while(i<5){i=i+1;if(i==2){continue;}s=s+i;}return s;}
+8int main(){int i;int s;i=0;s=0;while(i<4){i=i+1;if(i==2)continue;s=s+i;}return s;}
+4int main(){int i;i=0;do{i=i+1;if(i==4) break;}while(1);return i;}
+3int main(){int o;int t;o=0;t=0;while(o<3){o=o+1;int i;i=0;do{i=i+1;if(i==2){break;}t=t+1;}while(i<9);}return t;}
+4int main(){int i;i=0;while(1){i=i+1;if(i>2){if(i>3){break;}}}return i;}
+53int main(){int i;int s;i=0;s=0;do{i=i+1;if(i<3){continue;}s=s+1;}while(i<5);return s+i*10;}
+5int main(){int e;int c;int f;e=0;c=0;f=5;do{c=c+1;}while(e || (c != f));return c;}
+3int main(){char c;c=48;int i;i=0;do{i=i+1;c=c+1;}while(c != ')' && i<3);return i;}
+4int main(){char c;c=48;int i;i=0;do{i=i+1;c=c+1;}while(c != '}' && i<4);return i;}
+4int main(){char c;c=5;int i;i=0;do{i=i+1;c=c+1;}while((32 != c) && (9 != c) && ('\n' != c));return i;}
+10int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){s=s+i;}return s;}
+33int main(){int i;int n;n=0;for(i=0;i<3;i=i+1){n=n+1;}return n*10+i;}
+0int main(){int i;int s;s=0;for(i=0;i<0;i=i+1){s=s+9;}return s;}
+7struct N{int v;struct N* nx;};int main(){struct N a;struct N b;a.v=3;a.nx=&b;b.v=4;b.nx=0;struct N* i;int s;s=0;for(i=&a;0 != i;i=i->nx){s=s+i->v;}return s;}
+6int main(){int i;int s;s=0;for(i=0;i<4;i=i+1) s=s+i;return s;}
+6int main(){int i;int j;int t;t=0;for(i=0;i<3;i=i+1){for(j=0;j<2;j=j+1){t=t+1;}}return t;}
+4int main(){int i;int s;s=0;for(i=0;i<9;i=i+1){if(i==4){break;}s=s+1;}return s;}
+8int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){if(i==2){continue;}s=s+i;}return s;}
+4int main(){int i;int s;s=0;for(i=0;i<4;i=i+1){continue;}return i;}
+6int main(){int s;s=0;for(int i=0;i<4;i=i+1){s=s+i;}return s;}
+5int main(){int i;i=0;for(;i<5;i=i+1){}return i;}
+5int main(){int i;for(i=0;i<5;){i=i+1;}return i;}
+7int main(){int i;i=0;for(;;){i=i+1;if(i>6){break;}}return i;}
+12int f(int x){return x*2;}int main(){int i;int s;s=0;for(i=1;i<4;i=i+1){s=s+f(i);}return s;}
+3int main(){int i;for(i=0;i<9;i=i+1){if(i==3){goto out;}}out: return i;}
+3int main(){int a;int i;int s;a=1;s=0;if(a) for(i=0;i<3;i=i+1) s=s+1; return s;}
+3int main(){int i;int j;int t;t=0;for(i=0;i<3;i=i+1){j=0;while(1){j=j+1;if(j>1){break;}t=t+1;}}return t;}
+6int main(){int i;int t;t=0;for(i=0;i<3;i=i+1){int k;k=0;do{k=k+1;t=t+1;}while(k<2);}return t;}
+1enum{FALSE=0,TRUE=1,};int main(){return TRUE;}
+5enum{FALSE=0,TRUE=1,};int main(){if(FALSE){return 9;}return 5;}
+12enum{A=3,B=4,};int main(){return A*B;}
+21enum{A,B,C};int main(){return C*10+B;}
+7enum{A=5,B,C};int main(){return C;}
+16enum{X=0x10,};int main(){return X;}
+4enum{NULLV=0,};int main(){int* p;p=NULLV;if(NULLV==p){return 4;}return 9;}
+2enum{V=7};int main(){int V;V=2;return V;}
+9enum{N=3};int f(int x){return x*2;}int main(){int a[4];a[N]=N;return a[N]+f(N);}
+6enum{LIM=4};int main(){int i;int s;s=0;for(i=0;i<LIM;i=i+1){s=s+i;}return s;}
+3enum{STOP=3};int main(){int i;i=0;do{i=i+1;if(i==STOP){break;}}while(i<9);return i;}
+7enum Color{RED=2,BLUE=5};int main(){return RED+BLUE;}
+4int main(){int enumerate;enumerate=4;return enumerate;}
+2enum{A=1};int main(){int x;x=0;if(x){return 9;}else{return A+1;}}
+5enum{TRUE=1,FALSE=0};int main(){int n;n=0;do{n=n+1;if(n>4) break;}while(TRUE);return n;}
+6enum{LIM=6};int main(){int i;int s;s=0;for(i=0;i<LIM;i=i+1){s=s+1;}return s;}
+8enum{SKIP=2};int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){if(i==SKIP)continue;s=s+i;}return s;}
+3enum{START=2,STEP=3,LIM=9};int main(){int i;int n;n=0;for(i=START;i<LIM;i=i+STEP){n=n+1;}return n;}
+3unsigned ceil_div(unsigned a,unsigned b){return (a+b-1)/b;}int main(){return ceil_div(10,4);}
+8unsigned ceil_div(unsigned a,unsigned b){return (a+b-1)/b;}int gz(int size){unsigned i;int n;i=ceil_div(size,8);n=0;while(i!=0){n=n+1;i=i-1;}return n;}int main(){return gz(60);}
+42int main(){unsigned d;int n;n=6;d=7;return d*n;}
+120char* lv(unsigned size){if(size==8){return "x";}return "y";}int main(){char* p;p=lv(8);return p[0];}
+42long _malloc_ptr;long _brk_ptr;int main(){_brk_ptr=7;_malloc_ptr=_brk_ptr*6;return _malloc_ptr;}
+42int f(int n){if(n>0){long old_brk=n;return old_brk+41;}return 0;}int main(){return f(1);}
+42int main(){int n;n=1;long old_malloc;old_malloc=41;return old_malloc+n;}
+42long _malloc_ptr;long _brk_ptr;int malloc(int size){if(0==_brk_ptr){_brk_ptr=brk(0);_malloc_ptr=_brk_ptr;}if(_brk_ptr<_malloc_ptr+size){long old_brk;old_brk=_brk_ptr;_brk_ptr=brk(_malloc_ptr+size);if(_brk_ptr==old_brk){return 0;}}long old_malloc;old_malloc=_malloc_ptr;_malloc_ptr=_malloc_ptr+size;return old_malloc;}int main(){char* p;p=malloc(64);p[0]=42;return p[0];}
+42int rd(int fd,char* buf,unsigned count);int main(){return rd(0,0,42);}int rd(int fd,char* buf,unsigned count){return count;}
+42int f(unsigned int value,int base){return value*base;}int main(){return f(7,6);}
+22int main(){unsigned int v=20;return v+2;}
+42int main(){long long n=41;return n+1;}
+42int main(){unsigned long long int n=42;return n;}
+42int f(long int a){return a;}int main(){return f(42);}
+42int main(){unsigned /* t */ int a=42;return a;}
+65int main(){unsigned char s[4];s[0]=65;s[1]=0;return s[0];}
+99unsigned g;int main(){g=99;return g;}
+9int set(unsigned* q){*q=9;return 0;}int main(){unsigned x;set(&x);return x;}
+42int sum(long* p,int n){int i;int s;i=0;s=0;while(i<n){s=s+p[i];i=i+1;}return s;}int main(){long a[3];a[0]=1;a[1]=2;a[2]=39;return sum(a,3);}
+42struct S{unsigned n;long m;};int main(){struct S s;s.n=6;s.m=7;return s.n*s.m;}
+42int f(unsigned,long);int main(){return f(6,7);}int f(unsigned a,long b){return a*b;}
+8int main(){return sizeof(unsigned);}
+1int main(){return sizeof(unsigned char);}
+6int main(){int s;s=0;for(unsigned i=0;i<4;i=i+1){s=s+i;}return s;}
+42int main(){int longitude;int unsignedly;longitude=40;unsignedly=2;return longitude+unsignedly;}
+42int int2str(int x,int signed_p){return x+signed_p;}int main(){return int2str(40,2);}
+6enum{A=1};int main(){char c;c=2;int i;i=0;lp:i=i+1;if(i<3){goto lp;}else{c=c+A;}return c+i;}
+7int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){if(i==3){continue;}s=s+i;}return s;}
+42int inc(int x){return x+1;}int apply(FUNCTION f,int v){return f(v);}int main(){return apply(inc,41);}
+43int inc(int x){return x+1;}int dbl(int x){return x*2;}int g(FUNCTION f,char* s,char* nm,FUNCTION it){return f(20)+it(21);}int main(){return g(inc,0,0,inc);}
+42int inc(int x){return x+1;}int main(){FUNCTION f;f=inc;return f(41);}
+42int inc(int x){return x+1;}FUNCTION h;int main(){h=inc;return h(41);}
+42int wr(FILE* out,int n){return n;}int main(){return wr(0,42);}
+42int rat(FILE* a,char* c,char* fn){return a[0]+42;}int main(){char b[2];b[0]=0;return rat(b,0,0);}
+42char* g;int main(){FILE* in=g;return 42;}
+42int main(){FILE* f;f=0;if(f){return 9;}return 42;}
+42FILE* input;int main(){input=0;return 42;}
+42int rd(FILE* f){return f[0];}int main(){char b[2];b[0]=42;return rd(b);}
+42int f(size_t n,int v){return n+v;}int main(){return f(40,2);}
+42int main(){size_t n;n=42;return n;}
+42int main(){size_t n=42;return n;}
+42int f(ssize_t n){return n;}int main(){return f(42);}
+42int f(va_list ap,int n){return n;}int main(){return f(0,42);}
+42int inc(int x){return x+1;}int g(FILE* out,FUNCTION f,int v){return f(v);}int main(){return g(0,inc,41);}
+42struct S{FILE* f;size_t n;};int main(){struct S s;s.n=42;return s.n;}
+42int sum(size_t* p,int n){int i;int s;i=0;s=0;while(i<n){s=s+p[i];i=i+1;}return s;}int main(){size_t a[3];a[0]=1;a[1]=2;a[2]=39;return sum(a,3);}
+42int f(FILE* o,int n){int a;int b;int c;a=1;b=2;c=n;return a+b+c;}int main(){return f(0,39);}
+42int f(void){return 42;}int main(){return f();}
+42void g(void){return;}int main(){g();return 42;}
+42int s;int f(int n){s=n;return 0;}int main(){f(42);return s;}
+42int main(){int a[2];a[1]=42;return a[1];}
+42struct S{int v;};int main(){struct S s;struct S* p;p=&s;p->v=42;return p->v;}
+42int main(){int i;i=0;lp:i=i+1;if(i<42){goto lp;}return i;}
+42int main(){int x;int* p;p=&x;*p=42;return x;}
+42int main(){int a;int b;int c;b=6;c=7;a=b*c;return a;}
+42int main(){int b;int c;b=6;c=7;int a=b*c;return a;}
+42int main(int argc,char** argv){return 42;}
+42int main(){int p;p=brk(0);if(p){return 42;}return 9;}
+42int main(){int a;int b;a=brk(0);b=brk(a+4096);if(b>a){return 42;}return 9;}
+42long _brk_ptr;long _malloc_ptr;int mymalloc(int size){if(_brk_ptr==0){_brk_ptr=brk(0);_malloc_ptr=_brk_ptr;}if(_brk_ptr<_malloc_ptr+size){_brk_ptr=brk(_malloc_ptr+size+4096);}int old;old=_malloc_ptr;_malloc_ptr=_malloc_ptr+size;return old;}int main(){char* p;p=mymalloc(64);p[0]=42;return p[0];}
+42long _brk_ptr;long _malloc_ptr;int mymalloc(int size){if(_brk_ptr==0){_brk_ptr=brk(0);_malloc_ptr=_brk_ptr;}if(_brk_ptr<_malloc_ptr+size){_brk_ptr=brk(_malloc_ptr+size+4096);}int old;old=_malloc_ptr;_malloc_ptr=_malloc_ptr+size;return old;}int main(){char* a;char* b;a=mymalloc(32);b=mymalloc(32);a[0]=2;b[0]=40;return a[0]+b[0];}
+42int f(int n){if(n==0){return 0;}return n+f(n-1);}int main(){int p;p=brk(0);brk(p+8192);return f(8)+6;}
+42int brk(int a){return 42;}int main(){return brk(0);}
+42int main(){char* a[2];char x[2];char y[2];x[0]=1;y[0]=41;a[0]=x;a[1]=y;char* p;char* q;p=a[0];q=a[1];return p[0]+q[0];}
+42int main(){int* a[2];int x;int y;x=1;y=41;a[0]=&x;a[1]=&y;int* p;int* q;p=a[0];q=a[1];return *p+*q;}
+42int main(){char* a[3];char x[2];x[0]=42;a[2]=x;int i;i=2;char* p;p=a[i];return p[0];}
+42int f(char** v,int i){char* p;p=v[i];return p[0];}int main(){char* a[2];char x[2];char y[2];x[0]=9;y[0]=42;a[0]=x;a[1]=y;return f(a,1);}
+42int f(char** v,int i){char* p;p=v[i+1];return p[0];}int main(){char* a[2];char x[2];char y[2];x[0]=9;y[0]=42;a[0]=x;a[1]=y;return f(a,0);}
+42int f(char** v,int i){if(v[i]==0){return 42;}return 9;}int main(){char* a[2];a[0]=0;return f(a,0);}
+42int g(char* s){return s[0];}int f(char** v,int i){return g(v[i]);}int main(){char* a[2];char x[2];x[0]=42;a[1]=x;return f(a,1);}
+42int f(char** v,char* s){v[1]=s;return 0;}int main(){char* a[2];char x[2];x[0]=42;f(a,x);char* p;p=a[1];return p[0];}
+42int main(){char* a[2];char x[2];x[0]=42;a[1]=x;char** v;v=a;char* p;p=v[1];return p[0];}
+42char** g;int main(){char* a[2];char x[2];x[0]=42;a[1]=x;g=a;char* p;p=g[1];return p[0];}
+42char* g[2];int main(){char x[2];x[0]=42;g[1]=x;char* p;p=g[1];return p[0];}
+42int main(){char* a[2];char x[2];x[0]=42;a[0]=x;char** v;v=a;char* p;p=*v;return p[0];}
+42int main(){char* a[3];char x[2];x[0]=42;a[2]=x;char** e;e=&a[2];char* p;p=*e;return p[0];}
+42int main(int argc,char** argv){return 42;}
+42int main(){char s[4];s[0]=65;s[1]=42;return s[1];}
+42int main(){char s[2];s[0]=42;char* p;p=s;return *p;}
+42int main(){char s[3];s[2]=42;char* p;p=s;return p[2];}
+42int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;}int main(){return len("hello")+37;}
+42int main(){int a[3];a[2]=42;return a[2];}
+42int main(){int x;x=42;int* p;p=&x;return *p;}
+1int main(int argc,char** argv){return argc;}
+3-o outint main(int argc,char** argv){return argc;}
+45-o outint main(int argc,char** argv){char* p;p=argv[1];return p[0];}
+111-o outint main(int argc,char** argv){char* p;p=argv[1];return p[1];}
+111-o outint main(int argc,char** argv){int i;i=2;char* p;p=argv[i];return p[0];}
+111-o outint main(int argc,char** argv){int i;i=1;char* p;p=argv[i+1];return p[0];}
+42-o outint main(int argc,char** argv){if(argv[argc]==0){return 42;}return 9;}
+42-o outint eq(char* a,char* b){int i;i=0;while(a[i]){if(a[i]!=b[i]){return 0;}i=i+1;}if(b[i]){return 0;}return 1;}int main(int argc,char** argv){int i;i=1;while(i<argc){if(eq(argv[i],"-o")){return 42;}i=i+1;}return 9;}
+45-o outint f(char** v,int i){char* p;p=v[i];return p[0];}int main(int argc,char** argv){return f(argv,1);}
+42-o outint main(){return 42;}
+42-o outint main(void){return 42;}
+55-o outint f(int n){if(n<2){return n;}return f(n-1)+f(n-2);}int main(int argc,char** argv){return f(10);}
+42-o outint main(int argc,char** argv){char* p;p=calloc(4,8);p[0]=42;return p[0];}

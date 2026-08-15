@@ -1,0 +1,6018 @@
+# pico-c (stage 2, layer 2) — A2: functions + a real call stack + recursion.
+# Builds on the m34 tokenizer. The symbol table and frame allocator are now LIVE:
+#   * declaration-order frame allocator (params first, then locals), consulted by
+#     name via a symbol table -> MULTI-CHAR variable names work; no letter-map.
+#   * functions: program is one-or-more int name(params){body}; a call f(a,b) is a
+#     primary in any expression.
+# Emitted runtime (three regions in one brk block):
+#   x9 value stack (temps AND args/return), x10 frame base (params+locals at
+#   x10+off, decl order, word slots), x11 frame stack (frames nest -> recursion).
+#   frame = [saved caller x10 (8) | saved x30 (8) | params+locals], 16-aligned;
+#   x10 points past the 16-byte save area. call: eval args L->R onto value stack,
+#   bl f; callee saves x10/x30, opens a frame, pops P args (reverse) into params;
+#   return e leaves the result on the value stack, restores x10/x30/x11, ret.
+#   program starts bl main; main's return is the exit code. Functions emit :name /
+#   bl name (resolved by pico-c-assembler); if/while stay NUMERIC backpatched (b.eq @<pos>),
+#   which pico-c-assembler passes through -> pipeline prog.c | pico-c | pico-c-assembler | self-assembler.
+# compiler regs: x19 inbuf, x21 inlen, x22 outbuf, x23 outpos, x6 scan, x17 emitted
+#   instr count (labels are 0 bytes, emitted via emitlabel so x17 is unaffected),
+#   x24 opstk base, x25 opstk top, x26 cur-op, x11 op-to-apply, x14 store-offset,
+#   x15/x16 blockstk, x12 cexpr opstk base / patch temp, x13 patch/offset temp,
+# block record = 24 bytes [kind | a | b | c | d | e]; kind 0=if 1=while 2=else
+#   3=plain 4=do 5=for, +8 = braceless variant (peekbrace); 14/15 are the for
+#   header phases (init/step), which are not blocks but ride the same stack so the
+#   ordinary statement machinery can compile those clauses. a = end/else label
+#   (if/else) or the back-branch target (while/do top, for step); b = loop exit
+#   label (break target); c = continue target label id PLUS ONE, 0 = none yet
+#   (label id 0 is a real label, so the +1 is the sentinel). while sets c at push;
+#   do allocates it lazily on first continue and defines it at close, immediately
+#   before the condition; for sets it to its step label. d/e are scratch for the
+#   for-step phase record (d = body label).
+# enum constants live in their own table at x19+(2058<<16): 16-byte records
+#   [name_start | name_len | value | pad], count at the counter page +72. Names are
+#   compared against the input buffer exactly as gsymlookup does, so nothing is
+#   copied. Looked up in ceid_var only AFTER local and global variables miss, and
+#   before the `adr x0 <name>` function-address fallback -- so a variable or
+#   function of the same name still wins, and an enum constant costs nothing until
+#   an identifier would otherwise have become an address.
+#   x10 symtab base, x8 symtab count (this function), x28 cexpr save-stack ptr,
+#   x18/x20/x29 token start/kind/aux. cexpr save-stack holds (x30,x12) so the
+#   expression compiler is re-entrant across call arguments; compile_call also
+#   parks the callee name span there.
+mov x0 0
+mov x1 0
+movk x1 2064 16
+mov x2 3
+mov x3 34
+mov x4 0
+sub x4 x4 1
+mov x5 0
+mov x8 222
+svc
+mov x19 x0
+mov x1 0
+movk x1 2049 16
+add x22 x19 x1
+mov x1 0
+movk x1 2053 16
+add x24 x19 x1
+mov x1 4096
+movk x1 2053 16
+add x15 x19 x1
+mov x1 8192
+movk x1 2053 16
+add x10 x19 x1
+mov x1 12288
+movk x1 2053 16
+add x28 x19 x1
+mov x16 0
+mov x17 0
+mov x25 0
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+mov x2 0
+str x2 x1
+add x3 x1 8
+str x2 x3
+add x3 x1 40
+str x2 x3
+add x3 x1 48
+str x2 x3
+add x3 x1 56
+str x2 x3
+mov x21 0
+:s2rdl
+mov x2 0
+movk x2 2048 16
+sub x2 x2 x21
+cmp x2 1
+b.lt s2rdfull
+mov x0 0
+add x1 x19 x21
+mov x8 63
+svc
+cmp x0 1
+b.lt s2rddone
+add x21 x21 x0
+b s2rdl
+:s2rdfull
+mov x0 2
+adr x1 sinover
+mov x2 28
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
+:s2rddone
+mov x23 0
+mov x6 0
+mov x1 32768
+movk x1 2053 16
+add x1 x19 x1
+mov x2 0
+str x2 x1
+mov x1 36864
+movk x1 2053 16
+add x1 x19 x1
+mov x2 0
+str x2 x1
+mov x1 36872
+movk x1 2053 16
+add x1 x19 x1
+mov x2 0
+str x2 x1
+adr x9 smainpre
+bl emitstr
+:funcloop
+bl next_token
+cmp x20 0
+b.eq alldone
+cmp x29 14
+b.eq doenum
+cmp x29 7
+b.eq fl_struct
+mov x12 0
+cmp x29 5
+b.ne fl_nc
+mov x12 1
+:fl_nc
+bl next_token
+cmp x20 5
+b.ne fl_starchk
+cmp x29 40
+b.eq fl_gfnptr
+:fl_starchk
+cmp x29 42
+b.ne fl_hn
+mov x3 4
+orr x12 x12 x3
+bl next_token
+cmp x29 42
+b.ne fl_hn
+mov x3 16
+orr x12 x12 x3
+:fl_stars
+cmp x29 42
+b.ne fl_hn
+bl next_token
+b fl_stars
+:fl_hn
+mov x3 x6
+:fl_pk
+cmp x3 x21
+b.ge fl_global
+ldrb w5 x19 x3
+cmp x5 32
+b.eq fl_pka
+cmp x5 9
+b.eq fl_pka
+cmp x5 10
+b.eq fl_pka
+cmp x5 13
+b.eq fl_pka
+b fl_pkc
+:fl_pka
+add x3 x3 1
+b fl_pk
+:fl_pkc
+cmp x5 40
+b.eq fl_pchk
+b fl_global
+:fl_pchk
+mov x4 0
+:fpc_l
+cmp x3 x21
+b.ge fl_func
+ldrb w5 x19 x3
+cmp x5 40
+b.ne fpc_nc
+add x4 x4 1
+:fpc_nc
+cmp x5 41
+b.ne fpc_adv
+sub x4 x4 1
+cmp x4 0
+b.eq fpc_close
+:fpc_adv
+add x3 x3 1
+b fpc_l
+:fpc_close
+add x3 x3 1
+:fpc_ws
+cmp x3 x21
+b.ge fl_func
+ldrb w5 x19 x3
+cmp x5 32
+b.eq fpc_wsa
+cmp x5 9
+b.eq fpc_wsa
+cmp x5 10
+b.eq fpc_wsa
+cmp x5 13
+b.eq fpc_wsa
+b fpc_chk
+:fpc_wsa
+add x3 x3 1
+b fpc_ws
+:fpc_chk
+cmp x5 59
+b.eq fl_proto
+b fl_func
+:fl_proto
+add x3 x3 1
+mov x6 x3
+b funcloop
+:fl_func
+adr x3 scalloc
+bl nameq
+cmp x0 0
+b.eq flf_ckf
+mov x0 1
+adr x3 udef_calloc
+str x0 x3
+b flf_ckd
+:flf_ckf
+adr x3 sfree
+bl nameq
+cmp x0 0
+b.eq flf_cko
+mov x0 1
+adr x3 udef_free
+str x0 x3
+b flf_ckd
+:flf_cko
+adr x3 sopen
+bl nameq
+cmp x0 0
+b.eq flf_ckr
+mov x0 1
+adr x3 udef_open
+str x0 x3
+b flf_ckd
+:flf_ckr
+adr x3 sread
+bl nameq
+cmp x0 0
+b.eq flf_ckw
+mov x0 1
+adr x3 udef_read
+str x0 x3
+b flf_ckd
+:flf_ckw
+adr x3 swrite
+bl nameq
+cmp x0 0
+b.eq flf_ckc
+mov x0 1
+adr x3 udef_write
+str x0 x3
+b flf_ckd
+:flf_ckc
+adr x3 sclose
+bl nameq
+cmp x0 0
+b.eq flf_cke
+mov x0 1
+adr x3 udef_close
+str x0 x3
+b flf_ckd
+:flf_cke
+adr x3 sexit
+bl nameq
+cmp x0 0
+b.eq flf_ckb
+mov x0 1
+adr x3 udef_exit
+str x0 x3
+b flf_ckd
+:flf_ckb
+adr x3 sbrk
+bl nameq
+cmp x0 0
+b.eq flf_ckg
+mov x0 1
+adr x3 udef_brk
+str x0 x3
+b flf_ckd
+:flf_ckg
+adr x3 schmod
+bl nameq
+cmp x0 0
+b.eq flf_ckd
+mov x0 1
+adr x3 udef_chmod
+str x0 x3
+:flf_ckd
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 48
+ldr x2 x1
+add x2 x2 1
+str x2 x1
+bl emitlabel
+mov x8 0
+bl next_token
+:paramloop
+bl next_token
+cmp x20 5
+b.ne pl_int
+cmp x29 41
+b.eq paramdone
+mov x3 1
+cmp x29 40
+b.eq pl_fp_skip
+b paramloop
+:pl_int
+cmp x20 3
+b.ne pl_ident
+cmp x29 7
+b.eq pl_struct
+mov x12 0
+cmp x29 5
+b.ne pl_notchar
+mov x12 1
+:pl_notchar
+bl next_token
+cmp x20 5
+b.ne pl_starchk
+cmp x29 40
+b.eq pl_fnptr
+:pl_starchk
+cmp x29 42
+b.ne pl_decl
+mov x3 4
+orr x12 x12 x3
+bl next_token
+cmp x29 42
+b.ne pl_decl
+mov x3 16
+orr x12 x12 x3
+:pl_stars
+cmp x29 42
+b.ne pl_decl
+bl next_token
+b pl_stars
+:pl_decl
+mov x2 x12
+mov x13 8
+bl symdecl
+b paramloop
+:pl_struct
+bl next_token
+bl struct_findtag
+mov x2 37120
+movk x2 2053 16
+add x2 x19 x2
+sub x5 x0 x2
+mov x1 5
+lsr x5 x5 x1
+add x27 x5 1
+add x1 x0 16
+ldr w7 x1
+bl next_token
+cmp x29 42
+b.ne pl_st_val
+mov x13 8
+bl next_token
+mov x2 4
+bl symdecl
+b pl_st_stag
+:pl_st_val
+mov x2 0
+mov x13 x7
+bl symdecl
+:pl_st_stag
+sub x3 x8 1
+mov x5 5
+lsl x3 x3 x5
+add x3 x10 x3
+add x4 x3 20
+str w27 x4
+b paramloop
+:pl_ident
+mov x3 x6
+:pl_tpk
+cmp x3 x21
+b.ge paramloop
+ldrb w5 x19 x3
+cmp x5 32
+b.eq pl_tpa
+cmp x5 9
+b.eq pl_tpa
+cmp x5 10
+b.eq pl_tpa
+cmp x5 13
+b.eq pl_tpa
+b pl_tpc
+:pl_tpa
+add x3 x3 1
+b pl_tpk
+:pl_tpc
+cmp x5 42
+b.eq pl_tname
+cmp x5 95
+b.eq pl_tname
+cmp x5 65
+b.lt paramloop
+cmp x5 91
+b.lt pl_tname
+cmp x5 97
+b.lt paramloop
+cmp x5 123
+b.lt pl_tname
+b paramloop
+:pl_tname
+mov x12 0
+b pl_notchar
+:paramdone
+bl next_token
+bl prescan
+add x2 x8 x0
+mov x5 3
+lsl x2 x2 x5
+add x2 x2 15
+mov x5 4
+lsr x2 x2 x5
+lsl x2 x2 x5
+add x13 x2 16
+adr x9 sfpro
+bl emitstr
+bl emitoff
+adr x9 snl
+bl emitstr
+sub x12 x8 1
+:poploop
+cmp x12 0
+b.lt popdone
+adr x9 spop
+bl emitstr
+mov x5 3
+lsl x13 x12 x5
+bl emitoff
+adr x9 sstore
+bl emitstr
+sub x12 x12 1
+b poploop
+:popdone
+b stmtloop
+:alldone
+bl emit_runtime
+mov x0 1
+mov x1 x22
+mov x2 x23
+mov x8 64
+svc
+mov x0 0
+mov x8 93
+svc
+:fl_struct
+bl next_token
+mov x3 x6
+:fls_pk
+cmp x3 x21
+b.ge fls_isdef
+ldrb w5 x19 x3
+cmp x5 32
+b.eq fls_pka
+cmp x5 9
+b.eq fls_pka
+cmp x5 10
+b.eq fls_pka
+cmp x5 13
+b.eq fls_pka
+cmp x5 123
+b.eq fls_isdef
+b fl_gstruct
+:fls_pka
+add x3 x3 1
+b fls_pk
+:fls_isdef
+mov x2 36864
+movk x2 2053 16
+add x2 x19 x2
+ldr x3 x2
+mov x7 37120
+movk x7 2053 16
+add x7 x19 x7
+mov x5 5
+lsl x5 x3 x5
+add x12 x7 x5
+str w18 x12
+sub x4 x6 x18
+add x0 x12 4
+str w4 x0
+mov x0 36872
+movk x0 2053 16
+add x0 x19 x0
+ldr w4 x0
+add x1 x12 8
+str w4 x1
+add x3 x3 1
+str x3 x2
+bl next_token
+:fl_sfl
+bl next_token
+cmp x20 5
+b.ne fl_sf_type
+cmp x29 125
+b.eq fl_sdone
+b fl_sfl
+:fl_sf_type
+mov x13 0
+mov x14 0
+cmp x29 5
+b.ne fl_sf_nc
+mov x13 1
+:fl_sf_nc
+cmp x29 7
+b.ne fl_sf_nstr
+bl next_token
+bl struct_findtag
+mov x2 37120
+movk x2 2053 16
+add x2 x19 x2
+sub x0 x0 x2
+mov x5 5
+lsr x0 x0 x5
+add x14 x0 1
+:fl_sf_nstr
+bl next_token
+cmp x29 42
+b.ne fl_sf_name
+mov x2 2
+orr x13 x13 x2
+bl next_token
+:fl_sf_name
+mov x0 36872
+movk x0 2053 16
+add x0 x19 x0
+ldr w4 x0
+mov x7 45056
+movk x7 2053 16
+add x7 x19 x7
+mov x5 x4
+mov x2 24
+mul x5 x5 x2
+add x5 x7 x5
+str w18 x5
+sub x2 x6 x18
+add x1 x5 4
+str w2 x1
+add x1 x12 8
+ldr w3 x1
+sub x3 x4 x3
+mov x2 3
+lsl x2 x3 x2
+add x1 x5 8
+str w2 x1
+add x1 x5 12
+str w13 x1
+add x1 x5 16
+str w14 x1
+add x4 x4 1
+mov x0 36872
+movk x0 2053 16
+add x0 x19 x0
+str w4 x0
+bl next_token
+b fl_sfl
+:fl_sdone
+mov x0 36872
+movk x0 2053 16
+add x0 x19 x0
+ldr w4 x0
+add x1 x12 8
+ldr w3 x1
+sub x4 x4 x3
+add x1 x12 12
+str w4 x1
+mov x2 3
+lsl x2 x4 x2
+add x1 x12 16
+str w2 x1
+bl next_token
+b funcloop
+:fl_gstruct
+bl struct_findtag
+cmp x0 0
+b.eq flg_fwd
+mov x2 37120
+movk x2 2053 16
+add x2 x19 x2
+sub x5 x0 x2
+mov x1 5
+lsr x5 x5 x1
+add x27 x5 1
+add x1 x0 16
+ldr w7 x1
+b flg_look
+:flg_fwd
+mov x27 0
+mov x7 8
+:flg_look
+bl next_token
+cmp x29 42
+b.ne flg_st_val
+:flg_st_stars
+bl next_token
+cmp x29 42
+b.eq flg_st_stars
+mov x2 4
+mov x3 x6
+:flg_sfpk
+cmp x3 x21
+b.ge flg_sfno
+ldrb w5 x19 x3
+cmp x5 32
+b.eq flg_sfpa
+cmp x5 9
+b.eq flg_sfpa
+cmp x5 10
+b.eq flg_sfpa
+cmp x5 13
+b.eq flg_sfpa
+cmp x5 40
+b.eq fl_pchk
+b flg_sfno
+:flg_sfpa
+add x3 x3 1
+b flg_sfpk
+:flg_sfno
+bl gsymdecl
+mov x13 8
+bl flg_ststag
+bl emit_gdata
+b flg_st_sk
+:flg_st_val
+cmp x27 0
+b.eq stfwd
+mov x2 0
+mov x13 x7
+bl gsymdecl
+bl flg_ststag
+bl emit_gdata
+:flg_st_sk
+bl next_token
+cmp x29 59
+b.ne flg_st_sk
+b funcloop
+:flg_ststag
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x3 x1 40
+ldr x4 x3
+sub x4 x4 1
+mov x5 4
+lsl x5 x4 x5
+mov x0 0
+movk x0 2056 16
+add x0 x19 x0
+add x0 x0 x5
+add x0 x0 12
+str w27 x0
+ret
+:fl_global
+mov x3 x6
+:flg_pk
+cmp x3 x21
+b.ge flg_scalar
+ldrb w5 x19 x3
+cmp x5 32
+b.eq flg_pka
+cmp x5 9
+b.eq flg_pka
+cmp x5 10
+b.eq flg_pka
+cmp x5 13
+b.eq flg_pka
+b flg_pkc
+:flg_pka
+add x3 x3 1
+b flg_pk
+:flg_pkc
+cmp x5 91
+b.eq flg_array
+:flg_scalar
+mov x2 x12
+bl gsymdecl
+mov x13 8
+bl emit_gdata
+:flg_ssk
+bl next_token
+cmp x29 59
+b.ne flg_ssk
+b funcloop
+:flg_array
+mov x7 x18
+mov x14 x6
+bl next_token
+bl parsenum
+str x6 x28
+add x28 x28 8
+mov x5 4
+and x3 x12 x5
+cmp x3 0
+b.eq flg_anp
+mov x5 16
+orr x12 x12 x5
+:flg_anp
+mov x5 17
+and x3 x12 x5
+cmp x3 1
+b.eq flg_ac
+mov x5 3
+lsl x13 x0 x5
+b flg_asz
+:flg_ac
+add x0 x0 7
+mov x5 3
+lsr x0 x0 x5
+lsl x13 x0 x5
+:flg_asz
+mov x2 x12
+add x2 x2 2
+mov x18 x7
+mov x6 x14
+bl gsymdecl
+bl emit_gdata
+sub x28 x28 8
+ldr x6 x28
+:flg_ask
+bl next_token
+cmp x29 59
+b.ne flg_ask
+b funcloop
+:stmtend
+cmp x16 0
+b.eq stmtloop
+sub x2 x16 24
+add x2 x15 x2
+ldr w4 x2
+cmp x4 8
+b.lt stmtloop
+sub x16 x16 24
+add x2 x15 x16
+ldr w4 x2
+add x2 x16 4
+add x2 x15 x2
+ldr w12 x2
+add x2 x16 8
+add x2 x15 x2
+ldr w13 x2
+cmp x4 9
+b.eq dclose_while
+cmp x4 10
+b.eq docloseelse
+cmp x4 12
+b.eq dclose_do
+cmp x4 13
+b.eq dclose_while
+cmp x4 14
+b.eq forp2
+cmp x4 15
+b.eq forp4
+b docloseif
+:stmtloop
+bl next_token
+cmp x20 0
+b.eq alldone
+cmp x20 3
+b.eq stmtkw
+cmp x20 4
+b.eq stmtop
+cmp x20 2
+b.eq doreassign
+cmp x20 5
+b.ne stmtloop
+cmp x29 125
+b.eq doclose
+cmp x29 123
+b.eq doblock
+cmp x29 59
+b.eq stmtend
+b stmtloop
+:doblock
+mov w4 3
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+b stmtloop
+:stmtkw
+cmp x29 1
+b.eq doint_int
+cmp x29 5
+b.eq doint_char
+cmp x29 7
+b.eq dostruct
+cmp x29 2
+b.eq doif
+cmp x29 3
+b.eq dowhile
+cmp x29 4
+b.eq doreturn
+cmp x29 9
+b.eq dogoto
+cmp x29 10
+b.eq dodo
+cmp x29 11
+b.eq dobreak
+cmp x29 12
+b.eq docontinue
+cmp x29 13
+b.eq dofor
+b stmtloop
+:stmtop
+cmp x29 42
+b.eq dostar
+b stmtloop
+:dostar
+bl next_token
+str x18 x28
+add x28 x28 8
+str x6 x28
+add x28 x28 8
+bl next_token
+bl compile_expr
+mov x14 x6
+sub x28 x28 8
+ldr x6 x28
+sub x28 x28 8
+ldr x18 x28
+bl emitbase1
+mov x3 1
+and x5 x1 x3
+cmp x5 0
+b.ne dostar_b
+adr x9 sstoreind
+bl emitstr
+mov x6 x14
+add x6 x6 1
+b stmtend
+:dostar_b
+adr x9 sstoreindb
+bl emitstr
+mov x6 x14
+add x6 x6 1
+b stmtend
+:doint_int
+mov x12 0
+b doint
+:doint_char
+mov x12 1
+b doint
+:doint
+bl next_token
+cmp x20 5
+b.ne doint_star
+cmp x29 40
+b.eq doint_fnptr
+:doint_star
+cmp x29 42
+b.ne di_name
+mov x3 4
+orr x12 x12 x3
+bl next_token
+cmp x29 42
+b.ne di_name
+mov x3 16
+orr x12 x12 x3
+:di_stars
+cmp x29 42
+b.ne di_name
+bl next_token
+b di_stars
+:di_name
+mov x3 x6
+:di_ws0
+cmp x3 x21
+b.ge di_scalar
+ldrb w5 x19 x3
+cmp x5 32
+b.eq di_ws0a
+cmp x5 9
+b.eq di_ws0a
+cmp x5 10
+b.eq di_ws0a
+cmp x5 13
+b.eq di_ws0a
+b di_chk0
+:di_ws0a
+add x3 x3 1
+b di_ws0
+:di_chk0
+cmp x5 91
+b.eq di_array
+:di_scalar
+mov x2 x12
+mov x13 8
+bl symdecl
+mov x14 x0
+mov x3 x6
+:di_ws
+cmp x3 x21
+b.ge di_uninit
+ldrb w5 x19 x3
+cmp x5 32
+b.eq di_wsadv
+cmp x5 9
+b.eq di_wsadv
+cmp x5 10
+b.eq di_wsadv
+cmp x5 13
+b.eq di_wsadv
+b di_chk
+:di_wsadv
+add x3 x3 1
+b di_ws
+:di_chk
+cmp x5 61
+b.eq di_init
+:di_uninit
+bl next_token
+b stmtend
+:di_init
+bl next_token
+str x14 x28
+add x28 x28 8
+bl compile_expr
+sub x28 x28 8
+ldr x14 x28
+adr x9 spop
+bl emitstr
+mov w13 x14
+bl emitoff
+adr x9 sstore
+bl emitstr
+add x6 x6 1
+b stmtend
+:di_array
+mov x7 x18
+mov x14 x6
+bl next_token
+bl parsenum
+mov x1 x6
+mov x5 4
+and x3 x12 x5
+cmp x3 0
+b.eq di_arr_np
+mov x5 16
+orr x12 x12 x5
+:di_arr_np
+mov x5 17
+and x3 x12 x5
+cmp x3 1
+b.eq di_arr_char
+mov x5 3
+lsl x13 x0 x5
+b di_arr_sz
+:di_arr_char
+add x0 x0 7
+mov x5 3
+lsr x0 x0 x5
+lsl x13 x0 x5
+:di_arr_sz
+mov x2 x12
+add x2 x2 2
+mov x18 x7
+mov x6 x14
+bl symdecl
+mov x6 x1
+bl next_token
+bl next_token
+b stmtend
+:dostruct
+bl next_token
+bl struct_findtag
+cmp x0 0
+b.eq ds_fwd
+mov x2 37120
+movk x2 2053 16
+add x2 x19 x2
+sub x5 x0 x2
+mov x1 5
+lsr x5 x5 x1
+add x27 x5 1
+add x1 x0 16
+ldr w13 x1
+b ds_look
+:ds_fwd
+mov x27 0
+mov x13 8
+:ds_look
+bl next_token
+cmp x29 42
+b.ne ds_value
+mov x13 8
+bl next_token
+mov x2 4
+bl symdecl
+mov x14 x0
+sub x3 x8 1
+mov x5 5
+lsl x3 x3 x5
+add x3 x10 x3
+add x4 x3 20
+str w27 x4
+mov x3 x6
+:ds_ws
+cmp x3 x21
+b.ge ds_uninit
+ldrb w5 x19 x3
+cmp x5 32
+b.eq ds_wsadv
+cmp x5 9
+b.eq ds_wsadv
+cmp x5 10
+b.eq ds_wsadv
+cmp x5 13
+b.eq ds_wsadv
+b ds_chk
+:ds_wsadv
+add x3 x3 1
+b ds_ws
+:ds_chk
+cmp x5 61
+b.eq ds_init
+:ds_uninit
+bl next_token
+b stmtend
+:ds_init
+bl next_token
+str x14 x28
+add x28 x28 8
+bl compile_expr
+sub x28 x28 8
+ldr x14 x28
+adr x9 spop
+bl emitstr
+mov w13 x14
+bl emitoff
+adr x9 sstore
+bl emitstr
+add x6 x6 1
+b stmtend
+:ds_value
+cmp x27 0
+b.eq stfwd
+mov x2 0
+bl symdecl
+sub x3 x8 1
+mov x5 5
+lsl x3 x3 x5
+add x3 x10 x3
+add x4 x3 20
+str w27 x4
+bl next_token
+b stmtend
+:doreassign
+mov x3 x6
+:dra_ws
+cmp x3 x21
+b.ge dra_asg
+ldrb w5 x19 x3
+cmp x5 32
+b.eq dra_wsadv
+cmp x5 9
+b.eq dra_wsadv
+cmp x5 10
+b.eq dra_wsadv
+cmp x5 13
+b.eq dra_wsadv
+b dra_chk
+:dra_wsadv
+add x3 x3 1
+b dra_ws
+:dra_chk
+cmp x5 40
+b.eq dra_call
+cmp x5 91
+b.eq dra_sub
+cmp x5 46
+b.eq dra_member
+cmp x5 45
+b.eq dra_arrowq
+cmp x5 58
+b.eq dra_label
+cmp x5 42
+b.eq dra_td_star
+b dra_td_id
+:dra_td_star
+add x3 x3 1
+:dra_td_sws
+cmp x3 x21
+b.ge dra_asg
+ldrb w5 x19 x3
+cmp x5 32
+b.eq dra_td_sa
+cmp x5 9
+b.eq dra_td_sa
+cmp x5 10
+b.eq dra_td_sa
+cmp x5 13
+b.eq dra_td_sa
+cmp x5 42
+b.eq dra_td_star
+b dra_td_id
+:dra_td_sa
+add x3 x3 1
+b dra_td_sws
+:dra_td_id
+cmp x5 95
+b.eq dra_decl
+cmp x5 65
+b.lt dra_asg
+cmp x5 91
+b.lt dra_decl
+cmp x5 97
+b.lt dra_asg
+cmp x5 123
+b.lt dra_decl
+b dra_asg
+:dra_decl
+mov x12 0
+b doint
+:dra_asg
+str x18 x28
+add x28 x28 8
+str x6 x28
+add x28 x28 8
+bl next_token
+bl compile_expr
+adr x9 spopv
+bl emitstr
+mov x14 x6
+sub x28 x28 8
+ldr x6 x28
+sub x28 x28 8
+ldr x18 x28
+bl emitbase1
+adr x9 sstore
+bl emitstr
+mov x6 x14
+add x6 x6 1
+b stmtend
+:dra_call
+mov x6 x18
+bl compile_expr
+adr x9 sdiscard
+bl emitstr
+add x6 x6 1
+b stmtend
+:dra_sub
+str x18 x28
+add x28 x28 8
+str x6 x28
+add x28 x28 8
+bl next_token
+bl compile_expr
+bl next_token
+bl next_token
+bl compile_expr
+mov x14 x6
+sub x28 x28 8
+ldr x6 x28
+sub x28 x28 8
+ldr x18 x28
+bl emitsubstore
+mov x6 x14
+add x6 x6 1
+b stmtend
+:dra_arrowq
+add x2 x3 1
+ldrb w5 x19 x2
+cmp x5 62
+b.eq dra_member
+b dra_asg
+:dra_member
+bl emit_maddr
+mov x3 x6
+:dram_pws
+cmp x3 x21
+b.ge dram_plain
+ldrb w5 x19 x3
+cmp x5 32
+b.eq dram_pwsa
+cmp x5 9
+b.eq dram_pwsa
+cmp x5 10
+b.eq dram_pwsa
+cmp x5 13
+b.eq dram_pwsa
+b dram_pchk
+:dram_pwsa
+add x3 x3 1
+b dram_pws
+:dram_pchk
+cmp x5 91
+b.ne dram_plain
+adr x9 sldrw
+bl emitstr
+str x14 x28
+add x28 x28 8
+bl next_token
+bl compile_expr
+bl next_token
+bl next_token
+bl compile_expr
+sub x28 x28 8
+ldr x14 x28
+adr x9 spopval2
+bl emitstr
+adr x9 spopbase
+bl emitstr
+mov x3 1
+and x5 x14 x3
+cmp x5 0
+b.ne dram_sbyte
+adr x9 sscale
+bl emitstr
+adr x9 saddidx
+bl emitstr
+adr x9 sstrw
+bl emitstr
+b dram_sdn
+:dram_sbyte
+adr x9 sstrbidx
+bl emitstr
+:dram_sdn
+add x6 x6 1
+b stmtend
+:dram_plain
+adr x9 spushx1
+bl emitstr
+str x14 x28
+add x28 x28 8
+bl next_token
+bl compile_expr
+sub x28 x28 8
+ldr x14 x28
+mov x3 3
+and x5 x14 x3
+cmp x5 1
+b.eq dram_byte
+adr x9 smst2
+bl emitstr
+b dram_done
+:dram_byte
+adr x9 smst2b
+bl emitstr
+:dram_done
+add x6 x6 1
+b stmtend
+:doreturn
+mov x3 x6
+:dr_peek
+cmp x3 x21
+b.ge dr_expr
+ldrb w5 x19 x3
+cmp x5 32
+b.eq dr_padv
+cmp x5 9
+b.eq dr_padv
+cmp x5 10
+b.eq dr_padv
+cmp x5 13
+b.eq dr_padv
+b dr_pchk
+:dr_padv
+add x3 x3 1
+b dr_peek
+:dr_pchk
+cmp x5 59
+b.ne dr_expr
+mov x6 x3
+adr x9 spush0
+bl emitstr
+b dr_epi
+:dr_expr
+bl compile_expr
+:dr_epi
+adr x9 sepi
+bl emitstr
+add x6 x6 1
+b stmtend
+:dogoto
+bl next_token
+adr x9 sgotob
+bl emitstr
+bl emitglname
+adr x9 snlonly
+bl emitstr
+b stmtend
+:dra_label
+mov x14 x3
+adr x9 slgpfx
+bl emitstr
+bl emitglname
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+mov x6 x14
+add x6 x6 1
+b stmtloop
+:scancond
+mov x2 x6
+:scc_f
+cmp x2 x21
+b.ge scc_x
+ldrb w5 x19 x2
+cmp x5 40
+b.eq scc_s
+add x2 x2 1
+b scc_f
+:scc_s
+mov x4 0
+:scc_l
+cmp x2 x21
+b.ge scc_x
+ldrb w5 x19 x2
+cmp x5 39
+b.eq scc_ch
+cmp x5 34
+b.eq scc_st
+cmp x5 40
+b.ne scc_nc
+add x4 x4 1
+:scc_nc
+cmp x5 41
+b.ne scc_a
+sub x4 x4 1
+cmp x4 0
+b.eq scc_c
+:scc_a
+add x2 x2 1
+b scc_l
+:scc_ch
+add x2 x2 1
+ldrb w5 x19 x2
+cmp x5 92
+b.ne scc_ch1
+add x2 x2 1
+:scc_ch1
+add x2 x2 2
+b scc_l
+:scc_st
+add x2 x2 1
+:scc_sl
+cmp x2 x21
+b.ge scc_x
+ldrb w5 x19 x2
+cmp x5 92
+b.eq scc_sesc
+cmp x5 34
+b.eq scc_se
+add x2 x2 1
+b scc_sl
+:scc_sesc
+add x2 x2 2
+b scc_sl
+:scc_se
+add x2 x2 1
+b scc_l
+:scc_c
+add x2 x2 1
+:scc_x
+ret
+:peekbrace
+mov x3 x6
+:pkb_w
+cmp x3 x21
+b.ge pkb_n
+ldrb w5 x19 x3
+cmp x5 32
+b.eq pkb_a
+cmp x5 9
+b.eq pkb_a
+cmp x5 10
+b.eq pkb_a
+cmp x5 13
+b.eq pkb_a
+b pkb_c
+:pkb_a
+add x3 x3 1
+b pkb_w
+:pkb_c
+cmp x5 123
+b.ne pkb_n
+add x3 x3 1
+mov x6 x3
+mov x7 0
+ret
+:pkb_n
+mov x7 1
+ret
+:newlbl
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 56
+ldr x3 x1
+add x2 x3 1
+str x2 x1
+ret
+:emitlid
+str x30 x28
+add x28 x28 8
+add x4 x22 x23
+bl pos6
+add x23 x23 9
+sub x28 x28 8
+ldr x30 x28
+ret
+:emitdef
+str x30 x28
+add x28 x28 8
+str x3 x28
+add x28 x28 8
+adr x9 sdeflab
+bl emitstr
+sub x28 x28 8
+ldr x3 x28
+bl emitlid
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+sub x28 x28 8
+ldr x30 x28
+ret
+:doif
+bl scancond
+str x21 x28
+add x28 x28 8
+mov x21 x2
+bl compile_expr
+sub x28 x28 8
+ldr x21 x28
+adr x9 scondtest
+bl emitstr
+bl newlbl
+mov x12 x3
+bl emitlid
+adr x9 snlonly
+bl emitstr
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x12
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+bl peekbrace
+mov x5 3
+lsl x7 x7 x5
+sub x2 x16 24
+add x2 x15 x2
+str w7 x2
+b stmtloop
+:dowhile
+bl newlbl
+mov x12 x3
+bl emitdef
+bl scancond
+str x21 x28
+add x28 x28 8
+mov x21 x2
+bl compile_expr
+sub x28 x28 8
+ldr x21 x28
+adr x9 scondtest
+bl emitstr
+bl newlbl
+mov x13 x3
+bl emitlid
+adr x9 snlonly
+bl emitstr
+mov w4 1
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x12
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x13
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+add x14 x12 1
+mov w4 x14
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+bl peekbrace
+mov x5 3
+lsl x7 x7 x5
+add x7 x7 1
+sub x2 x16 24
+add x2 x15 x2
+str w7 x2
+b stmtloop
+:dodo
+bl newlbl
+mov x12 x3
+bl emitdef
+bl newlbl
+mov x13 x3
+mov w4 4
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x12
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x13
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+bl peekbrace
+mov x5 3
+lsl x7 x7 x5
+add x7 x7 4
+sub x2 x16 24
+add x2 x15 x2
+str w7 x2
+b stmtloop
+:doclose
+cmp x16 0
+b.eq funcdone
+sub x16 x16 24
+add x2 x15 x16
+ldr w4 x2
+add x2 x16 4
+add x2 x15 x2
+ldr w12 x2
+add x2 x16 8
+add x2 x15 x2
+ldr w13 x2
+cmp x4 1
+b.eq dclose_while
+cmp x4 3
+b.eq dclose_plain
+cmp x4 2
+b.eq docloseelse
+cmp x4 4
+b.eq dclose_do
+cmp x4 5
+b.eq dclose_while
+b docloseif
+:dclose_plain
+b stmtend
+:dclose_while
+adr x9 sbback
+bl emitstr
+mov x3 x12
+bl emitlid
+adr x9 snlonly
+bl emitstr
+mov x3 x13
+bl emitdef
+b stmtend
+:dclose_do
+bl next_token
+add x2 x16 4
+add x2 x15 x2
+ldr w12 x2
+add x2 x16 8
+add x2 x15 x2
+ldr w13 x2
+add x2 x16 12
+add x2 x15 x2
+ldr w7 x2
+cmp x7 0
+b.eq dcdo_nc
+sub x3 x7 1
+bl emitdef
+:dcdo_nc
+bl scancond
+str x21 x28
+add x28 x28 8
+str x12 x28
+add x28 x28 8
+str x13 x28
+add x28 x28 8
+mov x21 x2
+bl compile_expr
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+sub x28 x28 8
+ldr x21 x28
+adr x9 scondtest
+bl emitstr
+mov x3 x13
+bl emitlid
+adr x9 snlonly
+bl emitstr
+adr x9 sbback
+bl emitstr
+mov x3 x12
+bl emitlid
+adr x9 snlonly
+bl emitstr
+mov x3 x13
+bl emitdef
+b stmtloop
+:docloseif
+str x6 x28
+add x28 x28 8
+bl next_token
+sub x28 x28 8
+ldr x5 x28
+cmp x20 3
+b.ne dci_noelse
+cmp x29 6
+b.ne dci_noelse
+adr x9 sbback
+bl emitstr
+bl newlbl
+mov x14 x3
+bl emitlid
+adr x9 snlonly
+bl emitstr
+mov x3 x12
+bl emitdef
+mov w4 2
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x14
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+bl peekbrace
+mov x5 3
+lsl x7 x7 x5
+add x7 x7 2
+sub x2 x16 24
+add x2 x15 x2
+str w7 x2
+b stmtloop
+:dci_noelse
+mov x6 x5
+mov x3 x12
+bl emitdef
+b stmtend
+:docloseelse
+mov x3 x12
+bl emitdef
+b stmtend
+:peeknws
+mov x3 x6
+:pnw_l
+cmp x3 x21
+b.ge pnw_e
+ldrb w5 x19 x3
+cmp x5 32
+b.eq pnw_a
+cmp x5 9
+b.eq pnw_a
+cmp x5 10
+b.eq pnw_a
+cmp x5 13
+b.eq pnw_a
+ret
+:pnw_a
+add x3 x3 1
+b pnw_l
+:pnw_e
+mov x5 0
+ret
+:dofor
+bl next_token
+mov w4 14
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+bl peeknws
+cmp x5 59
+b.ne dofor_go
+add x6 x3 1
+b stmtend
+:dofor_go
+b stmtloop
+:forp2
+mov w4 15
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+bl newlbl
+sub x2 x16 20
+add x2 x15 x2
+str w3 x2
+bl newlbl
+sub x2 x16 16
+add x2 x15 x2
+str w3 x2
+bl newlbl
+sub x2 x16 12
+add x2 x15 x2
+str w3 x2
+bl newlbl
+sub x2 x16 8
+add x2 x15 x2
+str w3 x2
+sub x2 x16 20
+add x2 x15 x2
+ldr w3 x2
+bl emitdef
+bl peeknws
+cmp x5 59
+b.ne forp2_c
+add x6 x3 1
+adr x9 spush1
+bl emitstr
+b forp2_t
+:forp2_c
+bl compile_expr
+add x6 x6 1
+:forp2_t
+adr x9 scondtest
+bl emitstr
+sub x2 x16 16
+add x2 x15 x2
+ldr w3 x2
+bl emitlid
+adr x9 snlonly
+bl emitstr
+adr x9 sbback
+bl emitstr
+sub x2 x16 8
+add x2 x15 x2
+ldr w3 x2
+bl emitlid
+adr x9 snlonly
+bl emitstr
+sub x2 x16 12
+add x2 x15 x2
+ldr w3 x2
+bl emitdef
+bl peeknws
+cmp x5 41
+b.ne forp3_go
+add x6 x3 1
+b stmtend
+:forp3_go
+b stmtloop
+:forp4
+adr x9 sbback
+bl emitstr
+add x2 x16 4
+add x2 x15 x2
+ldr w3 x2
+bl emitlid
+adr x9 snlonly
+bl emitstr
+add x2 x16 16
+add x2 x15 x2
+ldr w3 x2
+bl emitdef
+add x2 x16 12
+add x2 x15 x2
+ldr w12 x2
+add x2 x16 8
+add x2 x15 x2
+ldr w13 x2
+mov w4 5
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x12
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x13
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+add x14 x12 1
+mov w4 x14
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+bl peekbrace
+mov x5 3
+lsl x7 x7 x5
+add x7 x7 5
+sub x2 x16 24
+add x2 x15 x2
+str w7 x2
+b stmtloop
+:findloop
+mov x2 x16
+:fdl_l
+cmp x2 0
+b.eq fdl_none
+sub x2 x2 24
+add x3 x15 x2
+ldr w4 x3
+mov x5 7
+and x4 x4 x5
+cmp x4 1
+b.eq fdl_hit
+cmp x4 4
+b.eq fdl_hit
+cmp x4 5
+b.ne fdl_l
+:fdl_hit
+mov x7 1
+ret
+:fdl_none
+mov x7 0
+ret
+:dobreak
+bl findloop
+cmp x7 0
+b.eq brkerr
+add x3 x2 8
+add x3 x15 x3
+ldr w13 x3
+adr x9 sbback
+bl emitstr
+mov x3 x13
+bl emitlid
+adr x9 snlonly
+bl emitstr
+b stmtend
+:docontinue
+bl findloop
+cmp x7 0
+b.eq brkerr
+mov x14 x2
+add x3 x14 12
+add x3 x15 x3
+ldr w13 x3
+cmp x13 0
+b.ne dct_have
+bl newlbl
+add x13 x3 1
+add x3 x14 12
+add x3 x15 x3
+str w13 x3
+:dct_have
+adr x9 sbback
+bl emitstr
+sub x3 x13 1
+bl emitlid
+adr x9 snlonly
+bl emitstr
+b stmtend
+:brkerr
+mov x0 2
+adr x1 sbrkerr
+mov x2 38
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
+:doenum
+bl next_token
+cmp x20 5
+b.ne de_tag
+cmp x29 123
+b.eq de_body
+:de_tag
+bl next_token
+:de_body
+mov x14 0
+:de_loop
+bl next_token
+cmp x20 0
+b.eq alldone
+cmp x20 2
+b.eq de_name
+cmp x20 5
+b.ne de_err
+cmp x29 125
+b.eq de_end
+cmp x29 44
+b.eq de_loop
+b de_err
+:de_name
+mov x0 0
+movk x0 2058 16
+add x0 x19 x0
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 72
+ldr x4 x1
+mov x5 4
+lsl x5 x4 x5
+add x0 x0 x5
+str w18 x0
+add x5 x0 4
+sub x7 x6 x18
+str w7 x5
+bl next_token
+cmp x29 61
+b.eq de_eq
+mov x13 x29
+b de_store
+:de_eq
+bl next_token
+cmp x20 1
+b.ne de_err
+bl parseval
+mov x14 x0
+mov x13 0
+:de_store
+mov x0 0
+movk x0 2058 16
+add x0 x19 x0
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 72
+ldr x4 x1
+mov x5 4
+lsl x5 x4 x5
+add x0 x0 x5
+add x0 x0 8
+str w14 x0
+add x4 x4 1
+str x4 x1
+add x14 x14 1
+cmp x13 125
+b.eq de_end
+b de_loop
+:de_end
+bl next_token
+b funcloop
+:de_err
+mov x0 2
+adr x1 senumerr
+mov x2 43
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
+:enumlookup
+str x12 x28
+add x28 x28 8
+str x13 x28
+add x28 x28 8
+sub x1 x6 x18
+mov x2 61440
+movk x2 2055 16
+add x2 x19 x2
+add x2 x2 72
+ldr x3 x2
+mov x4 0
+mov x7 0
+movk x7 2058 16
+add x7 x19 x7
+:enl_loop
+cmp x4 x3
+b.ge enl_nf
+mov x5 4
+lsl x5 x4 x5
+add x5 x7 x5
+add x0 x5 4
+ldr w0 x0
+cmp x0 x1
+b.ne enl_next
+ldr w2 x5
+mov x0 0
+:enl_cmp
+cmp x0 x1
+b.ge enl_found
+add x13 x2 x0
+ldrb w13 x19 x13
+add x12 x18 x0
+ldrb w12 x19 x12
+cmp x13 x12
+b.ne enl_next
+add x0 x0 1
+b enl_cmp
+:enl_next
+add x4 x4 1
+b enl_loop
+:enl_found
+add x5 x5 8
+ldr w0 x5
+mov x7 1
+b enl_ret
+:enl_nf
+mov x7 0
+:enl_ret
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+ret
+:funcdone
+adr x9 spush0
+bl emitstr
+adr x9 sepi
+bl emitstr
+b funcloop
+:compile_expr
+str x30 x28
+add x28 x28 8
+str x12 x28
+add x28 x28 8
+mov x2 32768
+movk x2 2053 16
+add x2 x19 x2
+ldr x4 x2
+str x4 x28
+add x28 x28 8
+mov x12 x25
+mov x3 1
+:celoop
+bl next_token
+cmp x20 0
+b.eq ceflush
+cmp x20 7
+b.eq ce_str
+cmp x20 6
+b.eq ce_charlit
+cmp x20 1
+b.eq ce_num
+cmp x20 2
+b.eq ce_id
+cmp x20 3
+b.eq ce_kw
+cmp x20 4
+b.eq ce_op
+cmp x20 5
+b.eq ce_punct
+b celoop
+:ce_charlit
+bl emitcharlit
+mov x3 0
+b celoop
+:ce_str
+bl emitstrlit
+mov x3 0
+b celoop
+:ce_num
+bl emitnum
+mov x3 0
+b celoop
+:ce_kw
+bl next_token
+bl next_token
+mov x13 8
+cmp x29 5
+b.ne szk_ns
+mov x13 1
+:szk_ns
+cmp x29 7
+b.ne szk_notstruct
+bl next_token
+bl struct_size
+mov x13 x0
+:szk_notstruct
+bl next_token
+cmp x29 42
+b.ne szk_close
+mov x13 8
+bl next_token
+:szk_close
+adr x9 smovx0
+bl emitstr
+bl emitoff
+adr x9 spush
+bl emitstr
+mov x2 0
+bl tpush
+mov x3 0
+b celoop
+:ce_id
+mov x3 x6
+:ceid_ws
+cmp x3 x21
+b.ge ceid_var
+ldrb w5 x19 x3
+cmp x5 32
+b.eq ceid_wsadv
+cmp x5 9
+b.eq ceid_wsadv
+cmp x5 10
+b.eq ceid_wsadv
+cmp x5 13
+b.eq ceid_wsadv
+b ceid_chk
+:ceid_wsadv
+add x3 x3 1
+b ceid_ws
+:ceid_chk
+cmp x5 40
+b.eq ceid_call
+cmp x5 91
+b.eq ceid_sub
+cmp x5 46
+b.eq ceid_member
+cmp x5 45
+b.eq ceid_arrowq
+:ceid_var
+bl resolve
+cmp x7 0
+b.ne ceid_realvar
+cmp x0 0
+b.ne ceid_realvar
+bl enumlookup
+cmp x7 0
+b.eq ceid_adr
+mov x1 x0
+bl emitval
+mov x3 0
+b celoop
+:ceid_adr
+adr x9 sadrx0f
+bl emitstr
+bl copyspan
+adr x9 spush
+bl emitstr
+mov x2 0
+bl tpush
+mov x3 0
+b celoop
+:ceid_realvar
+bl emitvar
+mov x3 0
+b celoop
+:ceid_arrowq
+add x2 x3 1
+ldrb w5 x19 x2
+cmp x5 62
+b.eq ceid_member
+b ceid_var
+:ceid_call
+bl compile_call
+mov x3 0
+b celoop
+:ceid_member
+bl emit_maddr
+mov x3 3
+and x5 x14 x3
+cmp x5 1
+b.eq cem_lbyte
+adr x9 sldrw
+bl emitstr
+b cem_lpt
+:cem_lbyte
+adr x9 smldrb
+bl emitstr
+:cem_lpt
+mov x3 2
+and x5 x14 x3
+cmp x5 0
+b.eq cem_lp0
+mov x3 1
+and x5 x14 x3
+cmp x5 0
+b.eq cem_lp8
+mov x2 1
+b cem_ltp
+:cem_lp8
+mov x2 8
+b cem_ltp
+:cem_lp0
+mov x2 0
+:cem_ltp
+bl tpush
+mov x3 x6
+:cem_sws
+cmp x3 x21
+b.ge cem_nosub
+ldrb w5 x19 x3
+cmp x5 32
+b.eq cem_swsa
+cmp x5 9
+b.eq cem_swsa
+cmp x5 10
+b.eq cem_swsa
+cmp x5 13
+b.eq cem_swsa
+b cem_schk
+:cem_swsa
+add x3 x3 1
+b cem_sws
+:cem_schk
+cmp x5 91
+b.ne cem_nosub
+str x14 x28
+add x28 x28 8
+bl next_token
+bl compile_expr
+bl next_token
+sub x28 x28 8
+ldr x14 x28
+adr x9 spopidx
+bl emitstr
+adr x9 spopbase
+bl emitstr
+mov x3 1
+and x5 x14 x3
+cmp x5 0
+b.ne cem_sbyte
+adr x9 sscale
+bl emitstr
+adr x9 saddidx
+bl emitstr
+adr x9 sldrw
+bl emitstr
+b cem_sdn
+:cem_sbyte
+adr x9 saddidx
+bl emitstr
+adr x9 smldrb
+bl emitstr
+:cem_sdn
+bl tpop
+mov x2 0
+bl tpush
+mov x3 0
+b celoop
+:cem_nosub
+mov x3 0
+b celoop
+:emit_maddr
+str x30 x28
+add x28 x28 8
+bl local_stag
+cmp x0 0
+b.ne ema_havestag
+bl global_stag
+:ema_havestag
+mov x27 x0
+mov x3 4
+and x26 x1 x3
+bl emitbase1
+cmp x26 0
+b.eq ema_bval
+adr x9 sldrx1
+bl emitstr
+:ema_bval
+bl next_token
+bl next_token
+sub x0 x27 1
+mov x5 5
+lsl x0 x0 x5
+mov x2 37120
+movk x2 2053 16
+add x2 x19 x2
+add x0 x0 x2
+bl field_find
+add x3 x0 8
+ldr w13 x3
+add x3 x0 12
+ldr w14 x3
+add x3 x0 16
+ldr w27 x3
+adr x9 smaddf
+bl emitstr
+bl emitoff
+mov x3 x6
+:ema_pk
+cmp x3 x21
+b.ge ema_done
+ldrb w5 x19 x3
+cmp x5 32
+b.eq ema_pka
+cmp x5 9
+b.eq ema_pka
+cmp x5 10
+b.eq ema_pka
+cmp x5 13
+b.eq ema_pka
+cmp x5 46
+b.eq ema_follow
+cmp x5 45
+b.eq ema_arrowq
+b ema_done
+:ema_pka
+add x3 x3 1
+b ema_pk
+:ema_arrowq
+add x2 x3 1
+ldrb w5 x19 x2
+cmp x5 62
+b.eq ema_follow
+b ema_done
+:ema_follow
+mov x3 2
+and x5 x14 x3
+cmp x5 0
+b.eq ema_next
+adr x9 sldrx1
+bl emitstr
+:ema_next
+bl next_token
+bl next_token
+sub x0 x27 1
+mov x5 5
+lsl x0 x0 x5
+mov x2 37120
+movk x2 2053 16
+add x2 x19 x2
+add x0 x0 x2
+bl field_find
+add x3 x0 8
+ldr w13 x3
+add x3 x0 12
+ldr w14 x3
+add x3 x0 16
+ldr w27 x3
+adr x9 smaddf
+bl emitstr
+bl emitoff
+mov x3 x6
+b ema_pk
+:ema_done
+sub x28 x28 8
+ldr x30 x28
+ret
+:ceid_sub
+str x18 x28
+add x28 x28 8
+str x6 x28
+add x28 x28 8
+bl next_token
+bl compile_expr
+bl next_token
+mov x14 x6
+sub x28 x28 8
+ldr x6 x28
+sub x28 x28 8
+ldr x18 x28
+bl emitsub
+mov x6 x14
+mov x3 0
+b celoop
+:ce_op
+cmp x29 38
+b.ne ceo_star
+cmp x3 1
+b.eq ceuaddr
+b ceobin
+:ceo_star
+cmp x29 42
+b.ne ceo_un
+cmp x3 1
+b.eq ceuderef
+b ceobin
+:ceo_un
+cmp x3 1
+b.ne ceobin
+cmp x29 45
+b.eq ceu_neg
+cmp x29 33
+b.eq ceu_not
+cmp x29 126
+b.eq ceu_bnot
+:ceobin
+mov x26 x29
+b cewhile
+:ceu_neg
+mov x26 8
+b ceu_push
+:ceu_not
+mov x26 7
+b ceu_push
+:ceu_bnot
+mov x26 9
+:ceu_push
+strb w26 x24 x25
+add x25 x25 1
+mov x3 1
+b celoop
+:ceuaddr
+bl next_token
+mov x3 x6
+:cua_ws
+cmp x3 x21
+b.ge cua_addr
+ldrb w5 x19 x3
+cmp x5 32
+b.eq cua_wsa
+cmp x5 9
+b.eq cua_wsa
+cmp x5 10
+b.eq cua_wsa
+cmp x5 13
+b.eq cua_wsa
+b cua_chk
+:cua_wsa
+add x3 x3 1
+b cua_ws
+:cua_chk
+cmp x5 91
+b.eq cua_sub
+cmp x5 46
+b.eq cua_member
+cmp x5 45
+b.eq cua_arrowq
+:cua_addr
+bl emitaddr
+mov x3 0
+b celoop
+:cua_sub
+str x18 x28
+add x28 x28 8
+str x6 x28
+add x28 x28 8
+bl next_token
+bl compile_expr
+bl next_token
+mov x14 x6
+sub x28 x28 8
+ldr x6 x28
+sub x28 x28 8
+ldr x18 x28
+bl emiteladdr
+mov x6 x14
+mov x3 0
+b celoop
+:cua_arrowq
+add x2 x3 1
+ldrb w5 x19 x2
+cmp x5 62
+b.eq cua_member
+b cua_addr
+:cua_member
+bl emit_maddr
+adr x9 spushx1
+bl emitstr
+mov x3 1
+and x5 x14 x3
+cmp x5 0
+b.eq cua_mpt8
+mov x3 2
+and x5 x14 x3
+cmp x5 0
+b.ne cua_mpt8
+mov x2 1
+b cua_mptp
+:cua_mpt8
+mov x2 8
+:cua_mptp
+bl tpush
+mov x3 0
+b celoop
+:ceuderef
+bl next_token
+bl emitderef
+mov x3 0
+b celoop
+:ce_punct
+cmp x29 40
+b.eq ceopen
+cmp x29 41
+b.eq ceclose
+mov x6 x18
+b ceflush
+:cewhile
+cmp x25 x12
+b.eq cepushop
+sub x0 x25 1
+ldrb w4 x24 x0
+cmp x4 40
+b.eq cepushop
+mov x0 x4
+bl prec
+mov x7 x0
+mov x0 x26
+bl prec
+cmp x7 x0
+b.ge cepop
+b cepushop
+:cepop
+sub x25 x25 1
+ldrb w11 x24 x25
+bl emitapply
+b cewhile
+:cepushop
+cmp x26 11
+b.eq cepush_sc
+cmp x26 12
+b.eq cepush_sc
+:cepush_st
+strb w26 x24 x25
+add x25 x25 1
+mov x3 1
+b celoop
+:cepush_sc
+adr x9 sscand
+cmp x26 11
+b.eq cepush_sce
+adr x9 sscor
+:cepush_sce
+bl emitstr
+bl newlbl
+mov x1 16384
+movk x1 2053 16
+add x1 x19 x1
+mov x2 2
+lsl x2 x25 x2
+add x1 x1 x2
+mov w4 x3
+str w4 x1
+bl emitlid
+adr x9 snlonly
+bl emitstr
+adr x9 sdiscard
+bl emitstr
+b cepush_st
+:prec
+cmp x0 12
+b.eq prec_2
+cmp x0 11
+b.eq prec_3
+cmp x0 124
+b.eq prec_4
+cmp x0 94
+b.eq prec_5
+cmp x0 38
+b.eq prec_6
+cmp x0 3
+b.eq prec_7
+cmp x0 4
+b.eq prec_7
+cmp x0 60
+b.eq prec_8
+cmp x0 62
+b.eq prec_8
+cmp x0 1
+b.eq prec_8
+cmp x0 2
+b.eq prec_8
+cmp x0 5
+b.eq prec_9
+cmp x0 6
+b.eq prec_9
+cmp x0 43
+b.eq prec_10
+cmp x0 45
+b.eq prec_10
+cmp x0 42
+b.eq prec_11
+cmp x0 47
+b.eq prec_11
+cmp x0 37
+b.eq prec_11
+mov x0 12
+ret
+:prec_2
+mov x0 2
+ret
+:prec_3
+mov x0 3
+ret
+:prec_4
+mov x0 4
+ret
+:prec_5
+mov x0 5
+ret
+:prec_6
+mov x0 6
+ret
+:prec_7
+mov x0 7
+ret
+:prec_8
+mov x0 8
+ret
+:prec_9
+mov x0 9
+ret
+:prec_10
+mov x0 10
+ret
+:prec_11
+mov x0 11
+ret
+:ceopen
+mov w5 40
+strb w5 x24 x25
+add x25 x25 1
+mov x3 1
+b celoop
+:ceclose
+mov x3 x25
+:cc_scan
+cmp x3 x12
+b.eq cc_term
+sub x3 x3 1
+ldrb w4 x24 x3
+cmp x4 40
+b.eq ceclose2
+b cc_scan
+:cc_term
+mov x6 x18
+b ceflush
+:ceclose2
+sub x0 x25 1
+ldrb w4 x24 x0
+cmp x4 40
+b.eq ceclparen
+sub x25 x25 1
+ldrb w11 x24 x25
+bl emitapply
+b ceclose2
+:ceclparen
+sub x25 x25 1
+mov x3 0
+b celoop
+:ceflush
+cmp x25 x12
+b.eq cedone
+sub x25 x25 1
+ldrb w11 x24 x25
+cmp x11 40
+b.eq ceflush
+bl emitapply
+b ceflush
+:cedone
+mov x2 32768
+movk x2 2053 16
+add x2 x19 x2
+sub x28 x28 8
+ldr x4 x28
+str x4 x2
+sub x28 x28 8
+ldr x12 x28
+sub x28 x28 8
+ldr x30 x28
+ret
+:compile_call
+str x30 x28
+add x28 x28 8
+str x18 x28
+add x28 x28 8
+str x6 x28
+add x28 x28 8
+bl next_token
+bl next_token
+cmp x20 5
+b.ne cc_firstarg
+cmp x29 41
+b.eq cc_emit
+:cc_firstarg
+mov x6 x18
+:cc_arg
+bl compile_expr
+bl next_token
+cmp x29 44
+b.eq cc_arg
+:cc_emit
+sub x28 x28 8
+ldr x1 x28
+sub x28 x28 8
+ldr x18 x28
+str x6 x28
+add x28 x28 8
+mov x6 x1
+bl resolve
+cmp x7 0
+b.ne cc_blr
+cmp x0 0
+b.ne cc_blr
+adr x9 sbl
+bl emitstr
+bl copyspan
+adr x9 snl
+bl emitstr
+adr x3 scalloc
+bl nameq
+cmp x0 0
+b.eq ccu_ckf
+mov x0 1
+adr x3 used_calloc
+str x0 x3
+b cc_after
+:ccu_ckf
+adr x3 sfree
+bl nameq
+cmp x0 0
+b.eq ccu_cko
+mov x0 1
+adr x3 used_free
+str x0 x3
+b cc_after
+:ccu_cko
+adr x3 sopen
+bl nameq
+cmp x0 0
+b.eq ccu_ckr
+mov x0 1
+adr x3 used_open
+str x0 x3
+b cc_after
+:ccu_ckr
+adr x3 sread
+bl nameq
+cmp x0 0
+b.eq ccu_ckw
+mov x0 1
+adr x3 used_read
+str x0 x3
+b cc_after
+:ccu_ckw
+adr x3 swrite
+bl nameq
+cmp x0 0
+b.eq ccu_ckc
+mov x0 1
+adr x3 used_write
+str x0 x3
+b cc_after
+:ccu_ckc
+adr x3 sclose
+bl nameq
+cmp x0 0
+b.eq ccu_cke
+mov x0 1
+adr x3 used_close
+str x0 x3
+b cc_after
+:ccu_cke
+adr x3 sexit
+bl nameq
+cmp x0 0
+b.eq ccu_ckb
+mov x0 1
+adr x3 used_exit
+str x0 x3
+b cc_after
+:ccu_ckb
+adr x3 sbrk
+bl nameq
+cmp x0 0
+b.eq ccu_ckg
+mov x0 1
+adr x3 used_brk
+str x0 x3
+b cc_after
+:ccu_ckg
+adr x3 schmod
+bl nameq
+cmp x0 0
+b.eq cc_after
+mov x0 1
+adr x3 used_chmod
+str x0 x3
+b cc_after
+:cc_blr
+bl emitbase1
+adr x9 sldrx16blr
+bl emitstr
+:cc_after
+sub x28 x28 8
+ldr x6 x28
+mov x2 0
+bl tpush
+sub x28 x28 8
+ldr x30 x28
+ret
+:emitnum
+str x30 x28
+add x28 x28 8
+bl parseval
+mov x1 x0
+bl emitval
+sub x28 x28 8
+ldr x30 x28
+ret
+:emitval
+mov x27 x30
+str x1 x28
+add x28 x28 8
+adr x9 smovx0
+bl emitstr
+sub x2 x28 8
+ldr x0 x2
+mov x2 65535
+and x0 x0 x2
+bl emitdec
+adr x9 snlonly
+bl emitstr
+sub x2 x28 8
+ldr x0 x2
+mov x7 16
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+cmp x0 0
+b.eq ev_hw2
+adr x9 smovkx0
+bl emitstr
+sub x2 x28 8
+ldr x0 x2
+mov x7 16
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+bl emitdec
+adr x9 ss16
+bl emitstr
+:ev_hw2
+sub x2 x28 8
+ldr x0 x2
+mov x7 32
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+cmp x0 0
+b.eq ev_hw3
+adr x9 smovkx0
+bl emitstr
+sub x2 x28 8
+ldr x0 x2
+mov x7 32
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+bl emitdec
+adr x9 ss32
+bl emitstr
+:ev_hw3
+sub x2 x28 8
+ldr x0 x2
+mov x7 48
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+cmp x0 0
+b.eq ev_push
+adr x9 smovkx0
+bl emitstr
+sub x2 x28 8
+ldr x0 x2
+mov x7 48
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+bl emitdec
+adr x9 ss48
+bl emitstr
+:ev_push
+adr x9 spushnl
+bl emitstr
+mov x2 0
+bl tpush
+sub x28 x28 8
+mov x30 x27
+ret
+:parseval
+mov x0 0
+mov x3 x18
+add x2 x18 1
+cmp x2 x6
+b.ge pv_l
+ldrb w4 x19 x18
+cmp x4 48
+b.ne pv_l
+ldrb w4 x19 x2
+cmp x4 120
+b.eq pv_hex
+cmp x4 88
+b.eq pv_hex
+b pv_l
+:pv_hex
+add x3 x18 2
+:pvh_l
+cmp x3 x6
+b.ge pv_d
+ldrb w4 x19 x3
+cmp x4 58
+b.lt pvh_dec
+cmp x4 71
+b.lt pvh_up
+sub x4 x4 87
+b pvh_add
+:pvh_up
+sub x4 x4 55
+b pvh_add
+:pvh_dec
+sub x4 x4 48
+:pvh_add
+mov x2 16
+mul x0 x0 x2
+add x0 x0 x4
+add x3 x3 1
+b pvh_l
+:pv_l
+cmp x3 x6
+b.ge pv_d
+ldrb w4 x19 x3
+sub x4 x4 48
+mov x2 10
+mul x0 x0 x2
+add x0 x0 x4
+add x3 x3 1
+b pv_l
+:pv_d
+ret
+:emitdec
+mov x3 x0
+mov x4 0
+mov x5 0
+mov x2 10000
+:ed1_l
+cmp x3 x2
+b.lt ed1_d
+sub x3 x3 x2
+add x5 x5 1
+b ed1_l
+:ed1_d
+cmp x5 0
+b.ne ed1_e
+cmp x4 0
+b.eq ed1_s
+:ed1_e
+mov x4 1
+add x7 x5 48
+strb w7 x22 x23
+add x23 x23 1
+:ed1_s
+mov x5 0
+mov x2 1000
+:ed2_l
+cmp x3 x2
+b.lt ed2_d
+sub x3 x3 x2
+add x5 x5 1
+b ed2_l
+:ed2_d
+cmp x5 0
+b.ne ed2_e
+cmp x4 0
+b.eq ed2_s
+:ed2_e
+mov x4 1
+add x7 x5 48
+strb w7 x22 x23
+add x23 x23 1
+:ed2_s
+mov x5 0
+mov x2 100
+:ed3_l
+cmp x3 x2
+b.lt ed3_d
+sub x3 x3 x2
+add x5 x5 1
+b ed3_l
+:ed3_d
+cmp x5 0
+b.ne ed3_e
+cmp x4 0
+b.eq ed3_s
+:ed3_e
+mov x4 1
+add x7 x5 48
+strb w7 x22 x23
+add x23 x23 1
+:ed3_s
+mov x5 0
+mov x2 10
+:ed4_l
+cmp x3 x2
+b.lt ed4_d
+sub x3 x3 x2
+add x5 x5 1
+b ed4_l
+:ed4_d
+cmp x5 0
+b.ne ed4_e
+cmp x4 0
+b.eq ed4_s
+:ed4_e
+mov x4 1
+add x7 x5 48
+strb w7 x22 x23
+add x23 x23 1
+:ed4_s
+add x7 x3 48
+strb w7 x22 x23
+add x23 x23 1
+ret
+:escval
+cmp x5 110
+b.ne ev_t
+mov x0 10
+ret
+:ev_t
+cmp x5 116
+b.ne ev_r
+mov x0 9
+ret
+:ev_r
+cmp x5 114
+b.ne ev_0
+mov x0 13
+ret
+:ev_0
+cmp x5 48
+b.ne ev_d
+mov x0 0
+ret
+:ev_d
+mov x0 x5
+ret
+:emitstrlit
+mov x27 x30
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 64
+mov x2 0
+str x2 x1
+adr x9 sdskip
+bl emitstr
+bl esl_id
+adr x9 snlonly
+bl emitstr
+adr x9 sdlabel
+bl emitstr
+bl esl_id
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+add x4 x18 1
+:esl_loop
+cmp x4 x29
+b.ge esl_done
+ldrb w5 x19 x4
+cmp x5 92
+b.ne esl_plain
+add x4 x4 1
+ldrb w5 x19 x4
+bl escval
+mov x13 x0
+b esl_emit
+:esl_plain
+mov x13 x5
+:esl_emit
+str x4 x28
+add x28 x28 8
+adr x9 sbyte
+bl emitstr
+bl emitoff
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+bl esl_bump
+sub x28 x28 8
+ldr x4 x28
+add x4 x4 1
+b esl_loop
+:esl_done
+adr x9 sbyte0
+bl emitstr
+bl esl_bump
+:esl_pad
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 64
+ldr x7 x1
+mov x5 3
+and x5 x7 x5
+cmp x5 0
+b.eq esl_padded
+adr x9 sbyte0
+bl emitstr
+bl esl_bump
+b esl_pad
+:esl_padded
+adr x9 sdslab
+bl emitstr
+bl esl_id
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+adr x9 sadrx0d
+bl emitstr
+bl esl_id
+adr x9 spush
+bl emitstr
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x2 x1 8
+ldr x13 x2
+add x13 x13 1
+str x13 x2
+mov x2 1
+bl tpush
+mov x30 x27
+ret
+:esl_id
+str x30 x28
+add x28 x28 8
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x2 x1 8
+ldr x13 x2
+bl emitoff
+sub x28 x28 8
+ldr x30 x28
+ret
+:esl_bump
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 64
+ldr x7 x1
+add x7 x7 1
+str x7 x1
+ret
+:emitcharlit
+mov x27 x30
+mov x13 x29
+adr x9 smovx0
+bl emitstr
+bl emitoff
+adr x9 spush
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:emitbase1
+str x30 x28
+add x28 x28 8
+bl resolve
+cmp x7 0
+b.eq eb1_g
+mov x13 x0
+adr x9 svaradr
+bl emitstr
+bl emitoff
+sub x28 x28 8
+ldr x30 x28
+ret
+:eb1_g
+adr x9 sadrg1
+bl emitstr
+bl copyspan
+sub x28 x28 8
+ldr x30 x28
+ret
+:emitbase0
+str x30 x28
+add x28 x28 8
+bl resolve
+cmp x7 0
+b.eq eb0_g
+mov x13 x0
+adr x9 svaraddr
+bl emitstr
+bl emitoff
+sub x28 x28 8
+ldr x30 x28
+ret
+:eb0_g
+adr x9 sadrg0
+bl emitstr
+bl copyspan
+sub x28 x28 8
+ldr x30 x28
+ret
+:emit_gdata
+mov x27 x30
+str x13 x28
+add x28 x28 8
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 64
+mov x2 0
+str x2 x1
+adr x9 sgskip
+bl emitstr
+bl copyspan
+adr x9 snlonly
+bl emitstr
+adr x9 sglabel
+bl emitstr
+bl copyspan
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+sub x28 x28 8
+ldr x13 x28
+:egd_loop
+cmp x13 1
+b.lt egd_pad
+sub x13 x13 1
+str x13 x28
+add x28 x28 8
+adr x9 sbyte0
+bl emitstr
+bl esl_bump
+sub x28 x28 8
+ldr x13 x28
+b egd_loop
+:egd_pad
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 64
+ldr x7 x1
+mov x5 3
+and x5 x7 x5
+cmp x5 0
+b.eq egd_done
+adr x9 sbyte0
+bl emitstr
+bl esl_bump
+b egd_pad
+:egd_done
+adr x9 sgslab
+bl emitstr
+bl copyspan
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+mov x30 x27
+ret
+:emitvar
+mov x27 x30
+bl resolve
+mov x3 2
+and x4 x1 x3
+mov x3 6
+and x5 x1 x3
+cmp x5 0
+b.eq ev_p0
+mov x3 1
+and x5 x1 x3
+cmp x5 0
+b.eq ev_p8
+mov x2 1
+b ev_pd
+:ev_p8
+mov x2 8
+b ev_pd
+:ev_p0
+mov x2 0
+:ev_pd
+bl tpush
+cmp x4 0
+b.ne emitvar_arr
+bl emitbase1
+adr x9 svarload
+bl emitstr
+mov x30 x27
+ret
+:emitvar_arr
+bl emitbase0
+adr x9 spush
+bl emitstr
+mov x30 x27
+ret
+:emitsub
+mov x27 x30
+adr x9 spopidx
+bl emitstr
+bl emitbase1
+mov x4 x1
+mov x3 2
+and x5 x4 x3
+cmp x5 0
+b.ne esub_arr
+adr x9 sldrx1
+bl emitstr
+:esub_arr
+mov x3 17
+and x5 x4 x3
+cmp x5 1
+b.eq esub_byte
+adr x9 sscale
+bl emitstr
+adr x9 saddidx
+bl emitstr
+adr x9 sldrw
+bl emitstr
+mov x2 0
+mov x3 16
+and x5 x4 x3
+cmp x5 0
+b.eq esub_tp
+mov x2 8
+mov x3 1
+and x5 x4 x3
+cmp x5 0
+b.eq esub_tp
+mov x2 1
+:esub_tp
+bl tpush
+mov x30 x27
+ret
+:esub_byte
+adr x9 sldrbidx
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:emiteladdr
+mov x27 x30
+adr x9 spopidx
+bl emitstr
+bl emitbase1
+mov x4 x1
+mov x3 2
+and x5 x4 x3
+cmp x5 0
+b.ne eela_arr
+adr x9 sldrx1
+bl emitstr
+:eela_arr
+mov x3 17
+and x5 x4 x3
+cmp x5 1
+b.eq eela_byte
+adr x9 sscale
+bl emitstr
+:eela_byte
+adr x9 saddidx
+bl emitstr
+adr x9 spushx1
+bl emitstr
+mov x3 17
+and x5 x4 x3
+cmp x5 1
+b.ne eela_p8
+mov x2 1
+b eela_pd
+:eela_p8
+mov x2 8
+:eela_pd
+bl tpush
+mov x30 x27
+ret
+:emitsubstore
+mov x27 x30
+adr x9 spopval2
+bl emitstr
+bl emitbase1
+mov x4 x1
+mov x3 2
+and x5 x4 x3
+cmp x5 0
+b.ne esst_arr
+adr x9 sldrx1
+bl emitstr
+:esst_arr
+mov x3 17
+and x5 x4 x3
+cmp x5 1
+b.eq esst_byte
+adr x9 sscale
+bl emitstr
+adr x9 saddidx
+bl emitstr
+adr x9 sstrw
+bl emitstr
+mov x30 x27
+ret
+:esst_byte
+adr x9 sstrbidx
+bl emitstr
+mov x30 x27
+ret
+:emitaddr
+mov x27 x30
+bl resolve
+mov x3 7
+and x4 x1 x3
+cmp x4 1
+b.ne emitaddr_p8
+mov x2 1
+b emitaddr_pd
+:emitaddr_p8
+mov x2 8
+:emitaddr_pd
+bl tpush
+bl emitbase0
+adr x9 spush
+bl emitstr
+mov x30 x27
+ret
+:emitderef
+mov x27 x30
+bl emitbase1
+mov x3 17
+and x5 x1 x3
+cmp x5 1
+b.eq emitderef_b
+adr x9 sderef
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:emitderef_b
+adr x9 sderefb
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:emitoff
+mov x3 x13
+mov x5 0
+:eo_k
+cmp x3 1000
+b.lt eo_kd
+sub x3 x3 1000
+add x5 x5 1
+b eo_k
+:eo_kd
+add x5 x5 48
+strb w5 x22 x23
+add x23 x23 1
+mov x5 0
+:eo_h
+cmp x3 100
+b.lt eo_hd
+sub x3 x3 100
+add x5 x5 1
+b eo_h
+:eo_hd
+add x5 x5 48
+strb w5 x22 x23
+add x23 x23 1
+mov x5 0
+:eo_t
+cmp x3 10
+b.lt eo_td
+sub x3 x3 10
+add x5 x5 1
+b eo_t
+:eo_td
+add x5 x5 48
+strb w5 x22 x23
+add x23 x23 1
+add x5 x3 48
+strb w5 x22 x23
+add x23 x23 1
+ret
+:emitlabel
+mov x14 x30
+mov w5 58
+strb w5 x22 x23
+add x23 x23 1
+bl copyspan
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+mov x30 x14
+ret
+:emitglname
+str x30 x28
+add x28 x28 8
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 48
+ldr x13 x1
+bl emitoff
+mov w5 95
+strb w5 x22 x23
+add x23 x23 1
+bl copyspan
+sub x28 x28 8
+ldr x30 x28
+ret
+:resolve
+str x30 x28
+add x28 x28 8
+bl symlookup
+cmp x7 0
+b.ne resolve_l
+bl gsymlookup
+mov x7 0
+:resolve_l
+sub x28 x28 8
+ldr x30 x28
+ret
+:gsymdecl
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x3 x1 40
+ldr x4 x3
+mov x5 4
+lsl x5 x4 x5
+mov x0 0
+movk x0 2056 16
+add x0 x19 x0
+add x0 x0 x5
+str w18 x0
+add x5 x0 4
+sub x7 x6 x18
+str w7 x5
+add x5 x0 8
+str w2 x5
+add x4 x4 1
+str x4 x3
+ret
+:gsymlookup
+str x12 x28
+add x28 x28 8
+str x13 x28
+add x28 x28 8
+sub x1 x6 x18
+mov x2 61440
+movk x2 2055 16
+add x2 x19 x2
+add x2 x2 40
+ldr x3 x2
+mov x4 0
+mov x7 0
+movk x7 2056 16
+add x7 x19 x7
+:gsl_loop
+cmp x4 x3
+b.ge gsl_nf
+mov x5 4
+lsl x5 x4 x5
+add x5 x7 x5
+add x0 x5 4
+ldr w0 x0
+cmp x0 x1
+b.ne gsl_next
+ldr w2 x5
+mov x0 0
+:gsl_cmp
+cmp x0 x1
+b.ge gsl_found
+add x13 x2 x0
+ldrb w13 x19 x13
+add x12 x18 x0
+ldrb w12 x19 x12
+cmp x13 x12
+b.ne gsl_next
+add x0 x0 1
+b gsl_cmp
+:gsl_found
+add x5 x5 8
+ldr w1 x5
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+mov x0 1
+ret
+:gsl_next
+add x4 x4 1
+b gsl_loop
+:gsl_nf
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+mov x0 0
+mov x1 0
+ret
+:symdecl
+cmp x8 0
+b.ne sd_prev
+mov x0 0
+b sd_store
+:sd_prev
+sub x3 x8 1
+mov x5 5
+lsl x3 x3 x5
+add x3 x10 x3
+add x4 x3 8
+ldr w0 x4
+add x4 x3 12
+ldr w4 x4
+add x0 x0 x4
+:sd_store
+mov x5 5
+lsl x3 x8 x5
+add x3 x10 x3
+str w18 x3
+add x4 x3 4
+sub x5 x6 x18
+str w5 x4
+add x4 x3 8
+str w0 x4
+add x4 x3 12
+str w13 x4
+add x4 x3 16
+str w2 x4
+add x8 x8 1
+ret
+:symlookup
+sub x1 x6 x18
+sub x3 x8 1
+:sl_loop
+cmp x3 0
+b.lt sl_nf
+mov x5 5
+lsl x4 x3 x5
+add x4 x10 x4
+ldr w2 x4
+add x0 x4 4
+ldr w0 x0
+cmp x0 x1
+b.ne sl_next
+mov x5 0
+:sl_cmp
+cmp x5 x1
+b.ge sl_found
+add x7 x2 x5
+ldrb w7 x19 x7
+add x0 x18 x5
+ldrb w0 x19 x0
+cmp x7 x0
+b.ne sl_next
+add x5 x5 1
+b sl_cmp
+:sl_found
+add x0 x4 8
+ldr w0 x0
+add x1 x4 16
+ldr w1 x1
+mov x7 1
+ret
+:sl_next
+sub x3 x3 1
+b sl_loop
+:sl_nf
+mov x0 0
+mov x1 0
+mov x7 0
+ret
+:local_stag
+sub x1 x6 x18
+mov x3 0
+:lst_loop
+cmp x3 x8
+b.ge lst_nf
+mov x5 5
+lsl x4 x3 x5
+add x4 x10 x4
+ldr w2 x4
+add x0 x4 4
+ldr w0 x0
+cmp x0 x1
+b.ne lst_next
+mov x5 0
+:lst_cmp
+cmp x5 x1
+b.ge lst_found
+add x7 x2 x5
+ldrb w7 x19 x7
+add x0 x18 x5
+ldrb w0 x19 x0
+cmp x7 x0
+b.ne lst_next
+add x5 x5 1
+b lst_cmp
+:lst_found
+add x0 x4 20
+ldr w0 x0
+add x1 x4 16
+ldr w1 x1
+ret
+:lst_next
+add x3 x3 1
+b lst_loop
+:lst_nf
+mov x0 0
+mov x1 0
+ret
+:global_stag
+str x12 x28
+add x28 x28 8
+str x13 x28
+add x28 x28 8
+sub x1 x6 x18
+mov x2 61440
+movk x2 2055 16
+add x2 x19 x2
+add x2 x2 40
+ldr x3 x2
+mov x4 0
+mov x7 0
+movk x7 2056 16
+add x7 x19 x7
+:gst_loop
+cmp x4 x3
+b.ge gst_nf
+mov x5 4
+lsl x5 x4 x5
+add x5 x7 x5
+add x0 x5 4
+ldr w0 x0
+cmp x0 x1
+b.ne gst_next
+ldr w2 x5
+mov x0 0
+:gst_cmp
+cmp x0 x1
+b.ge gst_found
+add x13 x2 x0
+ldrb w13 x19 x13
+add x12 x18 x0
+ldrb w12 x19 x12
+cmp x13 x12
+b.ne gst_next
+add x0 x0 1
+b gst_cmp
+:gst_found
+add x0 x5 12
+ldr w0 x0
+add x1 x5 8
+ldr w1 x1
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+ret
+:gst_next
+add x4 x4 1
+b gst_loop
+:gst_nf
+mov x0 0
+mov x1 0
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+ret
+:tpush
+mov x1 32768
+movk x1 2053 16
+add x1 x19 x1
+ldr x0 x1
+add x3 x1 8
+strb w2 x3 x0
+add x0 x0 1
+str x0 x1
+ret
+:struct_size
+str x30 x28
+add x28 x28 8
+bl struct_findtag
+cmp x0 0
+b.eq szundef
+add x0 x0 16
+ldr w0 x0
+sub x28 x28 8
+ldr x30 x28
+ret
+:stfwd
+mov x0 2
+adr x1 sstfwd
+mov x2 44
+mov x8 64
+svc
+mov x0 4
+mov x8 93
+svc
+:szundef
+mov x0 2
+adr x1 sszundef
+mov x2 38
+mov x8 64
+svc
+mov x0 3
+mov x8 93
+svc
+:struct_findtag
+str x12 x28
+add x28 x28 8
+str x13 x28
+add x28 x28 8
+str x7 x28
+add x28 x28 8
+sub x1 x6 x18
+mov x2 36864
+movk x2 2053 16
+add x2 x19 x2
+ldr x3 x2
+mov x7 37120
+movk x7 2053 16
+add x7 x19 x7
+mov x4 0
+:sft_loop
+cmp x4 x3
+b.ge sft_nf
+mov x5 5
+lsl x5 x4 x5
+add x5 x7 x5
+add x0 x5 4
+ldr w0 x0
+cmp x0 x1
+b.ne sft_next
+ldr w2 x5
+mov x0 0
+:sft_cmp
+cmp x0 x1
+b.ge sft_found
+add x13 x2 x0
+ldrb w13 x19 x13
+add x12 x18 x0
+ldrb w12 x19 x12
+cmp x13 x12
+b.ne sft_next
+add x0 x0 1
+b sft_cmp
+:sft_found
+mov x0 x5
+sub x28 x28 8
+ldr x7 x28
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+ret
+:sft_next
+add x4 x4 1
+b sft_loop
+:sft_nf
+mov x0 0
+sub x28 x28 8
+ldr x7 x28
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+ret
+:field_find
+str x12 x28
+add x28 x28 8
+str x13 x28
+add x28 x28 8
+str x14 x28
+add x28 x28 8
+str x7 x28
+add x28 x28 8
+sub x1 x6 x18
+add x14 x0 8
+ldr w4 x14
+add x14 x0 12
+ldr w14 x14
+add x14 x4 x14
+mov x7 45056
+movk x7 2053 16
+add x7 x19 x7
+:ff_loop
+cmp x4 x14
+b.ge ff_nf
+mov x5 x4
+mov x0 24
+mul x5 x5 x0
+add x5 x7 x5
+add x0 x5 4
+ldr w0 x0
+cmp x0 x1
+b.ne ff_next
+ldr w2 x5
+mov x0 0
+:ff_cmp
+cmp x0 x1
+b.ge ff_found
+add x13 x2 x0
+ldrb w13 x19 x13
+add x12 x18 x0
+ldrb w12 x19 x12
+cmp x13 x12
+b.ne ff_next
+add x0 x0 1
+b ff_cmp
+:ff_found
+mov x0 x5
+sub x28 x28 8
+ldr x7 x28
+sub x28 x28 8
+ldr x14 x28
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+ret
+:ff_next
+add x4 x4 1
+b ff_loop
+:ff_nf
+mov x0 0
+sub x28 x28 8
+ldr x7 x28
+sub x28 x28 8
+ldr x14 x28
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+ret
+:tpop
+mov x1 32768
+movk x1 2053 16
+add x1 x19 x1
+ldr x3 x1
+sub x3 x3 1
+str x3 x1
+add x0 x1 8
+ldrb w0 x0 x3
+ret
+:parsenum
+str x30 x28
+add x28 x28 8
+bl next_token
+bl parseval
+sub x28 x28 8
+ldr x30 x28
+ret
+:prescan
+mov x14 x30
+mov x7 x6
+mov x12 0
+mov x13 1
+mov x11 1
+:ps_l
+bl next_token
+cmp x20 0
+b.eq ps_done
+mov x3 x11
+mov x11 0
+cmp x20 5
+b.ne ps_nfl
+cmp x29 59
+b.eq ps_setfl
+cmp x29 123
+b.eq ps_setfl
+cmp x29 125
+b.eq ps_setfl
+b ps_nfl
+:ps_setfl
+mov x11 1
+:ps_nfl
+cmp x20 3
+b.ne ps_np
+mov x27 x29
+cmp x29 7
+b.eq ps_struct
+cmp x29 1
+b.eq ps_isdecl
+cmp x29 5
+b.ne ps_l
+:ps_isdecl
+bl next_token
+cmp x20 5
+b.ne ps_star
+cmp x29 40
+b.eq ps_fnptr
+:ps_star
+cmp x29 42
+b.ne ps_havename
+mov x27 1
+:ps_stars
+bl next_token
+cmp x29 42
+b.eq ps_stars
+:ps_havename
+bl next_token
+cmp x20 5
+b.ne ps_scalar
+cmp x29 91
+b.ne ps_scalar
+bl parsenum
+cmp x27 5
+b.ne ps_addint
+add x0 x0 7
+mov x5 3
+lsr x0 x0 x5
+:ps_addint
+add x12 x12 x0
+b ps_l
+:ps_scalar
+add x12 x12 1
+cmp x20 5
+b.ne ps_l
+cmp x29 59
+b.ne ps_l
+mov x11 1
+b ps_l
+:ps_struct
+bl next_token
+bl struct_size
+mov x27 x0
+bl next_token
+cmp x29 42
+b.ne ps_st_notptr
+bl next_token
+add x12 x12 1
+b ps_l
+:ps_st_notptr
+cmp x20 2
+b.ne ps_l
+mov x0 x27
+mov x5 3
+lsr x0 x0 x5
+add x12 x12 x0
+b ps_l
+:ps_np
+cmp x20 2
+b.ne ps_punct
+cmp x3 0
+b.eq ps_l
+mov x2 x6
+:ps_ipk
+cmp x2 x21
+b.ge ps_l
+ldrb w5 x19 x2
+cmp x5 32
+b.eq ps_ipa
+cmp x5 9
+b.eq ps_ipa
+cmp x5 10
+b.eq ps_ipa
+cmp x5 13
+b.eq ps_ipa
+cmp x5 42
+b.eq ps_ipa
+b ps_ipc
+:ps_ipa
+add x2 x2 1
+b ps_ipk
+:ps_ipc
+cmp x5 95
+b.eq ps_idecl
+cmp x5 65
+b.lt ps_l
+cmp x5 91
+b.lt ps_idecl
+cmp x5 97
+b.lt ps_l
+cmp x5 123
+b.lt ps_idecl
+b ps_l
+:ps_idecl
+mov x27 1
+b ps_isdecl
+:ps_punct
+cmp x20 5
+b.ne ps_l
+cmp x29 123
+b.ne ps_ncb
+add x13 x13 1
+b ps_l
+:ps_ncb
+cmp x29 125
+b.ne ps_l
+sub x13 x13 1
+cmp x13 0
+b.ne ps_l
+:ps_done
+mov x0 x12
+mov x6 x7
+mov x30 x14
+ret
+:emitapply
+mov x27 x30
+cmp x11 7
+b.eq eaunot
+cmp x11 8
+b.eq eauneg
+cmp x11 9
+b.eq eaubnot
+bl tpop
+mov x13 x0
+bl tpop
+mov x4 x0
+cmp x11 11
+b.eq easc
+cmp x11 12
+b.eq easc
+adr x9 spoppop
+bl emitstr
+cmp x11 60
+b.eq eaclt
+cmp x11 62
+b.eq eacgt
+cmp x11 42
+b.eq eamul
+cmp x11 45
+b.eq easub
+cmp x11 1
+b.eq eacle
+cmp x11 2
+b.eq eacge
+cmp x11 3
+b.eq eaceq
+cmp x11 4
+b.eq eacne
+cmp x11 47
+b.eq eadiv
+cmp x11 37
+b.eq eamod
+cmp x11 38
+b.eq eaand
+cmp x11 124
+b.eq eaor
+cmp x11 94
+b.eq eaxor
+cmp x11 5
+b.eq eashl
+cmp x11 6
+b.eq eashr
+b ea_add
+:eaclt
+adr x9 scmplt
+b eaop
+:eacgt
+adr x9 scmpgt
+b eaop
+:eamul
+adr x9 smulr
+b eaop
+:easub
+b ea_sub
+:eadiv
+adr x9 sdivr
+b eaop
+:eamod
+adr x9 smodr
+b eaop
+:eacle
+adr x9 scmpgt
+bl emitstr
+adr x9 sflip
+b eaop
+:eacge
+adr x9 scmplt
+bl emitstr
+adr x9 sflip
+b eaop
+:eaceq
+adr x9 scmpne
+bl emitstr
+adr x9 sflip
+b eaop
+:eacne
+adr x9 scmpne
+:eaop
+bl emitstr
+adr x9 spush
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:eaand
+adr x9 sandr
+b eaop
+:eaor
+adr x9 sorrr
+b eaop
+:eaxor
+adr x9 seorr
+b eaop
+:eashl
+adr x9 slslr
+b eaop
+:eashr
+adr x9 slsrr
+b eaop
+:easc
+adr x9 sscnorm
+bl emitstr
+mov x2 0
+bl tpush
+mov x1 16384
+movk x1 2053 16
+add x1 x19 x1
+mov x2 2
+lsl x2 x25 x2
+add x1 x1 x2
+ldr w3 x1
+bl emitdef
+mov x30 x27
+ret
+:eaunot
+bl tpop
+adr x9 spop1
+bl emitstr
+adr x9 sunot
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:eauneg
+bl tpop
+adr x9 spop1
+bl emitstr
+adr x9 suneg
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:eaubnot
+bl tpop
+adr x9 spop1
+bl emitstr
+adr x9 subnot
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:ea_add
+cmp x4 0
+b.ne ea_add_lp
+cmp x13 0
+b.eq ea_add_plain
+cmp x13 8
+b.ne ea_add_lsc
+adr x9 sscllf
+bl emitstr
+:ea_add_lsc
+adr x9 saddr
+bl emitstr
+adr x9 spush
+bl emitstr
+mov x2 x13
+bl tpush
+mov x30 x27
+ret
+:ea_add_lp
+cmp x13 0
+b.ne ea_add_plain
+cmp x4 8
+b.ne ea_add_rsc
+adr x9 ssclrf
+bl emitstr
+:ea_add_rsc
+adr x9 saddr
+bl emitstr
+adr x9 spush
+bl emitstr
+mov x2 x4
+bl tpush
+mov x30 x27
+ret
+:ea_add_plain
+adr x9 saddr
+bl emitstr
+adr x9 spush
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:ea_sub
+cmp x4 0
+b.eq ea_sub_plain
+cmp x13 0
+b.ne ea_sub_pp
+cmp x4 8
+b.ne ea_sub_rsc
+adr x9 ssclrf
+bl emitstr
+:ea_sub_rsc
+adr x9 ssubr
+bl emitstr
+adr x9 spush
+bl emitstr
+mov x2 x4
+bl tpush
+mov x30 x27
+ret
+:ea_sub_pp
+adr x9 ssubr
+bl emitstr
+cmp x4 8
+b.ne ea_sub_ppnd
+adr x9 sdiv8f
+bl emitstr
+:ea_sub_ppnd
+adr x9 spush
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:ea_sub_plain
+adr x9 ssubr
+bl emitstr
+adr x9 spush
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:emflush
+str x0 x28
+add x28 x28 8
+str x1 x28
+add x28 x28 8
+str x2 x28
+add x28 x28 8
+str x8 x28
+add x28 x28 8
+mov x0 1
+mov x1 x22
+mov x2 x23
+mov x8 64
+svc
+mov x23 0
+sub x28 x28 8
+ldr x8 x28
+sub x28 x28 8
+ldr x2 x28
+sub x28 x28 8
+ldr x1 x28
+sub x28 x28 8
+ldr x0 x28
+ret
+:emitstr
+mov x7 0
+movk x7 2049 16
+add x7 x19 x7
+cmp x22 x7
+b.ne es_go
+mov x7 32768
+cmp x23 x7
+b.lt es_go
+str x30 x28
+add x28 x28 8
+bl emflush
+sub x28 x28 8
+ldr x30 x28
+:es_go
+mov x7 0
+:esloop
+ldrb w5 x9 x7
+cmp x5 0
+b.eq esdone
+strb w5 x22 x23
+add x23 x23 1
+cmp x5 10
+b.ne esnl
+add x17 x17 1
+:esnl
+add x7 x7 1
+b esloop
+:esdone
+ret
+:next_token
+:nt_ws
+cmp x6 x21
+b.ge nt_eof
+ldrb w5 x19 x6
+cmp x5 32
+b.eq nt_wsadv
+cmp x5 9
+b.eq nt_wsadv
+cmp x5 10
+b.eq nt_wsadv
+cmp x5 13
+b.eq nt_wsadv
+cmp x5 47
+b.eq nt_cmt
+cmp x5 35
+b.eq nt_hash
+b nt_class
+:nt_wsadv
+add x6 x6 1
+b nt_ws
+:nt_hash
+cmp x6 x21
+b.ge nt_ws
+ldrb w5 x19 x6
+cmp x5 10
+b.eq nt_ws
+add x6 x6 1
+b nt_hash
+:nt_cmt
+add x2 x6 1
+cmp x2 x21
+b.ge nt_class
+ldrb w5 x19 x2
+cmp x5 42
+b.eq nt_bcmt
+cmp x5 47
+b.eq nt_lcmt
+ldrb w5 x19 x6
+b nt_class
+:nt_lcmt
+add x6 x6 2
+:nt_lcl
+cmp x6 x21
+b.ge nt_ws
+ldrb w5 x19 x6
+cmp x5 10
+b.eq nt_ws
+add x6 x6 1
+b nt_lcl
+:nt_bcmt
+add x6 x6 2
+:nt_bcl
+cmp x6 x21
+b.ge nt_ws
+ldrb w5 x19 x6
+cmp x5 42
+b.ne nt_bcadv
+add x2 x6 1
+cmp x2 x21
+b.ge nt_ws
+ldrb w5 x19 x2
+cmp x5 47
+b.eq nt_bcend
+:nt_bcadv
+add x6 x6 1
+b nt_bcl
+:nt_bcend
+add x6 x6 2
+b nt_ws
+:nt_eof
+mov x20 0
+ret
+:nt_lshift
+mov x29 5
+add x6 x6 2
+mov x20 4
+ret
+:nt_rshift
+mov x29 6
+add x6 x6 2
+mov x20 4
+ret
+:nt_charlit
+add x2 x6 1
+ldrb w29 x19 x2
+cmp x29 92
+b.ne nt_cl_plain
+add x2 x6 2
+ldrb w5 x19 x2
+str x30 x28
+add x28 x28 8
+bl escval
+sub x28 x28 8
+ldr x30 x28
+mov x29 x0
+add x6 x6 4
+mov x20 6
+ret
+:nt_cl_plain
+add x6 x6 3
+mov x20 6
+ret
+:nt_strlit
+add x6 x6 1
+:nt_ssc
+ldrb w5 x19 x6
+cmp x5 92
+b.eq nt_ssesc
+cmp x5 34
+b.eq nt_ssend
+add x6 x6 1
+b nt_ssc
+:nt_ssesc
+add x6 x6 2
+b nt_ssc
+:nt_ssend
+mov x29 x6
+add x6 x6 1
+mov x20 7
+ret
+:nt_class
+mov x18 x6
+cmp x5 34
+b.eq nt_strlit
+cmp x5 39
+b.eq nt_charlit
+cmp x5 48
+b.lt nt_notdig
+cmp x5 58
+b.ge nt_notdig
+cmp x5 48
+b.ne nt_dig
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 120
+b.eq nt_hex
+cmp x4 88
+b.eq nt_hex
+b nt_dig
+:nt_hex
+add x6 x6 2
+:nt_hexl
+cmp x6 x21
+b.ge nt_digdone
+ldrb w5 x19 x6
+cmp x5 48
+b.lt nt_digdone
+cmp x5 58
+b.lt nt_hexadv
+cmp x5 65
+b.lt nt_digdone
+cmp x5 71
+b.lt nt_hexadv
+cmp x5 97
+b.lt nt_digdone
+cmp x5 103
+b.ge nt_digdone
+:nt_hexadv
+add x6 x6 1
+b nt_hexl
+:nt_dig
+cmp x6 x21
+b.ge nt_digdone
+ldrb w5 x19 x6
+cmp x5 48
+b.lt nt_digdone
+cmp x5 58
+b.ge nt_digdone
+add x6 x6 1
+b nt_dig
+:nt_digdone
+mov x20 1
+ret
+:nt_notdig
+cmp x5 95
+b.eq nt_id
+cmp x5 65
+b.lt nt_op
+cmp x5 91
+b.lt nt_id
+cmp x5 97
+b.lt nt_op
+cmp x5 123
+b.lt nt_id
+b nt_op
+:nt_id
+add x6 x6 1
+:nt_idl
+cmp x6 x21
+b.ge nt_idend
+ldrb w5 x19 x6
+cmp x5 95
+b.eq nt_idadv
+cmp x5 48
+b.lt nt_idend
+cmp x5 58
+b.lt nt_idadv
+cmp x5 65
+b.lt nt_idend
+cmp x5 91
+b.lt nt_idadv
+cmp x5 97
+b.lt nt_idend
+cmp x5 123
+b.lt nt_idadv
+b nt_idend
+:nt_idadv
+add x6 x6 1
+b nt_idl
+:nt_idend
+sub x1 x6 x18
+cmp x1 2
+b.eq nt_kw2
+cmp x1 3
+b.eq nt_kw3
+cmp x1 4
+b.eq nt_kw4
+cmp x1 5
+b.eq nt_kw5
+cmp x1 6
+b.eq nt_kw6
+cmp x1 8
+b.eq nt_kw8
+b nt_plainid
+:nt_kw2
+ldrb w5 x19 x18
+cmp x5 100
+b.eq nt_kw2_do
+cmp x5 105
+b.ne nt_plainid
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 102
+b.ne nt_plainid
+mov x29 2
+mov x20 3
+ret
+:nt_kw2_do
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+mov x29 10
+mov x20 3
+ret
+:nt_kw3
+ldrb w5 x19 x18
+cmp x5 102
+b.eq nt_kw3_for
+cmp x5 105
+b.ne nt_plainid
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 116
+b.ne nt_plainid
+mov x29 1
+mov x20 3
+ret
+:nt_kw3_for
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 114
+b.ne nt_plainid
+mov x29 13
+mov x20 3
+ret
+:nt_kw5
+ldrb w5 x19 x18
+cmp x5 98
+b.eq nt_kw5_brk
+cmp x5 119
+b.ne nt_plainid
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 104
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 105
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 108
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+mov x29 3
+mov x20 3
+ret
+:nt_kw5_brk
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 114
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 97
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 107
+b.ne nt_plainid
+mov x29 11
+mov x20 3
+ret
+:nt_kw8
+ldrb w5 x19 x18
+cmp x5 117
+b.eq nt_kw8u
+cmp x5 99
+b.ne nt_plainid
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 116
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 105
+b.ne nt_plainid
+add x2 x18 5
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 6
+ldrb w5 x19 x2
+cmp x5 117
+b.ne nt_plainid
+add x2 x18 7
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+mov x29 12
+mov x20 3
+ret
+:nt_kw8u
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 115
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 105
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 103
+b.ne nt_plainid
+add x2 x18 5
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 6
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+add x2 x18 7
+ldrb w5 x19 x2
+cmp x5 100
+b.ne nt_plainid
+mov x29 1
+mov x20 3
+b nt_wtype
+:nt_kw6
+ldrb w5 x19 x18
+cmp x5 114
+b.eq nt_kw6_ret
+cmp x5 115
+b.eq nt_kw6_s
+b nt_plainid
+:nt_kw6_ret
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 116
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 117
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 114
+b.ne nt_plainid
+add x2 x18 5
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+mov x29 4
+mov x20 3
+ret
+:nt_kw6_s
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 116
+b.eq nt_kw6_struct
+cmp x5 105
+b.eq nt_kw6_sizeof
+b nt_plainid
+:nt_kw6_struct
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 114
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 117
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 99
+b.ne nt_plainid
+add x2 x18 5
+ldrb w5 x19 x2
+cmp x5 116
+b.ne nt_plainid
+mov x29 7
+mov x20 3
+ret
+:nt_kw6_sizeof
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 122
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+add x2 x18 5
+ldrb w5 x19 x2
+cmp x5 102
+b.ne nt_plainid
+mov x29 8
+mov x20 3
+ret
+:nt_kw4
+ldrb w5 x19 x18
+cmp x5 101
+b.eq nt_kw4e
+cmp x5 103
+b.eq nt_kw4g
+cmp x5 108
+b.eq nt_kw4l
+cmp x5 99
+b.ne nt_plainid
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 104
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 97
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 114
+b.ne nt_plainid
+mov x29 5
+mov x20 3
+ret
+:nt_kw4e
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 110
+b.eq nt_kw4en
+cmp x5 108
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 115
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+mov x29 6
+mov x20 3
+ret
+:nt_kw4en
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 117
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 109
+b.ne nt_plainid
+mov x29 14
+mov x20 3
+ret
+:nt_kw4g
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 116
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+mov x29 9
+mov x20 3
+ret
+:nt_kw4l
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 103
+b.ne nt_plainid
+mov x29 1
+mov x20 3
+b nt_wtype
+:nt_wtype
+str x30 x28
+add x28 x28 8
+:nt_wt_l
+str x18 x28
+add x28 x28 8
+str x29 x28
+add x28 x28 8
+str x6 x28
+add x28 x28 8
+bl next_token
+sub x28 x28 8
+ldr x4 x28
+sub x28 x28 8
+ldr x2 x28
+sub x28 x28 8
+ldr x1 x28
+mov x18 x1
+cmp x20 3
+b.ne nt_wt_no
+cmp x29 5
+b.eq nt_wt_done
+cmp x29 1
+b.ne nt_wt_no
+mov x29 x2
+b nt_wt_l
+:nt_wt_no
+mov x6 x4
+mov x29 x2
+:nt_wt_done
+mov x20 3
+sub x28 x28 8
+ldr x30 x28
+ret
+:nt_plainid
+ldrb w29 x19 x18
+mov x20 2
+ret
+:nt_op
+cmp x5 60
+b.eq nt_lt
+cmp x5 62
+b.eq nt_gt
+cmp x5 61
+b.eq nt_eq
+cmp x5 33
+b.eq nt_ne
+cmp x5 43
+b.eq nt_op1
+cmp x5 45
+b.eq nt_minus
+cmp x5 46
+b.eq nt_op1
+cmp x5 42
+b.eq nt_op1
+cmp x5 47
+b.eq nt_op1
+cmp x5 37
+b.eq nt_op1
+cmp x5 38
+b.eq nt_amp
+cmp x5 126
+b.eq nt_op1
+cmp x5 94
+b.eq nt_op1
+cmp x5 124
+b.eq nt_pipe
+cmp x5 40
+b.eq nt_punct1
+cmp x5 41
+b.eq nt_punct1
+cmp x5 123
+b.eq nt_punct1
+cmp x5 125
+b.eq nt_punct1
+cmp x5 59
+b.eq nt_punct1
+cmp x5 44
+b.eq nt_punct1
+cmp x5 91
+b.eq nt_punct1
+cmp x5 93
+b.eq nt_punct1
+add x6 x6 1
+b nt_ws
+:nt_op1
+mov x29 x5
+add x6 x6 1
+mov x20 4
+ret
+:nt_minus
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 62
+b.eq nt_arrow
+mov x29 45
+add x6 x6 1
+mov x20 4
+ret
+:nt_arrow
+mov x29 10
+add x6 x6 2
+mov x20 4
+ret
+:nt_lt
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 61
+b.eq nt_lte
+cmp x4 60
+b.eq nt_lshift
+mov x29 60
+add x6 x6 1
+mov x20 4
+ret
+:nt_lte
+mov x29 1
+add x6 x6 2
+mov x20 4
+ret
+:nt_gt
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 61
+b.eq nt_gte
+cmp x4 62
+b.eq nt_rshift
+mov x29 62
+add x6 x6 1
+mov x20 4
+ret
+:nt_gte
+mov x29 2
+add x6 x6 2
+mov x20 4
+ret
+:nt_eq
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 61
+b.eq nt_eqeq
+mov x29 61
+add x6 x6 1
+mov x20 5
+ret
+:nt_eqeq
+mov x29 3
+add x6 x6 2
+mov x20 4
+ret
+:nt_ne
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 61
+b.eq nt_nene
+mov x29 33
+add x6 x6 1
+mov x20 4
+ret
+:nt_nene
+mov x29 4
+add x6 x6 2
+mov x20 4
+ret
+:nt_amp
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 38
+b.eq nt_andand
+mov x29 38
+add x6 x6 1
+mov x20 4
+ret
+:nt_andand
+mov x29 11
+add x6 x6 2
+mov x20 4
+ret
+:nt_pipe
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 124
+b.eq nt_oror
+mov x29 124
+add x6 x6 1
+mov x20 4
+ret
+:nt_oror
+mov x29 12
+add x6 x6 2
+mov x20 4
+ret
+:nt_punct1
+mov x29 x5
+add x6 x6 1
+mov x20 5
+ret
+:copyspan
+mov x2 x18
+:cspl
+cmp x2 x6
+b.ge cspdone
+ldrb w5 x19 x2
+strb w5 x22 x23
+add x23 x23 1
+add x2 x2 1
+b cspl
+:cspdone
+ret
+:nameq
+mov x2 x18
+mov x4 0
+:nameq_l
+ldrb w5 x3 x4
+cmp x2 x6
+b.ge nameq_inend
+cmp x5 0
+b.eq nameq_no
+ldrb w7 x19 x2
+cmp x5 x7
+b.ne nameq_no
+add x2 x2 1
+add x4 x4 1
+b nameq_l
+:nameq_inend
+cmp x5 0
+b.ne nameq_no
+mov x0 1
+ret
+:nameq_no
+mov x0 0
+ret
+:emit_runtime
+str x30 x28
+add x28 x28 8
+adr x3 used_calloc
+ldr x0 x3
+cmp x0 0
+b.eq ert_free
+adr x3 udef_calloc
+ldr x0 x3
+cmp x0 0
+b.ne ert_free
+adr x9 scalloc_rt
+bl emitstr
+:ert_free
+adr x3 used_free
+ldr x0 x3
+cmp x0 0
+b.eq ert_open
+adr x3 udef_free
+ldr x0 x3
+cmp x0 0
+b.ne ert_open
+adr x9 sfree_rt
+bl emitstr
+:ert_open
+adr x3 used_open
+ldr x0 x3
+cmp x0 0
+b.eq ert_read
+adr x3 udef_open
+ldr x0 x3
+cmp x0 0
+b.ne ert_read
+adr x9 sopen_rt
+bl emitstr
+:ert_read
+adr x3 used_read
+ldr x0 x3
+cmp x0 0
+b.eq ert_write
+adr x3 udef_read
+ldr x0 x3
+cmp x0 0
+b.ne ert_write
+adr x9 sread_rt
+bl emitstr
+:ert_write
+adr x3 used_write
+ldr x0 x3
+cmp x0 0
+b.eq ert_close
+adr x3 udef_write
+ldr x0 x3
+cmp x0 0
+b.ne ert_close
+adr x9 swrite_rt
+bl emitstr
+:ert_close
+adr x3 used_close
+ldr x0 x3
+cmp x0 0
+b.eq ert_exit
+adr x3 udef_close
+ldr x0 x3
+cmp x0 0
+b.ne ert_exit
+adr x9 sclose_rt
+bl emitstr
+:ert_exit
+adr x3 used_exit
+ldr x0 x3
+cmp x0 0
+b.eq ert_brk
+adr x3 udef_exit
+ldr x0 x3
+cmp x0 0
+b.ne ert_brk
+adr x9 sexit_rt
+bl emitstr
+:ert_brk
+adr x3 used_brk
+ldr x0 x3
+cmp x0 0
+b.eq ert_chmod
+adr x3 udef_brk
+ldr x0 x3
+cmp x0 0
+b.ne ert_chmod
+adr x9 sbrk_rt
+bl emitstr
+:ert_chmod
+adr x3 used_chmod
+ldr x0 x3
+cmp x0 0
+b.eq ert_done
+adr x3 udef_chmod
+ldr x0 x3
+cmp x0 0
+b.ne ert_done
+adr x9 schmod_rt
+bl emitstr
+:ert_done
+sub x28 x28 8
+ldr x30 x28
+ret
+:pos6
+mov x2 51712
+movk x2 15258 16
+cmp x3 x2
+b.ge p6_over
+mov x2 9
+add x4 x4 9
+b p6l
+:p6_over
+mov x0 2
+adr x1 sposover
+mov x2 48
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
+:p6l
+mov x5 0
+:p6q
+cmp x3 10
+b.lt p6w
+sub x3 x3 10
+add x5 x5 1
+b p6q
+:p6w
+add x3 x3 48
+sub x4 x4 1
+mov x7 0
+strb w3 x4 x7
+mov x3 x5
+sub x2 x2 1
+cmp x2 0
+b.ne p6l
+ret
+:doint_fnptr
+bl next_token
+bl next_token
+mov x12 4
+mov x3 8
+orr x12 x12 x3
+mov x2 x12
+mov x13 8
+bl symdecl
+mov x14 x0
+bl next_token
+bl next_token
+mov x3 1
+:doint_fp_skip
+bl next_token
+cmp x20 5
+b.ne doint_fp_skip
+cmp x29 40
+b.ne doint_fp_nlp
+add x3 x3 1
+b doint_fp_skip
+:doint_fp_nlp
+cmp x29 41
+b.ne doint_fp_skip
+sub x3 x3 1
+cmp x3 0
+b.ne doint_fp_skip
+bl next_token
+cmp x29 61
+b.eq doint_fp_init
+b stmtend
+:doint_fp_init
+bl compile_expr
+adr x9 spop
+bl emitstr
+mov w13 x14
+bl emitoff
+adr x9 sstore
+bl emitstr
+add x6 x6 1
+b stmtend
+:pl_fnptr
+bl next_token
+bl next_token
+mov x12 4
+mov x3 8
+orr x12 x12 x3
+mov x2 x12
+mov x13 8
+bl symdecl
+bl next_token
+bl next_token
+mov x3 1
+:pl_fp_skip
+bl next_token
+cmp x20 5
+b.ne pl_fp_skip
+cmp x29 40
+b.ne pl_fp_nlp
+add x3 x3 1
+b pl_fp_skip
+:pl_fp_nlp
+cmp x29 41
+b.ne pl_fp_skip
+sub x3 x3 1
+cmp x3 0
+b.ne pl_fp_skip
+b paramloop
+:fl_gfnptr
+bl next_token
+bl next_token
+mov x12 4
+mov x3 8
+orr x12 x12 x3
+mov x2 x12
+bl gsymdecl
+mov x13 8
+bl emit_gdata
+b flg_ssk
+:ps_fnptr
+bl next_token
+bl next_token
+bl next_token
+bl next_token
+mov x3 1
+:ps_fp_skip
+bl next_token
+cmp x20 5
+b.ne ps_fp_skip
+cmp x29 40
+b.ne ps_fp_nlp
+add x3 x3 1
+b ps_fp_skip
+:ps_fp_nlp
+cmp x29 41
+b.ne ps_fp_skip
+sub x3 x3 1
+cmp x3 0
+b.ne ps_fp_skip
+add x12 x12 1
+b ps_l
+:used_calloc
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_free
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_calloc
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_free
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_open
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_open
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_read
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_read
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_write
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_write
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_close
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_close
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_exit
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_exit
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_brk
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_brk
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_chmod
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_chmod
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:sbrk
+.ascii "brk"
+.byte 0
+:schmod
+.ascii "chmod"
+.byte 0
+:scalloc
+.ascii "calloc"
+.byte 0
+:sfree
+.ascii "free"
+.byte 0
+:sopen
+.ascii "open"
+.byte 0
+:sread
+.ascii "read"
+.byte 0
+:swrite
+.ascii "write"
+.byte 0
+:sclose
+.ascii "close"
+.byte 0
+:sexit
+.ascii "exit"
+.byte 0
+:scalloc_rt
+.ascii ":calloc\nsub x9 x9 8\nldr x5 x9\nsub x9 x9 8\nldr x4 x9\nmul x6 x4 x5\nadd x6 x6 7\nmov x2 3\nlsr x6 x6 x2\nlsl x6 x6 x2\nadr x1 __mp\nldr x3 x1\ncmp x3 0\nb.ne __cc_have\nmov x0 0\nmov x1 0\nmovk x1 4096 16\nmov x2 3\nmov x3 34\nmov x4 0\nsub x4 x4 1\nmov x5 0\nmov x8 222\nsvc\nmov x3 x0\n:__cc_have\nadd x4 x3 x6\nadr x1 __mp\nstr x4 x1\nstr x3 x9\nadd x9 x9 8\nret\n:__mp\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n"
+.byte 0
+:sfree_rt
+.ascii ":free\nsub x9 x9 8\nldr x0 x9\nmov x0 0\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:sopen_rt
+.ascii ":open\nsub x9 x9 8\nldr x3 x9\nsub x9 x9 8\nldr x2 x9\nsub x9 x9 8\nldr x1 x9\nmov x0 0\nsub x0 x0 100\nmov x8 56\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:sread_rt
+.ascii ":read\nsub x9 x9 8\nldr x2 x9\nsub x9 x9 8\nldr x1 x9\nsub x9 x9 8\nldr x0 x9\nmov x8 63\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:swrite_rt
+.ascii ":write\nsub x9 x9 8\nldr x2 x9\nsub x9 x9 8\nldr x1 x9\nsub x9 x9 8\nldr x0 x9\nmov x8 64\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:sclose_rt
+.ascii ":close\nsub x9 x9 8\nldr x0 x9\nmov x8 57\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:sexit_rt
+.ascii ":exit\nsub x9 x9 8\nldr x0 x9\nmov x8 93\nsvc\n"
+.byte 0
+:sbrk_rt
+.ascii ":brk\nsub x9 x9 8\nldr x0 x9\nmov x8 214\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:schmod_rt
+.ascii ":chmod\nsub x9 x9 8\nldr x2 x9\nsub x9 x9 8\nldr x1 x9\nmov x0 0\nsub x0 x0 100\nmov x3 0\nmov x8 53\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:smovkx0
+.ascii "movk x0 "
+.byte 0
+:ss16
+.ascii " 16\n"
+.byte 0
+:ss32
+.ascii " 32\n"
+.byte 0
+:ss48
+.ascii " 48\n"
+.byte 0
+:spushnl
+.ascii "str x0 x9\nadd x9 x9 8\n"
+.byte 0
+:smainpre
+.ascii "mov x0 0\nmov x8 214\nsvc\nmov x2 x0\nmov x9 x2\nmov x1 32768\nadd x11 x2 x1\nmov x1 0\nmovk x1 1 16\nadd x0 x2 x1\nmov x8 214\nsvc\nadd x3 x31 0\nldr x0 x3\nstr x0 x9\nadd x9 x9 8\nadd x0 x3 8\nstr x0 x9\nadd x9 x9 8\nbl main\nsub x9 x9 8\nldr x0 x9\nmov x8 93\nsvc\n"
+.byte 0
+:sfpro
+.ascii "str x10 x11\nadd x1 x11 8\nstr x30 x1\nadd x10 x11 16\nadd x11 x11 "
+.byte 0
+:sepi
+.ascii "sub x11 x10 16\nadd x1 x11 8\nldr x30 x1\nldr x10 x11\nret\n"
+.byte 0
+:spush1
+.ascii "mov x0 1\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:spush0
+.ascii "mov x0 0\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:sbl
+.ascii "bl "
+.byte 0
+:sadrx0f
+.ascii "adr x0 "
+.byte 0
+:sldrx16blr
+.ascii "\nldr x16 x1\nblr x16\n"
+.byte 0
+:smovx0
+.ascii "mov x0 "
+.byte 0
+:sadrx0d
+.ascii "adr x0 __d"
+.byte 0
+:sadrg0
+.ascii "adr x0 g_"
+.byte 0
+:sadrg1
+.ascii "adr x1 g_"
+.byte 0
+:sglabel
+.ascii ":g_"
+.byte 0
+:sgskip
+.ascii "b __gs"
+.byte 0
+:sgslab
+.ascii ":__gs"
+.byte 0
+:spopv
+.ascii "sub x9 x9 8\nldr x0 x9\n"
+.byte 0
+:sdlabel
+.ascii ":__d"
+.byte 0
+:sdskip
+.ascii "b __ds"
+.byte 0
+:sdslab
+.ascii ":__ds"
+.byte 0
+:sgotob
+.ascii "b __Lg"
+.byte 0
+:slgpfx
+.ascii ":__Lg"
+.byte 0
+:sbyte
+.ascii ".byte "
+.byte 0
+:sbyte0
+.ascii ".byte 0\n"
+.byte 0
+:sdeflab
+.ascii ":__L"
+.byte 0
+:sgdover
+.ascii "pico-c: global data too large\n"
+.byte 0
+:senumerr
+.ascii "pico-c: enum member needs an integer value\n"
+.byte 0
+:sbrkerr
+.ascii "pico-c: break/continue outside a loop\n"
+.byte 0
+:sszundef
+.ascii "pico-c: sizeof of an undefined struct\n"
+.byte 0
+:sstfwd
+.ascii "pico-c: an undefined struct needs a pointer\n"
+.byte 0
+:sinover
+.ascii "pico-c: input exceeds arena\n"
+.byte 0
+:sposover
+.ascii "pico-c: emitted code exceeds @<pos> field width\n"
+.byte 0
+:snlonly
+.ascii "\n"
+.byte 0
+:spush
+.ascii "\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:svaradr
+.ascii "add x1 x10 "
+.byte 0
+:svaraddr
+.ascii "add x0 x10 "
+.byte 0
+:sderef
+.ascii "\nldr x1 x1\nldr x0 x1\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:sstoreind
+.ascii "\nldr x1 x1\nsub x9 x9 8\nldr x0 x9\nstr x0 x1\n"
+.byte 0
+:sdiscard
+.ascii "sub x9 x9 8\n"
+.byte 0
+:spopidx
+.ascii "sub x9 x9 8\nldr x2 x9\n"
+.byte 0
+:spopbase
+.ascii "sub x9 x9 8\nldr x1 x9\n"
+.byte 0
+:spopval2
+.ascii "sub x9 x9 8\nldr x0 x9\nsub x9 x9 8\nldr x2 x9\n"
+.byte 0
+:sldrx1
+.ascii "\nldr x1 x1"
+.byte 0
+:sscale
+.ascii "\nmov x3 3\nlsl x2 x2 x3"
+.byte 0
+:ssclrf
+.ascii "mov x3 3\nlsl x0 x0 x3\n"
+.byte 0
+:sscllf
+.ascii "mov x3 3\nlsl x1 x1 x3\n"
+.byte 0
+:sdiv8f
+.ascii "\nmov x3 3\nlsr x0 x0 x3"
+.byte 0
+:saddidx
+.ascii "\nadd x1 x1 x2"
+.byte 0
+:sldrw
+.ascii "\nldr x0 x1\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:sldrbidx
+.ascii "\nldrb w0 x1 x2\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:sstrw
+.ascii "\nstr x0 x1\n"
+.byte 0
+:sstrbidx
+.ascii "\nstrb w0 x1 x2\n"
+.byte 0
+:spushx1
+.ascii "\nstr x1 x9\nadd x9 x9 8\n"
+.byte 0
+:sderefb
+.ascii "\nldr x1 x1\nmov x2 0\nldrb w0 x1 x2\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:sstoreindb
+.ascii "\nldr x1 x1\nsub x9 x9 8\nldr x0 x9\nmov x2 0\nstrb w0 x1 x2\n"
+.byte 0
+:svarload
+.ascii "\nldr x0 x1\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:spoppop
+.ascii "sub x9 x9 8\nldr x0 x9\nsub x9 x9 8\nldr x1 x9\n"
+.byte 0
+:saddr
+.ascii "add x0 x1 x0"
+.byte 0
+:sandr
+.ascii "and x0 x1 x0"
+.byte 0
+:sorrr
+.ascii "orr x0 x1 x0"
+.byte 0
+:seorr
+.ascii "eor x0 x1 x0"
+.byte 0
+:slslr
+.ascii "lsl x0 x1 x0"
+.byte 0
+:slsrr
+.ascii "lsr x0 x1 x0"
+.byte 0
+:spop1
+.ascii "sub x9 x9 8\nldr x0 x9\n"
+.byte 0
+:suneg
+.ascii "mov x2 0\nsub x0 x2 x0\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:subnot
+.ascii "mov x2 0\nsub x0 x2 x0\nmov x2 1\nsub x0 x0 x2\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:sunot
+.ascii "mov x2 0\nsub x2 x2 x0\norr x0 x0 x2\nmov x2 63\nlsr x0 x0 x2\nmov x2 1\nsub x0 x2 x0\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:ssubr
+.ascii "sub x0 x1 x0"
+.byte 0
+:smulr
+.ascii "mul x0 x1 x0"
+.byte 0
+:sdivr
+.ascii "udiv x0 x1 x0"
+.byte 0
+:smodr
+.ascii "udiv x2 x1 x0\nmul x2 x2 x0\nsub x0 x1 x2"
+.byte 0
+:scmplt
+.ascii "sub x0 x1 x0\nmov x2 63\nlsr x0 x0 x2"
+.byte 0
+:scmpgt
+.ascii "sub x0 x0 x1\nmov x2 63\nlsr x0 x0 x2"
+.byte 0
+:scmpne
+.ascii "sub x0 x1 x0\nmov x2 0\nsub x2 x2 x0\norr x0 x0 x2\nmov x2 63\nlsr x0 x0 x2"
+.byte 0
+:sflip
+.ascii "\nmov x2 1\nsub x0 x2 x0"
+.byte 0
+:spop
+.ascii "sub x9 x9 8\nldr x0 x9\nadd x1 x10 "
+.byte 0
+:sstore
+.ascii "\nstr x0 x1\n"
+.byte 0
+:scondtest
+.ascii "sub x9 x9 8\nldr x0 x9\ncmp x0 0\nb.eq __L"
+.byte 0
+:snl
+.ascii "\n"
+.byte 0
+:smaddf
+.ascii "\nadd x1 x1 "
+.byte 0
+:smst2
+.ascii "sub x9 x9 8\nldr x0 x9\nsub x9 x9 8\nldr x1 x9\nstr x0 x1\n"
+.byte 0
+:smst2b
+.ascii "sub x9 x9 8\nldr x0 x9\nsub x9 x9 8\nldr x1 x9\nmov x2 0\nstrb w0 x1 x2\n"
+.byte 0
+:smldrb
+.ascii "\nmov x2 0\nldrb w0 x1 x2\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:smstoreoff
+.ascii "\nadd x1 x1 "
+.byte 0
+:smstorev
+.ascii "\nsub x9 x9 8\nldr x0 x9\nstr x0 x1\n"
+.byte 0
+:smstorevb
+.ascii "\nsub x9 x9 8\nldr x0 x9\nmov x2 0\nstrb w0 x1 x2\n"
+.byte 0
+:sbback
+.ascii "b __L"
+.byte 0
+:sscand
+.ascii "sub x9 x9 8\nldr x0 x9\nmov x1 0\nstr x1 x9\nadd x9 x9 8\ncmp x0 0\nb.eq __L"
+.byte 0
+:sscor
+.ascii "sub x9 x9 8\nldr x0 x9\nmov x1 1\nstr x1 x9\nadd x9 x9 8\ncmp x0 0\nb.ne __L"
+.byte 0
+:sscnorm
+.ascii "sub x9 x9 8\nldr x0 x9\nmov x2 0\nsub x2 x2 x0\norr x0 x0 x2\nmov x2 63\nlsr x0 x0 x2\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0

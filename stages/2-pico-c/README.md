@@ -1,21 +1,29 @@
-# stages/2-pico-c — the C layer, bootstrapped from assembly
+# stages/2-pico-c — the C layer, bootstrapped from assembly — LIVE
 
-Stage 2 merges the spike track's `stage1-as` and `stage2-pico-c` (design doc
-D1): two layers that always run together with one purpose — making C
-writable — are one stage with two files.
+Stage 2 merges the spike track's two coupled layers (design D1): the macro
+assembler exists only to make pico-c writable, so they are one stage.
 
-| official artifact | redone from | what it is |
+| artifact | source (committed) | built output (recorded, not committed) |
 |---|---|---|
-| `pico-c-assembler-arm64.s` | `spikes/stage1-as/stage1-as.s0` | two-pass macro/label assembler, written in the self-assembler's own input language; exists only to make pico-c writable (1 file, ~7 KB) |
-| `pico-c-arm64.s` | `spikes/stage2-pico-c/stage2-pico-c.s1` | THE C-subset compiler (1 file, ~75 KB of stage-2 assembly) |
-| `m2libc-shim.c`, `corpus/`, `selfhost/` | same names in the spike | companions: the single M2libc substitution, the 426-program conformance list, the self-host harness |
+| `pico-c-assembler` | `pico-c-assembler-arm64.s` — two-pass numeric label resolver, written in the self-assembler's language (1 file) | `out/2/aarch64/pico-c-assembler` — sha/bytes pinned in `substages.toml` |
+| `pico-c` | `pico-c-arm64.s` — THE C-subset compiler (1 file, ~75 KB) | `out/2/aarch64/pico-c` — pinned likewise |
 
-The old `.s0`/`.s1` extensions encoded the language layer; that fact moves
-into each file's header comment — the pipeline documents itself:
-`prog | pico-c-assembler | self-assembler | elf-wrapper`.
+Pipeline: `prog.c | pico-c | pico-c-assembler | self-assembler | elf-wrapper`.
 
-**Status: NOT YET ADOPTED.** Adoption happens after Stage 1's first
-re-baseline (its substages are assembled by the official Stage 1 binaries),
-proven by the oracle test: the official pair must build these sources to
-bytes identical to what the live spike workflow produces. Spike originals
-untouched per §7.0.
+**Redone from the spike sources with audited diffs**: the only code changes
+are the renamed self-naming strings — 3 (+3 length words) in the assembler,
+7 length-preserving in pico-c — everything else is comments. Proven
+equivalent against the live spike as oracle: label resolution byte-identical,
+compiler output on real C byte-identical, and the built pico-c differs from
+the spike-chain build by **exactly 42 printable-ascii bytes** (7 × the 6
+chars where `stage2` ≠ `pico-c`). The canon canary built through this chain
+lands on **5,052 B `ba935364bb0532c0` — the same number the spike ladder job
+prints** — and holds its fixpoint.
+
+`verify.sh` (one script, both homes; the workflow is its caller) rebuilds
+both artifacts through the committed Stage 1 pair, requires the recorded
+hashes, and runs the canary + error-prefix probes. Records:
+`substages.toml`, with `builder` edges into `1/1` and `1/2` — a Stage 1
+re-baseline makes this gate go red until these records regenerate, which is
+the chain doing its job. Companions (`m2libc-shim.c`, `corpus/`,
+`selfhost/`) adopted verbatim.

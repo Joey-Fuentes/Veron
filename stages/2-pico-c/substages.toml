@@ -1,0 +1,107 @@
+# stages/2-pico-c/substages.toml -- stage 2's records. Outputs are NOT
+# committed: the trunk builds them into out/2/aarch64/; the recorded hashes
+# are the reproducibility pin the verify script rebuilds against. Builder
+# edges chain to Stage 1's committed, round-trip-verified pair.
+
+[[substage]]
+id     = "2/1/pico-c-assembler"
+stage  = 2
+arch   = "aarch64"
+flavor = "trunk"
+root   = "repo"
+
+[[substage.input]]
+role   = "source"
+path   = "stages/2-pico-c/pico-c-assembler-arm64.s"
+sha256 = "5306509d25703fc61fdfb8d46a755c41646dc903699304eb56b86bc16d8429ad"
+bytes  = 6915
+mode   = "0644"
+
+[[substage.input]]
+role   = "builder"
+ref    = "1/1/self-assembler"
+sha256 = "e97e2969cf88b11a4ed28d7b22c9154a155fe9c38d01e420ab09151f2938f550"
+
+[[substage.input]]
+role   = "tool"                       # wraps the assembled bytes
+ref    = "1/2/elf-wrapper"
+sha256 = "5225c6314e073bb7d043b81f7dd148902db5e8a7fe76b7f02da7d1e08102da5e"
+
+[[substage.output]]
+path   = "out/2/aarch64/pico-c-assembler"
+sha256 = "b4e719163b7194bb163aa110ecd07cad911420c7453f51af5d1e0dac60044526"
+bytes  = 1732
+mode   = "0755"
+
+[[substage.step]]
+name   = "assemble"
+run    = ["stages/1-self-assembly/self-assembler-arm64"]
+stdin  = "stages/2-pico-c/pico-c-assembler-arm64.s"
+stdout = "$W/pca.bin"
+
+[[substage.step]]
+name   = "wrap"
+run    = ["stages/1-self-assembly/elf-wrapper-arm64", "$W/pca"]
+stdin  = "$W/pca.bin"
+
+[substage.verify]
+oracle = "output on pico-c-arm64.s is byte-identical to the spike assembler's"
+errors = "renamed prefixes print exactly (pico-c-assembler: ...)"
+
+[[substage]]
+id     = "2/2/pico-c"
+stage  = 2
+arch   = "aarch64"
+flavor = "trunk"
+root   = "repo"
+
+[[substage.input]]
+role   = "source"
+path   = "stages/2-pico-c/pico-c-arm64.s"
+sha256 = "ba35415e97b18c7d4c896e70f292c2d3d52225230adee1fc1adc00fc63474a73"
+bytes  = 74712
+mode   = "0644"
+
+[[substage.input]]
+role   = "builder"                    # resolves the labels
+ref    = "2/1/pico-c-assembler"
+sha256 = "b4e719163b7194bb163aa110ecd07cad911420c7453f51af5d1e0dac60044526"
+
+[[substage.input]]
+role   = "builder"                    # assembles the resolved text
+ref    = "1/1/self-assembler"
+sha256 = "e97e2969cf88b11a4ed28d7b22c9154a155fe9c38d01e420ab09151f2938f550"
+
+[[substage.input]]
+role   = "tool"
+ref    = "1/2/elf-wrapper"
+sha256 = "5225c6314e073bb7d043b81f7dd148902db5e8a7fe76b7f02da7d1e08102da5e"
+
+[[substage.output]]
+path   = "out/2/aarch64/pico-c"
+sha256 = "1305e1c9a3f681a48fefb208789a62b5fc08e4bd6e78a6b7486f79ac90bd0568"
+bytes  = 23719
+mode   = "0755"
+
+[[substage.step]]
+name   = "resolve"
+run    = ["out/2/aarch64/pico-c-assembler"]
+stdin  = "stages/2-pico-c/pico-c-arm64.s"
+stdout = "$W/pc.s0txt"
+
+[[substage.step]]
+name   = "assemble"
+run    = ["stages/1-self-assembly/self-assembler-arm64"]
+stdin  = "$W/pc.s0txt"
+stdout = "$W/pc.bin"
+
+[[substage.step]]
+name   = "wrap"
+run    = ["stages/1-self-assembly/elf-wrapper-arm64", "$W/pc"]
+stdin  = "$W/pc.bin"
+
+[substage.verify]
+codegen = "compiler output on canon.c byte-identical to the spike chain's"
+canary  = "canon: 5052 B ba935364bb0532c0 == the ladder job's own number; canon(canon(x)) == canon(x)"
+rename  = "binary differs from spike-chain pico-c by exactly 42 printable-ascii bytes (7 strings x 6 chars)"
+errors  = "renamed prefixes print exactly (pico-c: ...)"
