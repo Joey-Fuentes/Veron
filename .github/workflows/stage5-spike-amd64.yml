@@ -2120,6 +2120,40 @@ jobs:
       # two-instance DHCP. This rebuilds it from the stripped tree and re-runs
       # only what can still be asserted about a tree whose debug sections are
       # gone: that it boots, and that its own package tests pass.
+      # WHERE THE BYTES ARE, MEASURED RATHER THAN ESTIMATED. Every size figure
+      # in this project's discussion so far came from summing installs.txt,
+      # which counts a hardlink once per path and knows nothing about the
+      # stage-4 sysroot underneath. The merged tree turned out to be 4,724 MB
+      # where the listings predicted about 1,200. This prints the real thing.
+      - name: 'Size the system, and name what nothing reaches'
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
+        run: |
+          set -eu
+          cd spikes/stage5
+          echo "  === merged system, before stripping ==="
+          du -sh sysroot | sed 's/^/    total   /'
+          echo "    largest directories:"
+          du -sh sysroot/usr/* 2>/dev/null | sort -rh | head -12 | sed 's/^/      /'
+          echo "    apparent vs on-disk (the gap is hardlinks):"
+          printf '      on-disk  %s\n' "$(du -sh sysroot | cut -f1)"
+          printf '      apparent %s\n' "$(du -sh --apparent-size sysroot | cut -f1)"
+
+          # AND WHAT IS IN THERE THAT NOTHING RUNS. Declared edges alone were
+          # too weak to trust -- they cannot see a shebang or a dlopen -- so
+          # this reads the built tree: DT_NEEDED out of real ELFs, interpreters
+          # out of real shebangs, and paths out of the bytes themselves.
+          #
+          # warn, NOT fail. It over-reports by design (a path in a help string
+          # counts as a reference), and a package it cannot reach is a
+          # candidate for build_only rather than proof of anything.
+          echo "  === what nothing running reaches ==="
+          # ONE LINE, NOT A CONTINUATION. The selftest tokenises every veron
+          # invocation in these workflows and a backslash-wrapped one does not
+          # parse -- it reported `malformed invocation`, which is the gate
+          # doing its job rather than a false positive.
+          python3 tools/veron --overlay packages-amd64 reachable --sysroot sysroot --mode warn > out/reachable.txt 2>&1 || true
+          tail -40 out/reachable.txt | sed 's/^/    /'
+
       - name: 'Strip, rebuild the image, and re-verify it still boots'
         id: strip
         if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
@@ -2132,6 +2166,9 @@ jobs:
           # extension -- but the packages it exercises are what is being
           # stripped, which is the point of running it again below.
           STRIP_LOG=out/strip.txt sh tools/stage5-strip.sh sysroot
+
+          echo "  === merged system, after stripping ==="
+          du -sh sysroot | sed 's/^/    total   /'
 
           cd out
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
