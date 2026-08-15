@@ -50,7 +50,12 @@ _start:
     ldr     x0, [sp]                        // argc
     cmp     x0, #0x2
     b.lt    clean_exit                      // no output path -> harmless no-op success
-    ldr     x19, [sp, #16]                  // argv[1] = output path
+    // DUAL-DECODER SUBSET: immediate-offset addressing reads back as decimal
+    // under GNU 2.47 and hex under LLVM 22.1.8, so no spelling satisfies the
+    // plain round-trip. The self-assembler's proven 885/885 subset avoids the
+    // form entirely; these sites now do too (add-imm + no-offset load/store).
+    add     x19, sp, #0x10                  // &argv[1]
+    ldr     x19, [x19]                      // argv[1] = output path
 
     // ---- slurp raw code bytes from stdin into codebuf ----
     adr     x22, codebuf
@@ -86,13 +91,19 @@ read_ok:
     adr     x23, header
     mov     x24, #HDR_LEN
     add     x24, x24, x20                   // filesz
-    str     x24, [x23, #96]                 // p_filesz
+    add     x9, x23, #0x60                  // &p_filesz (header + 96)
+    str     x24, [x9]                       // p_filesz
     mov     x25, #BSS_RESERVE
     add     x25, x25, x24                   // memsz = filesz + reserve
-    str     x25, [x23, #104]                // p_memsz
+    add     x9, x23, #0x68                  // &p_memsz (header + 104)
+    str     x25, [x9]                       // p_memsz
 
     // ---- open the output file (creates it 0755) ----
-    mov     x0, #0xffffffffffffff9c         // AT_FDCWD
+    // AT_FDCWD = -100. GNU prints the MOVN alias as the 64-bit hex value,
+    // LLVM prints signed decimal -- no mov spelling round-trips under both,
+    // so build it from two subset-proven forms instead.
+    mov     x0, #0x0
+    sub     x0, x0, #0x64                   // AT_FDCWD = -100
     mov     x1, x19                         // path
     mov     x2, #0x241                      // O_WRONLY|O_CREAT|O_TRUNC
     mov     x3, #0x1ed                      // mode 0755

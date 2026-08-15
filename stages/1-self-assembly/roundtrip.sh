@@ -145,12 +145,15 @@ for pair in "sa $SA_SRC $SA_BIN" "ew $EW_SRC $EW_BIN"; do
   echo "================ $(basename "$SRC") ================"
 
   # ---- 1. LEG 1: both assemblers, then the as+ld reference ----
-  "$P/bin/as" -o "$N-gnu.o" "$SRC"
+  "$P/bin/as" -o "$N-ref.o" "$SRC"   # the FILE symbol lands in the linked
+                                     # symtab; the engine rebuilds as $W.o,
+                                     # so the names must agree or A2's
+                                     # whole-binary compare differs on it
   "$P/bin/llvm-mc" -triple=aarch64-linux-gnu -filetype=obj \
     -o "$N-llvm.o" "$SRC" 2> "$N-llvm-mc.err" || true
   [ -s "$N-llvm.o" ] || { echo "  llvm-mc could not assemble the source:"; \
     head -3 "$N-llvm-mc.err" | sed 's/^/    /'; fail=$((fail+1)); }
-  "$P/bin/ld" -static -o "$N-ref" "$N-gnu.o"
+  "$P/bin/ld" -static -o "$N-ref" "$N-ref.o"
   printf '  %-14s %8s  %s  (pinned as+ld reference)\n' "$N-ref" \
     "$(wc -c < "$N-ref")" "$(sha256sum "$N-ref" | cut -c1-16)"
 
@@ -207,12 +210,16 @@ for pair in "sa $SA_SRC $SA_BIN" "ew $EW_SRC $EW_BIN"; do
     tb=$("$P/bin/objdump" -h "$N-ref" | awk '$2==".text"{print $4; exit}')
     nd=$(cmp -l "$N-committed.text" "$N-ref.text" 2>/dev/null \
          | awk '{print int(($1-1)/4)}' | sort -u | wc -l)
+    # THE BOUND IS DERIVED, NOT HARDCODED: every symbol the binary defines
+    # outside .text (data/bss), read from the binary itself -- so the check
+    # is right for any Stage 1 artifact without a per-binary list.
+    dsyms=$("$P/bin/objdump" -t "$N-ref" | awk '$4!=".text" && $NF ~ /^[a-z_]/ {print $NF}'             | sort -u | paste -sd'|' -)
     nb=$(cmp -l "$N-committed.text" "$N-ref.text" 2>/dev/null \
          | awk '{print int(($1-1)/4)}' | sort -un \
          | while read -r w; do
              a=$(printf '%x' $((0x$tb + w * 4)))
              grep -m1 "^ *$a:" "$N.dis"
-           done | grep -cE "inbuf|symtab|outword|codebuf|header" || true)
+           done | grep -cE "adr.*<(${dsyms:-NONE})>" || true)
     printf '  committed vs reference .text: %s differing words (bound: .bss/.data adr only)\n' "$nd"
     if [ "$nd" != "$nb" ] || [ "$nd" -gt 7 ]; then
       echo "  FAIL: committed bytes diverge beyond the data-addressing bound:"
