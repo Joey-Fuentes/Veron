@@ -3,6 +3,7 @@ version = "1"
 group   = "desktop"
 license = "MIT"
 srcdir  = "."
+build_only = true
 
 [source]
 kind      = "local"
@@ -52,6 +53,20 @@ cwd  = "$B"
 run  = [["sh", "-c", "mkdir -p $D/usr/include/veron && cp /packages/veron-fltk-style/files/veron-fltk-style.h $D/usr/include/veron/veron-fltk-style.h && chmod 0644 $D/usr/include/veron/veron-fltk-style.h"]]
 
 [guest]
-# THE BINARY EXISTS AND IS EXECUTABLE. Running it would open a window.
-test   = [["/bin/sh", "-c", "test -f /usr/include/veron/veron-fltk-style.h && echo present"]]
-expect = ["present"]
+# NO GUEST TEST, BECAUSE NOTHING OF THIS PACKAGE IS IN THE IMAGE. It is
+# build_only: its single output is a header that veron-about,
+# veron-filechooser, veron-pinentry, veron-edit and veron-browser compile
+# against, and which nothing opens at runtime.
+#
+# THE TEST THAT USED TO BE HERE CHECKED FOR THAT HEADER, AND THE TRIM DELETED
+# IT. Once stage 5 started removing usr/include from the merged tree, this was
+# the one package whose entire content was headers -- so the image lost the
+# file and the guest suite reported
+#
+#     FAIL veron-fltk-style: test -f /usr/include/veron/... did not run
+#
+# The header was never needed in the image; the package simply had not been
+# declared build_only. Marking it says so, and `guest-tests` then emits
+# `none (build-only: nothing ships)` rather than a test for an absent path.
+test   = []
+expect = []
