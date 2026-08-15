@@ -26,6 +26,51 @@ set -u
 
 echo "device-nodes: regrouping for the desktop user"
 
+# THE FOUR SYMLINKS EVERY SHELL SCRIPT ASSUMES, AND WHICH NOTHING HERE WAS
+# CREATING.
+#
+# devtmpfs makes device NODES. It does not make /dev/fd, /dev/stdin,
+# /dev/stdout or /dev/stderr -- on an ordinary distribution those come from
+# udev rules or from systemd, and this image has libudev-zero, which provides
+# the API without the daemon and therefore without the rules. Same gap this
+# script already exists to fill for /dev/snd permissions; it simply never
+# covered these.
+#
+# WHAT BREAKS WITHOUT THEM IS PROCESS SUBSTITUTION, EVERYWHERE. `<(...)` is
+# implemented as /dev/fd/N, so every script using it fails on a system where
+# /dev/fd does not exist. Found on real hardware in the vault:
+#
+#     /usr/bin/pass: line 110: /dev/fd/63: No such file or directory
+#     cat <(echo works)  ->  can't open '/dev/fd/64'
+#
+# pass carried on and prompted anyway, which is why this went unnoticed: the
+# guest test for pass runs `pass version` and never reaches line 110. Nothing
+# else in the image had exercised `<(...)` before.
+#
+# NOT A STRIPPING CASUALTY. The trim removes archives, headers and gcc's C++
+# back-end; /dev is devtmpfs, mounted at boot, and no trim can touch it. This
+# has been missing since the first boot.
+#
+# AND IT CANNOT BE FIXED BY HAND. devtmpfs is recreated empty on every boot,
+# so a symlink made from a root shell is gone at the next start. It has to be
+# made here, on every boot, by a service that runs as root.
+for l in fd:/proc/self/fd stdin:/proc/self/fd/0 \
+         stdout:/proc/self/fd/1 stderr:/proc/self/fd/2; do
+    name=${l%%:*}
+    target=${l#*:}
+    if [ ! -e "/dev/$name" ]; then
+        /bin/busybox ln -sf "$target" "/dev/$name" 2>/dev/null
+    fi
+done
+# REPORTED, NOT ASSUMED. If /dev is read-only or the link cannot be made, the
+# next line says so rather than leaving process substitution quietly broken
+# for the life of the session.
+if [ -e /dev/fd ] && [ -e /dev/stdin ]; then
+    echo "  /dev/{fd,stdin,stdout,stderr} -> /proc/self/fd"
+else
+    echo "  WARNING: /dev/fd could not be created -- <(...) will not work"
+fi
+
 # SOUND. 0660 rather than 0666: group members only, which is the point of
 # having a group. ABSENT IS NOT AN ERROR -- a machine with no sound card has
 # no /dev/snd, and dinit treats a non-zero exit as a failed start on a service
