@@ -159,9 +159,10 @@ between this file and the recipes fails the run.
   137. veron-about
   138. veron-edit
   139. veron-filechooser
-  140. wpewebkit
-  141. wpe-platform-veron
-  142. veron-browser
+  140. veron-pinentry
+  141. wpewebkit
+  142. wpe-platform-veron
+  143. veron-browser
 
 ======================================================================
 package bzip2 1.0.8
@@ -4933,6 +4934,32 @@ package veron-filechooser 1
     [02] install
          cwd  build/veron-filechooser-1
          argv ["sh", "-c", "mkdir -p dest/veron-filechooser/usr/bin && cp veron-filechooser dest/veron-filechooser/usr/bin/veron-filechooser && chmod 0755 dest/veron-filechooser/usr/bin/veron-filechooser"]
+
+======================================================================
+package veron-pinentry 1.0
+  group        system
+  license      BSD-2-Clause
+  recipe-sha   40a15bd2db76043d767a39c1e74383161631770898e693031f070d6386ce9add
+
+  source
+    url        this repository
+    sha256     n/a -- the source is in this repository; the commit is the pin
+    signature  n/a -- provenance is the commit that carries these files
+    correspond none
+
+  deps
+    build        fltk, libgcrypt, pkgconf, veron-fltk-style
+    link         fltk, libgcrypt
+    runtime      fltk, libgcrypt
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] compile
+         cwd  build/veron-pinentry-1.0
+         argv ["sh", "-c", "cp /packages/veron-pinentry/files/pinentry.cxx . && c++ -O2 -std=c++17 -I/sysroot/usr/include -o veron-pinentry pinentry.cxx $(fltk-config --cxxflags --ldflags) $(pkgconf --cflags --libs libgcrypt 2>/dev/null || libgcrypt-config --cflags --libs)"]
+    [02] install
+         cwd  build/veron-pinentry-1.0
+         argv ["sh", "-c", "mkdir -p dest/veron-pinentry/usr/bin && cp veron-pinentry dest/veron-pinentry/usr/bin/veron-pinentry && chmod 0755 dest/veron-pinentry/usr/bin/veron-pinentry"]
 
 ======================================================================
 package wpewebkit 2.52.5

@@ -1,0 +1,90 @@
+name    = "veron-pinentry"
+version = "1.0"
+group   = "system"
+license = "BSD-2-Clause"
+srcdir  = "."
+
+[source]
+kind      = "local"
+path      = "packages/veron-pinentry/files"
+url       = "this repository"
+sha256    = "n/a -- the source is in this repository; the commit is the pin"
+signature = "n/a -- provenance is the commit that carries these files"
+crosschecked_against = []
+
+[deps]
+build        = ["fltk", "pkgconf", "libgcrypt", "veron-fltk-style"]
+link         = ["fltk", "libgcrypt"]
+runtime      = ["fltk", "libgcrypt"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "none -- it opens a window, and the protocol half needs an agent to talk to"
+packaged_as     = ["veron-pinentry"]
+deferral        = """
+gnupg IS BUILT POINTING AT THIS PATH AND WAS BROKEN WITHOUT IT. The gnupg \
+recipe passes --with-pinentry-pgm=/usr/bin/veron-pinentry, so gpg-agent runs \
+this program and no other. Until it existed, every operation needing a secret \
+failed: `pass show` could not decrypt, `pass insert` could not encrypt to a \
+passphrase-protected key, and a smartcard could not be asked for its PIN. \
+`gpg --card-status` worked on hardware and hid the gap, because reading a \
+card's public information needs no PIN at all.
+
+A PINENTRY IS A PROGRAM, NOT A PLUGIN, which is what makes replacing it \
+reasonable. It links nothing of gnupg's; it reads Assuan commands on stdin \
+and writes one response per command to stdout. The command set was read out \
+of agent/call-pinentry.c in gnupg 2.5.21 rather than remembered.
+
+AN UNKNOWN COMMAND ANSWERS OK, AND THAT IS THE DESIGN DECISION MOST LIKELY TO \
+LOOK WRONG. gpg-agent sends options this program has no use for -- \
+allow-emacs-prompt, formatted-passphrase, constraints-enforce -- and a \
+pinentry answering ERR to those is one an agent may abandon. GETINFO is the \
+documented exception: call-pinentry.c:672 substitutes "unknown" on failure, \
+so a wrong answer there costs nothing.
+
+THE PASSWORDLESS PATH IS THE POINT. Veron has no passwords anywhere except \
+inside the vault, for websites that demand them. So the vault's own key is \
+unlocked by something you HAVE: with keyfile= set in \
+~/.config/veron/pinentry.conf this derives the passphrase from that file's \
+bytes and never prompts. The typed box is the fallback for a machine not yet \
+set up, and for a card PIN -- which is device-bound and rate-limited to three \
+attempts, a different thing from a password.
+
+ITERSALTED_S2K, NOT ARGON2, AND THE REASON IS THE API. gcry_kdf_derive takes \
+no time, memory or lane parameters, which is why libgcrypt exposes Argon2 \
+through gcry_kdf_open/compute/final instead; passing GCRY_KDF_ARGON2 to \
+gcry_kdf_derive fails rather than degrading. The security therefore rests on \
+the key file being high-entropy -- 32+ bytes of /dev/urandom on a device you \
+carry -- which is stated in the source rather than implied.
+
+WHAT IS NOT DONE, and each is a separate piece of work rather than a defect \
+here: no YubiKey challenge-response factor, no TOTP gate, and no wiping of \
+the typed passphrase after use -- FLTK's Fl_Input owns its buffer and frees \
+it without zeroing, which is recorded in the source at the point it matters. \
+The keyfile path is the one factor implemented, and it is the one that makes \
+the system usable without a password."""
+
+[installs]
+prefixes = ["usr/bin"]
+
+[[steps]]
+name = "compile"
+# -std=c++17 FOR THE SAME REASON veron-filechooser NEEDS IT: the buttons use
+# captureless lambdas as Fl_Callback, and fltk-config adds no standard flag.
+cwd  = "$B"
+run  = [["sh", "-c", "cp /packages/veron-pinentry/files/pinentry.cxx . && c++ -O2 -std=c++17 -I$SYSROOT/usr/include -o veron-pinentry pinentry.cxx $(fltk-config --cxxflags --ldflags) $(pkgconf --cflags --libs libgcrypt 2>/dev/null || libgcrypt-config --cflags --libs)"]]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+# NO .desktop ENTRY. Nobody launches a pinentry; gpg-agent spawns it. Putting
+# it on the menu would offer a dialog with no caller, the same argument
+# veron-filechooser's recipe makes.
+run  = [["sh", "-c", "mkdir -p $D/usr/bin && cp veron-pinentry $D/usr/bin/veron-pinentry && chmod 0755 $D/usr/bin/veron-pinentry"]]
+
+[guest]
+# --version IS ANSWERED BEFORE stdin IS TOUCHED, deliberately: a pinentry that
+# opened a window here would hang the test rather than fail it.
+test   = [["/usr/bin/veron-pinentry", "--version"]]
+expect = ["veron-pinentry 1.0"]
