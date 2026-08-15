@@ -91,7 +91,7 @@ cwd  = "$B"
 # link the same verify.c, which is the point of shipping them together: a
 # factor cannot mean one thing to the lock screen and another to the console.
 # Only veron-lock needs Wayland; the other two are libgcrypt alone.
-run  = [["sh", "-c", "GC=$(pkgconf --cflags --libs libgcrypt 2>/dev/null || libgcrypt-config --cflags --libs) && cc -O2 -Wall -std=c11 -I. -o veron-lock lock.c verify.c ext-session-lock-v1-protocol.c $(pkg-config --cflags --libs wayland-client cairo xkbcommon) $GC && cc -O2 -Wall -std=c11 -I. -o veron-login login.c verify.c $GC && cc -O2 -Wall -std=c11 -I. -o veron-enroll enroll.c verify.c $GC"]]
+run  = [["sh", "-c", "GC=$(pkgconf --cflags --libs libgcrypt 2>/dev/null || libgcrypt-config --cflags --libs) && cc -O2 -Wall -std=c11 -I. -o veron-lock lock.c verify.c wrap.c ext-session-lock-v1-protocol.c $(pkg-config --cflags --libs wayland-client cairo xkbcommon) $GC && cc -O2 -Wall -std=c11 -I. -o veron-login login.c verify.c wrap.c $GC && cc -O2 -Wall -std=c11 -I. -o veron-enroll enroll.c verify.c wrap.c $GC"]]
 
 [[steps]]
 name = "install"

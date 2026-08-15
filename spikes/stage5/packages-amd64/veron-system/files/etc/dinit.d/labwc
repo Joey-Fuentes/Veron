@@ -8,7 +8,24 @@
 # to stay the thing that always works, so labwc is its own service and the
 # getty keeps running.
 #
-# restart = false FOR THE SAME REASON. dinit would otherwise respawn a
+# # RESTART, BECAUSE A STOPPED COMPOSITOR IS A MACHINE WITH NO DESKTOP AND NO
+# WAY BACK TO ONE.
+#
+# This said `restart = false`. Killing labwc -- which is what recovering from
+# a wedged lock screen required -- left `[STOPPD] labwc` and a blank tty1,
+# with no path to a session short of a reboot. On a system with no root, no
+# display manager and no login screen, that is unrecoverable from the desktop
+# side entirely.
+#
+# THE ARGUMENT AGAINST IS A CRASH LOOP, and it is a real one: a compositor
+# that dies immediately will be restarted forever. dinit's restart limits are
+# what bound that -- after `restart-limit-count` failures inside
+# `restart-limit-interval` the service is left stopped, which is the same
+# state as before but only after genuinely trying.
+restart = true
+restart-delay = 2.0
+restart-limit-count = 5
+restart-limit-interval = 60.0 FOR THE SAME REASON. dinit would otherwise respawn a
 # compositor that cannot start, once per second, filling the console with the
 # same error and hiding the boot. One attempt, one message, and `dinitctl start
 # labwc` to try again after fixing something.

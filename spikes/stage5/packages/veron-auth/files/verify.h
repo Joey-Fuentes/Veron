@@ -47,8 +47,8 @@ int veron_verify(const char *input, int len);
  * missing -- the last accepted step is written down so the same code cannot
  * be replayed inside its own window by somebody who read it over a shoulder.
  */
-int veron_totp_check(const char *seedpath, const char *statepath,
-                     const char *code, int codelen);
+int veron_totp_check_seed(const char *seed_b32, const char *statepath,
+                          const char *code, int codelen);
 
 /* IS THE CARD THERE. Possession only: this asks the already-running gpg
  * stack for a serial number and does not prove the card can do anything.
@@ -73,3 +73,38 @@ int veron_card_present(void);
  * the call. */
 int veron_keyfile_derive(const char *path, const uint8_t salt[8],
                          uint8_t out[32]);
+
+/* ---- the factor store: one master secret, many wraps ------------------ */
+
+/* THE MASTER SECRET IS NEVER DERIVED FROM A FACTOR -- every factor WRAPS it.
+ * That is what lets a second key file be enrolled without invalidating the
+ * first, and what will let a disk key survive adding a factor later. */
+#define VERON_MASTER_LEN 64
+
+const char *veron_home(void);
+int  veron_confdir(char *out, size_t outlen);
+
+/* IS THIS PATH ON SOMETHING OTHER THAN THE ROOT FILESYSTEM. Returns 1 for
+ * removable, 0 for the root device, -1 if it cannot be determined. A key file
+ * on the disk it unlocks protects nothing; this is how that is refused rather
+ * than merely discouraged. */
+int  veron_is_removable(const char *path);
+
+int  veron_master_new(uint8_t master[VERON_MASTER_LEN]);
+int  veron_wrap_to_keyfile(const char *keyfile, const char *wrappath,
+                           const uint8_t master[VERON_MASTER_LEN]);
+int  veron_master_from_keyfile(const char *keyfile, const char *wrappath,
+                               uint8_t master[VERON_MASTER_LEN]);
+int  veron_wrap_salt(const char *path, uint8_t salt[16]);
+
+/* THE TOTP SEED, ENCRYPTED UNDER THE MASTER SECRET. There is no plaintext
+ * accessor and there should never be one: a seed a caller can read without a
+ * possession factor is a seed on the disk. */
+int  veron_totp_seed_read(const uint8_t master[VERON_MASTER_LEN],
+                          char *b32, size_t b32len);
+int  veron_totp_seed_write(const uint8_t master[VERON_MASTER_LEN],
+                           const char *b32);
+
+/* THE CONFIG READER, SHARED. auth.conf holds no secrets now -- the wraps do
+ * -- so it is a list of which factors exist and where their key files are. */
+int conf_get_pub(const char *key, char *out, size_t outlen);

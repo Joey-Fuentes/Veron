@@ -224,17 +224,43 @@ int main(int argc, char **argv)
             usage();
             return 1;
         }
-        uint8_t salt[8];
-        if (!gen_salt(salt)) {
-            fprintf(stderr, "veron-enroll: no entropy\n");
+
+        /* REFUSED ON THE ROOT FILESYSTEM, NOT WARNED ABOUT.
+         *
+         * Every other secret this system stores is encrypted to something
+         * that is not on the disk. The key file is where that chain
+         * terminates, so it cannot itself be encrypted -- which makes its
+         * PLACEMENT the entire security property. On the internal disk it
+         * protects nothing: whoever takes the disk takes the key with it.
+         *
+         * A warning would be ignored, and was: every instruction given during
+         * testing put the key file in $HOME, which is precisely the useless
+         * arrangement. Refusing is the only version that holds.
+         *
+         * A LIVE IMAGE PASSES NATURALLY, because there the root filesystem IS
+         * removable, so this rule needs no exception for the case it would
+         * otherwise break. */
+        int rm = veron_is_removable(argv[2]);
+        if (rm < 0) {
+            fprintf(stderr, "veron-enroll: cannot stat %s: %s\n",
+                    argv[2], strerror(errno));
             return 1;
         }
-        /* THE TWO FAILURES ARE REPORTED SEPARATELY NOW, because reporting
-         * both as "cannot read" sent a real bug hunt to the wrong place: the
-         * key file was present, 64 bytes and world-readable, while the actual
-         * fault was an 8-byte salt passed as 16. An error that names the
-         * wrong cause is worse than one that says only that something
-         * failed. */
+        if (rm == 0) {
+            fprintf(stderr,
+              "veron-enroll: %s is on the root filesystem -- refused.\n\n"
+              "  A key file on the disk it unlocks protects nothing: whoever\n"
+              "  takes the disk takes the key with it. Put it on removable\n"
+              "  media, which is the thing you carry and the disk does not:\n\n"
+              "    head -c 64 /dev/urandom > /run/media/veron/stick/veron.key\n"
+              "    veron-enroll keyfile /run/media/veron/stick/veron.key\n\n"
+              "  VERON_ALLOW_ONDISK_KEYFILE=1 overrides this for testing, and\n"
+              "  produces a configuration that is not secure.\n", argv[2]);
+            if (!getenv("VERON_ALLOW_ONDISK_KEYFILE"))
+                return 1;
+            fprintf(stderr, "  overridden -- continuing INSECURELY\n\n");
+        }
+
         FILE *probe = fopen(argv[2], "rb");
         if (!probe) {
             fprintf(stderr, "veron-enroll: cannot open %s: %s\n",
@@ -243,63 +269,175 @@ int main(int argc, char **argv)
         }
         fclose(probe);
 
-        uint8_t key[32];
-        if (!veron_keyfile_derive(argv[2], salt, key)) {
-            fprintf(stderr, "veron-enroll: %s is readable but the key "
-                            "derivation failed\n", argv[2]);
-            fprintf(stderr, "  an empty file, or a libgcrypt that rejected "
-                            "the parameters\n");
+        /* THE MASTER SECRET IS CREATED ONCE AND WRAPPED MANY TIMES.
+         *
+         * If a wrap already exists for another factor, this one wraps the
+         * SAME master secret rather than inventing a new one -- which is what
+         * allows a second key file to be enrolled without invalidating the
+         * first, and what will let a disk key survive a factor being added
+         * later. Only the first enrolment generates. */
+        char wrapdir[1024], wrappath[1200];
+        if (!veron_confdir(wrapdir, sizeof wrapdir))
+            return 1;
+
+        uint8_t master[VERON_MASTER_LEN];
+        int have_master = 0;
+        for (int i = 0; i < 8 && !have_master; i++) {
+            char other[1200], okf[1024];
+            snprintf(other, sizeof other, "%s/master.%d.wrap", wrapdir, i);
+            char key[32];
+            snprintf(key, sizeof key, "keyfile%d", i);
+            if (conf_get_pub(key, okf, sizeof okf) &&
+                veron_master_from_keyfile(okf, other, master))
+                have_master = 1;
+        }
+        if (!have_master) {
+            veron_master_new(master);
+            printf("a new master secret was generated -- this is the first "
+                   "factor\n");
+        }
+
+        /* THE FIRST FREE SLOT. Slots are per-factor so removing one does not
+         * disturb the others. */
+        int slot = -1;
+        for (int i = 0; i < 8; i++) {
+            char k[32], v[1024];
+            snprintf(k, sizeof k, "keyfile%d", i);
+            if (!conf_get_pub(k, v, sizeof v)) { slot = i; break; }
+            if (!strcmp(v, argv[2]))           { slot = i; break; }
+        }
+        if (slot < 0) {
+            fprintf(stderr, "veron-enroll: no free key file slot (8 max)\n");
+            explicit_bzero(master, sizeof master);
             return 1;
         }
-        char salthex[17], keyhex[65];
-        hex(salt, 8, salthex);
-        hex(key, 32, keyhex);
-        explicit_bzero(key, sizeof key);
+        snprintf(wrappath, sizeof wrappath, "%s/master.%d.wrap",
+                 wrapdir, slot);
 
-        if (!conf_set(dir, "keyfile", argv[2]) ||
-            !conf_set(dir, "keyfile-salt", salthex) ||
-            !conf_set(dir, "keyfile-hash", keyhex))
+        if (!veron_wrap_to_keyfile(argv[2], wrappath, master)) {
+            fprintf(stderr, "veron-enroll: %s is readable but the key "
+                            "derivation failed\n", argv[2]);
+            explicit_bzero(master, sizeof master);
             return 1;
-        explicit_bzero(keyhex, sizeof keyhex);
-        printf("keyfile enrolled: %s\n", argv[2]);
-        printf("  the file itself is NOT copied -- keep it, and keep a spare\n");
+        }
+        explicit_bzero(master, sizeof master);
+
+        char k[32];
+        snprintf(k, sizeof k, "keyfile%d", slot);
+        if (!conf_set(dir, k, argv[2]))
+            return 1;
+
+        printf("keyfile enrolled in slot %d: %s\n", slot, argv[2]);
+        printf("  the file itself is NOT copied anywhere\n");
+
+        /* ONE FACTOR IS A SINGLE POINT OF FAILURE AND THE PERSON SHOULD BE
+         * TOLD SO IN WORDS. There is no recovery in this system by design:
+         * no escrow, no reset, no master password. Redundancy is the user's
+         * to arrange, in advance, and it is only arranged if they know. */
+        int n = 0;
+        for (int i = 0; i < 8; i++) {
+            char kk[32], vv[1024];
+            snprintf(kk, sizeof kk, "keyfile%d", i);
+            if (conf_get_pub(kk, vv, sizeof vv)) n++;
+        }
+        if (n < 2) {
+            printf("\n  WARNING: this is your only enrolled factor.\n");
+            printf("  There is no recovery. Lose it and the vault, the lock\n");
+            printf("  screen and the console are closed permanently -- there\n");
+            printf("  is no escrow, no reset and no master password by\n");
+            printf("  design. Enrol a second key file or a second token now:\n");
+            printf("    veron-enroll keyfile /run/media/veron/backup/veron.key\n");
+        }
         return 0;
     }
 
     if (!strcmp(argv[1], "totp")) {
+        /* TOTP IS NEVER A FIRST FACTOR, AND THIS IS WHERE THAT IS ENFORCED.
+         *
+         * A TOTP verifier must hold the shared secret in usable form -- that
+         * is what symmetric means, and no construction avoids it. Stored in
+         * the clear it lets anyone with the disk mint valid codes forever, so
+         * it would be worth nothing against exactly the attacker it is
+         * imagined to stop.
+         *
+         * So the seed is encrypted under the master secret, and the master
+         * secret only exists once a possession factor has been enrolled. TOTP
+         * therefore cannot be checked until something you HAVE has already
+         * succeeded. It stops being an independent factor, which is the
+         * design rather than a limitation of it. */
+        char wrapdir[1024];
+        if (!veron_confdir(wrapdir, sizeof wrapdir))
+            return 1;
+
+        uint8_t master[VERON_MASTER_LEN];
+        int have_master = 0;
+        for (int i = 0; i < 8 && !have_master; i++) {
+            char wp[1200], kf[1024], k[32];
+            snprintf(k, sizeof k, "keyfile%d", i);
+            snprintf(wp, sizeof wp, "%s/master.%d.wrap", wrapdir, i);
+            if (conf_get_pub(k, kf, sizeof kf) &&
+                veron_master_from_keyfile(kf, wp, master))
+                have_master = 1;
+        }
+        if (!have_master) {
+            fprintf(stderr,
+              "veron-enroll: no possession factor is enrolled.\n\n"
+              "  TOTP cannot stand alone here. Its seed is a SHARED secret --\n"
+              "  anything able to check a code can also generate one -- so on\n"
+              "  an unencrypted disk a plaintext seed protects nothing at all.\n"
+              "  It is stored encrypted under a master secret that only a\n"
+              "  possession factor can unwrap, which means one has to exist\n"
+              "  first:\n\n"
+              "    veron-enroll keyfile /run/media/veron/stick/veron.key\n\n"
+              "  Then enrol TOTP as the second factor it is meant to be.\n");
+            return 1;
+        }
+
         char seed[64];
         if (!gen_totp_seed(seed, sizeof seed)) {
             fprintf(stderr, "veron-enroll: no entropy\n");
+            explicit_bzero(master, sizeof master);
             return 1;
         }
-        char path[1088];
-        snprintf(path, sizeof path, "%s/totp.key", dir);
-        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-        if (fd < 0) {
-            fprintf(stderr, "veron-enroll: cannot write %s: %s\n",
-                    path, strerror(errno));
-            return 1;
-        }
-        dprintf(fd, "%s\n", seed);
-        close(fd);
 
-        /* THE STATE FILE IS CREATED NOW, EMPTY-ISH, rather than on first use.
-         * veron_totp_check refuses a code it cannot record, so a missing
-         * state file would make every code fail with no hint why. */
-        snprintf(path, sizeof path, "%s/totp.state", dir);
-        fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (!veron_totp_seed_write(master, seed)) {
+            fprintf(stderr, "veron-enroll: cannot write the encrypted seed\n");
+            explicit_bzero(master, sizeof master);
+            explicit_bzero(seed, sizeof seed);
+            return 1;
+        }
+        explicit_bzero(master, sizeof master);
+
+        /* THE REPLAY STATE STAYS IN THE CLEAR AND THAT IS CORRECT. It records
+         * the last time step accepted, which is not a secret -- knowing it
+         * lets nobody generate a code. Encrypting it would only mean the
+         * replay check could not run until after a factor succeeded, which is
+         * the wrong order. */
+        char path[1200];
+        snprintf(path, sizeof path, "%s/totp.state", wrapdir);
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
         if (fd >= 0) {
             dprintf(fd, "0\n");
             close(fd);
         }
+
+        /* THE OLD PLAINTEXT SEED IS REMOVED IF IT IS THERE. An earlier
+         * version wrote ~/.config/veron/totp.key in the clear; leaving it
+         * behind would mean the encrypted seed sat beside a readable copy of
+         * itself. */
+        snprintf(path, sizeof path, "%s/totp.key", wrapdir);
+        if (unlink(path) == 0)
+            printf("removed the old plaintext seed at %s\n", path);
 
         if (!conf_set(dir, "totp", "yes"))
             return 1;
         printf("TOTP enrolled. Add this secret to your authenticator app:\n\n");
         printf("    %s\n\n", seed);
         printf("  algorithm SHA1, 6 digits, 30 seconds -- the defaults.\n");
-        printf("  Write it down somewhere safe before you close this terminal;\n");
-        printf("  it is not shown again, and the file is mode 0600.\n");
+        printf("  Write it down before closing this terminal; it is not shown\n");
+        printf("  again and the stored copy is encrypted.\n");
+        printf("  It is a SECOND factor: a possession factor must succeed\n");
+        printf("  before it is even consulted.\n");
         explicit_bzero(seed, sizeof seed);
         return 0;
     }

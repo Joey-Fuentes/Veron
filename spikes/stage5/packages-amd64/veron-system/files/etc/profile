@@ -122,6 +122,24 @@ mkdir -p "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" 2>/dev/null || :
 # LANG RATHER THAN LC_ALL. LC_ALL is an override that a user cannot then
 # adjust per-category; LANG is the default that LC_* variables refine, which
 # is what a system-wide setting should be.
+# THE SYSTEM dinit SOCKET, BECAUSE dinitctl DEFAULTS TO THE USER ONE AND THIS
+# SYSTEM HAS NO USER INSTANCE.
+#
+# The privilege model here is that there is no root shell at all: members of
+# the `power` group act on root-owned services through /run/dinitctl. But a
+# bare `dinitctl start labwc` looks for /run/user/1000/dinitctl and fails with
+#
+#     dinitctl: connecting to socket: /run/user/1000/dinitctl: No such file
+#     dinitctl: perhaps no user instance is running?
+#
+# -- so the documented way to obtain privilege did not work without a flag
+# nobody would guess. Found while trying to restart a compositor from a
+# console, which is exactly when a person can least afford to guess.
+#
+# SET, NOT FORCED. Anything that genuinely wants a user instance can override
+# it; this only supplies the default the group membership implies.
+export DINIT_SOCKET_PATH=${DINIT_SOCKET_PATH:-/run/dinitctl}
+
 export LANG=C.UTF-8
 
 # TZ, BECAUSE WITHOUT IT EVERYTHING IS UTC AND ALMOST NOBODY IS.

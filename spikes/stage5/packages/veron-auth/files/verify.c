@@ -44,7 +44,9 @@ static const char *home_dir(void)
 
 /* ONE key = value PER LINE, the same shape veron-pinentry reads, so a person
  * setting this system up learns one file format rather than two. */
-static int conf_get(const char *key, char *out, size_t outlen)
+/* NOT static: veron-enroll reads the same file with the same parser. Two
+ * copies of a config reader is how a writer and a reader drift apart. */
+int conf_get_pub(const char *key, char *out, size_t outlen)
 {
     const char *home = home_dir();
     if (!home)
@@ -161,23 +163,18 @@ static int totp_at(const uint8_t *key, size_t keylen, uint64_t step)
     return (int)(bin % 1000000u);
 }
 
-int veron_totp_check(const char *seedpath, const char *statepath,
-                     const char *code, int codelen)
+/* THE SEED IS PASSED IN, NOT READ FROM A PATH, because there is no longer a
+ * file to read: it lives encrypted under the master secret and the caller has
+ * just decrypted it. A function that took a path would be a function that
+ * invited a plaintext seed back onto the disk. */
+int veron_totp_check_seed(const char *seed_b32, const char *statepath,
+                          const char *code, int codelen)
 {
     if (codelen != 6)
         return 0;
 
-    FILE *f = fopen(seedpath, "r");
-    if (!f)
-        return 0;
     char b32[512];
-    if (!fgets(b32, sizeof b32, f)) {
-        fclose(f);
-        return 0;
-    }
-    fclose(f);
-    char *nl = strpbrk(b32, "\r\n");
-    if (nl) *nl = '\0';
+    snprintf(b32, sizeof b32, "%s", seed_b32);
 
     uint8_t key[128];
     int keylen = base32_decode(b32, key, sizeof key);
@@ -274,7 +271,7 @@ int veron_keyfile_derive(const char *path, const uint8_t salt[8],
 static int keyfile_gate(const char *path)
 {
     char expect[128], saltcfg[64];
-    if (!conf_get("keyfile-hash", expect, sizeof expect))
+    if (!conf_get_pub("keyfile-hash", expect, sizeof expect))
         return 0;
     /* THE SALT IS HEX ON DISK AND SIXTEEN RAW BYTES HERE. veron-enroll writes
      * it with %02x; reading it as raw characters instead would derive from a
@@ -283,7 +280,7 @@ static int keyfile_gate(const char *path)
      * agree, which is why this is not a memcpy. */
     uint8_t salt[8];
     memset(salt, 0, sizeof salt);
-    if (!conf_get("keyfile-salt", saltcfg, sizeof saltcfg))
+    if (!conf_get_pub("keyfile-salt", saltcfg, sizeof saltcfg))
         return 0;
     if (!unhex(saltcfg, salt, sizeof salt))
         return 0;
@@ -330,45 +327,71 @@ int veron_verify(const char *input, int len)
     memcpy(buf, input, (size_t)len);
     buf[len] = '\0';
 
-    const char *home = home_dir();
-    char seed[1024], state[1024], kf[1024];
-    int need = 0, have = 0;
-
-    if (home) {
-        snprintf(seed, sizeof seed, "%s/.config/veron/totp.key", home);
-        snprintf(state, sizeof state, "%s/.config/veron/totp.state", home);
-    } else {
-        seed[0] = state[0] = '\0';
-    }
-
-    char v[64];
-    if (conf_get("totp", v, sizeof v) && !strcmp(v, "yes")) {
-        need++;
-        if (seed[0] && veron_totp_check(seed, state, buf, len))
-            have++;
-    }
-    if (conf_get("keyfile", kf, sizeof kf)) {
-        need++;
-        if (keyfile_gate(kf))
-            have++;
-    }
-    if (conf_get("card", v, sizeof v) && !strcmp(v, "yes")) {
-        need++;
-        if (veron_card_present())
-            have++;
-    }
-
-    explicit_bzero(buf, sizeof buf);
-
-    /* NO CONFIGURED FACTORS MEANS NO UNLOCK, NOT A FREE ONE. An unconfigured
-     * or unreadable auth.conf must not become an open door -- but see the
-     * lockout note in lock.c: the escape from this state is a VT switch, not
-     * a fallback here. */
-    if (need == 0)
+    char wrapdir[1024];
+    if (!veron_confdir(wrapdir, sizeof wrapdir)) {
+        explicit_bzero(buf, sizeof buf);
         return 0;
+    }
 
-    char mode[32];
-    int require_all = conf_get("require", mode, sizeof mode) &&
-                      !strcmp(mode, "all");
-    return require_all ? (have == need) : (have > 0);
+    /* A POSSESSION FACTOR FIRST, ALWAYS, AND ANY ONE OF THEM WILL DO.
+     *
+     * Each enrolled key file has its own wrap of the same master secret, so
+     * enrolling a spare does not invalidate the original and losing one does
+     * not lock out the other. This is the redundancy the design asks the user
+     * to arrange, and it is why the loop runs over slots rather than looking
+     * for a single configured file.
+     *
+     * NOTHING TYPED IS CONSULTED HERE. A key file is something you HAVE: the
+     * check is whether the bytes on the stick unwrap the master secret, not
+     * whether anybody typed anything. */
+    uint8_t master[VERON_MASTER_LEN];
+    int have_master = 0;
+    for (int i = 0; i < 8 && !have_master; i++) {
+        char k[32], kf[1024], wp[1200];
+        snprintf(k, sizeof k, "keyfile%d", i);
+        if (!conf_get_pub(k, kf, sizeof kf))
+            continue;
+        snprintf(wp, sizeof wp, "%s/master.%d.wrap", wrapdir, i);
+        if (veron_master_from_keyfile(kf, wp, master))
+            have_master = 1;
+    }
+
+    /* THE CARD, IF ENROLLED, IS A POSSESSION FACTOR TOO -- but presence alone
+     * proves only that A card is plugged in, not that it is yours. It cannot
+     * yield the master secret, so it can accompany a key file and cannot
+     * replace one. Recorded plainly rather than counted as equivalent. */
+    char v[64];
+    int card_ok = 0;
+    if (conf_get_pub("card", v, sizeof v) && !strcmp(v, "yes"))
+        card_ok = veron_card_present();
+
+    if (!have_master) {
+        /* NO POSSESSION FACTOR SUCCEEDED, SO NOTHING ELSE IS EVEN ASKED.
+         * There is no path here that a typed input can open: an unconfigured
+         * or unreadable store is a closed door, not an open one. */
+        explicit_bzero(buf, sizeof buf);
+        return 0;
+    }
+
+    /* TOTP, ONLY NOW, AND ONLY IF IT WAS ENROLLED. The seed is decrypted with
+     * the master secret that a possession factor just produced -- which is
+     * the whole reason a plaintext seed no longer sits on the disk. */
+    int ok = 1;
+    if (conf_get_pub("totp", v, sizeof v) && !strcmp(v, "yes")) {
+        char seed[128], state[1200];
+        snprintf(state, sizeof state, "%s/totp.state", wrapdir);
+        if (!veron_totp_seed_read(master, seed, sizeof seed)) {
+            ok = 0;
+        } else {
+            ok = veron_totp_check_seed(seed, state, buf, len);
+            explicit_bzero(seed, sizeof seed);
+        }
+    }
+
+    if (conf_get_pub("card", v, sizeof v) && !strcmp(v, "yes") && !card_ok)
+        ok = 0;
+
+    explicit_bzero(master, sizeof master);
+    explicit_bzero(buf, sizeof buf);
+    return ok;
 }

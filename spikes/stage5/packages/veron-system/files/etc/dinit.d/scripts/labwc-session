@@ -272,4 +272,20 @@ echo "labwc-session: starting labwc (runtime=$XDG_RUNTIME_DIR config=$XDG_CONFIG
 # exec SO dinit SUPERVISES labwc ITSELF rather than this wrapper. Without it
 # dinit would watch a shell that had already finished its work, and killing
 # the service would kill the wrapper and orphan the compositor.
+# ORPHANS FROM A PREVIOUS SESSION ARE CLEARED BEFORE STARTING A NEW ONE.
+#
+# labwc's autostart launches yambar, swaybg and friends as ordinary
+# processes -- not children that die with the compositor. So killing labwc
+# left them running, and restarting it ran autostart again: two yambars
+# stacked on one output, and another with every restart. Observed on hardware
+# after recovering from a wedged lock screen.
+#
+# BY NAME, NARROWLY, AND ONLY THIS USER. `pkill -u` cannot reach another
+# user's processes, and the list is explicit rather than a pattern, because a
+# session script that kills by wildcard eventually kills something nobody was
+# thinking about. -x requires an exact name match for the same reason.
+for helper in yambar swaybg fuzzel; do
+    /bin/busybox pkill -u "$(id -u)" -x "$helper" 2>/dev/null || true
+done
+
 exec /usr/bin/labwc

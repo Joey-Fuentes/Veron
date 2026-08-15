@@ -1,0 +1,320 @@
+/* The factor store: one master secret, wrapped once per factor.
+ *
+ * WHY WRAPS RATHER THAN INDEPENDENT SECRETS. A person should be able to
+ * enrol a second key file, or a third, without invalidating the first and
+ * without re-encrypting anything that depends on the result. So there is ONE
+ * master secret, generated once, and each enrolled factor gets its own
+ * wrapped copy of it. Adding a factor writes a file; removing one deletes a
+ * file; the master secret never changes.
+ *
+ * This is the same arrangement LUKS uses for key slots, and it is here for
+ * the same reason: the thing being protected must not be tied to the identity
+ * of any one thing that protects it.
+ *
+ * WHAT THE MASTER SECRET IS FOR. Today: decrypting the TOTP seed, so that a
+ * shared secret never sits in the clear on a disk. Tomorrow: unwrapping a
+ * disk key, which is the same operation one layer down.
+ *
+ * EVERY CONSTRUCTION HERE IS SYMMETRIC, AND THAT IS DELIBERATE RATHER THAN
+ * INCIDENTAL. AES-256 and SHA-256 are not broken by Shor's algorithm --
+ * Grover's halves the effective key length, which is why AES-256 and not
+ * AES-128. An RSA or ECC wrap would be the one quantum-vulnerable link in a
+ * chain whose whole point is that it does not have one, and it would be the
+ * worst-placed link at that: the wrapped blob sits on disk, so it is a
+ * harvest-now-decrypt-later target.
+ */
+#define _GNU_SOURCE 1
+#include "verify.h"
+
+#include <gcrypt.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <pwd.h>
+
+#define MASTER_LEN 64
+#define WRAP_MAGIC "VERONWRAP1"
+
+/* ---- where things live ------------------------------------------------ */
+
+const char *veron_home(void)
+{
+    const char *h = getenv("HOME");
+    if (h && *h)
+        return h;
+    struct passwd *pw = getpwuid(getuid());
+    if (pw && pw->pw_dir && *pw->pw_dir)
+        return pw->pw_dir;
+    return NULL;
+}
+
+int veron_confdir(char *out, size_t outlen)
+{
+    const char *home = veron_home();
+    if (!home)
+        return 0;
+    snprintf(out, outlen, "%s/.config/veron", home);
+    return 1;
+}
+
+/* ---- the removable-media rule ----------------------------------------- */
+
+/* A KEY FILE ON THE DISK IT UNLOCKS IS A KEY LEFT IN THE LOCK.
+ *
+ * Everything else this system stores is encrypted to something not on the
+ * disk. The key file is where that chain terminates, so it is the one thing
+ * that cannot be encrypted -- and therefore the one thing whose PLACEMENT is
+ * the entire security property. On the internal disk it protects nothing at
+ * all: whoever takes the disk takes the key with it.
+ *
+ * COMPARED BY DEVICE, NOT BY PATH. st_dev on the key file against st_dev on
+ * "/" catches ~, /persist, /tmp and anywhere else on the same filesystem
+ * without needing a list of mount points or a guess about naming. A live
+ * image satisfies it naturally, because there the root IS removable.
+ */
+int veron_is_removable(const char *path)
+{
+    struct stat sf, sr;
+    if (stat(path, &sf) != 0)
+        return -1;                 /* cannot tell; caller reports the errno */
+    if (stat("/", &sr) != 0)
+        return -1;
+    return sf.st_dev != sr.st_dev;
+}
+
+/* ---- wrapping ---------------------------------------------------------- */
+
+/* AES-256-GCM, SO A TAMPERED WRAP FAILS LOUDLY.
+ *
+ * A plain cipher would decrypt a corrupted or substituted wrap into garbage
+ * and hand it back as if it were the master secret -- which then silently
+ * fails to decrypt the TOTP seed, and the error surfaces somewhere unrelated.
+ * GCM's tag turns that into an authentication failure at the point it
+ * happens.
+ *
+ * File layout, fixed and simple enough to read with od(1):
+ *   "VERONWRAP1"  10 bytes
+ *   salt          16 bytes   (KDF salt for this factor)
+ *   nonce         12 bytes   (GCM)
+ *   tag           16 bytes
+ *   ciphertext    64 bytes   (the master secret)
+ */
+static int wrap_write(const char *path, const uint8_t key[32],
+                      const uint8_t master[MASTER_LEN],
+                      const uint8_t salt[16])
+{
+    uint8_t nonce[12], tag[16], ct[MASTER_LEN];
+    gcry_randomize(nonce, sizeof nonce, GCRY_STRONG_RANDOM);
+
+    gcry_cipher_hd_t h;
+    if (gcry_cipher_open(&h, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_GCM, 0))
+        return 0;
+    int ok = 0;
+    if (!gcry_cipher_setkey(h, key, 32) &&
+        !gcry_cipher_setiv(h, nonce, sizeof nonce) &&
+        !gcry_cipher_encrypt(h, ct, sizeof ct, master, MASTER_LEN) &&
+        !gcry_cipher_gettag(h, tag, sizeof tag))
+        ok = 1;
+    gcry_cipher_close(h);
+    if (!ok)
+        return 0;
+
+    /* WRITTEN 0600 AND RENAMED INTO PLACE, so a crash cannot leave a
+     * half-written wrap where a whole one used to be. */
+    char tmp[1088];
+    snprintf(tmp, sizeof tmp, "%s.new", path);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0)
+        return 0;
+    ok = write(fd, WRAP_MAGIC, 10) == 10
+      && write(fd, salt, 16) == 16
+      && write(fd, nonce, 12) == 12
+      && write(fd, tag, 16) == 16
+      && write(fd, ct, MASTER_LEN) == MASTER_LEN;
+    close(fd);
+    explicit_bzero(ct, sizeof ct);
+    if (!ok) {
+        unlink(tmp);
+        return 0;
+    }
+    return rename(tmp, path) == 0;
+}
+
+static int wrap_read(const char *path, const uint8_t key[32],
+                     uint8_t master[MASTER_LEN], uint8_t salt_out[16])
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return 0;
+    uint8_t magic[10], salt[16], nonce[12], tag[16], ct[MASTER_LEN];
+    int ok = read(fd, magic, 10) == 10
+          && read(fd, salt, 16) == 16
+          && read(fd, nonce, 12) == 12
+          && read(fd, tag, 16) == 16
+          && read(fd, ct, MASTER_LEN) == MASTER_LEN;
+    close(fd);
+    if (!ok || memcmp(magic, WRAP_MAGIC, 10) != 0)
+        return 0;
+    if (salt_out)
+        memcpy(salt_out, salt, 16);
+
+    gcry_cipher_hd_t h;
+    if (gcry_cipher_open(&h, GCRY_CIPHER_AES256, GCRY_CIPHER_MODE_GCM, 0))
+        return 0;
+    ok = 0;
+    if (!gcry_cipher_setkey(h, key, 32) &&
+        !gcry_cipher_setiv(h, nonce, sizeof nonce) &&
+        !gcry_cipher_decrypt(h, master, MASTER_LEN, ct, sizeof ct) &&
+        !gcry_cipher_checktag(h, tag, sizeof tag))
+        ok = 1;
+    gcry_cipher_close(h);
+    if (!ok)
+        explicit_bzero(master, MASTER_LEN);
+    return ok;
+}
+
+/* ---- the salt lives with the wrap ------------------------------------- */
+
+/* READ THE SALT OUT OF THE WRAP FILE ITSELF rather than from auth.conf.
+ *
+ * Each factor needs its own salt, and keeping it beside the thing it belongs
+ * to means enrolling a second key file cannot disturb the first. It also
+ * means auth.conf carries no cryptographic material at all -- it becomes a
+ * list of which factors exist, which is metadata rather than secret.
+ */
+int veron_wrap_salt(const char *path, uint8_t salt[16])
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return 0;
+    uint8_t magic[10];
+    int ok = read(fd, magic, 10) == 10 && read(fd, salt, 16) == 16;
+    close(fd);
+    return ok && memcmp(magic, WRAP_MAGIC, 10) == 0;
+}
+
+int veron_master_from_keyfile(const char *keyfile, const char *wrappath,
+                              uint8_t master[MASTER_LEN])
+{
+    uint8_t salt[16], key[32];
+    if (!veron_wrap_salt(wrappath, salt))
+        return 0;
+    /* THE FIRST 8 BYTES, BECAUSE S2K TAKES EXACTLY EIGHT. libgcrypt rejects
+     * any other length with GPG_ERR_INV_VALUE (cipher/kdf.c) -- passing 16
+     * made every derivation fail silently, and the error was reported as a
+     * missing file. Sixteen are stored so the salt is not shortened if the
+     * KDF is ever changed to one that takes more. */
+    if (!veron_keyfile_derive(keyfile, salt, key))
+        return 0;
+    int ok = wrap_read(wrappath, key, master, NULL);
+    explicit_bzero(key, sizeof key);
+    return ok;
+}
+
+int veron_master_new(uint8_t master[MASTER_LEN])
+{
+    gcry_randomize(master, MASTER_LEN, GCRY_VERY_STRONG_RANDOM);
+    return 1;
+}
+
+int veron_wrap_to_keyfile(const char *keyfile, const char *wrappath,
+                          const uint8_t master[MASTER_LEN])
+{
+    uint8_t salt[16], key[32];
+    gcry_randomize(salt, sizeof salt, GCRY_STRONG_RANDOM);
+    if (!veron_keyfile_derive(keyfile, salt, key))
+        return 0;
+    int ok = wrap_write(wrappath, key, master, salt);
+    explicit_bzero(key, sizeof key);
+    return ok;
+}
+
+/* ---- the TOTP seed, encrypted --------------------------------------- */
+
+/* TOTP IS A SHARED SECRET, SO THE VERIFIER MUST HOLD IT -- AND THAT IS
+ * EXACTLY WHY IT CANNOT BE A FACTOR ON ITS OWN HERE.
+ *
+ * A verifier that can check a code can also generate one. Stored in the
+ * clear, the seed on an unencrypted disk lets anyone holding that disk mint
+ * valid codes forever, which makes TOTP worth nothing against the attacker it
+ * is usually imagined to stop.
+ *
+ * The way out is not a cleverer construction -- there isn't one, TOTP is
+ * symmetric by definition -- but a policy: the seed is encrypted under the
+ * master secret, so a possession factor must succeed BEFORE TOTP can even be
+ * checked. TOTP stops being an independent factor, which is the point rather
+ * than the cost. It is a second factor, never a first.
+ */
+int veron_totp_seed_read(const uint8_t master[MASTER_LEN],
+                         char *b32, size_t b32len)
+{
+    char dir[1024], path[1088];
+    if (!veron_confdir(dir, sizeof dir))
+        return 0;
+    snprintf(path, sizeof path, "%s/totp.wrap", dir);
+
+    uint8_t key[32];
+    /* THE SEED KEY IS DERIVED FROM THE MASTER, NOT THE MASTER ITSELF, so that
+     * a compromise of one derived use does not hand over the others. */
+    gcry_md_hd_t h;
+    if (gcry_md_open(&h, GCRY_MD_SHA256, GCRY_MD_FLAG_HMAC))
+        return 0;
+    gcry_md_setkey(h, master, MASTER_LEN);
+    gcry_md_write(h, "veron-totp-seed", 15);
+    unsigned char *d = gcry_md_read(h, GCRY_MD_SHA256);
+    if (!d) {
+        gcry_md_close(h);
+        return 0;
+    }
+    memcpy(key, d, 32);
+    gcry_md_close(h);
+
+    uint8_t out[MASTER_LEN];
+    int ok = wrap_read(path, key, out, NULL);
+    explicit_bzero(key, sizeof key);
+    if (!ok)
+        return 0;
+    /* The seed is stored NUL-padded inside a fixed-size wrap so its length
+     * does not leak through the file size. */
+    snprintf(b32, b32len, "%.*s", MASTER_LEN, (char *)out);
+    explicit_bzero(out, sizeof out);
+    return 1;
+}
+
+int veron_totp_seed_write(const uint8_t master[MASTER_LEN], const char *b32)
+{
+    char dir[1024], path[1088];
+    if (!veron_confdir(dir, sizeof dir))
+        return 0;
+    snprintf(path, sizeof path, "%s/totp.wrap", dir);
+
+    uint8_t key[32];
+    gcry_md_hd_t h;
+    if (gcry_md_open(&h, GCRY_MD_SHA256, GCRY_MD_FLAG_HMAC))
+        return 0;
+    gcry_md_setkey(h, master, MASTER_LEN);
+    gcry_md_write(h, "veron-totp-seed", 15);
+    unsigned char *d = gcry_md_read(h, GCRY_MD_SHA256);
+    if (!d) {
+        gcry_md_close(h);
+        return 0;
+    }
+    memcpy(key, d, 32);
+    gcry_md_close(h);
+
+    uint8_t buf[MASTER_LEN];
+    memset(buf, 0, sizeof buf);
+    snprintf((char *)buf, sizeof buf, "%s", b32);
+
+    uint8_t salt[16];
+    gcry_randomize(salt, sizeof salt, GCRY_STRONG_RANDOM);
+    int ok = wrap_write(path, key, buf, salt);
+    explicit_bzero(key, sizeof key);
+    explicit_bzero(buf, sizeof buf);
+    return ok;
+}
