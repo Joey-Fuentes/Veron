@@ -116,6 +116,82 @@ experiment beside it — and at this point it is the real build.
 
 ---
 
+### PROPOSED: how the jobs should be structured
+
+**Not decided.** This is the shape argued for below; the open question at the
+end has to be answered before any of it is written.
+
+Three constraints drive it, and none of them are preferences:
+
+- **Runner architecture forces a split.** Stages 1-3 must run on aarch64 --
+  the seed assembler is ARM64 -- and stages 4-6 run natively on x86_64. That
+  boundary exists whether or not the layout acknowledges it.
+- **Stages 1-3 are coupled and fast.** They run in one box today, each rung
+  feeding the next directly. Splitting them into three workflows would add two
+  artifact round-trips for a few minutes of work.
+- **Stages 4, 5 and 6 are long and independently re-runnable.** Stage 4 is
+  about six hours; stage 5 has a checkpoint system precisely so it does not
+  redo everything. These want to be separate files.
+
+```
+.github/workflows/
+  1-3-seed-<arch>.yml             aarch64: self-assembly -> pico-c -> micro-c
+                                  -> the cross to a native x86_64 tcc
+  4-toolchain-kernel-<arch>.yml   native: twenty rungs, three kernels
+  5-user-space-<arch>.yml         native: the package set, the image
+  6-release-<arch>.yml            native: trace, ISOs, signing, publish
+  chain-<arch>.yml                calls 1-3 -> 4 -> 5 -> 6 in order
+  lint.yml
+```
+
+**EACH STAGE IS BOTH `workflow_call` AND `workflow_dispatch`, AND THAT IS THE
+POINT.** Called from `chain`, artifacts pass inside the run. Dispatched alone,
+the stage downloads the previous stage's published release. Same script either
+way; only the source of the input differs. This is what makes it possible to
+re-run stage 5 against yesterday's stage 4 without a six-hour rebuild, which
+is how the work actually proceeds.
+
+**THE ARTIFACT CONTRACT IS IDENTICAL AT EVERY RUNG.** Each stage publishes:
+
+```
+<N>/latest-<arch>
+  artifact.tar.zst      what the next stage consumes
+  ARTIFACT-SHA256       its digest
+  rungs.toml            one record per rung: inputs, builder edge, outputs
+```
+
+`rungs.toml` is the only new part, and its content already exists -- the seed
+job prints exactly this at the handoff today. Stage 6 concatenates all five
+files and walks the edges. A uniform contract is what makes the trace possible
+without a special case per stage.
+
+**THE WORKFLOW BECOMES A THIN CALLER.** Each stage's logic moves to
+`stages/<N>/build.sh`, running exactly what the YAML runs today:
+
+```yaml
+- run: ./veron build --stage 4 --arch ${{ inputs.arch }}
+```
+
+so the same command works on a laptop. This single change is what yields the
+local build, the rung records, and a file a person can read -- the 4,500-line
+inline YAML is the reason none of those exist today.
+
+**THE PROBE AND WATCHPOINT WORKFLOWS SHOULD GO.** Roughly twenty of them are
+answered questions kept as history: `stage3-cross-tcc-probe` established that
+the cross works, and the cross now runs in production and is marked
+`VERON-XTCC-GEN2-OK`. Their findings belong in `docs/experiments/` with the
+conclusion recorded; the workflow list should be the ladder and nothing else.
+Deleting a workflow that proved something is safe once what it proved is
+written down -- and keeping twenty of them means the list no longer says what
+the project builds.
+
+**OPEN QUESTION, AND IT CHANGES THE REST.** Is `chain-<arch>.yml` the normal
+entry point, or do stages stay dispatched individually? If the chain is
+normal, the artifact contract is load-bearing and every stage must publish a
+release even when nothing consumes it from there. If individual dispatch stays
+normal, the contract is a convenience and intermediate publishing can be
+skipped inside a chained run. Answer this before writing any of it.
+
 ## 2. What stage 6 actually delivers
 
 ### 2.1 The trace
