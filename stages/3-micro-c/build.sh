@@ -31,7 +31,7 @@ while [ ! -f "$ROOT/sources/tcc.toml" ] && [ "$ROOT" != / ]; do
 [ -f "$ROOT/sources/tcc.toml" ] || { echo "FAIL: no repo root above $HERE"; exit 1; }
 cd "$ROOT"
 
-MESCC_SHA=5adfbf3d21b0d3fe93f76c7d99d35d418e630d7a  # workflow env: 5adfbf3
+MESCC_SHA=5adfbf3   # the workflow pins the SHORT form; expanded at fetch
 M2LIBC_SHA=68a23cfd05d5a355ba7a30c770d684cbe86fcc4e
 PHASE="${1:-all}"
 IN="$ROOT/in/3"
@@ -86,6 +86,29 @@ do_in() {
   find "$IN/tcc-src" -name '*.orig' -delete
   echo "  tcc-src ready: $(ls "$IN"/tcc-src/*.c | wc -l) .c files"
 
+  if [ -f "$HERE/ADOPTED-SHA256" ]; then
+    echo "== in/3: ADOPTED repo sources (D2 -- no upstream, no patches) =="
+    ( cd "$HERE" && sha256sum -c ADOPTED-SHA256 --quiet ) \
+      || { echo "FAIL: adopted sources do not match ADOPTED-SHA256"; exit 1; }
+    echo "  $(wc -l < "$HERE/ADOPTED-SHA256") adopted files verified"
+    rm -rf "$IN/m2libc-veron" && cp -r "$HERE/m2libc" "$IN/m2libc-veron"
+    cp "$HERE/bootstrap.c" "$IN/patched_bootstrap.c"
+    rm -rf "$IN/microc" && mkdir -p "$IN/microc"
+    cp -r "$HERE/micro-c/." "$IN/microc/"
+    S="$IN/microc/test/test1000/hello-aarch64.sh"
+    sed -e ':a' -e '/\\$/{N; s/\\\n/ /; ta}' "$S" > "$IN/joined.sh"
+    grep -m1 'bin/M2-Planet' "$IN/joined.sh" \
+      | grep -oE -- '-f[[:space:]]+[^[:space:]]+' \
+      | sed 's/^-f[[:space:]]*//' > "$IN/microc-srcs.txt"
+    rm -rf "$IN/mescc-s2" && mkdir -p "$IN/mescc-s2"
+    cp -r "$HERE/linker-tools/." "$IN/mescc-s2/"
+    cp "$HERE/linker-tools/M1-srcs.txt" "$HERE/linker-tools/hex2-srcs.txt" "$IN/"
+    # bootstrappable.c for the M1/hex2 units, from the adopted tree
+    mkdir -p "$IN/m2libc-pin"
+    cp "$HERE/micro-c/M2libc/bootstrappable.c" "$IN/m2libc-pin/bootstrappable.c"
+    echo yes > "$IN/PIN-TRUE"
+    return 0
+  fi
   echo "== in/3: m2libc-veron = reference + the m2libc series =="
   rm -rf "$IN/m2libc-veron"
   cp -r spikes/reference/m2libc "$IN/m2libc-veron"
@@ -130,7 +153,25 @@ do_in() {
 
   echo "== in/3: mescc-tools at the pin, rewritten for pico-c =="
   rm -rf "$IN/mescc"
-  if ( . tools/clone-pinned.sh \
+  # THE PIN IS SHORT (7 hex). A server will not serve an abbreviated
+  # object -- "upload-pack: not our ref" -- and inventing the missing 33
+  # digits is worse than fetching history: the first release of this
+  # script did exactly that and taught the lesson. Expand honestly: full
+  # clone, rev-parse, verify the prefix, then pin the expansion.
+  if [ "${#MESCC_SHA}" -lt 40 ]; then
+    if git clone -q https://github.com/oriansj/mescc-tools.git \
+         "$IN/mescc" 2>/dev/null; then
+      full=$(git -C "$IN/mescc" rev-parse "$MESCC_SHA^{commit}" 2>/dev/null || true)
+      case "$full" in "$MESCC_SHA"*)
+        git -C "$IN/mescc" checkout -q "$full"
+        echo "  mescc-tools @ $full (pin-true, expanded from $MESCC_SHA)"
+        MESCC_FETCHED=yes ;;
+      *) rm -rf "$IN/mescc"; MESCC_FETCHED=no ;;
+      esac
+    else MESCC_FETCHED=no; fi
+  else MESCC_FETCHED=no; fi
+  if [ "${MESCC_FETCHED:-no}" = yes ]; then :
+  elif ( . tools/clone-pinned.sh \
        && clone_pinned "$IN/mescc" "$MESCC_SHA" \
             "https://github.com/oriansj/mescc-tools.git" ) 2>/dev/null; then
     echo "  mescc-tools @ $MESCC_SHA (pin-true)"
