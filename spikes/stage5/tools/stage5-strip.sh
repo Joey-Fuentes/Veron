@@ -169,6 +169,58 @@ do_strip() {
 strip_available() { [ "$STRIP" = OWN ] || [ -x "$STRIP" ]; }
 strip_available || { emit "VERON-STRIP-NONE"; exit 1; }
 
+# ---- delete what a running system never opens -------------------------
+#
+# EVERYTHING HERE HAPPENS TO THE MERGED TREE, WHICH IS WHY IT IS HERE AND NOT
+# IN THE RECIPES. A recipe edit changes recipe-sha, which invalidates that
+# package and everything that build-depends on it -- adding one flag to
+# pkgconf, python and m4 discarded 117 of 144 packages and cost a full
+# rebuild. Trimming after merge costs nothing: the packages are already built,
+# the checkpoint still matches, and the decision is reversible by re-running
+# without the flag.
+#
+# stage4/bridge/sysroot-trim.sh does the same thing for the sysroot it
+# publishes. This is the stage-5 half, which never existed.
+#
+# EACH CATEGORY IS MEASURED AND REPORTED SEPARATELY so that a removal that
+# turns out to be wrong is attributable, and so the numbers stop being
+# estimates.
+trim_cat() {   # $1 = label, rest = find predicates
+    label=$1; shift
+    b=$(sz "$ROOT")
+    find "$ROOT" "$@" -delete 2>/dev/null || true
+    a=$(sz "$ROOT")
+    printf '    %-22s %6d MB\n' "$label" "$(( (b - a) / 1024 ))"
+}
+
+if [ "${VERON_TRIM:-1}" = 1 ]; then
+    emit ""
+    emit "  --- removing what nothing loads at runtime ---"
+    # STATIC ARCHIVES ARE LINK-TIME ONLY. Nothing dlopens a .a and nothing in
+    # this image links statically; the biggest are llvm's and python's, whose
+    # packages are build_only and no longer merged at all.
+    trim_cat "static archives (.a)" -type f -name '*.a'
+    # LIBTOOL .la FILES describe how to link and are read by libtool alone.
+    trim_cat "libtool .la"          -type f -name '*.la'
+    # HEADERS ARE FOR COMPILING AGAINST AN INSTALLED LIBRARY. A rebuild on
+    # this system comes up from the seed and recompiles the libraries too, so
+    # it regenerates its own headers rather than reading these.
+    # THE PREDICATE IS A PLAIN PATH MATCH. A -prune form was tried first and
+    # deleted nothing: -prune stops the descent, so the files under the pruned
+    # directory are never reached and the -delete never sees them. Caught on a
+    # test tree where every other category cleared and headers survived.
+    trim_cat "headers"              -type f -path '*/usr/include/*'
+    # MAN AND INFO PAGES. There is no man(1) in this image to read them.
+    trim_cat "man pages"            -type f -path '*/share/man/*'
+    trim_cat "info pages"           -type f -path '*/share/info/*'
+    # DOCS. READMEs and changelogs shipped beside libraries.
+    trim_cat "docs"                 -type f -path '*/share/doc/*'
+    # LOCALE. gnupg alone ships about 5 MB of translations, and nothing in
+    # this image sets LC_MESSAGES to anything but C.
+    trim_cat "locale"               -type f -path '*/share/locale/*'
+    emit ""
+fi
+
 before=$(sz "$ROOT")
 count=0
 
