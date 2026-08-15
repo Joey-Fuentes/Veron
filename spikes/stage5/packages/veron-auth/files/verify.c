@@ -10,14 +10,43 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <pwd.h>
 
 /* ---- configuration ---------------------------------------------------- */
+
+/* THE HOME DIRECTORY IS LOOKED UP, NOT READ FROM THE ENVIRONMENT, AND THIS IS
+ * WHY CONSOLE LOGIN REFUSED EVERY ATTEMPT.
+ *
+ * getty does not set HOME. On an ordinary system login(1) sets it AFTER
+ * authenticating -- and login(1) is precisely what veron-login replaces, so
+ * by the time the verifier runs there is no HOME to read. getenv returned
+ * NULL, no configuration file was found, no factors were configured as far as
+ * the verifier could tell, and `veron_verify` refused: "not accepted", for
+ * every input, with a correctly enrolled key file sitting on disk.
+ *
+ * The lock screen was unaffected because it runs inside a session that
+ * already has HOME set, which is exactly why this only showed up on tty3.
+ *
+ * getpwuid IS THE ANSWER RATHER THAN HARDCODING /home/<user>: the passwd
+ * entry is where a home directory is actually defined, and it is correct for
+ * root, for a relocated home, and for any user this is ever run as. HOME is
+ * still preferred when set, so nothing changes for the session case. */
+static const char *home_dir(void)
+{
+    const char *h = getenv("HOME");
+    if (h && *h)
+        return h;
+    struct passwd *pw = getpwuid(getuid());
+    if (pw && pw->pw_dir && *pw->pw_dir)
+        return pw->pw_dir;
+    return NULL;
+}
 
 /* ONE key = value PER LINE, the same shape veron-pinentry reads, so a person
  * setting this system up learns one file format rather than two. */
 static int conf_get(const char *key, char *out, size_t outlen)
 {
-    const char *home = getenv("HOME");
+    const char *home = home_dir();
     if (!home)
         return 0;
     char path[1024];
@@ -301,7 +330,7 @@ int veron_verify(const char *input, int len)
     memcpy(buf, input, (size_t)len);
     buf[len] = '\0';
 
-    const char *home = getenv("HOME");
+    const char *home = home_dir();
     char seed[1024], state[1024], kf[1024];
     int need = 0, have = 0;
 

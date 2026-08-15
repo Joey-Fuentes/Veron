@@ -28,13 +28,22 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <pwd.h>
 #include <errno.h>
 
 static int mkconfdir(char *out, size_t n)
 {
+    /* THE SAME LOOKUP THE VERIFIER USES, so enrolment cannot write to one
+     * place while the check reads another. veron-enroll is normally run from
+     * a shell where HOME is set, but a mismatch here would produce the worst
+     * kind of failure: a config file written successfully and never found. */
     const char *home = getenv("HOME");
+    if (!home || !*home) {
+        struct passwd *pw = getpwuid(getuid());
+        home = (pw && pw->pw_dir && *pw->pw_dir) ? pw->pw_dir : NULL;
+    }
     if (!home) {
-        fprintf(stderr, "veron-enroll: HOME is not set\n");
+        fprintf(stderr, "veron-enroll: cannot determine the home directory\n");
         return 0;
     }
     snprintf(out, n, "%s/.config/veron", home);

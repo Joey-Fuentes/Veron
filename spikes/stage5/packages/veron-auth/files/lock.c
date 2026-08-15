@@ -64,6 +64,7 @@
 #define MAX_ENTRY   256
 
 typedef struct {
+    uint32_t                   name;   /* registry name, for global_remove */
     struct wl_output          *output;
     struct wl_surface         *surface;
     struct ext_session_lock_surface_v1 *lock_surface;
@@ -239,6 +240,37 @@ static const struct ext_session_lock_surface_v1_listener surface_listener = {
     surface_configure,
 };
 
+/* RELEASE ONE OUTPUT'S SURFACE AND BUFFERS. Called when the compositor takes
+ * an output away -- which happens on every VT SWITCH, not only when a monitor
+ * is unplugged. */
+static void output_teardown(LockOutput *o)
+{
+    if (o->lock_surface) {
+        ext_session_lock_surface_v1_destroy(o->lock_surface);
+        o->lock_surface = NULL;
+    }
+    if (o->surface)  { wl_surface_destroy(o->surface);   o->surface = NULL; }
+    if (o->cairo)    { cairo_surface_destroy(o->cairo);  o->cairo = NULL; }
+    if (o->buffer)   { wl_buffer_destroy(o->buffer);     o->buffer = NULL; }
+    if (o->data)     { munmap(o->data, o->size);         o->data = NULL; }
+    if (o->output)   { wl_output_destroy(o->output);     o->output = NULL; }
+    o->configured = 0;
+    o->width = o->height = 0;
+}
+
+/* GIVE ONE OUTPUT A LOCK SURFACE. Used both for the outputs present when the
+ * lock is taken and for any that appear afterwards. */
+static void output_attach(LockOutput *o)
+{
+    if (!session_lock || !o->output || o->lock_surface)
+        return;
+    o->surface = wl_compositor_create_surface(compositor);
+    o->lock_surface = ext_session_lock_v1_get_lock_surface(
+        session_lock, o->surface, o->output);
+    ext_session_lock_surface_v1_add_listener(
+        o->lock_surface, &surface_listener, o);
+}
+
 /* ---- the lock --------------------------------------------------------- */
 
 static void lock_locked(void *data, struct ext_session_lock_v1 *l)
@@ -406,16 +438,48 @@ static void reg_global(void *data, struct wl_registry *r, uint32_t name,
         lock_manager = wl_registry_bind(
             r, name, &ext_session_lock_manager_v1_interface, 1);
     else if (!strcmp(iface, wl_output_interface.name)) {
-        if (n_outputs < MAX_OUTPUTS) {
-            outputs[n_outputs].output = wl_registry_bind(
-                r, name, &wl_output_interface, version < 3 ? version : 3);
-            n_outputs++;
-        }
+        /* A FREE SLOT, NOT ALWAYS A NEW ONE. Outputs come and go across VT
+         * switches, so reuse a slot an earlier removal emptied rather than
+         * running off the end of the array on the third or fourth switch. */
+        int i = -1;
+        for (int k = 0; k < n_outputs; k++)
+            if (!outputs[k].output) { i = k; break; }
+        if (i < 0 && n_outputs < MAX_OUTPUTS)
+            i = n_outputs++;
+        if (i < 0)
+            return;
+        outputs[i].name = name;
+        outputs[i].output = wl_registry_bind(
+            r, name, &wl_output_interface, version < 3 ? version : 3);
+        /* IF THE SESSION IS ALREADY LOCKED, THIS OUTPUT NEEDS COVERING NOW.
+         * An output that appears while locked and gets no lock surface is an
+         * output showing whatever the compositor falls back to. */
+        output_attach(&outputs[i]);
     }
 }
 
+/* AN OUTPUT GOING AWAY IS NOT A RARE EVENT, AND IGNORING IT BROKE THE LOCK
+ * SCREEN ON EVERY VT SWITCH.
+ *
+ * This handler used to do nothing. wlroots removes the wl_output globals when
+ * the session is deactivated -- which is what Ctrl+Alt+F2 does -- and re-adds
+ * them on return. A lock surface bound to an output that no longer exists is
+ * a protocol error the moment it is touched, so the compositor disconnected
+ * the client; and because ext-session-lock-v1 keeps the session locked when
+ * its client dies, the result was a permanently black screen that no
+ * keystroke could reach. Measured on hardware: lock, Ctrl+Alt+F2,
+ * Ctrl+Alt+F1, and the lock screen never came back.
+ *
+ * THE ESCAPE HATCH IS THE THING THAT BROKE IT, which is the worst possible
+ * shape for this bug: the documented way out of a misbehaving lock screen was
+ * itself what wedged the session. */
 static void reg_remove(void *d, struct wl_registry *r, uint32_t name)
-{ (void)d; (void)r; (void)name; }
+{
+    (void)d; (void)r;
+    for (int i = 0; i < n_outputs; i++)
+        if (outputs[i].output && outputs[i].name == name)
+            output_teardown(&outputs[i]);
+}
 
 static const struct wl_registry_listener reg_listener = {
     reg_global, reg_remove,
@@ -464,13 +528,11 @@ int main(int argc, char **argv)
     session_lock = ext_session_lock_manager_v1_lock(lock_manager);
     ext_session_lock_v1_add_listener(session_lock, &lock_listener, NULL);
 
-    for (int i = 0; i < n_outputs; i++) {
-        outputs[i].surface = wl_compositor_create_surface(compositor);
-        outputs[i].lock_surface = ext_session_lock_v1_get_lock_surface(
-            session_lock, outputs[i].surface, outputs[i].output);
-        ext_session_lock_surface_v1_add_listener(
-            outputs[i].lock_surface, &surface_listener, &outputs[i]);
-    }
+    /* ONE CODE PATH FOR BOTH CASES. output_attach is what the registry calls
+     * for an output that appears later, so using it here too means a
+     * hotplugged output is covered exactly the same way as an original one. */
+    for (int i = 0; i < n_outputs; i++)
+        output_attach(&outputs[i]);
 
     while (running && wl_display_dispatch(display) != -1)
         ;
