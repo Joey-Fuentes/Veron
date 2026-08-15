@@ -2251,15 +2251,26 @@ jobs:
           set -e
           echo "  qemu rc=$rc"
 
-          if ! grep -q "VERON-BOOT-OK" "$O/boot-stripped.log"; then
-            echo "VERON-STRIPPED-BOOT-FAIL  the stripped image did not boot"
+          # VERON-STAGE5-TESTS IS THE MARKER, NOT VERON-BOOT-OK, AND CHECKING
+          # THE WRONG ONE FAILED A RUN THAT WORKED. VERON-BOOT-OK belongs to
+          # the `veron.boot=system` path; this is the harness boot, which runs
+          # veron-stage5-test and powers off. A run that booted cleanly and
+          # reported pass=177 fail=0 was rejected because the marker it never
+          # prints was absent.
+          #
+          # -a BECAUSE THE LOG CONTAINS BINARY. A console log carries control
+          # sequences, and grep treats a file with a NUL as binary and reports
+          # nothing -- the same reason every other grep against these logs in
+          # this file passes -a.
+          if ! grep -aq "VERON-STAGE5-TESTS" "$O/boot-stripped.log"; then
+            echo "VERON-STRIPPED-BOOT-FAIL  the stripped image never reached its tests"
             tail -40 "$O/boot-stripped.log" | sed 's/^/    /'
             exit 1
           fi
-          grep -E "VERON-STAGE5-TESTS" "$O/boot-stripped.log" | tail -2 | sed 's/^/    /'
-          if grep -q "VERON-STAGE5-FAIL" "$O/boot-stripped.log"; then
+          grep -aE "VERON-STAGE5-TESTS" "$O/boot-stripped.log" | tail -2 | sed 's/^/    /'
+          if grep -aq "VERON-STAGE5-FAIL" "$O/boot-stripped.log"; then
             echo "VERON-STRIPPED-TESTS-FAIL  stripping broke something that worked"
-            grep -E "^\s+FAIL|bad " "$O/boot-stripped.log" | head -25 | sed 's/^/    /'
+            grep -aE "^\s+FAIL|bad " "$O/boot-stripped.log" | head -25 | sed 's/^/    /'
             exit 1
           fi
           echo "VERON-STRIPPED-OK  boots and passes its own tests after stripping"
