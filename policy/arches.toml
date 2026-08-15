@@ -1,0 +1,22 @@
+# policy/arches.toml — each target architecture declares its ORIGIN: how its
+# ladder reaches Stage 1 Self-Assembly. (Design doc §3.4.)
+#
+# The origin decides which substages exist for the target and what
+# `veron trace` prints at the bottom of a chain — the cross NOTE is generated
+# from this file, never hand-written. Flipping an arch to "native" (when its
+# self-assembler is written) is a declared, versioned event: a new lineage
+# whose acceptance test is the same tcc bytes out.
+
+[aarch64]
+origin = "native"                 # stages 1–3 native from self-assembler-arm64
+status = "reference"
+
+[x86_64]
+origin = "cross-from-aarch64"     # aarch64 substages 1–3, cross at 3/2:
+                                  # mc-tcc -> x86_64-tcc -> native tcc + musl
+status = "active"
+
+[riscv64]
+origin = "cross-from-aarch64"     # same shape; RV64I-only self-assembler is
+status = "planned"                # the eventual native origin (assembler subset
+                                  # RV64I; OS target RV64GC)

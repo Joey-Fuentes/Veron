@@ -1,0 +1,72 @@
+name: 1-self-assembly-verify
+# THE TRUST-ROOT GATE for the OFFICIAL tree. Two scripts, and the workflow is
+# only their caller -- the same two commands run identically on a laptop:
+#
+#   rebaseline.sh verify   re-derive gen1/elfgen1 through the self-host
+#                          ladder (bootstrapped from the committed spike
+#                          pair, no host toolchain) and require the committed
+#                          binaries to match byte-for-byte
+#   roundtrip.sh           prove source matches binary under TWO PINNED
+#                          independent decoders -- GNU binutils 2.47 and
+#                          LLVM 22.1.8 -- checks A/A2/B/E per binary, both
+#                          decoders, decoder crosscheck (C), verbatim, and
+#                          the committed-bytes tie (gate-17 bound)
+#
+# Verifies, never publishes: stage 1's artifacts are IN the repo.
+# §7.0: spikes and their workflows are untouched; this triggers on the
+# official paths only.
+
+on:
+  push:
+    paths:
+      - 'stages/1-self-assembly/**'
+      - 'tools/s0_selfhost.py'
+      - 'tools/s0_roundtrip.py'
+      - 'tools/s0_canon.py'
+      - 'tools/s0_rebuild.py'
+      - 'tools/roundtrip.sh'
+      - '.github/workflows/1-self-assembly-verify.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  BINUTILS_VER: '2.47'
+  LLVM_VER: '22.1.8'
+  ROUNDTRIP_BUDGET: '0'
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04-arm   # native aarch64; roundtrip.sh also runs
+    timeout-minutes: 45         # cross on x86_64 -- the pins are host-blind
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install (airlock deps for the two scripts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            binutils python3 curl xz-utils build-essential texinfo bison flex
+
+      - name: Cache the pinned toolchain
+        uses: actions/cache@v4
+        with:
+          path: build/toolchains/pinned
+          key: pinned-${{ runner.arch }}-binutils${{ env.BINUTILS_VER }}-llvm${{ env.LLVM_VER }}
+
+      - name: 'GATE 1: self-host ladder -- committed binaries re-derived'
+        run: ./stages/1-self-assembly/rebaseline.sh verify
+
+      - name: 'GATE 2: pinned two-decoder round-trip -- source matches binary'
+        run: ./stages/1-self-assembly/roundtrip.sh
+
+      - name: 'PINS.sha256 must be committed after the first green run'
+        run: |
+          set -eu
+          if ! git ls-files --error-unmatch \
+               stages/1-self-assembly/PINS.sha256 >/dev/null 2>&1; then
+            echo "::warning::first fetch recorded PINS.sha256 -- commit it so"
+            echo "::warning::every later cold cache must reproduce the digests"
+            cat stages/1-self-assembly/PINS.sha256 2>/dev/null || true
+          fi

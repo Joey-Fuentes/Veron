@@ -1,20 +1,15 @@
-# stages/ — the ladder
+# stages/ — the official ladder (design: docs/DESIGN.md)
 
-Each stage adds exactly one abstraction and is written in the language the
-stage below just produced.
+| stage | name | state |
+|---|---|---|
+| 1 | Self-Assembly | **live** — committed verified binaries + two gates |
+| 2 | pico-c | scaffold; adoption plan in its README |
+| 3 | micro-c (+ tcc, the handoff) | scaffold |
+| 4 | Toolchain and Kernel | scaffold; extraction plan |
+| 5 | User Space | scaffold; adoption plan |
+| 6 | Verification and Distribution | scaffold |
 
-```
-0-seed-as → 1-macro-as → 2-pico-c → 3-full-c      (trunk — flavor-blind)
-════════════════════════ FORK LINE ════════════════════════
-4-libc + 4-binutils → 5-gcc-bootstrap → 5-gcc → 5-userland → 5-kernel
-                                        (parameterized by libc = musl | glibc)
-```
-
-**Invariant:** nothing below stage 4 may reference libc, even transitively.
-CI enforces it (`tools/check-fork-invariant`).
-
-Stages 0–2 are per-arch (written 3×). From stage 3's portable C upward, source
-is written **once** and the compiler targets all three arches — so keep the
-assembly-language rungs few and small.
-
-See `ARCHITECTURE.md` §2.
+Redone from the spike track under docs/DESIGN.md §7.0: spikes stay live and
+untouched; each stage here is proven against the live spike as oracle. One
+sealed trunk job builds 1–3 and publishes one release, `3/latest-<arch>` —
+tcc, the artifact everything below the trunk exists to yield.
