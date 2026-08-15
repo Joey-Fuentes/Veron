@@ -97,7 +97,19 @@ on:
         default: false
 
 concurrency:
-  group: stage5-spike-amd64-${{ github.ref }}
+  # RENAMED AWAY FROM A GROUP A RUNNING JOB STILL HOLDS.
+  #
+  # 5-user-space-amd64 was adopted from this workflow and inherited this exact
+  # group string. Giving the official workflow its own name fixed it for
+  # everything dispatched afterwards -- but a run already in flight keeps the
+  # group it registered under, so the spike still queued behind it with
+  # "waiting for 5-user-space-amd64 #1 to complete".
+  #
+  # Renaming this side too means the spike is in a group nothing holds, so it
+  # starts while that run continues. Both names are now unique and this is
+  # stable rather than a workaround: -spike says which workflow it is, the way
+  # every other group here does.
+  group: stage5-spike-only-amd64-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
