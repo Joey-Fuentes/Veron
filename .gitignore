@@ -4,8 +4,11 @@
 *.o
 *.elf
 
-# Derived seed binaries (round-trip-verified from source, not stored)
-seed/*/seed-as
+# The official working tree (docs/DESIGN.md §2): derived state lives ONLY in
+# these three — `git status` staying clean after a full build is itself a
+# hermeticity check.
+/in/
+/out/
 
 # Local caches
 /.cache/

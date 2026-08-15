@@ -18,6 +18,7 @@ name: 1-self-assembly-verify
 
 on:
   push:
+    branches: ['**']    # lint rule: without this, a TAG push fires the job
     paths:
       - 'stages/1-self-assembly/**'
       - 'tools/s0_selfhost.py'
