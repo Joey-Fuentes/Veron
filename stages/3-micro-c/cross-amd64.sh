@@ -272,7 +272,11 @@ for s in d['substage']:
   # never as stage outputs. tcc-arm64-to-amd64 publishes beside the
   # contract because it is the recorded builder -- audit, not handoff.
   cp "$B/tcc-amd64" "$B/tcc-arm64-to-amd64" "$OUT/"
-  tar -czf "$B/sys-x86_64.tar.gz" -C "$B" sys-x86_64
+  # DETERMINISTIC CONTAINER (the compare gate's first catch: tar embeds
+  # mtimes and gzip a timestamp, so identical contents made a different
+  # tarball every run -- 12 drifting bytes while every direct .a hash held).
+  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='@0' \
+      -cf - -C "$B" sys-x86_64 | gzip -n > "$B/sys-x86_64.tar.gz"
   cp "$B/sys-x86_64.tar.gz" "$B/x86_64-libtcc1.a" "$OUT/"   # fixtures for verify-native
   echo
   echo "== STAGE 3 (amd64 leg) OUTPUT =="
@@ -313,7 +317,9 @@ emit_records() {
   printf '\n[[substage]]\nid = "3/6/tcc-amd64"\nstage = 3\narch = "x86_64"\nflavor = "trunk"\nroot = "repo"\n'
   inp source "tcc.c (pinned tree + tcc-veron.patch)" "$IN/tcc-src/tcc.c"
   inp source "musl-$MUSL_VER.tar.gz" "$IN/musl-$MUSL_VER.tar.gz"
-  inp intermediate "sys-x86_64.tar.gz (cross scaffold)" "$B/sys-x86_64.tar.gz"
+  # record CONTENT, not container: the .a is the scaffold's identity, the
+  # tarball is packaging for the verify-native fixture
+  inp intermediate "sys-x86_64/lib/libc.a (cross scaffold)" "$B/sys-x86_64/lib/libc.a"
   inp intermediate "x86_64-libtcc1.a (cross scaffold)" "$B/x86_64-libtcc1.a"
   printf '\n[[substage.input]]\nrole   = "builder"\nref    = "3/5/tcc-arm64-to-amd64"\nsha256 = "%s"\n' "$X_SHA"
   outp "out/3/x86_64/tcc-amd64" "$OUT/tcc-amd64"
