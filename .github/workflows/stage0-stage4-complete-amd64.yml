@@ -72,7 +72,14 @@ on:
         default: false
 
 concurrency:
-  group: stage0-stage4-complete-${{ github.ref }}
+  # PER ARCHITECTURE, BECAUSE THE aarch64 CHAIN USES THIS NAME TOO.
+  #
+  # Both stage0-stage4 workflows carried the same group, so dispatching one
+  # left the other queued behind it -- six hours of waiting for a build that
+  # shares nothing with it. They publish to different tags
+  # (stage4/hermetic-amd64 here, stage4/latest there) and read different
+  # inputs; only the string was shared.
+  group: stage0-stage4-complete-amd64-${{ github.ref }}
   cancel-in-progress: false
 
 env:

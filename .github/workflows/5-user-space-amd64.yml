@@ -108,7 +108,25 @@ on:
         default: false
 
 concurrency:
-  group: stage5-spike-amd64-${{ github.ref }}
+  # ITS OWN GROUP, BECAUSE THIS SHARES NOTHING WITH THE SPIKE.
+  #
+  # This workflow was adopted from spikes/stage5 verbatim, and it kept the
+  # spike's concurrency group with everything else. GitHub then treated the
+  # two as one resource: dispatching stage5-spike-amd64 while this was running
+  # showed "waiting for 5-user-space-amd64 #1 to complete", and the spike sat
+  # queued behind an unrelated build.
+  #
+  # NOTHING IS ACTUALLY SHARED. The spike publishes ckpt/latest-amd64 and
+  # stage5/latest-amd64; this publishes 5/ckpt-x86_64 and 5/latest-x86_64.
+  # Separate checkpoints, separate images, separate release tags -- the
+  # adoption note says so in as many words. The only thing they had in common
+  # was this string.
+  #
+  # AND THEY MUST RUN TOGETHER, not merely be allowed to. The spike is the
+  # oracle: byte-identical output between the two is the acceptance test for
+  # the adoption, and a comparison whose halves cannot run at the same time is
+  # a comparison nobody will make.
+  group: 5-user-space-amd64-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
