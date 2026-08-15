@@ -196,20 +196,86 @@ trim_cat() {   # $1 = label, rest = find predicates
 if [ "${VERON_TRIM:-1}" = 1 ]; then
     emit ""
     emit "  --- removing what nothing loads at runtime ---"
-    # STATIC ARCHIVES ARE LINK-TIME ONLY. Nothing dlopens a .a and nothing in
-    # this image links statically; the biggest are llvm's and python's, whose
-    # packages are build_only and no longer merged at all.
-    trim_cat "static archives (.a)" -type f -name '*.a'
+    # STATIC ARCHIVES, EXCEPT THE FOUR A -static LINK ACTUALLY NEEDS.
+    #
+    # Measured on the stage-4 sysroot: 115 MB of .a, of which libstdc++.a is
+    # 32 and libbfd.a 10.5 -- C++ and binutils' own, neither reachable from a
+    # kernel build. But libc.a (22), libm.a (7.5) and libgcc.a (6) are what a
+    # `-static` link resolves against, and libc_nonshared.a is linked into
+    # EVERY dynamic binary despite rounding to 0 MB, which makes it the one
+    # most easily lost to a blanket rule.
+    #
+    # The kernel build in the stage-4 log shows no -static and no libc.a, so
+    # these are probably unnecessary too -- but the log is quiet, that is
+    # absence of evidence rather than proof, and 36 MB is not worth gambling
+    # the one build capability this image is meant to keep.
+    b=$(sz "$ROOT")
+    find "$ROOT" -type f -name '*.a' \
+         ! -name 'libc.a' ! -name 'libm.a' ! -name 'libm-*.a' \
+         ! -name 'libgcc.a' ! -name 'libc_nonshared.a' \
+         -delete 2>/dev/null || true
+    a=$(sz "$ROOT")
+    printf '    %-22s %6d MB\n' "static archives (.a)" "$(( (b - a) / 1024 ))"
+
+    # THE C++ BACK-END AND THE LTO BACK-END.
+    #
+    # cc1plus is 48 MB and lto1 is 44 MB, and a kernel build invokes neither:
+    # the kernel is C, and gcc's LTO back-end runs only for -flto. In the
+    # stage-4 log cc1plus appears only where gcc BUILDS ITSELF -- "RUNG 9 --
+    # gcc 10.2.0, built by g++ (GCC) 4.7.4" -- which is the seed ladder's job,
+    # not the device's.
+    #
+    # WHAT THIS COSTS, PLAINLY: Veron's own applications are C++ (the FLTK
+    # programs, the browser shell), so they can no longer be rebuilt on the
+    # device. That is the accepted trade -- kernels are the supported local
+    # build, userspace comes from the seed.
+    if [ "${VERON_TRIM_CXX:-1}" = 1 ]; then
+        trim_cat "cc1plus + lto1" -type f \( -name 'cc1plus' -o -name 'lto1' \)
+    fi
     # LIBTOOL .la FILES describe how to link and are read by libtool alone.
     trim_cat "libtool .la"          -type f -name '*.la'
     # HEADERS ARE FOR COMPILING AGAINST AN INSTALLED LIBRARY. A rebuild on
     # this system comes up from the seed and recompiles the libraries too, so
     # it regenerates its own headers rather than reading these.
-    # THE PREDICATE IS A PLAIN PATH MATCH. A -prune form was tried first and
-    # deleted nothing: -prune stops the descent, so the files under the pruned
-    # directory are never reached and the -delete never sees them. Caught on a
-    # test tree where every other category cleared and headers survived.
-    trim_cat "headers"              -type f -path '*/usr/include/*'
+    # HEADERS ARE NOT ALL THE SAME, AND DELETING THEM ALL BREAKS KERNEL
+    # BUILDS ON THE DEVICE.
+    #
+    # This used to be `-path '*/usr/include/*'`, which removed glibc's and
+    # gcc's headers along with everything else. That is fine for a system that
+    # only runs -- and fatal for one that must compile its own kernel, because
+    # the kernel's host tools (fixdep, objtool, kconfig) are ordinary C
+    # programs that #include <stdio.h>.
+    #
+    # THE DISCRIMINATOR IS DATA, NOT A PATTERN. Every stage-5 package records
+    # what it installs in packages/<n>/installs.txt, so the headers that came
+    # from a PACKAGE can be named exactly and removed, while everything else
+    # under usr/include -- which is the stage-4 sysroot's, glibc's and the
+    # kernel's -- is left alone. No guessing about which prefix belongs to
+    # whom.
+    #
+    # Rebuilding Veron's own userspace is deliberately NOT supported on the
+    # device: that needs cairo's, glib's and wpewebkit's headers, and those
+    # are exactly what this removes. A user who wants that starts from the
+    # seed. Kernels are the supported case.
+    if [ -n "${PKGDIRS:-}" ]; then
+        b=$(sz "$ROOT")
+        for pd in $PKGDIRS; do
+            [ -d "$pd" ] || continue
+            for il in "$pd"/*/installs.txt; do
+                [ -f "$il" ] || continue
+                awk '$1=="f" && $4 ~ /^usr\/include\// {print $4}' "$il"
+            done
+        done | LC_ALL=C sort -u | while IFS= read -r rel; do
+            [ -n "$rel" ] && rm -f "$ROOT/$rel" 2>/dev/null
+        done
+        # EMPTY DIRECTORIES LEFT BEHIND ARE NOISE IN THE MANIFEST, not a size
+        # problem -- removed only where nothing remains.
+        find "$ROOT/usr/include" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+        a=$(sz "$ROOT")
+        printf '    %-22s %6d MB\n' "package headers" "$(( (b - a) / 1024 ))"
+    else
+        printf '    %-22s %6s\n' "package headers" "skipped (no PKGDIRS)"
+    fi
     # MAN AND INFO PAGES. There is no man(1) in this image to read them.
     trim_cat "man pages"            -type f -path '*/share/man/*'
     trim_cat "info pages"           -type f -path '*/share/info/*'

@@ -2165,6 +2165,11 @@ jobs:
           # veron-stage5-test is a shell script, so strip skips it by
           # extension -- but the packages it exercises are what is being
           # stripped, which is the point of running it again below.
+          # PKGDIRS TELLS THE TRIM WHICH HEADERS ARE A PACKAGE'S.
+          # Without it the headers cut is skipped entirely rather than
+          # guessing -- and guessing here means deleting glibc's headers and
+          # taking kernel builds on the device with them.
+          PKGDIRS="packages packages-amd64" \
           STRIP_LOG=out/strip.txt sh tools/stage5-strip.sh sysroot
 
           echo "  === merged system, after stripping ==="
