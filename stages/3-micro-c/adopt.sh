@@ -27,6 +27,9 @@ rec() { printf '  %-40s %8s bytes  %s\n' "$1" "$(wc -c < "$2")" \
 say "== adopt: the unit prologue (ours, final form) =="
 cp "$IN/patched_bootstrap.c" "$HERE/bootstrap.c"
 rec 'bootstrap.c' "$HERE/bootstrap.c"
+# the M2libc dir was removed at micro-c adoption (empty submodule
+# mountpoint); recreate it for the one file the flist names there
+mkdir -p "$HERE/micro-c/M2libc"
 cp "$IN/m2libc-pin/bootstrappable.c" "$HERE/micro-c/M2libc/bootstrappable.c"
 rec 'micro-c/M2libc/bootstrappable.c' "$HERE/micro-c/M2libc/bootstrappable.c"
 

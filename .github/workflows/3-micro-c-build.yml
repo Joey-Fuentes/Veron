@@ -1,0 +1,78 @@
+name: 3-micro-c-build
+# THE REAL STAGE-3 CHAIN, natively: pico-c compiles micro-c, pico-c builds
+# M1 and hex2, micro-c compiles tcc, our M1 and hex2 link it -> mc-tcc.
+# Extracted from stage0-stage4-complete-amd64.yml (the TRUE zero-budget
+# form); the workflow is a caller of stages/3-micro-c/build.sh, the same
+# script that runs on a laptop or a phone.
+#
+# Triggers on stage 1 binaries and stage 2 deliberately: stage 3 consumes
+# them, so their re-baseline must re-prove this chain -- staleness by
+# design, same as 2-pico-c-verify.
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'stages/3-micro-c/**'
+      - 'stages/2-pico-c/**'
+      - 'stages/1-self-assembly/self-assembler-arm64'
+      - 'stages/1-self-assembly/elf-wrapper-arm64'
+      - 'tools/drop_asm.py'
+      - 'tools/include_closure.py'
+      - 'tools/octal_to_decimal.py'
+      - 'tools/defines_to_enums.py'
+      - 'tools/clone-pinned.sh'
+      - '.github/workflows/3-micro-c-build.yml'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install (airlock deps for the scripts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3 git patch file
+      - name: 'STAGE 2: rebuild to records (stage 3 consumes out/2)'
+        run: ./stages/2-pico-c/verify.sh
+      - name: 'STAGE 3 in/: materialize inputs (adopted-first; else pin-true fetch)'
+        run: sh stages/3-micro-c/build.sh in
+      - name: 'STAGE 3 chain: seed-rooted micro-c, M1, hex2, then mc-tcc'
+        run: sh stages/3-micro-c/build.sh chain
+      - name: 'THE NUMBERS: every artifact, exact size, sha, mode'
+        run: |
+          set -eu
+          echo "  stage-3 artifact ladder (builders above, outputs below):"
+          for f in build/3/aarch64/micro-c build/3/aarch64/M1 \
+                   build/3/aarch64/hex2 out/3/aarch64/mc-tcc; do
+            printf '    %-12s %10s bytes  sha256 %s  mode %s\n' \
+              "$(basename "$f")" "$(wc -c < "$f")" \
+              "$(sha256sum "$f" | cut -d' ' -f1)" "$(stat -c %04a "$f")"
+          done
+          file -b out/3/aarch64/mc-tcc | cut -c1-70
+      - name: 'Collect the artifacts (for records + off-runner comparison)'
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-3-aarch64
+          path: |
+            out/3/aarch64/mc-tcc
+            build/3/aarch64/micro-c
+            build/3/aarch64/M1
+            build/3/aarch64/hex2
+          retention-days: 14
+      # Provenance after the gates, main only -- same honesty split as
+      # stages 1 and 2: the attestation says who/where; the records (minted
+      # from these numbers next) say how.
+      - name: 'ATTEST: bind the chain outputs to this workflow identity'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            out/3/aarch64/mc-tcc
+            build/3/aarch64/micro-c
+            build/3/aarch64/M1
+            build/3/aarch64/hex2
