@@ -121,23 +121,36 @@ musl_build() {
   echo "    sys/$_t: libc.a $(wc -c < "$_sys/lib/libc.a") bytes + crt trio"
 }
 
-# libtcc1 for a target: the seven files, compiled by the given tcc, archived
+# libtcc1 for a target -- THE FILE LIST IS PER-TARGET, exactly as the
+# spike has it: arm64's runtime is lib-arm64.c + 4 (box step 10b, "5 of 5
+# objects"); x86_64's is libtcc1.c + 6 (the CROSS 2 list). The first
+# release used the x86_64 list for both and died on libtcc1.c's
+# "#error unsupported CPU type" -- the CPU dispatch in that file simply
+# does not include arm64 at this tcc version.
 #   libtcc1_build <target> <CC-invocation> <out-archive>
 libtcc1_build() {
   _t="$1"; _cc="$2"; _a="$3"
+  case "$_t" in
+    aarch64) _files="lib-arm64.c stdatomic.c builtin.c atomic.S alloca.S"
+             _flags="-B$IN/tcc-src -I$IN/tcc-src -I$IN/tcc-src/include"
+             _min=5 ;;
+    x86_64)  _files="libtcc1.c alloca.S alloca-bt.S stdatomic.c atomic.S builtin.c va_list.c"
+             _flags="-I. -Iinclude"
+             _min=4 ;;
+    *) echo "  FAIL: no libtcc1 recipe for $_t"; exit 1 ;;
+  esac
   ( cd "$IN/tcc-src"
     rm -f "$B"/lt_"$_t"_*.o
     _n=0
-    for f in libtcc1.c alloca.S alloca-bt.S stdatomic.c atomic.S \
-             builtin.c va_list.c; do
+    for f in $_files; do
       [ -f "lib/$f" ] || continue
-      $_cc -c "lib/$f" -o "$B/lt_${_t}_${f%.*}.o" -I. -Iinclude \
+      $_cc $_flags -c "lib/$f" -o "$B/lt_${_t}_$(echo "$f" | tr './' '__').o" \
         > "$B/lt-$_t.log" 2>&1 \
         || { echo "  lib/$f ($_t) did not compile:"
              tail -6 "$B/lt-$_t.log" | sed 's/^/    /'; exit 1; }
       _n=$((_n + 1))
     done
-    [ "$_n" -ge 4 ] || { echo "  only $_n libtcc1 objects ($_t)"; exit 1; }
+    [ "$_n" -ge "$_min" ] || { echo "  only $_n libtcc1 objects ($_t), want $_min"; exit 1; }
     $_cc -ar rcs "$_a" "$B"/lt_"$_t"_*.o >> "$B/lt-$_t.log" 2>&1 \
       || { echo "  ar failed ($_t):"; tail -4 "$B/lt-$_t.log" | sed 's/^/    /'; exit 1; }
     echo "    libtcc1 ($_t): $_n objects, $(wc -c < "$_a") bytes" )
