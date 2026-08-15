@@ -2,86 +2,97 @@
 
 This file is the operating guide for any AI agent (or human) working in this
 repo. It states the **rules you must not break** and the **workflows you'll
-use**. For deep design, read [`ARCHITECTURE.md`](./ARCHITECTURE.md) — it is
-canonical. When this file and `ARCHITECTURE.md` disagree: `ARCHITECTURE.md`
-wins on *design*, this file wins on *process*.
+use**. For deep design, read [`docs/DESIGN.md`](./docs/DESIGN.md) — for the
+official tree it is canonical; [`STAGE6.md`](./STAGE6.md) is canonical for the
+stage ladder. When this file and those disagree: they win on *design*, this
+file wins on *process*.
 
 ---
 
 ## 1. Orientation
 
-Veron is a **bootstrap / spike operating system**. A hand-audited,
-per-architecture assembly **seed** climbs a readable ladder — assembler →
-C-subset compiler → self-hosting C → libc → GCC — to a traditional
-**GNU/Linux** system. Its defining properties are **hermetic, reproducible,
-and end-to-end auditable** builds. It is a proving ground, not a product.
+Veron is a **hermetic, reproducible, end-to-end auditable** OS bootstrapped
+from a hand-audited assembly trust root. Two tracks live in this repo:
 
-Target architectures: `x86_64`, `aarch64`, `riscv64`.
+- **The official tree** (`stages/`, `docs/DESIGN.md`) — LIVE. Stages 1–3 are
+  built, recorded, attested and published: the committed Stage 1 pair
+  (verified by self-host re-derivation AND round-trip disassembly under two
+  pinned independent decoders on every push), pico-c, micro-c, and the two
+  handoff compilers `tcc-arm64` and `tcc-amd64`, each proven by execution and
+  served from the `3/latest-<arch>` releases.
+- **The spike track** (`spikes/`) — also live, and **untouched by official
+  work** (design §7.0). Spikes are the oracle the official tree is proven
+  against; every migration is copy/redo, never move/edit of `spikes/**`.
 
-**Current status — read before assuming a file exists.** The design (seed,
-stages, build engine, flavors, ledger, all with invariants ON) under `seed/`,
-`stages/`, `lib/`, etc. is *specified but not yet implemented*. What *does*
-exist and run is the **feasibility-spike toolkit** under `spikes/` (invariants
-SUSPENDED — see `spikes/PROGRESS.md`): a working ARM64 pipeline
-`program.s | stage0-as | elf out` that turns assembly-with-labels into a running
-executable, all hand-written and byte-verified against the real assembler.
-`stage0-as` is **assembler-complete** (arithmetic, branches, single-char labels,
-memory, data). This is a proving ground, not Veron proper; do not copy spike
-code into `seed/`/`stages/` without re-applying the invariants. Do not assume
-something exists because the design mentions it — check the filesystem.
+Vocabulary: the ladder is **stages** containing **substages**. Never say
+"seed" or "rung" — Stage 1 IS the trust root; nothing sits above it.
+
+Target architectures: `aarch64` (native origin), `x86_64` (cross origin from
+aarch64), `riscv64` (planned). Artifacts are named by target: `tcc-arm64`,
+`tcc-amd64`, `tcc-riscv64`.
+
+**Check the filesystem before assuming.** Do not assume something exists
+because a design doc mentions it, and do not assume something is missing
+because an older doc predates it.
 
 ---
 
 ## 2. Invariants — never violate these
 
-1. **No committed binaries. Ever.** Every binary is *derived*. The seed binary
-   is produced from its assembly source and verified by round-trip
-   disassembly; it is never checked in. `.gitignore` blocks `seed/*/seed-as`.
-   If you need a binary, produce it in a build/CI step — do not commit it, and
-   do not commit `*.o`, `*.elf`, or build outputs.
+1. **No UNVERIFIED binaries.** Every committed binary must be re-derivable
+   from committed source by a gate that runs on every change to it, and
+   Stage 1's binaries additionally round-trip under two pinned independent
+   disassemblers (`stages/1-self-assembly/{rebaseline,roundtrip}.sh`). Today
+   the committed set is: the Stage 1 pair (`self-assembler-arm64`,
+   `elf-wrapper-arm64`) and the declared toolbox exceptions
+   (`spikes/toolbox/README.md`). Everything else is derived into `out/` and
+   recorded, never committed. Never commit `*.o`, `*.elf`, or build outputs.
 
-2. **The stage-0 seed is bijective, readable assembly.** For seed sources only
-   (`seed/**`): one real instruction per line, one pinned encoding each. **No**
-   macros, **no** pseudo-instructions that expand, **no** branch relaxation,
-   **no** optimization, **no** assembler-chosen encodings. The seed must
-   round-trip: assemble → disassemble → diff back to source with no
-   difference. The seed is per-architecture. The **RISC-V seed is RV64I base
-   only** (no compressed extension); the OS *target* is RV64GC.
-   **Spikes are exempt** — `spikes/**` may use full assembler conveniences.
+2. **The trust root is bijective, readable assembly.** For Stage 1 sources
+   (`stages/1-self-assembly/*.s`): one real instruction per line, one pinned
+   encoding each — no macros, no expanding pseudo-instructions, no relaxation,
+   no assembler-chosen encodings — and only the dual-decoder-clean subset
+   (both pinned decoders must read every instruction back as its source
+   spelling; GATE 2 enforces this at budget 0). The root is per-architecture;
+   the **riscv64 origin is RV64I base only**. **Spikes are exempt.**
 
 3. **Nothing below stage 4 may reference libc** — not directly, not
-   transitively. Stages 0–3 are the flavor-blind trunk; `libc` becomes a
-   parameter only at stage 4. (To be enforced by `tools/check-fork-invariant`
-   once implemented: any stage 0–3 derivation whose hash differs between
-   flavors is a stop-the-line bug. Until that tool exists, uphold it manually.)
+   transitively. Stages 1–3 are the flavor-blind trunk; libc becomes a
+   parameter only at stage 4. (The musl a stage-3 cross builds is scaffolding
+   inside the box, never a contract — the 3→4 handoff is a compiler, nothing
+   else.) `tools/check-fork-invariant` remains planned; uphold manually.
 
-4. **Flavors are parameters, not copies.** `musl` and `glibc` are small
-   parameter files under `flavors/`, both fed by one trunk. Never fork the
-   tree per flavor.
+4. **Flavors are parameters, not copies.** One trunk; `flavors/` files
+   parameterize stage 4+. Never fork the tree per flavor.
 
-5. **Respect the trust boundary.** The seed source (per arch) is the only
-   hand-authored root. The **assembler is untrusted** — its output is
-   round-trip-verified. The **Linux kernel and hardware are trusted, declared
-   inputs**; the kernel is a normal reproducible package, not bootstrapped
-   from the seed. State deferrals explicitly (see `TRUST-BOUNDARY.md`); never
-   hide them.
+5. **Respect the trust boundary.** Stage 1's sources are the only
+   hand-authored root. Assemblers and decoders are untrusted — outputs are
+   verified, never believed. The Linux kernel and hardware are trusted,
+   declared inputs. State deferrals explicitly (`TRUST-BOUNDARY.md`).
 
-6. **License discipline.** Veron's own code is **MIT** (`LICENSE`). Upstream
-   software (GCC, glibc, Linux, coreutils, BusyBox, musl, …) keeps its own
-   license, recorded per-node in the ledger as an SPDX id (audit criterion 7).
-   Never relicense upstream. Never vendor/copy upstream source into the tree —
-   fetch it by pinned hash via a `sources/` manifest.
+6. **License and origin discipline.** Veron's own code is MIT. Upstream stays
+   upstream-licensed, recorded per-node (SPDX, criterion 7). Two governed
+   ways to take upstream in — and only these:
+   - **Pin + patch** (the tcc shape): a `sources/` manifest (url + hash) plus
+     ONE condensed, series-equivalence-proven patch.
+   - **Adoption in final form** (the micro-c shape, design D2): the exact
+     tree committed with an `ORIGIN.md` declaring the fork point, the
+     derivation, and the inherited license, until a rewrite retires the
+     lineage. Silent vendoring — copying without a declared origin — is
+     forbidden.
+   Fetched inputs come from our own `sources` release first (mirrors as
+   fallback), enforced by `*-PINS.sha256` files: record on first fetch,
+   enforce forever.
 
-7. **Veron is self-contained.** It references **no other project, product, or
-   roadmap**. Do not add "relationship to X", "successor to Y", or "part of Z"
-   notes to any file — not in code, comments, docs, or commit messages. Keep
-   everything about Veron and its upstream dependencies only. If you find a
-   stray reference to an unrelated project, **remove it**.
+7. **Veron is self-contained.** No references to other projects, products or
+   roadmaps anywhere. Remove strays on sight.
 
-8. **Every build node must be auditable.** Any derivation you add must be able
-   to emit an audit record covering the **seven criteria** (§5). If a step
-   can't be made hermetic and reproducible, **stop and flag it** rather than
-   merging it.
+8. **Every build node must be auditable and its record falsifiable.** Any
+   derivation you add must emit a substage record (sha256 + exact bytes +
+   mode for every input and output, literal-argv steps, builder edges that
+   repeat the builder's output hash). Records are **generated by the run,
+   frozen in the tree, enforced by compare gates** — never hand-authored.
+   If a step can't be hermetic and reproducible, stop and flag it.
 
 ---
 
@@ -120,7 +131,7 @@ inherits. Treat divergence between docs and reality as a bug.
   `ARCHITECTURE.md`** so the decision is recorded, and update `AGENTS.md` if it
   changes a rule or workflow. Do this in the *same* change, not "later."
 - When you add real capability that supersedes a "planned" note (e.g. the
-  `check-fork-invariant` tool, the seed `roundtrip.sh`, a new stage), **update
+  `check-fork-invariant` tool, the Stage-1 `roundtrip.sh`, a new stage), **update
   the status notes and the relevant sections** so they stop saying "planned."
 - Never leave the docs describing a world that no longer exists. If you can't
   update them correctly, that itself is a reason to **stop and ask** (§2a).
@@ -188,61 +199,56 @@ there. Options that work on a laptop are not evidence.
 
 ```
 AGENTS.md            this file — agent operating guide
-ARCHITECTURE.md      canonical design (ladder, criteria, fork, trust boundary)
-AUDIT.md             audit-record format (summary; schema TBD)
-TRUST-BOUNDARY.md    what is trusted and why (honest boundary statement)
+STAGE6.md            canonical stage ladder (1–6)
+docs/DESIGN.md       canonical design of the official tree
+docs/AUDIT.md        seven criteria → substage-record field mapping
+TRUST-BOUNDARY.md    what is trusted and why
 LICENSE              MIT — Veron's own code only
-README.md            human-facing overview
 
-seed/                readable per-arch assembly trust root (NO binaries here)
-  <arch>/            seed-as.S, seed-as.hash, roundtrip.sh, AUDIT.md
-stages/              the ladder: 0-seed-as → 1-macro-as → 2-pico-c → 3-full-c
-                     │ (FORK LINE) │ 4-libc → 4-binutils → 5-gcc-… → 5-kernel
-flavors/             musl/ and glibc/ — parameter files, not copies
-lib/                 build engine: derivations, sandbox, binary cache
-sources/             pinned upstream manifests (url + hash + signature + SPDX)
-ledger/              per-node audit records — the auditability deliverable
-tools/               spike.sh (works now); diffoscope-wrap, check-fork-invariant (planned)
-spikes/              rapid cross-arch proof-of-concepts (see spikes/README.md)
-.github/workflows/   spike.yml (works now); trunk/flavor build workflows (planned)
-ci/                  Dockerfile for a prebuilt fast-start CI image
+stages/              THE OFFICIAL LADDER (live: 1–3; scaffolds: 4–6)
+  1-self-assembly/   committed verified trust root + rebaseline/roundtrip
+  2-pico-c/          adopted sources + records + verify.sh
+  3-micro-c/         adopted micro-c, tcc pin+patch, build.sh + cross-amd64.sh,
+                     frozen records (substages*.toml)
+policy/              arches.toml — per-target origin declarations
+sources/             pinned upstream manifests
+ledger/              GENERATED at stage 6 (concatenated records, signed) —
+                     never authored; see ledger/README.md
+flavors/             musl/glibc parameter files (stage 4+)
+tools/               shared engines and helpers (some spike-shared: edit with care)
+spikes/              the live spike track — the oracle; DO NOT TOUCH from
+                     official work (§7.0)
+in/ build/ out/      the working tree (gitignored): fetch / sealed scratch /
+                     contracts. `git status` clean after a build is itself a
+                     hermeticity check.
+.github/workflows/   official gates (1-*, 2-*, 3-*) + live spike workflows
 ```
 
 ---
 
-## 4. The stage ladder (summary — full detail in `ARCHITECTURE.md` §2)
+## 4. The stage ladder (canonical: `STAGE6.md`)
 
-| Stage | Name | Written in | Audit regime |
-|-------|------|-----------|--------------|
-| 0 | `seed-as` | readable per-arch assembly | A — source read + round-trip disassembly |
-| 1 | `macro-as` | stage-0 assembly | A — full source read |
-| 2 | `pico-c` | stage-1 assembly | A — full source read |
-| 3 | `full-c` | stage-2 C subset (self-hosts) | B — self-host + diverse double-compilation |
-| — | **FORK LINE** | *nothing above references libc* | |
-| 4 | `libc` + `binutils` | full C | C — reproduce + review delta + defer |
-| 5 | GCC → userland → kernel | full C | C |
-
-Stages 0–2 are per-arch (written 3×). From stage 3's portable C upward, source
-is written once and the compiler targets all three arches — so keep the
-assembly-language rungs few and small.
+| Stage | Name | Audit regime |
+|-------|------|--------------|
+| 1 | Self-Assembly | A — source read + self-host fixpoints + two-decoder round-trip |
+| 2 | pico-c | A — full source read; rebuild-to-records gate |
+| 3 | micro-c (+ tcc, the handoff) | B — adopted source + oracle equality + records + native execution proof |
+| — | **FORK LINE** — the 3→4 contract is one compiler per target | |
+| 4 | Toolchain and Kernel | C — reproduce + review delta + defer |
+| 5 | User Space | C |
+| 6 | Verification and Distribution | signed ledger, trace --verify as release gate |
 
 ---
 
-## 5. The audit ledger (summary — full detail in `ARCHITECTURE.md` §3)
+## 5. The records (the ledger's raw material)
 
-Every derivation emits one audit record (`ledger/<output-hash>.json`),
-flavor-tagged, carrying the **seven criteria**:
-
-1. provenance (source hash + signature)
-2. reproducibility (output hash + N byte-identical rebuild attestations)
-3. hermeticity (full input graph)
-4. reviewed delta (our patches / flags / recipe)
-5. behavioral verification (tests + self-host / fixpoint + GCC 3-stage)
-6. recorded deferral (verified vs. deferred, stated)
-7. license & rights (SPDX id per source)
-
-The ledger is what makes Veron end-to-end auditable, and doubles as an
-always-current SBOM + GPL corresponding-source manifest.
+Every substage emits one `[[substage]]` TOML record: inputs and outputs with
+**sha256 + exact bytes + mode**, `[[substage.step]]` literal argv, and builder
+edges carrying the builder's output hash. Records live where they are
+produced (`stages/<n>/substages*.toml`), are **emitted by the build, frozen
+by commit, and enforced by compare gates** on every pin-true run. `ledger/`
+is their generated concatenation, signed at stage 6 and baked into the image.
+Mapping to the seven audit criteria: `docs/AUDIT.md`.
 
 ---
 
@@ -250,7 +256,7 @@ always-current SBOM + GPL corresponding-source manifest.
 
 A **spike** is a tiny program you assemble and run under QEMU user-mode to
 answer one question fast. Spikes are throwaway experiments and (unlike the
-seed) **may use full assembler conveniences**.
+trust root) **may use full assembler conveniences**.
 
 **Naming convention** — one source per architecture, tagged in the filename:
 
@@ -282,83 +288,68 @@ one fails. For a faster start, build `ci/Dockerfile`, push to GHCR, and set
 
 ---
 
-## 6a. Daily workflow — stage 3, which is different
+## 6a. Daily workflow — the official stages
 
-Stage-3 work is not a spike. It builds a whole compiler and points it at
-370,000 lines of C, and for most of its life every question cost a CI round of
-about three minutes. It does not any more, and the entry point is two scripts:
+One script per concern, identical locally and in CI (workflows are callers):
 
 ```bash
-sh spikes/stage3/tools/local-build.sh
-    # micro-c + patched M2libc + M1/hex2, then the case suite on BOTH
-    # architectures -- aarch64 runs under spikes/toolbox/qemu-aarch64-static
-
-sh spikes/stage3/tools/local-tcc.sh build/local
-    # compile tcc with micro-c, link it, run it under the emulator
-
-sh spikes/stage3/tools/local-tcc.sh build/local tccpp.c macro_subst
-    # the same, with those functions instrumented; the last marker names the
-    # statement execution reached
+./stages/1-self-assembly/rebaseline.sh verify   # trust root re-derived, no toolchain
+./stages/1-self-assembly/roundtrip.sh           # optional locally, mandatory in CI
+sh stages/2-pico-c/verify.sh                    # rebuild to records + canary
+sh stages/3-micro-c/build.sh                    # in + chain -> tcc-arm64 + records
+sh stages/3-micro-c/cross-amd64.sh              # rung + cross 1–3 -> tcc-amd64
 ```
 
-**Do not assemble the pieces by hand.** Four traps sit between a clean
-checkout and a working setup and every one of them is silent — most visibly,
-`git apply` inside this repository *skips patches and exits 0*, so the series
-appears to apply and does nothing. The scripts encode all four and assert the
-result rather than the action. Their headers explain each one; read those
-before working around them.
+Non-aarch64 hosts use the toolbox qemu automatically; Android/Termux needs
+`VERON_RUNNER=qemu-aarch64` (the OS loader refuses static ET_EXEC). Only the
+`in` phases may touch the network; `chain` phases are hermetic. Records
+emitted by a run are frozen by committing them; after that, drift fails the
+gate — that is the system working, not a flake.
 
-Everything needed is committed: M2-Planet at the pin in
-`spikes/reference/m2-planet/`, and the emulator and the configured tcc tree in
-`spikes/toolbox/` (see that directory's README for what those binaries are and
-why an opaque one is committed at all).
+## 6b. Daily workflow — spike stage 3 (the oracle track)
 
-CI is still the verdict. Local results are a filter: amd64 hides the alignment
-class of bug entirely, and qemu is not silicon.
+Stage-3 spike work still uses `spikes/stage3/tools/local-build.sh` and
+`local-tcc.sh` exactly as their headers describe. Four silent traps sit
+between a clean checkout and a working setup; the scripts encode all four.
+Do not assemble the pieces by hand, and do not modify the spike track from
+official work.
 
 ---
 
 ## 7. Before you commit — checklist
 
-Run these from the repo root:
-
 ```bash
-# 1. Relevant spikes still pass (run the ones you touched, all three arches)
-tools/spike.sh x86_64  spikes/<name>/<name>.x86_64.s
-tools/spike.sh aarch64 spikes/<name>/<name>.aarch64.s
-tools/spike.sh riscv64 spikes/<name>/<name>.riscv64.s
-
-# 2. No stray build artifacts or binaries staged
-git status                       # expect no a.elf, *.o, seed-as, etc.
-
-# 3. If you touched seed/**: the seed still round-trips (no diff)
-#    (run seed/<arch>/roundtrip.sh once it exists)
-
-# 4. Docs/code mention only Veron + its upstream deps (invariant #7)
+# 1. The gates you touched still pass (see §6a; CI re-runs them on push)
+# 2. No stray artifacts staged; in/ build/ out/ stay untracked
+git status
+# 3. If you touched stages/1-self-assembly: rebaseline.sh verify is green
+# 4. If a run re-emitted records: committed records updated in the SAME change
+# 5. Docs/code mention only Veron + its upstream deps (invariant #7)
+# 6. Nothing under spikes/** modified by official work (§7.0)
 ```
 
 ---
 
 ## 8. How to add things
 
-- **Add a spike:** create `spikes/<name>/<name>.<arch>.s` (one file per arch you
-  want to test — you need not cover all three), run it locally, push.
-- **Add a stage (later):** create `stages/<n>-<name>/` as a hermetic,
-  content-addressed derivation. Uphold invariants #2 (if it's the seed), #3
-  (fork line), #5 (trust boundary), #8 (auditable).
-- **Add an upstream dependency:** add a pinned manifest under `sources/`
-  (url + cryptographic hash + signature + SPDX license). Never vendor source.
+- **Add a spike:** `spikes/<name>/<name>.<arch>.s`, run locally, push.
+- **Add an official substage:** a hermetic step whose record the run emits —
+  inputs/outputs hashed, argv literal, builder edges real. Freeze the record;
+  wire the compare gate. Uphold invariants #2 (trust root), #3 (fork line),
+  #6 (origin), #8 (falsifiable records).
+- **Add an upstream dependency:** manifest under `sources/` + mirror the
+  tarball into the `sources` release + a `*-PINS.sha256`. Adoption instead of
+  pinning requires an `ORIGIN.md` (invariant #6).
 
 ---
 
 ## 9. Pointers
 
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — canonical design (start here for depth)
+- [`docs/DESIGN.md`](./docs/DESIGN.md) — canonical official-tree design
+- [`STAGE6.md`](./STAGE6.md) — canonical ladder
+- [`docs/AUDIT.md`](./docs/AUDIT.md) — criteria → record fields
 - [`TRUST-BOUNDARY.md`](./TRUST-BOUNDARY.md) — what is trusted and why
-- [`AUDIT.md`](./AUDIT.md) — audit-record format
-- [`spikes/README.md`](./spikes/README.md) — spike conventions
-- [`spikes/PROGRESS.md`](./spikes/PROGRESS.md) — bootstrap-spike progress + toolkit state
-- per-directory `README.md` files — what belongs in each directory
+- [`spikes/README.md`](./spikes/README.md), [`spikes/PROGRESS.md`](./spikes/PROGRESS.md)
 
 ## Dependency declarations
 

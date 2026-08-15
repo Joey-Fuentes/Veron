@@ -6,6 +6,13 @@
 
 > ## Scope — read first
 >
+> **Status (2026-08):** the official tree this document designed is now
+> **live** — `docs/DESIGN.md` is canonical for it, `STAGE6.md` for the stage
+> ladder (numbered 1–6; this file's §2/§4 predate that renumbering and the
+> `seed/`→Stage-1 unification). Stages 1–3 are built, recorded, attested and
+> published (`3/latest-<arch>`). Where this file disagrees with those two,
+> they win.
+>
 > **This is a bootstrap/spike OS: a proving ground, not a product.**
 >
 > Its purpose is exploratory — to prove out one specific path (a hand-audited per-arch assembly seed climbing a readable ladder to a **traditional GNU/Linux** system) and to learn what is actually buildable end to end. It commits to nothing beyond that. It is self-contained and depends on no other project.
@@ -32,6 +39,11 @@ This is not a defense against a maliciously backdoored global ecosystem, and it 
 ---
 
 ## 2. The stage ladder
+
+> **Canonical numbering lives in `STAGE6.md`** (1 Self-Assembly, 2 pico-c,
+> 3 micro-c + tcc, 4 Toolchain and Kernel, 5 User Space, 6 Verification and
+> Distribution). The table below predates that renumbering; its *content*
+> maps stage 0→1, 1–2→2, 3→3, 4–5→4–5.
 
 The governing rule: **add exactly one new abstraction per stage, and write each stage in the language the stage below just produced.** Readability climbs monotonically; the only cryptic layer is the first one, which is also the smallest.
 
