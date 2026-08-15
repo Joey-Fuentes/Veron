@@ -1,0 +1,3832 @@
+diff --git a/arm-asm.c b/arm-asm.c
+index 2f9cca4..eef42cc 100644
+--- a/arm-asm.c
++++ b/arm-asm.c
+@@ -2602,7 +2602,7 @@ ST_FUNC void asm_opcode(TCCState *s1, int token)
+     }
+ }
+ 
+-ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier)
++ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier, ASMOperand *op)
+ {
+     int r, reg, size, val;
+ 
+diff --git a/arm64-asm.c b/arm64-asm.c
+index a97fd64..c5940ce 100644
+--- a/arm64-asm.c
++++ b/arm64-asm.c
+@@ -1,13 +1,18 @@
+ /*************************************************************/
+ /*
+- *  ARM64 dummy assembler for TCC
++ *  ARM64 assembler for TCC
+  *
+  */
+ 
+ #ifdef TARGET_DEFS_ONLY
+ 
+ #define CONFIG_TCC_ASM
+-#define NB_ASM_REGS 16
++/*
++ * x0 through x31; w registers are not tracked separately;
++ * q0 through q31 for floating point
++ */
++#define NB_ASM_REGS 64
++#define ASM_IS_FREG(i) (((i) & 32) != 0)
+ 
+ ST_FUNC void g(int c);
+ ST_FUNC void gen_le16(int c);
+@@ -18,11 +23,47 @@ ST_FUNC void gen_le32(int c);
+ /*************************************************************/
+ #define USING_GLOBALS
+ #include "tcc.h"
++#include <assert.h>
+ 
+-static void asm_error(void)
+-{
+-    tcc_error("ARM asm not implemented.");
+-}
++#define OPT_REG    (1U << 0)
++#define OPT_WREG   (1U << 1)
++#define OPT_XZR    (1U << 2)
++#define OPT_WZR    (1U << 3)
++#define OPT_SP     (1U << 4)
++#define OPT_WSP    (1U << 5)
++#define OPT_FREG_B (1U << 6)
++#define OPT_FREG_H (1U << 7)
++#define OPT_FREG_S (1U << 8)
++#define OPT_FREG_D (1U << 9)
++#define OPT_FREG_Q (1U << 10)
++#define OPT_IM     (1U << 30)
++
++#define OPT_ANY_31     (OPT_XZR | OPT_WZR | OPT_SP | OPT_WSP)
++#define OPT_ANY_GPR    (OPT_REG | OPT_WREG)
++#define OPT_ANY_Z      (OPT_XZR | OPT_WZR)
++#define OPT_ANY_GPR_Z  (OPT_ANY_GPR | OPT_ANY_Z)
++#define OPT_ANY_SP     (OPT_SP | OPT_WSP)
++#define OPT_ANY_GPR_SP (OPT_ANY_GPR | OPT_ANY_SP)
++#define OPT_ANY_X      (OPT_REG | OPT_XZR | OPT_SP)
++#define OPT_ANY_W      (OPT_WREG | OPT_WZR | OPT_WSP)
++#define OPT_ANY_IREG   (OPT_ANY_GPR | OPT_ANY_Z | OPT_ANY_SP)
++#define OPT_ANY_FP     (OPT_FREG_B | OPT_FREG_H | OPT_FREG_S | OPT_FREG_D | OPT_FREG_Q)
++
++#define OPT_IS_IREG(t) (((t) & OPT_ANY_IREG) != 0)
++#define OPT_IS_FREG(t) (((t) & OPT_ANY_FP) != 0)
++#define OPT_IS_W(t) (((t) & OPT_ANY_W) != 0)
++#define OPT_IS_X(t) (((t) & OPT_ANY_X) != 0)
++#define OPT_IS_SP(t) (((t) & OPT_ANY_SP) != 0)
++#define OPT_IS_ZR(t) (((t) & OPT_ANY_Z) != 0)
++#define OPT_IS_31(t) (((t) & OPT_ANY_31) != 0)
++
++typedef struct Operand {
++    uint32_t type;
++    union {
++        uint8_t reg;
++        ExprValue e;
++    };
++} Operand;
+ 
+ /* XXX: make it faster ? */
+ ST_FUNC void g(int c)
+@@ -54,14 +95,2040 @@ ST_FUNC void gen_expr32(ExprValue *pe)
+     gen_le32(pe->v);
+ }
+ 
+-ST_FUNC void asm_opcode(TCCState *s1, int opcode)
++static int parse_cond(void)
++{
++    int cond;
++    if (tok < TOK_ASM_eq || tok > TOK_ASM_lo) {
++        expect("condition code");
++    }
++    if (tok >= TOK_ASM_hs) {
++        cond = TOK_ASM_hs - tok + (TOK_ASM_cs - TOK_ASM_eq);
++    } else {
++        cond = tok - TOK_ASM_eq;
++    }
++    next();
++    return cond;
++}
++
++static void parse_label(TCCState *s1, Operand *op, uint32_t assume_reloc)
++{
++    ExprValue e = {0};
++    if (tok == '#') {
++        /* constant value */
++        next(); // skip '#'
++    }
++
++    if (tok == ':') {
++        next();
++        if (tok != TOK_ASM_lo12) {
++            expect("relocation string");
++        }
++        next();
++        if (tok != ':') {
++            expect("relocation string");
++        }
++        next();
++        asm_expr(s1, &e);
++        greloca(cur_text_section, e.sym, ind, R_AARCH64_ADD_ABS_LO12_NC, 0);
++    } else {
++        asm_expr(s1, &e);
++        greloca(cur_text_section, e.sym, ind, assume_reloc, 0);
++    }
++
++    op->e = e;
++    op->type = OPT_IM;
++
++    if (!e.sym) {
++        expect("label");
++    }
++}
++
++static void parse_operand(TCCState *s1, Operand *op)
++{
++    ExprValue e = {0};
++    int known_reloc;
++
++    op->type = 0;
++
++    switch (tok) {
++    case TOK_ASM_fp:
++        op->type = OPT_REG;
++        op->reg = 29;
++        goto special;
++    case TOK_ASM_lr:
++        op->type = OPT_REG;
++        op->reg = 30;
++        goto special;
++    case TOK_ASM_wzr:
++        op->type = OPT_WZR;
++        goto special;
++    case TOK_ASM_xzr:
++        op->type = OPT_XZR;
++        goto special;
++    case TOK_ASM_sp:
++        op->type = OPT_SP;
++        goto special;
++    case TOK_ASM_wsp:
++        op->type = OPT_WSP;
++    special:;
++        next();
++        return;
++    default:
++        break;
++    }
++    if (tok >= TOK_ASM_w0 && tok <= TOK_ASM_w31) {
++        op->type = OPT_WREG;
++        op->reg = tok - TOK_ASM_w0;
++        next(); // skip register name
++        return;
++    }
++    if (tok >= TOK_ASM_x0 && tok <= TOK_ASM_x31) {
++        op->reg = tok - TOK_ASM_x0;
++        op->type = OPT_REG;
++        next(); // skip register name
++        return;
++    }
++    if (tok >= TOK_ASM_b0 && tok <= TOK_ASM_b31) {
++        op->type = OPT_FREG_B;
++        op->reg = tok - TOK_ASM_b0;
++        next(); // skip register name
++        return;
++    }
++    if (tok >= TOK_ASM_h0 && tok <= TOK_ASM_h31) {
++        op->reg = tok - TOK_ASM_h0;
++        op->type = OPT_FREG_H;
++        next(); // skip register name
++        return;
++    }
++    if (tok >= TOK_ASM_s0 && tok <= TOK_ASM_s31) {
++        op->reg = tok - TOK_ASM_s0;
++        op->type = OPT_FREG_S;
++        next(); // skip register name
++        return;
++    }
++    if (tok >= TOK_ASM_d0 && tok <= TOK_ASM_d31) {
++        op->reg = tok - TOK_ASM_d0;
++        op->type = OPT_FREG_D;
++        next(); // skip register name
++        return;
++    }
++    if (tok >= TOK_ASM_q0 && tok <= TOK_ASM_q31) {
++        op->reg = tok - TOK_ASM_q0;
++        op->type = OPT_FREG_Q;
++        next(); // skip register name
++        return;
++    }
++    if (tok == '#') {
++        /* constant value */
++        next(); // skip '#'
++    }
++
++    known_reloc = 0;
++
++    if (tok == ':') {
++        next();
++        if (tok != TOK_ASM_lo12) {
++            expect("relocation string");
++        }
++        next();
++        if (tok != ':') {
++            expect("relocation string");
++        }
++        next();
++        known_reloc = 1;
++        asm_expr(s1, &e);
++        greloca(cur_text_section, e.sym, ind, R_AARCH64_ADD_ABS_LO12_NC, 0);
++    } else {
++        asm_expr(s1, &e);
++    }
++
++    op->e = e;
++
++    if (!e.sym || known_reloc) {
++        op->type = OPT_IM;
++    } else {
++        tcc_error("must indicate relocation type here");
++    }
++}
++
++static void must_eat_comma(void)
++{
++    if (tok != ',') {
++        expect(",");
++    }
++    next();
++}
++
++static uint32_t copy_gpr_size_to_permitted_mask(uint32_t source, uint32_t general_mask) {
++    if (OPT_IS_X(source)) {
++        return general_mask & OPT_ANY_X;
++    } else {
++        return general_mask & OPT_ANY_W;
++    }
++}
++
++static int asm_get_op_reg(Operand *op, unsigned permitted_mask)
++{
++    if (op->type & permitted_mask) {
++        if (OPT_IS_31(op->type)) {
++            return 31;
++        }
++        return op->reg;
++    }
++    tcc_error("unexpected operand");
++}
++
++enum {
++    ARR_8B,
++    ARR_16B,
++    ARR_4H,
++    ARR_8H,
++    ARR_2S,
++    ARR_4S,
++    ARR_2D,
++    WIDTH_B,
++    WIDTH_H,
++    WIDTH_S,
++    WIDTH_D,
++};
++
++static int parse_vec_with_arr(int *arrangement)
++{
++    int base, token = tok;
++
++    next();
++
++    if (token > TOK_ASM_v31_2D || token < TOK_ASM_v0_8B) {
++        expect("vector operand with arrangement");
++    }
++    if (token >= TOK_ASM_v0_2D) {
++        base = TOK_ASM_v0_2D;
++        *arrangement = ARR_2D;
++    } else if (token >= TOK_ASM_v0_4S) {
++        base = TOK_ASM_v0_4S;
++        *arrangement = ARR_4S;
++    } else if (token >= TOK_ASM_v0_2S) {
++        base = TOK_ASM_v0_2S;
++        *arrangement = ARR_2S;
++    } else if (token >= TOK_ASM_v0_8H) {
++        base = TOK_ASM_v0_8H;
++        *arrangement = ARR_8H;
++    } else if (token >= TOK_ASM_v0_4H) {
++        base = TOK_ASM_v0_4H;
++        *arrangement = ARR_4H;
++    } else if (token >= TOK_ASM_v0_16B) {
++        base = TOK_ASM_v0_16B;
++        *arrangement = ARR_16B;
++    } else {
++        base = TOK_ASM_v0_8B;
++        *arrangement = ARR_8B;
++    }
++    return token - base;
++}
++
++static int parse_vec_with_width(int *width)
++{
++    int base, token = tok;
++
++    next();
++
++    if (token > TOK_ASM_v31_D || token < TOK_ASM_v0_B) {
++        expect("vector operand with arrangement");
++    }
++    if (token >= TOK_ASM_v0_D) {
++        base = TOK_ASM_v0_D;
++        *width = WIDTH_D;
++    } else if (token >= TOK_ASM_v0_S) {
++        base = TOK_ASM_v0_S;
++        *width = WIDTH_S;
++    } else if (token >= TOK_ASM_v0_H) {
++        base = TOK_ASM_v0_H;
++        *width = WIDTH_H;
++    } else {
++        base = TOK_ASM_v0_B;
++        *width = WIDTH_B;
++    }
++    return token - base;
++}
++
++#define EXTMODE_LSL     0
++#define EXTMODE_EXREG32 1
++#define EXTMODE_EXREG64 2
++#define EXTMODE_SHREG   4
++#define EXTMODE_SHROR   (EXTMODE_SHREG | 8)
++#define EXTMODE_EXREG   (EXTMODE_EXREG32 | EXTMODE_EXREG64)
++
++static int asm_maybe_parse_ext(TCCState *s1, int *ext, long *amount, int mode)
++{
++    Operand op;
++
++    if (tok != ',') {
++        *ext = 0;
++        *amount = 0;
++        if (mode & EXTMODE_SHREG) {
++            mode &= EXTMODE_SHROR;
++        } else if (mode == EXTMODE_EXREG32) {
++            *ext = TOK_ASM_uxtw - TOK_ASM_uxtb;
++        } else if (mode == EXTMODE_EXREG64) {
++            *ext = TOK_ASM_uxtx - TOK_ASM_uxtb;
++        }
++        return mode;
++    }
++    next();
++
++    switch (tok) {
++    case TOK_ASM_uxtb:
++    case TOK_ASM_uxth:
++    case TOK_ASM_uxtw:
++    case TOK_ASM_uxtx:
++    case TOK_ASM_sxtb:
++    case TOK_ASM_sxth:
++    case TOK_ASM_sxtw:
++    case TOK_ASM_sxtx:
++        if (!(mode & EXTMODE_EXREG)) {
++            tcc_error("unsupported extend/shift specifier");
++        }
++        mode = mode & EXTMODE_EXREG;
++        *ext = tok - TOK_ASM_uxtb;
++        break;
++
++    case TOK_ASM_ror:
++        if (mode != EXTMODE_SHROR) {
++            tcc_error("unsupported extend/shift specifier");
++        }
++        *ext = tok - TOK_ASM_lsl;
++        break;
++    case TOK_ASM_lsr:
++    case TOK_ASM_asr:
++        if (!(mode & EXTMODE_SHREG)) {
++            tcc_error("unsupported extend/shift specifier");
++        }
++        mode = EXTMODE_SHREG;
++    case TOK_ASM_lsl:
++        /* lsl supported across all modes */
++
++        if ((mode & EXTMODE_EXREG) && (mode & EXTMODE_SHREG)) {
++            /*
++             * HACK!
++             * If both extmodes are allowed, we do not have an sp operand.
++             * Therefore EXTMODE_SHREG is the preferred encoding for this
++             * syntax.
++             */
++            mode = EXTMODE_SHREG;
++            *ext = 0;
++        } else if (mode & EXTMODE_EXREG) {
++            /*
++             * lsl, but we are expecting EXTMODE_EXREG. This means that
++             * we must be dealing with exreg with an sp operand. Re-encode as
++             * uxtx.
++             */
++            if (mode == EXTMODE_EXREG64) {
++                *ext = TOK_ASM_uxtx - TOK_ASM_uxtb;
++            } else {
++                *ext = TOK_ASM_uxtw - TOK_ASM_uxtb;
++            }
++        } else {
++            *ext = tok - TOK_ASM_lsl;
++        }
++        break;
++    default:
++        tcc_error("unsupported extend/shift specifier");
++        break;
++    }
++
++    next();
++    parse_operand(s1, &op);
++    if (op.type != OPT_IM) {
++        tcc_error("expected immediate after extend/shift specifier");
++    }
++    *amount = op.e.v;
++    return mode;
++}
++
++static uint16_t parse_u16(TCCState *s1)
++{
++    Operand op;
++    parse_operand(s1, &op);
++    if (op.type != OPT_IM) {
++        expect("unsigned 16-bit immediate (vs. register)");
++    }
++    if (op.e.sym || op.e.pcrel) {
++        expect("unsigned 16-bit immediate (vs. symbol)");
++    }
++    if (op.e.v > 65535) {
++        expect("unsigned 16-bit immediate from 0 to 65535");
++    }
++    return op.e.v;
++}
++
++static void asm_nullary_opcode(TCCState *s1, int token)
++{
++    switch (token) {
++    case TOK_ASM_nop:
++        gen_le32(0xd503201f);
++        return;
++    case TOK_ASM_ret:
++        gen_le32(0xd65f03c0);
++        return;
++    default:
++        tcc_error("unrecognized nullaryopcode %s", get_tok_str(token, NULL));
++    }
++}
++
++static void asm_dmb(void)
++{
++    /* TODO: numeric immediate operands */
++    int t = tok;
++    int crm;
++
++    next();
++    switch (t) {
++    case TOK_ASM_oshld:
++        crm = 1;
++        break;
++    case TOK_ASM_oshst:
++        crm = 2;
++        break;
++    case TOK_ASM_osh:
++        crm = 3;
++        break;
++    case TOK_ASM_nshld:
++        crm = 5;
++        break;
++    case TOK_ASM_nshst:
++        crm = 6;
++        break;
++    case TOK_ASM_nsh:
++        crm = 7;
++        break;
++    case TOK_ASM_ishld:
++        crm = 9;
++        break;
++    case TOK_ASM_ishst:
++        crm = 10;
++        break;
++    case TOK_ASM_ish:
++        crm = 11;
++        break;
++    case TOK_ASM_ld:
++        crm = 13;
++        break;
++    case TOK_ASM_st:
++        crm = 14;
++        break;
++    case TOK_ASM_sy:
++        crm = 15;
++        break;
++    default:
++        expect("barrier limitation");
++    }
++
++    gen_le32(0xd50330bf | (crm << 8));
++}
++
++static void asm_unary_opcode(TCCState *s1, int token)
++{
++    uint16_t uimm16;
++    int cc;
++    Operand op;
++
++    switch (token) {
++    case TOK_ASM_svc:
++        uimm16 = parse_u16(s1);
++        gen_le32(0xd4000001 | (uimm16 << 5));
++        return;
++    case TOK_ASM_udf:
++        uimm16 = parse_u16(s1);
++        gen_le32(uimm16);
++        return;
++    case TOK_ASM_br:
++        parse_operand(s1, &op);
++        gen_le32(0xd61f0000 | (asm_get_op_reg(&op, OPT_ANY_GPR_Z & OPT_ANY_X) << 5));
++        return;
++    case TOK_ASM_blr:
++        parse_operand(s1, &op);
++        gen_le32(0xd63f0000 | (asm_get_op_reg(&op, OPT_ANY_GPR_Z & OPT_ANY_X) << 5));
++        return;
++    case TOK_ASM_b:
++        parse_label(s1, &op, R_AARCH64_JUMP26);
++        gen_le32(0x14000000);
++        return;
++    case TOK_ASM_bl:
++        parse_label(s1, &op, R_AARCH64_JUMP26);
++        gen_le32(0x94000000);
++        return;
++    case TOK_ASM_b_hs:
++    case TOK_ASM_b_lo:
++        token = token - TOK_ASM_hs + TOK_ASM_cs;
++    case TOK_ASM_b_eq:
++    case TOK_ASM_b_ne:
++    case TOK_ASM_b_cs:
++    case TOK_ASM_b_cc:
++    case TOK_ASM_b_mi:
++    case TOK_ASM_b_pl:
++    case TOK_ASM_b_vs:
++    case TOK_ASM_b_vc:
++    case TOK_ASM_b_hi:
++    case TOK_ASM_b_ls:
++    case TOK_ASM_b_ge:
++    case TOK_ASM_b_lt:
++    case TOK_ASM_b_gt:
++    case TOK_ASM_b_le:
++    case TOK_ASM_b_al:
++    case TOK_ASM_b_nv:
++        cc = token - TOK_ASM_b_eq;
++        parse_label(s1, &op, R_AARCH64_CONDBR19);
++        gen_le32(0x54000000 | cc);
++        return;
++    case TOK_ASM_dmb:
++        asm_dmb();
++        return;
++    default:
++        tcc_error("unrecognized unary opcode %s", get_tok_str(token, NULL));
++    }
++}
++
++static void asm_vec_mov(TCCState *s1, Operand *op_d) {
++    ExprValue e = {0};
++    int rd = asm_get_op_reg(op_d, OPT_ANY_GPR_Z);
++    int width, rn;
++    uint32_t opcode;
++
++    rn = parse_vec_with_width(&width);
++
++    if (OPT_IS_X(op_d->type)) {
++        if (width != WIDTH_D) {
++            expect("vector of width D");
++        }
++    } else if (width != WIDTH_S) {
++        expect("vector of width S");
++    }
++    if (tok != '[') {
++        expect("[");
++    }
++    next();
++    if (tok == '#') {
++        next();
++    }
++    asm_expr(s1, &e);
++    if (e.sym) {
++        expect("index immediate");
++    }
++    if (tok != ']') {
++        expect("]");
++    }
++    next();
++
++    opcode = 0x0e003c00;
++    opcode |= rd;
++    opcode |= rn << 5;
++    if (OPT_IS_X(op_d->type)) {
++        opcode |= 1 << 30;
++        opcode |= 1 << 19;
++        if (e.v > 1) {
++            expect("index 0 or 1");
++        }
++        opcode |= e.v << 20;
++    } else {
++        opcode |= 1 << 18;
++        if (e.v > 3) {
++            expect("index 0 to 3");
++        }
++        opcode |= e.v << 19;
++    }
++    gen_le32(opcode);
++}
++
++static void asm_mov(TCCState *s1)
++{
++    Operand op1;
++    Operand op2;
++    int reg1, reg2;
++    int64_t imm;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++
++    if (tok >= TOK_ASM_v0_B && tok <= TOK_ASM_v31_D) {
++        asm_vec_mov(s1, &op1);
++        return;
++    }
++
++    parse_operand(s1, &op2);
++
++    reg1 = asm_get_op_reg(&op1, OPT_ANY_IREG);
++    if (!OPT_IS_SP(op1.type) && op2.type == OPT_IM) {
++        imm = op2.e.v;
++        if ((op1.type & OPT_ANY_W) && ((imm < -0x80000000LL) || (imm >= 0xffffffff))) {
++            tcc_error("immediate out of range");
++        }
++        /* try to find a nice encoding */
++        if ((imm >> 16) == 0) {
++            /* movz Wreg1, #imm, lsl #0 */
++            gen_le32(0x52800000 | (imm << 5) | reg1);
++            return;
++        }
++        if ((((imm >> 16) << 16) == imm) && imm >= 0x10000 && imm <= 0xffff0000) {
++            /* movz Wreg1, #imm, lsl #16 */
++            gen_le32(0x52a00000 | ((imm >> 16) << 5) | reg1);
++            return;
++        }
++        if ((((imm >> 32) << 32) == imm) && imm >= 0x100000000 && imm <= 0xffff00000000) {
++            /* movz Xreg1, #imm, lsl #32 */
++            gen_le32(0xd2c00000 | ((imm >> 32) << 5) | reg1);
++            return;
++        }
++        if (((imm >> 48) << 48) == imm) {
++            /* movz Xreg1, #imm, lsl #48 */
++            gen_le32(0xd2e00000 | ((imm >> 48) << 5) | reg1);
++            return;
++        }
++        /* movz Wreg1, #imm[0:15], lsl #0 */
++        gen_le32(0x52800000 | ((imm & 0xffff) << 5) | reg1);
++        /* movk Wreg1, #imm[16:31], lsl #16 */
++        gen_le32(0x72a00000 | (((imm >> 16) & 0xffff) << 5) | reg1);
++        if ((imm >> 32) != 0) {
++            /* movk Xreg1, #imm[32:47], lsl #32 */
++            gen_le32(0xf2c00000 | (((imm >> 32) & 0xffff) << 5) | reg1);
++            /* movk Xreg1, #imm[48:63], lsl #48 */
++            gen_le32(0xf2e00000 | (((imm >> 48) & 0xffff) << 5) | reg1);
++        }
++        return;
++    }
++    if ((OPT_IS_SP(op1.type) && OPT_IS_ZR(op2.type)) ||
++        (OPT_IS_SP(op2.type) && OPT_IS_ZR(op1.type))) {
++        expect("can't move between zr and sp");
++    }
++    reg2 = asm_get_op_reg(&op2, OPT_ANY_IREG);
++    if (OPT_IS_SP(op1.type) || OPT_IS_SP(op2.type)) {
++        /* addi Rop1, Rop2, #0 */
++        gen_le32((OPT_IS_X(op1.type) << 31) | 0x11000000 | reg1 | (reg2 << 5));
++        return;
++    }
++    /* orr Rop1, Rop2, Rzr */
++    gen_le32((OPT_IS_X(op1.type) << 31) | 0x2a000000 | (0x1f << 5) | reg1 | (reg2 << 16));
++    return;
++}
++
++static void asm_cmp(TCCState *s1, int token)
++{
++    Operand op1;
++    Operand op2;
++    int64_t imm;
++    uint32_t permitted_mask, opcode;
++    int rn, rm;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_operand(s1, &op2);
++
++    rn = asm_get_op_reg(&op1, OPT_ANY_IREG);
++
++    if (op2.type == OPT_IM) {
++        if (op1.type & OPT_ANY_Z) {
++            tcc_error("cannot cmp zr with immediate");
++        }
++        imm = op2.e.v;
++        if ((imm < 0) || (imm > 4095)) {
++            tcc_error("immediate %ld out of range", imm);
++        }
++
++        /* TODO: shift */
++        if (token == TOK_ASM_cmn) {
++            opcode = 0x3100001f;
++        } else {
++            opcode = 0x7100001f;
++        }
++        opcode |= OPT_IS_X(op1.type) << 31;
++        opcode |= rn << 5;
++        opcode |= imm << 10;
++        gen_le32(opcode);
++        return;
++    }
++
++    permitted_mask = copy_gpr_size_to_permitted_mask(op1.type, OPT_ANY_GPR_Z);
++    rm = asm_get_op_reg(&op2, permitted_mask);
++
++    /* todo: extend support */
++
++    if (OPT_IS_SP(op1.type)) {
++        if (token == TOK_ASM_cmn) {
++            opcode = 0x2b200000;
++        } else {
++            opcode = 0x6b200000;
++        }
++        if (OPT_IS_X(op1.type)) {
++            opcode |= 3 << 13;
++        } else {
++            opcode |= 2 << 13;
++        }
++    } else {
++        if (token == TOK_ASM_cmn) {
++            opcode = 0x2b000000;
++        } else {
++            opcode = 0x6b000000;
++        }
++    }
++    opcode |= 0x1f;
++    opcode |= (uint32_t) OPT_IS_X(op1.type) << 31;
++    opcode |= rn << 5;
++    opcode |= rm << 16;
++
++    gen_le32(opcode);
++}
++
++static void asm_ccmp(TCCState *s1, int token)
++{
++    Operand op1, op2, op3;
++    int64_t imm;
++    uint32_t opcode;
++    int rn, rm, cond, nzcv;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_operand(s1, &op2);
++    must_eat_comma();
++    parse_operand(s1, &op3);
++    must_eat_comma();
++    cond = parse_cond();
++
++    rn = asm_get_op_reg(&op1, OPT_ANY_GPR_Z);
++    if (op3.type != OPT_IM || op3.e.v > 15) {
++        expect("alternative flag state");
++    }
++    nzcv = op3.e.v;
++
++    if (op2.type == OPT_IM) {
++        imm = op2.e.v;
++        if ((imm < 0) || (imm > 0x1f)) {
++            tcc_error("immediate %ld out of range", imm);
++        }
++
++        opcode = 0x7a400800;
++        opcode |= nzcv;
++        opcode |= cond << 12;
++        opcode |= OPT_IS_X(op1.type) << 31;
++        opcode |= rn << 5;
++        opcode |= imm << 16;
++        gen_le32(opcode);
++        return;
++    }
++
++    rm = asm_get_op_reg(&op2, copy_gpr_size_to_permitted_mask(op1.type, OPT_ANY_GPR_Z));
++
++    opcode = 0x7a400000;
++    opcode |= nzcv;
++    opcode |= cond << 12;
++    opcode |= (uint32_t) OPT_IS_X(op1.type) << 31;
++    opcode |= rn << 5;
++    opcode |= rm << 16;
++
++    gen_le32(opcode);
++}
++
++static uint32_t parse_sys_register(void)
++{
++    int t = tok;
++    switch (t)
++    {
++    case TOK_ASM_fpcr:
++        next();
++        return 0xb4400;
++    case TOK_ASM_fpsr:
++        next();
++        return 0xb4420;
++    case TOK_ASM_tpidr_el0:
++        next();
++        return 0xbd040;
++    case TOK_ASM_dczid_el0:
++        next();
++        return 0xb00e0;
++    default:
++        expect("system register");
++    }
++}
++
++static uint32_t parse_dc_op(void)
++{
++    int t = tok;
++    switch (t)
++    {
++    case TOK_ASM_zva:
++        next();
++        return 0x30420;
++    default:
++        expect("DC operation");
++    }
++}
++
++static void asm_dup(TCCState *s1, int token)
++{
++    Operand op;
++    uint32_t opcode;
++    int rd, rn, q, imm, arr;
++
++    rd = parse_vec_with_arr(&arr);
++    must_eat_comma();
++    parse_operand(s1, &op);
++
++    if (arr == ARR_2D) {
++        rn = asm_get_op_reg(&op, OPT_ANY_GPR_Z & OPT_ANY_X);
++    } else {
++        rn = asm_get_op_reg(&op, OPT_ANY_GPR_Z & OPT_ANY_W);
++    }
++
++    switch (arr) {
++    case ARR_8B:
++        q = 0;
++        imm = 1;
++        break;
++    case ARR_16B:
++        q = 1;
++        imm = 1;
++        break;
++    case ARR_4H:
++        q = 0;
++        imm = 2;
++        break;
++    case ARR_8H:
++        q = 1;
++        imm = 2;
++        break;
++    case ARR_2S:
++        q = 0;
++        imm = 4;
++        break;
++    case ARR_4S:
++        q = 1;
++        imm = 4;
++        break;
++    case ARR_2D:
++        q = 1;
++        imm = 8;
++        break;
++    }
++
++    opcode = 0x0e000c00;
++    opcode |= rd;
++    opcode |= rn << 5;
++    opcode |= q << 30;
++    opcode |= imm << 16;
++
++    gen_le32(opcode);
++}
++
++static void asm_binary_opcode(TCCState *s1, int token)
++{
++    Operand op, op2;
++    int rd, rt, rn;
++    uint32_t opcode, sysreg;
++
++    switch (token) {
++    case TOK_ASM_mov:
++        asm_mov(s1);
++        return;
++    case TOK_ASM_cmp:
++    case TOK_ASM_cmn:
++        asm_cmp(s1, token);
++        return;
++    case TOK_ASM_adrp:
++        parse_operand(s1, &op);
++        rd = asm_get_op_reg(&op, OPT_ANY_GPR_Z & OPT_ANY_X);
++        must_eat_comma();
++        parse_label(s1, &op, R_AARCH64_ADR_PREL_PG_HI21);
++        if (op.type != OPT_IM) {
++            expect("symbol");
++        }
++        gen_le32(0x90000000 | rd);
++        return;
++    case TOK_ASM_mrs:
++        parse_operand(s1, &op);
++        must_eat_comma();
++        sysreg = parse_sys_register();
++        rt = asm_get_op_reg(&op, OPT_ANY_GPR_Z & OPT_ANY_X);
++        gen_le32(0xd5300000 | sysreg | rt);
++        return;
++    case TOK_ASM_msr:
++        sysreg = parse_sys_register();
++        must_eat_comma();
++        parse_operand(s1, &op);
++        rt = asm_get_op_reg(&op, OPT_ANY_GPR_Z & OPT_ANY_X);
++        gen_le32(0xd5100000 | sysreg | rt);
++        return;
++    case TOK_ASM_rbit:
++        parse_operand(s1, &op);
++        must_eat_comma();
++        parse_operand(s1, &op2);
++        rd = asm_get_op_reg(&op, OPT_ANY_GPR_Z);
++        rn = asm_get_op_reg(&op2, copy_gpr_size_to_permitted_mask(op.type, OPT_ANY_GPR_Z));
++        gen_le32(0x5ac00000 | (OPT_IS_X(op.type) << 31) | rd | (rn << 5));
++        return;
++    case TOK_ASM_clz:
++        parse_operand(s1, &op);
++        must_eat_comma();
++        parse_operand(s1, &op2);
++        rd = asm_get_op_reg(&op, OPT_ANY_GPR_Z);
++        rn = asm_get_op_reg(&op2, copy_gpr_size_to_permitted_mask(op.type, OPT_ANY_GPR_Z));
++        gen_le32(0x5ac01000 | (OPT_IS_X(op.type) << 31) | rd | (rn << 5));
++        return;
++    case TOK_ASM_dup:
++        asm_dup(s1, token);
++        return;
++    case TOK_ASM_dc:
++        opcode = 0xd5087000;
++        opcode |= parse_dc_op();
++        must_eat_comma();
++        parse_operand(s1, &op);
++        rt = asm_get_op_reg(&op, OPT_ANY_GPR_Z & OPT_ANY_X);
++        opcode |= rt;
++        gen_le32(opcode);
++        return;
++    case TOK_ASM_uxtw:
++        parse_operand(s1, &op);
++        must_eat_comma();
++        parse_operand(s1, &op2);
++        rd = asm_get_op_reg(&op, OPT_ANY_GPR_Z & OPT_ANY_X);
++        rn = asm_get_op_reg(&op2, OPT_ANY_GPR_Z & OPT_ANY_W);
++        gen_le32(0xd3407c00 | rd | (rn << 5));
++        return;
++    }
++}
++
++static void asm_fp_binary_opcode(TCCState *s1, int token)
++{
++    Operand op1, op2;
++    int rd, rn;
++    uint32_t opcode;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_operand(s1, &op2);
++
++    rd = asm_get_op_reg(&op1, OPT_FREG_H | OPT_FREG_S | OPT_FREG_D);
++    rn = asm_get_op_reg(&op2, op1.type);
++
++    switch (token) {
++    case TOK_ASM_frintp:
++        opcode = 0x1e24c000;
++        break;
++    case TOK_ASM_fabs:
++        opcode = 0x1e20c000;
++        break;
++    case TOK_ASM_frintm:
++        opcode = 0x1e254000;
++        break;
++    case TOK_ASM_frintx:
++        opcode = 0x1e274000;
++        break;
++    case TOK_ASM_frinti:
++        opcode = 0x1e27c000;
++        break;
++    case TOK_ASM_frinta:
++        opcode = 0x1e264000;
++        break;
++    case TOK_ASM_fsqrt:
++        opcode = 0x1e21c000;
++        break;
++    case TOK_ASM_frintz:
++        opcode = 0x1e25c000;
++        break;
++    default:
++        assert(0);
++    }
++    opcode |= rd;
++    opcode |= rn << 5;
++    if (op1.type == OPT_FREG_D) {
++        opcode |= 1 << 22;
++    } else if (op1.type == OPT_FREG_H) {
++        opcode |= 3 << 22;
++    }
++
++    gen_le32(opcode);
++}
++
++static void asm_fp_ternary_opcode(TCCState *s1, int token)
++{
++    Operand op1, op2, op3;
++    int rd, rn, rm;
++    uint32_t opcode;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_operand(s1, &op2);
++    must_eat_comma();
++    parse_operand(s1, &op3);
++
++    rd = asm_get_op_reg(&op1, OPT_FREG_H | OPT_FREG_S | OPT_FREG_D);
++    rn = asm_get_op_reg(&op2, op1.type);
++    rm = asm_get_op_reg(&op3, op1.type);
++
++    switch (token) {
++    case TOK_ASM_fmaxnm:
++        opcode = 0x1e206800;
++        break;
++    case TOK_ASM_fminnm:
++        opcode = 0x1e207800;
++        break;
++    }
++    opcode |= rd;
++    opcode |= rn << 5;
++    opcode |= rm << 16;
++    if (op1.type == OPT_FREG_D) {
++        opcode |= 1 << 22;
++    } else if (op1.type == OPT_FREG_H) {
++        opcode |= 3 << 22;
++    }
++
++    gen_le32(opcode);
++}
++
++static void asm_fmadd(TCCState *s1, int token)
+ {
+-    asm_error();
++    Operand op1, op2, op3, op4;
++    int rd, rn, rm, ra;
++    uint32_t opcode;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_operand(s1, &op2);
++    must_eat_comma();
++    parse_operand(s1, &op3);
++    must_eat_comma();
++    parse_operand(s1, &op4);
++
++    rd = asm_get_op_reg(&op1, OPT_FREG_H | OPT_FREG_S | OPT_FREG_D);
++    rn = asm_get_op_reg(&op2, op1.type);
++    rm = asm_get_op_reg(&op3, op1.type);
++    ra = asm_get_op_reg(&op4, op1.type);
++
++    opcode = 0x1f000000;
++    opcode |= rd;
++    opcode |= rn << 5;
++    opcode |= ra << 10;
++    opcode |= rm << 16;
++    if (op1.type == OPT_FREG_D) {
++        opcode |= 1 << 22;
++    } else if (op1.type == OPT_FREG_H) {
++        opcode |= 3 << 22;
++    }
++
++    gen_le32(opcode);
+ }
+ 
+-ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier)
++static void asm_fp_convert_opcode(TCCState *s1, int token)
+ {
+-    asm_error();
++    Operand op1, op2;
++    int rd, rn;
++    uint32_t opcode;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_operand(s1, &op2);
++
++    if (op1.type == op2.type) {
++        expect("operands of differing types");
++    }
++
++    rd = asm_get_op_reg(&op1, OPT_ANY_GPR_Z | OPT_FREG_D | OPT_FREG_S);
++    rn = asm_get_op_reg(&op2, OPT_FREG_D | OPT_FREG_S | OPT_FREG_H);
++
++    switch (token) {
++    case TOK_ASM_fcvtas:
++        if (OPT_IS_IREG(op1.type)) {
++            opcode = 0x1e240000;
++        } else {
++            opcode = 0x1e3a0000;
++        }
++        break;
++    case TOK_ASM_fcvtzs:
++        if (OPT_IS_IREG(op1.type)) {
++            opcode = 0x1e380000;
++        } else {
++            opcode = 0x1e360000;
++        }
++        break;
++    }
++    if (OPT_IS_X(op1.type) || op1.type == OPT_FREG_D) {
++        opcode |= 1U << 31;
++    }
++    if (op2.type == OPT_FREG_D) {
++        opcode |= 1 << 22;
++    } else if (op2.type == OPT_FREG_H) {
++        opcode |= 3 << 22;
++    }
++    opcode |= rd;
++    opcode |= rn << 5;
++
++    gen_le32(opcode);
++}
++
++static void asm_opcode_tbz(TCCState *s1, int token)
++{
++    Operand op1, op2, op3;
++    int rt;
++    uint32_t opcode;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_operand(s1, &op2);
++    must_eat_comma();
++    parse_label(s1, &op3, R_AARCH64_TSTBR14);
++
++    rt = asm_get_op_reg(&op1, OPT_ANY_GPR_Z);
++    if (op2.type != OPT_IM) {
++        expect("bit position immediate");
++    }
++    if (OPT_IS_W(op1.type) && op2.e.v > 31) {
++        expect("bit position from 0 to 31");
++    }
++    if (op2.e.v > 63) {
++        expect("bit position from 0 to 63");
++    }
++
++    opcode = 0x36000000;
++    if (token == TOK_ASM_tbnz) {
++        opcode |= 1 << 24;
++    }
++    opcode |= rt;
++    opcode |= (op2.e.v > 31) << 31;
++    opcode |= (op2.e.v & 0x1f) << 19;
++
++    gen_le32(opcode);
++}
++
++static void asm_opcode_cbz(TCCState *s1, int token)
++{
++    Operand op1, op2;
++    int rt;
++    uint32_t opcode;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_label(s1, &op2, R_AARCH64_CONDBR19);
++
++    rt = asm_get_op_reg(&op1, OPT_ANY_GPR_Z);
++
++    opcode = 0x34000000;
++    if (token == TOK_ASM_cbnz) {
++        opcode |= 1 << 24;
++    }
++    opcode |= rt;
++    opcode |= OPT_IS_X(op1.type) << 31;
++
++    gen_le32(opcode);
++}
++
++#define IND_MODE_REG       0
++#define IND_MODE_UOFF      1
++#define IND_MODE_POST      2
++#define IND_MODE_PRE       3
++#define IND_MODE_UNSCALED  4
++
++#define MEMREF_EXT_UXTW    2
++#define MEMREF_EXT_LSL     3
++#define MEMREF_EXT_SXTW    6
++#define MEMREF_EXT_SXTX    7
++
++typedef struct MemRef {
++    int ind_mode;
++    int xn;
++    union {
++        int64_t delta;
++        struct {
++            int rm;
++            int extend_option;
++            int shift_amount;
++        } offset;
++    };
++} MemRef;
++
++static void asm_parse_mem_ref(TCCState *s1, MemRef *ref)
++{
++    Operand op;
++    if (tok != '[') {
++        expect("[");
++    }
++    next();
++    parse_operand(s1, &op);
++    ref->xn = asm_get_op_reg(&op, OPT_ANY_GPR_SP & OPT_ANY_X);
++
++    if (tok == ']') {
++        next();
++        if (tok == ',') {
++            ref->ind_mode = IND_MODE_POST;
++            next();
++            parse_operand(s1, &op);
++            if (op.type != OPT_IM) {
++                expect("immediate");
++            }
++            ref->delta = op.e.v;
++            return;
++        }
++        /* no offset given in asm, default to 0 */
++        ref->ind_mode = IND_MODE_UOFF;
++        ref->delta = 0;
++        return;
++    }
++    if (tok != ',') {
++        expect(", or ]");
++    }
++    next();
++    parse_operand(s1, &op);
++    if (op.type == OPT_IM) {
++        ref->delta = op.e.v;
++        if (tok != ']') {
++            expect("]");
++        }
++        next();
++        if (tok == '!') {
++            ref->ind_mode = IND_MODE_PRE;
++            next();
++        } else {
++            ref->ind_mode = IND_MODE_UOFF;
++        }
++        return;
++    }
++    ref->ind_mode = IND_MODE_REG;
++    ref->offset.rm = asm_get_op_reg(&op, OPT_ANY_GPR_Z);
++
++    if (tok == ']') {
++        next();
++        ref->offset.extend_option = MEMREF_EXT_LSL;
++        ref->offset.shift_amount = 0;
++        return;
++    }
++
++    if (tok != ',') {
++        expect("] or ,");
++    }
++    next();
++    switch (tok) {
++    case TOK_ASM_lsl:
++        ref->offset.extend_option = MEMREF_EXT_LSL;
++        break;
++    case TOK_ASM_uxtw:
++        ref->offset.extend_option = MEMREF_EXT_UXTW;
++        break;
++    case TOK_ASM_sxtw:
++        ref->offset.extend_option = MEMREF_EXT_SXTW;
++        break;
++    case TOK_ASM_sxtx:
++        ref->offset.extend_option = MEMREF_EXT_SXTX;
++        break;
++    default:
++        expect("valid extend specifier");
++    }
++    next();
++    parse_operand(s1, &op);
++    if (op.type != OPT_IM || op.e.v > 16) {
++        expect("extend amount");
++    }
++    ref->offset.shift_amount = op.e.v;
++    if (tok != ']') {
++        expect("]");
++    }
++    next();
++}
++
++static void asm_mem_pair(TCCState *s1, int token)
++{
++    Operand op;
++    MemRef ref;
++    uint32_t opcode;
++    int rt, rt2, permitted_mask, delta_lo, delta_hi, delta_shift;
++
++    parse_operand(s1, &op);
++    if (OPT_IS_IREG(op.type)) {
++        permitted_mask = copy_gpr_size_to_permitted_mask(op.type, OPT_ANY_GPR_Z);
++    } else {
++        /* both operands must be of the same type */
++        permitted_mask = op.type & (OPT_FREG_S | OPT_FREG_D | OPT_FREG_Q);
++    }
++
++    rt = asm_get_op_reg(&op, permitted_mask);
++    must_eat_comma();
++    parse_operand(s1, &op);
++    rt2 = asm_get_op_reg(&op, permitted_mask);
++    must_eat_comma();
++    asm_parse_mem_ref(s1, &ref);
++    if (ref.ind_mode == IND_MODE_REG) {
++        expect("memory reference with immediate offset");
++    }
++    if (OPT_IS_W(permitted_mask) || (permitted_mask == OPT_FREG_S)) {
++        delta_lo = -256; delta_hi = 252; delta_shift = 2;
++    } else if (OPT_IS_X(permitted_mask) || (permitted_mask == OPT_FREG_D)) {
++        delta_lo = -512; delta_hi = 504; delta_shift = 3;
++    } else {
++        delta_lo = -1024; delta_hi = 1008; delta_shift = 4;
++    }
++
++    if ((ref.delta != ((ref.delta >> delta_shift) << delta_shift)) ||
++        ref.delta < delta_lo ||
++        ref.delta > delta_hi
++    ) {
++        tcc_error("immediate %ld out of range or misaligned", ref.delta);
++    }
++    ref.delta >>= delta_shift;
++    ref.delta &= 0x7f;
++
++    if (OPT_IS_IREG(permitted_mask)) {
++        opcode = 0x28000000;
++        opcode |= (uint32_t) OPT_IS_X(permitted_mask) << 31;
++    } else {
++        opcode = 0x2c000000;
++        if (permitted_mask == OPT_FREG_D) {
++            opcode |= 0x40000000;
++        } else if (permitted_mask == OPT_FREG_Q) {
++            opcode |= 0x80000000;
++        }
++    }
++    if (token == TOK_ASM_ldp) {
++        opcode |= 0x00400000;
++    }
++    switch (ref.ind_mode) {
++    case IND_MODE_POST:
++        opcode |= 0x00800000;
++        break;
++    case IND_MODE_PRE:
++        opcode |= 0x01800000;
++        break;
++    case IND_MODE_UOFF:
++        opcode |= 0x01000000;
++        break;
++    }
++    opcode |= rt;
++    opcode |= ref.xn << 5;
++    opcode |= rt2 << 10;
++    opcode |= ref.delta << 15;
++    gen_le32(opcode);
++}
++
++static void asm_atomic_mem(TCCState *s1, int token)
++{
++    MemRef ref;
++    Operand op;
++    uint32_t opcode;
++    int rt, rs;
++
++    parse_operand(s1, &op);
++    rt = asm_get_op_reg(&op, OPT_ANY_GPR_Z);
++    must_eat_comma();
++    if (token == TOK_ASM_stlxr) {
++        parse_operand(s1, &op);
++        rs = rt;
++        rt = asm_get_op_reg(&op, copy_gpr_size_to_permitted_mask(op.type, OPT_ANY_GPR_Z));
++        must_eat_comma();
++    } else {
++        rs = 0x1f;
++    }
++
++    asm_parse_mem_ref(s1, &ref);
++    if (ref.ind_mode != IND_MODE_UOFF || ref.delta != 0) {
++        expect("no offset");
++    }
++
++    switch (token) {
++    case TOK_ASM_ldaxr:
++        opcode = 0x885ffc00;
++        break;
++    case TOK_ASM_stlxr:
++        opcode = 0x8800fc00;
++        break;
++    }
++    opcode |= OPT_IS_X(op.type) << 30;
++    opcode |= rt;
++    opcode |= ref.xn << 5;
++    opcode |= rs << 16;
++    gen_le32(opcode);
++}
++
++static void asm_memory_opcode(TCCState *s1, int token)
++{
++    Operand op;
++    MemRef ref;
++    uint32_t opcode;
++    int delta_hi = 0, delta_shift = 0;
++    int rt, size, permitted_mask;
++
++    parse_operand(s1, &op);
++    if (OPT_IS_IREG(op.type)) {
++        permitted_mask = copy_gpr_size_to_permitted_mask(op.type, OPT_ANY_GPR_Z);
++        switch (token) {
++            case TOK_ASM_ldrb:
++            case TOK_ASM_strb:
++                permitted_mask &= OPT_ANY_W;
++                size = 1;
++                break;
++            case TOK_ASM_ldrh:
++            case TOK_ASM_strh:
++                permitted_mask &= OPT_ANY_W;
++                size = 2;
++                break;
++            default:
++                if (OPT_IS_W(op.type)) {
++                    size = 4;
++                } else {
++                    size = 8;
++                }
++                break;
++        }
++    } else {
++        size = 0;
++        /* both operands must be of the same type */
++        permitted_mask = op.type & OPT_ANY_FP;
++    }
++
++    rt = asm_get_op_reg(&op, permitted_mask);
++    must_eat_comma();
++
++    asm_parse_mem_ref(s1, &ref);
++    switch (ref.ind_mode) {
++    case IND_MODE_REG:
++        break;
++    case IND_MODE_PRE:
++    case IND_MODE_POST:
++        if (ref.delta > 0xff || ref.delta < -0x100) {
++            tcc_error("immediate %ld out of range", ref.delta);
++        }
++        ref.delta &= 0x1ff;
++        break;
++    case IND_MODE_UOFF:
++        if (permitted_mask == OPT_FREG_B || size == 1) {
++            delta_hi = 4095; delta_shift = 0;
++        } else if (permitted_mask == OPT_FREG_H || size == 2) {
++            delta_hi = 8190; delta_shift = 1;
++        } else if (OPT_IS_W(permitted_mask) || (permitted_mask == OPT_FREG_S) || size == 4) {
++            delta_hi = 16380; delta_shift = 2;
++        } else if (OPT_IS_X(permitted_mask) || (permitted_mask == OPT_FREG_D) || size == 8) {
++            delta_hi = 32760; delta_shift = 3;
++        } else if (permitted_mask == OPT_FREG_Q) {
++            delta_hi = 65520; delta_shift = 4;
++        }
++        if ((ref.delta != ((ref.delta >> delta_shift) << delta_shift)) ||
++            ref.delta < 0 ||
++            ref.delta > delta_hi
++        ) {
++            if (ref.delta >= -256 && ref.delta <= 255) {
++                ref.delta &= 0x1ff;
++                ref.ind_mode = IND_MODE_UNSCALED;
++                break;
++            }
++            tcc_error("immediate %ld out of range or misaligned", ref.delta);
++        }
++        ref.delta >>= delta_shift;
++
++        break;
++    }
++
++    if (OPT_IS_IREG(permitted_mask)) {
++        switch (size) {
++        case 1:
++            opcode = 0x7 << 27;
++            break;
++        case 2:
++            opcode = 0xf << 27;
++            break;
++        case 4:
++            opcode = 0x17 << 27;
++            break;
++        case 8:
++            opcode = 0x1f << 27;
++            break;
++        default:
++            assert(0);
++        }
++    } else {
++        opcode = 0x3c000000;
++        if (permitted_mask == OPT_FREG_H) {
++            opcode |= 0x40000000;
++        } else if (permitted_mask == OPT_FREG_S) {
++            opcode |= 0x80000000;
++        } else if (permitted_mask == OPT_FREG_D) {
++            opcode |= 0xc0000000;
++        } else if (permitted_mask == OPT_FREG_Q) {
++            opcode |= 0x00800000;
++        }
++    }
++    if (token >= TOK_ASM_ldr && token <= TOK_ASM_ldrh) {
++        opcode |= 0x00400000;
++    }
++
++    switch (ref.ind_mode) {
++    case IND_MODE_POST:
++        opcode |= 0x00000400;
++        break;
++    case IND_MODE_PRE:
++        opcode |= 0x00000c00;
++        break;
++    case IND_MODE_UOFF:
++        opcode |= 0x01000000;
++        break;
++    case IND_MODE_REG:
++        opcode |= 0x00200800;
++        opcode |= ref.offset.extend_option << 13;
++        if (ref.offset.shift_amount != 0) {
++            if (1 << ref.offset.shift_amount != size) {
++                tcc_error("wrong shift amount for address offset");
++            }
++            opcode |= 1 << 12;
++        }
++        break;
++    case IND_MODE_UNSCALED:
++        break;
++    }
++    opcode |= rt;
++    opcode |= ref.xn << 5;
++    if (ref.ind_mode == IND_MODE_REG) {
++        opcode |= ref.offset.rm << 16;
++    } else if (ref.ind_mode == IND_MODE_UOFF) {
++        opcode |= ref.delta << 10;
++    } else {
++        opcode |= ref.delta << 12;
++    }
++    gen_le32(opcode);
++}
++
++/* comes in variants of immediate, shifted register, extended register */
++static void asm_opcode_imm_sh_ext(TCCState *s1, int token)
++{
++    int rd, rn, rm, extmode, permit_extmode;
++    long sh_amount;
++    uint32_t opcode, permitted_mask;
++    Operand op1, op2, op3;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_operand(s1, &op2);
++    must_eat_comma();
++    parse_operand(s1, &op3);
++
++    if (OPT_IS_SP(op1.type) || OPT_IS_SP(op2.type)) {
++        permitted_mask = copy_gpr_size_to_permitted_mask(op1.type, OPT_ANY_GPR_SP);
++    } else {
++        permitted_mask = copy_gpr_size_to_permitted_mask(op1.type, OPT_ANY_GPR_Z);
++    }
++    rd = asm_get_op_reg(&op1, permitted_mask);
++    rn = asm_get_op_reg(&op2, permitted_mask);
++
++    if (op3.type == OPT_IM) {
++        if (OPT_IS_ZR(op1.type) || OPT_IS_ZR(op2.type)) {
++            tcc_error("can't use immediate with zr");
++        }
++        if (op3.e.v > 4095) {
++            tcc_error("immediate out of range");
++        }
++        if (token == TOK_ASM_add || token == TOK_ASM_adds) {
++            opcode = 0x11000000;
++        } else {
++            opcode = 0x51000000;
++        }
++        if (token == TOK_ASM_adds || token == TOK_ASM_subs) {
++            opcode |= 1 << 29;
++        }
++        opcode |= (uint32_t) OPT_IS_X(op1.type) << 31;
++        opcode |= rd;
++        opcode |= rn << 5;
++        opcode |= (uint32_t) op3.e.v << 10;
++
++        if (asm_maybe_parse_ext(s1, &extmode, &sh_amount, EXTMODE_LSL) >= 0) {
++            if (sh_amount == 12) {
++                opcode |= 1 << 22;
++            } else if (sh_amount != 0) {
++                tcc_error("invalid shift amount");
++            }
++        }
++
++        gen_le32(opcode);
++        return;
++    }
++    rm = asm_get_op_reg(&op3, OPT_ANY_GPR_Z);
++
++    permit_extmode = EXTMODE_SHREG;
++    if (OPT_IS_X(op1.type)) {
++        permit_extmode |= EXTMODE_EXREG64;
++    } else {
++        permit_extmode |= EXTMODE_EXREG32;
++    }
++    if (OPT_IS_ZR(op1.type) || OPT_IS_ZR(op2.type)) {
++        permit_extmode &= ~EXTMODE_EXREG;
++    } else if (OPT_IS_SP(op1.type) || OPT_IS_SP(op2.type)) {
++        permit_extmode &= ~EXTMODE_SHREG;
++    }
++    permit_extmode = asm_maybe_parse_ext(s1, &extmode, &sh_amount, permit_extmode);
++    if (sh_amount < 0) {
++        tcc_error("shift amount out of range");
++    }
++    if (token == TOK_ASM_add || token == TOK_ASM_adds) {
++        opcode = 0x0b000000;
++    } else {
++        opcode = 0x4b000000;
++    }
++    if (permit_extmode == EXTMODE_EXREG) {
++        opcode |= 0x00200000;
++    }
++    if (token == TOK_ASM_adds || token == TOK_ASM_subs) {
++        opcode |= 1 << 29;
++    }
++
++    opcode |= (uint32_t) OPT_IS_X(op1.type) << 31;
++    opcode |= rd;
++    opcode |= rn << 5;
++    opcode |= rm << 16;
++    if (permit_extmode == EXTMODE_SHREG) {
++        if ((OPT_IS_W(op1.type) && sh_amount > 31) || (sh_amount > 63)) {
++            tcc_error("shift amount out of range");
++        }
++        opcode |= extmode << 22;
++    } else {
++        if (sh_amount > 4) {
++            tcc_error("shift amount out of range");
++        }
++        opcode |= extmode << 13;
++    }
++    opcode |= sh_amount << 10;
++
++    gen_le32(opcode);
++}
++
++/* https://github.com/ruby/ruby/blob/3237be163c313af0b6626b209e55bdb0b33c9f0f/yjit/src/asm/arm64/arg/bitmask_imm.rs */
++static void encode_bitmask(uint64_t x, int *imms, int *immr, int *n)
++{
++    int rots, zeroes, ones, size;
++    uint64_t y, normalized;
++
++    if (x == 0 || x == UINT64_MAX) {
++        tcc_error("invalid bitmask: all ones or all zeroes");
++    }
++    rots = 0;
++    y = x & (x + 1);
++    while (!(y & 1) && rots < 64) {
++        rots++;
++        y >>= 1;
++    }
++    normalized = (x >> rots) | (x << (64 - rots));
++    y = normalized;
++    zeroes = 0;
++    while (!(y >> 63) && zeroes < 64) {
++        zeroes++;
++        y <<= 1;
++    }
++    y = ~normalized;
++    ones = 0;
++    while (!(y & 1) && ones < 64) {
++        ones++;
++        y >>= 1;
++    }
++    size = zeroes + ones;
++    if (((x >> (size & 63)) | (x << (64 - (size & 63)))) != x) {
++        tcc_error("invalid bitmask: %016lx", x);
++    }
++    if (!*n && ((size >> 6) & 1)) {
++        tcc_error("bitmask too large: %016lx", x);
++    }
++
++    *n = (size >> 6) & 1;
++    *imms = ((-(size << 1)) | (ones - 1)) & 0x3f;
++    *immr = ((-rots) & (size - 1)) & 0x3f;
++}
++
++/* comes in variants of immediate & shifted register */
++static void asm_opcode_imm_sh(TCCState *s1, int token)
++{
++    int rd, rn, rm, extmode, imms, immr, n;
++    long sh_amount;
++    uint32_t opcode;
++    Operand op1, op2, op3;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_operand(s1, &op2);
++    must_eat_comma();
++    parse_operand(s1, &op3);
++
++    if (token == TOK_ASM_and || token == TOK_ASM_orr) {
++        rd = asm_get_op_reg(&op1, OPT_ANY_GPR_SP | OPT_ANY_GPR_Z);
++    } else {
++        rd = asm_get_op_reg(&op1, OPT_ANY_GPR_Z);
++    }
++    rn = asm_get_op_reg(&op2, copy_gpr_size_to_permitted_mask(op1.type, OPT_ANY_GPR_Z));
++
++    if (op3.type == OPT_IM) {
++        if (OPT_IS_ZR(op1.type)) {
++            tcc_error("can't use immediate with zr destination");
++        }
++        opcode = 0x12000000;
++        if (token == TOK_ASM_bic) {
++            op3.e.v = ~op3.e.v;
++        } else if (token == TOK_ASM_orr) {
++            opcode |= 1 << 29;
++        }
++        if (OPT_IS_W(op1.type)) {
++            op3.e.v = op3.e.v & 0xffffffff;
++            op3.e.v |= op3.e.v << 32;
++        }
++        n = OPT_IS_X(op1.type);
++        encode_bitmask(op3.e.v, &imms, &immr, &n);
++        opcode |= (uint32_t) OPT_IS_X(op1.type) << 31;
++        opcode |= n << 22;
++        opcode |= rd;
++        opcode |= rn << 5;
++        opcode |= imms << 10;
++        opcode |= immr << 16;
++
++        gen_le32(opcode);
++        return;
++    } else if (OPT_IS_SP(op1.type)) {
++        tcc_error("can't use sp destination without immediate");
++    }
++    rm = asm_get_op_reg(&op3, OPT_ANY_GPR_Z);
++
++    asm_maybe_parse_ext(s1, &extmode, &sh_amount, EXTMODE_SHROR);
++    if (sh_amount < 0) {
++        tcc_error("shift amount out of range");
++    }
++    if (token == TOK_ASM_orr) {
++        opcode = 0x2a000000;
++    } else if (token == TOK_ASM_and) {
++        opcode = 0x0a000000;
++    } else {
++        opcode = 0x0a200000;
++    }
++
++    opcode |= (uint32_t) OPT_IS_X(op1.type) << 31;
++    opcode |= rd;
++    opcode |= rn << 5;
++    opcode |= rm << 16;
++    opcode |= extmode << 22;
++    opcode |= sh_amount << 10;
++
++    gen_le32(opcode);
++}
++
++/* comes in variants of immediate & register */
++static void asm_opcode_imm_reg(TCCState *s1, int token)
++{
++    int rd, rn, rm, imms, immr;
++    uint32_t opcode;
++    Operand op1, op2, op3;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_operand(s1, &op2);
++    must_eat_comma();
++    parse_operand(s1, &op3);
++
++    rd = asm_get_op_reg(&op1, OPT_ANY_GPR_Z);
++    rn = asm_get_op_reg(&op2, copy_gpr_size_to_permitted_mask(op1.type, OPT_ANY_GPR_Z));
++
++    if (op3.type == OPT_IM) {
++        if (op3.e.v > 63) {
++            tcc_error("immediate out of range");
++        }
++        if (OPT_IS_W(op1.type) && op3.e.v > 31) {
++            tcc_error("immediate out of range");
++        }
++        if (token == TOK_ASM_lsr) {
++            imms = 31 + 32 * OPT_IS_X(op1.type);
++            immr = op3.e.v;
++        } else if (token == TOK_ASM_lsl) {
++            if (OPT_IS_X(op1.type)) {
++                immr = (-(int) op3.e.v) & 63;
++                imms = 63 - (int) op3.e.v;
++            } else {
++                immr = (-(int) op3.e.v) & 31;
++                imms = 31 - (int) op3.e.v;
++            }
++        }
++        opcode = 0x53000000;
++        opcode |= (uint32_t) OPT_IS_X(op1.type) << 31;
++        opcode |= (uint32_t) OPT_IS_X(op1.type) << 22;
++        opcode |= rd;
++        opcode |= rn << 5;
++        opcode |= imms << 10;
++        opcode |= immr << 16;
++
++        gen_le32(opcode);
++        return;
++    }
++    rm = asm_get_op_reg(&op3, copy_gpr_size_to_permitted_mask(op1.type, OPT_ANY_GPR_Z));
++
++    if (token == TOK_ASM_lsl) {
++        opcode = 0x1ac02000;
++    } else if (token == TOK_ASM_lsr) {
++        opcode = 0x1ac02400;
++    } else {
++        tcc_internal_error("");
++    }
++
++    opcode |= (uint32_t) OPT_IS_X(op1.type) << 31;
++    opcode |= rd;
++    opcode |= rn << 5;
++    opcode |= rm << 16;
++
++    gen_le32(opcode);
++}
++
++static void asm_opcode_csinc(TCCState *s1, int token)
++{
++    Operand op1, op2, op3;
++    int cond;
++    uint32_t permitted_mask, opcode;
++
++    parse_operand(s1, &op1);
++    must_eat_comma();
++    parse_operand(s1, &op2);
++    must_eat_comma();
++    parse_operand(s1, &op3);
++    must_eat_comma();
++    cond = parse_cond();
++
++    permitted_mask = copy_gpr_size_to_permitted_mask(op1.type, OPT_ANY_GPR_Z);
++    opcode = 0x1a800000;
++    opcode |= 1 << 10;
++    opcode |= cond << 12;
++    opcode |= asm_get_op_reg(&op1, permitted_mask);
++    opcode |= asm_get_op_reg(&op2, permitted_mask) << 5;
++    opcode |= asm_get_op_reg(&op3, permitted_mask) << 16;
++    gen_le32(opcode);
++}
++
++ST_FUNC void asm_opcode(TCCState *s1, int token)
++{
++    switch (token) {
++    case TOK_ASM_nop:
++    case TOK_ASM_ret:
++        asm_nullary_opcode(s1, token);
++        return;
++    case TOK_ASM_svc:
++    case TOK_ASM_udf:
++    case TOK_ASM_br:
++    case TOK_ASM_blr:
++    case TOK_ASM_b:
++    case TOK_ASM_bl:
++    case TOK_ASM_dmb:
++    case TOK_ASM_b_eq:
++    case TOK_ASM_b_ne:
++    case TOK_ASM_b_cs:
++    case TOK_ASM_b_cc:
++    case TOK_ASM_b_mi:
++    case TOK_ASM_b_pl:
++    case TOK_ASM_b_vs:
++    case TOK_ASM_b_vc:
++    case TOK_ASM_b_hi:
++    case TOK_ASM_b_ls:
++    case TOK_ASM_b_ge:
++    case TOK_ASM_b_lt:
++    case TOK_ASM_b_gt:
++    case TOK_ASM_b_le:
++    case TOK_ASM_b_al:
++    case TOK_ASM_b_nv:
++    case TOK_ASM_b_hs:
++    case TOK_ASM_b_lo:
++        asm_unary_opcode(s1, token);
++        return;
++    case TOK_ASM_cmp:
++    case TOK_ASM_cmn:
++    case TOK_ASM_mov:
++    case TOK_ASM_adrp:
++    case TOK_ASM_mrs:
++    case TOK_ASM_msr:
++    case TOK_ASM_rbit:
++    case TOK_ASM_clz:
++    case TOK_ASM_dup:
++    case TOK_ASM_dc:
++    case TOK_ASM_uxtw:
++        asm_binary_opcode(s1, token);
++        return;
++    case TOK_ASM_ccmp:
++        asm_ccmp(s1, token);
++        return;
++    case TOK_ASM_fcvtzs:
++    case TOK_ASM_fcvtas:
++        asm_fp_convert_opcode(s1, token);
++        return;
++    case TOK_ASM_frintp:
++    case TOK_ASM_fabs:
++    case TOK_ASM_frintm:
++    case TOK_ASM_frintx:
++    case TOK_ASM_frinti:
++    case TOK_ASM_frinta:
++    case TOK_ASM_fsqrt:
++    case TOK_ASM_frintz:
++        asm_fp_binary_opcode(s1, token);
++        return;
++    case TOK_ASM_fmaxnm:
++    case TOK_ASM_fminnm:
++        asm_fp_ternary_opcode(s1, token);
++        return;
++    case TOK_ASM_fmadd:
++        asm_fmadd(s1, token);
++        return;
++    case TOK_ASM_ldr:
++    case TOK_ASM_ldrb:
++    case TOK_ASM_ldrh:
++    case TOK_ASM_str:
++    case TOK_ASM_strb:
++    case TOK_ASM_strh:
++        asm_memory_opcode(s1, token);
++        return;
++    case TOK_ASM_ldp:
++    case TOK_ASM_stp:
++        asm_mem_pair(s1, token);
++        return;
++    case TOK_ASM_ldaxr:
++    case TOK_ASM_stlxr:
++        asm_atomic_mem(s1, token);
++        return;
++    case TOK_ASM_and:
++    case TOK_ASM_orr:
++    case TOK_ASM_bic:
++        asm_opcode_imm_sh(s1, token);
++        return;
++    case TOK_ASM_add:
++    case TOK_ASM_sub:
++    case TOK_ASM_subs:
++        asm_opcode_imm_sh_ext(s1, token);
++        return;
++    case TOK_ASM_lsl:
++    case TOK_ASM_lsr:
++        asm_opcode_imm_reg(s1, token);
++        return;
++    case TOK_ASM_csinc:
++        asm_opcode_csinc(s1, token);
++        return;
++    case TOK_ASM_tbz:
++    case TOK_ASM_tbnz:
++        asm_opcode_tbz(s1, token);
++        return;
++    case TOK_ASM_cbz:
++    case TOK_ASM_cbnz:
++        asm_opcode_cbz(s1, token);
++        return;
++    default:
++        tcc_error("unrecognized opcode %s", get_tok_str(token, NULL));
++    }
++}
++
++ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier, ASMOperand *op)
++{
++    int r, reg, val, t, is_addr;
++
++    r = sv->r;
++    if ((r & VT_VALMASK) == VT_CONST) {
++        if (!(r & VT_LVAL) && modifier != 'c' && modifier != 'n' &&
++            modifier != 'P') {
++            cstr_ccat(add_str, '#');
++        }
++        if (r & VT_SYM) {
++            const char *name = get_tok_str(sv->sym->v, NULL);
++            if (sv->sym->v >= SYM_FIRST_ANOM) {
++                /* In case of anonymous symbols ("L.42", used
++                   for static data labels) we can't find them
++                   in the C symbol table when later looking up
++                   this name.  So enter them now into the asm label
++                   list when we still know the symbol.  */
++                get_asm_sym(tok_alloc(name, strlen(name))->tok, sv->sym);
++            }
++            if (tcc_state->leading_underscore)
++                cstr_ccat(add_str, '_');
++            cstr_cat(add_str, name, -1);
++            if ((uint32_t) sv->c.i == 0)
++                goto no_offset;
++            cstr_ccat(add_str, '+');
++        }
++        val = sv->c.i;
++        if (modifier == 'n')
++            val = -val;
++        cstr_printf(add_str, "%d", (int) sv->c.i);
++        no_offset:;
++    } else if ((r & VT_VALMASK) == VT_LOCAL) {
++        cstr_printf(add_str, "[fp, #%d]", (int) sv->c.i);
++    } else if (r & VT_LVAL) {
++        is_addr = !!strchr(op->constraint, 'Q');
++
++        reg = r & VT_VALMASK;
++        if (reg == TREG_R30) {
++            reg = 30;
++        }
++        if (reg >= VT_CONST)
++            tcc_internal_error("");
++
++        t = sv->type.t & VT_BTYPE;
++        if (reg > TREG_R30) {
++            reg -= 20;
++            if (modifier == 'd') {
++                reg = TOK_ASM_d0 + reg;
++            } else if (modifier == 's') {
++                reg = TOK_ASM_s0 + reg;
++            } else if (modifier == 'b') {
++                reg = TOK_ASM_b0 + reg;
++            } else if (modifier == 'q') {
++                reg = TOK_ASM_q0 + reg;
++            } else if (t == VT_DOUBLE) {
++                reg = TOK_ASM_d0 + reg;
++            } else {
++                reg = TOK_ASM_s0 + reg;
++            }
++        } else if (modifier == 'x' || is_addr) {
++            reg = TOK_ASM_x0 + reg;
++        } else if (modifier == 'w') {
++            reg = TOK_ASM_w0 + reg;
++        } else if (t == VT_LLONG || t == VT_PTR) {
++            reg = TOK_ASM_x0 + reg;
++        } else {
++            reg = TOK_ASM_w0 + reg;
++        }
++        if (is_addr) {
++            cstr_cat(add_str, "[", -1);
++        }
++        cstr_cat(add_str, get_tok_str(reg, NULL), -1);
++        if (is_addr) {
++            cstr_cat(add_str, "]", -1);
++        }
++    } else {
++        is_addr = !!strchr(op->constraint, 'Q');
++
++        /* register case */
++        reg = r & VT_VALMASK;
++        if (reg == TREG_R30) {
++            reg = 30;
++        }
++        if (reg >= VT_CONST)
++            tcc_internal_error("");
++
++        t = sv->type.t & VT_BTYPE;
++        if (reg > TREG_R30)  {
++            reg -= 20;
++            if (modifier == 'd') {
++                reg = TOK_ASM_d0 + reg;
++            } else if (modifier == 's') {
++                reg = TOK_ASM_s0 + reg;
++            } else if (modifier == 'b') {
++                reg = TOK_ASM_b0 + reg;
++            } else if (modifier == 'q') {
++                reg = TOK_ASM_q0 + reg;
++            } else if (t == VT_DOUBLE) {
++                reg = TOK_ASM_d0 + reg;
++            } else {
++                reg = TOK_ASM_s0 + reg;
++            }
++        } else if (modifier == 'x' || is_addr) {
++            reg = TOK_ASM_x0 + reg;
++        } else if (modifier == 'w') {
++            reg = TOK_ASM_w0 + reg;
++        } else if (t == VT_LLONG || t == VT_PTR) {
++            reg = TOK_ASM_x0 + reg;
++        } else {
++            reg = TOK_ASM_w0 + reg;
++        }
++        if (is_addr) {
++            cstr_cat(add_str, "[", -1);
++        }
++        cstr_cat(add_str, get_tok_str(reg, NULL), -1);
++        if (is_addr) {
++            cstr_cat(add_str, "]", -1);
++        }
++    }
+ }
+ 
+ /* generate prolog and epilog code for asm statement */
+@@ -70,23 +2137,514 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
+                          uint8_t *clobber_regs,
+                          int out_reg)
+ {
++    uint8_t regs_allocated[NB_ASM_REGS];
++    ASMOperand *op;
++    int i, reg, odd;
++    int8_t pending = -1;
++
++    static const uint8_t reg_saved[] = {
++        // General purpose regs
++        19, 20, 21, 22, 23, 24, 25, 26, 27, 28
++    };
++    static const uint8_t fp_saved[] = {
++        // High 64 bits are non-volatile. Let's just save everything regardless.
++        8, 9, 10, 11, 12, 13, 14, 15
++    };
++
++    /* mark all used registers */
++    memcpy(regs_allocated, clobber_regs, sizeof(regs_allocated));
++    for(i = 0; i < nb_operands; i++) {
++        op = &operands[i];
++        if (op->reg >= 0) {
++            regs_allocated[op->reg] = 1;
++        }
++    }
++
++    if(!is_output) {
++        /* generate reg save code */
++        for(i = 0; i < sizeof(reg_saved)/sizeof(reg_saved[0]); i++) {
++            reg = reg_saved[i];
++            if (regs_allocated[reg]) {
++                if (pending < 0) {
++                    pending = (int8_t) reg;
++                } else {
++                    /* stp Xpending, Xreg, [sp, #-16]! */
++                    gen_le32(0xa9800000 | ((-2 & 0x7f) << 15) | (31 << 5) \
++                             | (pending & 0x1f) | ((reg & 0x1f) << 10));
++                    pending = -1;
++                }
++            }
++        }
++        if (pending >= 0) {
++            /* stp Xpending, xzr, [sp, #-16]! */
++            gen_le32(0xa9800000 | ((-2 & 0x7f) << 15) | (31 << 5) \
++                     | (pending & 0x1f) | (0x1f << 10));
++        }
++        for (i = 0; i < sizeof(fp_saved)/sizeof(fp_saved[0]); i++) {
++            reg = fp_saved[i];
++            if (regs_allocated[reg + 32]) {
++                // str Qreg, [sp, #-16]! */
++                gen_le32(0x3c800c00 | ((-16 & 0x1ff) << 12) | reg | (0x1f << 5));
++            }
++        }
++
++        /* generate load code */
++        for(i = 0; i < nb_operands; i++) {
++            op = &operands[i];
++            if (op->reg >= 0) {
++                if ((op->vt->r & VT_VALMASK) == VT_LLOCAL &&
++                    op->is_memory) {
++                    /* memory reference case (for both input and
++                       output cases) */
++                    SValue sv;
++                    sv = *op->vt;
++                    sv.r = (sv.r & ~VT_VALMASK) | VT_LOCAL | VT_LVAL;
++                    sv.type.t = VT_PTR;
++                    load(op->reg, &sv);
++                } else if (i >= nb_outputs || op->is_rw || strchr(op->constraint, 'Q')) {
++                    /* load value in register */
++                    if ((op->vt->type.t & VT_BTYPE) == VT_FLOAT ||
++                        (op->vt->type.t & VT_BTYPE) == VT_DOUBLE) {
++                        load(op->reg, op->vt);
++                    } else {
++                        load(op->reg, op->vt);
++                    }
++                    if (op->is_llong) {
++                        tcc_error("long long not implemented");
++                    }
++                }
++            }
++        }
++    } else {
++        /* generate save code */
++        for(i = 0 ; i < nb_outputs; i++) {
++            op = &operands[i];
++            if (op->reg >= 0) {
++                if ((op->vt->r & VT_VALMASK) == VT_LLOCAL) {
++                    if (!op->is_memory) {
++                        SValue sv;
++                        sv = *op->vt;
++                        sv.r = (sv.r & ~VT_VALMASK) | VT_LOCAL;
++                        sv.type.t = VT_PTR;
++                        load(out_reg, &sv);
++
++                        sv = *op->vt;
++                        sv.r = (sv.r & ~VT_VALMASK) | out_reg;
++                        store(op->reg, &sv);
++                    }
++                } else {
++                    if ((op->vt->type.t & VT_BTYPE) == VT_FLOAT ||
++                        (op->vt->type.t & VT_BTYPE) == VT_DOUBLE) {
++                        store(op->reg, op->vt);
++                    } else {
++                        store(op->reg, op->vt);
++                    }
++                    if (op->is_llong) {
++                        tcc_error("long long not implemented");
++                    }
++                }
++            }
++        }
++
++        /* generate reg restore code for floating point registers */
++        for (i = 0; i < sizeof(fp_saved)/sizeof(fp_saved[0]); i++) {
++            reg = fp_saved[i];
++            if (regs_allocated[reg + 32]) {
++                // ldr Qreg, [sp], #16 */
++                gen_le32(0x3cc00400 | (16 << 12) | reg | (0x1f << 5));
++            }
++        }
++
++        /* generate reg restore code for integer registers */
++        odd = 0;
++        /* First pass
++         * - Find last saved register, if any.
++         * - Check if number of saved registers is odd.
++         */
++        for(i = sizeof(reg_saved)/sizeof(reg_saved[0]) - 1; i >= 0; i--) {
++            reg = reg_saved[i];
++            if (regs_allocated[reg]) {
++                if (pending == -1) {
++                    pending = reg;
++                }
++                odd ^= 1;
++            }
++        }
++        if (odd) {
++            /* ldp pending, xzr, [sp], #16 */
++            gen_le32(0xa8c00000 | (2 << 15) | (31 << 5) \
++                 | (pending & 0x1f) | (0x1f << 10));
++        }
++        pending = -1;
++        for(i = sizeof(reg_saved)/sizeof(reg_saved[0]) - 1; i >= 0; i--) {
++            reg = reg_saved[i];
++            if (regs_allocated[reg]) {
++                if (odd) {
++                    /* last register that was allocated was already popped */
++                    odd = 0;
++                    continue;
++                }
++                /* pop */
++                if (pending < 0) {
++                    pending = reg;
++                } else {
++                    /* ldp reg, pending, [sp], #16 */
++                    gen_le32(0xa8c00000 | (2 << 15) | (31 << 5) \
++                         | (reg & 0x1f) | ((pending & 0x1f) << 10));
++                }
++            }
++        }
++    }
++}
++
++/* return the constraint priority (we allocate first the lowest
++   numbered constraints) */
++static inline int constraint_priority(const char *str)
++{
++    // TODO: How is this chosen??
++    int priority, c, pr;
++
++    /* we take the lowest priority */
++    priority = 0;
++    for(;;) {
++        c = *str;
++        if (c == '\0')
++            break;
++        str++;
++        switch(c) {
++        case 'Q': // address
++        case 'r': // register [general]
++        case 'w': // fp register
++        case 'p': // valid memory address for load,store [general]
++            pr = 3;
++            break;
++        case 'I': // immediate that is valid for ADD
++        case 'J': // immediate that is valid for SUB
++        case 'm': // memory operand [general]
++        case 'g': // general-purpose-register, memory, immediate integer [general]
++            pr = 4;
++            break;
++        default:
++            tcc_error("unknown constraint '%c'", c);
++        }
++        if (pr > priority)
++            priority = pr;
++    }
++    return priority;
++}
++
++static const char *skip_constraint_modifiers(const char *p)
++{
++    /* Constraint modifier:
++        =   Operand is written to by this instruction
++        +   Operand is both read and written to by this instruction
++        %   Instruction is commutative for this operand and the following operand.
++
++       Per-alternative constraint modifier:
++        &   Operand is clobbered before the instruction is done using the input operands
++    */
++    while (*p == '=' || *p == '&' || *p == '+' || *p == '%')
++        p++;
++    return p;
+ }
+ 
++#define REG_OUT_MASK 0x01
++#define REG_IN_MASK  0x02
++
++#define is_reg_allocated(reg) (regs_allocated[reg] & reg_mask)
++
+ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+                                     int nb_operands, int nb_outputs,
+                                     const uint8_t *clobber_regs,
+                                     int *pout_reg)
+ {
++    /* TODO: Simple constraints
++        whitespace  ignored
++        o  memory operand that is offsetable
++        V  memory but not offsetable
++        <  memory operand with autodecrement addressing is allowed.  Restrictions apply.
++        >  memory operand with autoincrement addressing is allowed.  Restrictions apply.
++        n  immediate integer operand with a known numeric value
++        E  immediate floating operand (const_double) is allowed, but only if target=host
++        F  immediate floating operand (const_double or const_vector) is allowed
++        s  immediate integer operand whose value is not an explicit integer
++        X  any operand whatsoever
++        0...9 (postfix); (can also be more than 1 digit number);  an operand that matches the specified operand number is allowed
++    */
++
++    ASMOperand *op;
++    int sorted_op[MAX_ASM_OPERANDS];
++    int i, j, k, p1, p2, tmp, reg, c, reg_mask;
++    const char *str;
++    uint8_t regs_allocated[NB_ASM_REGS];
++
++    /* init fields */
++    for (i = 0; i < nb_operands; i++) {
++        op = &operands[i];
++        op->input_index = -1;
++        op->ref_index = -1;
++        op->reg = -1;
++        op->is_memory = 0;
++        op->is_rw = 0;
++    }
++    /* compute constraint priority and evaluate references to output
++       constraints if input constraints */
++    for (i = 0; i < nb_operands; i++) {
++        op = &operands[i];
++        str = op->constraint;
++        str = skip_constraint_modifiers(str);
++        if (isnum(*str) || *str == '[') {
++            /* this is a reference to another constraint */
++            k = find_constraint(operands, nb_operands, str, NULL);
++            if ((unsigned) k >= i || i < nb_outputs)
++                tcc_error("invalid reference in constraint %d ('%s')",
++                          i, str);
++            op->ref_index = k;
++            if (operands[k].input_index >= 0)
++                tcc_error("cannot reference twice the same operand");
++            operands[k].input_index = i;
++            op->priority = 5;
++        } else if ((op->vt->r & VT_VALMASK) == VT_LOCAL
++                   && op->vt->sym
++                   && (reg = op->vt->sym->r & VT_VALMASK) < VT_CONST) {
++            op->priority = 1;
++            op->reg = reg;
++        } else {
++            op->priority = constraint_priority(str);
++        }
++    }
++
++    /* sort operands according to their priority */
++    for (i = 0; i < nb_operands; i++)
++        sorted_op[i] = i;
++    for (i = 0; i < nb_operands - 1; i++) {
++        for (j = i + 1; j < nb_operands; j++) {
++            p1 = operands[sorted_op[i]].priority;
++            p2 = operands[sorted_op[j]].priority;
++            if (p2 < p1) {
++                tmp = sorted_op[i];
++                sorted_op[i] = sorted_op[j];
++                sorted_op[j] = tmp;
++            }
++        }
++    }
++
++    /* cannot allocate x29 = fp, x30 = lr or x31 = wzr */
++    regs_allocated[29] = REG_IN_MASK | REG_OUT_MASK;
++    regs_allocated[30] = REG_IN_MASK | REG_OUT_MASK;
++    regs_allocated[31] = REG_IN_MASK | REG_OUT_MASK;
++
++    for (i = 0; i < NB_ASM_REGS; i++) {
++        if (clobber_regs[i])
++            regs_allocated[i] = REG_IN_MASK | REG_OUT_MASK;
++        else
++            regs_allocated[i] = 0;
++    }
++
++    /* allocate registers and generate corresponding asm moves */
++    for (i = 0; i < nb_operands; i++) {
++        j = sorted_op[i];
++        op = &operands[j];
++        str = op->constraint;
++        /* no need to allocate references */
++        if (op->ref_index >= 0)
++            continue;
++        /* select if register is used for output, input or both */
++        if (op->input_index >= 0) {
++            reg_mask = REG_IN_MASK | REG_OUT_MASK;
++        } else if (j < nb_outputs) {
++            reg_mask = REG_OUT_MASK;
++        } else {
++            reg_mask = REG_IN_MASK;
++        }
++        if (op->reg >= 0) {
++            if (is_reg_allocated(op->reg))
++                tcc_error
++                    ("asm regvar requests register that's taken already");
++            reg = op->reg;
++        }
++      try_next:
++        c = *str++;
++        switch (c) {
++        case '=': // Operand is written-to
++            goto try_next;
++        case '+': // Operand is both READ and written-to
++            op->is_rw = 1;
++            /* FALL THRU */
++        case '&': // Operand is clobbered before the instruction is done using the input operands
++            if (j >= nb_outputs)
++                tcc_error("'%c' modifier can only be applied to outputs", c);
++            reg_mask = REG_IN_MASK | REG_OUT_MASK;
++            goto try_next;
++        case 'Q':
++            /* any general register */
++            /* From x0 to x18 */
++            if ((reg = op->reg) >= 0)
++                goto reg_found;
++            else for (reg = 0; reg <= 18; reg++) {
++                if (!(regs_allocated[reg] & REG_IN_MASK))
++                    goto reg_foundQ;
++            }
++            goto try_next;
++          reg_foundQ:
++            /* now we can reload in the register */
++            op->is_llong = 0;
++            op->reg = reg;
++            regs_allocated[reg] |= REG_IN_MASK;
++            break;
++        case 'w': // floating point register
++            /* floating point register */
++            /* From f0 to f7 */
++            if ((reg = op->reg) >= 0)
++                goto reg_found;
++            else for (reg = 20; reg <= 27; reg++) {
++                if (!is_reg_allocated(reg))
++                    goto reg_found;
++            }
++            goto try_next;
++        case 'r': // general-purpose register
++        case 'p': // loadable/storable address
++            /* any general register */
++            /* From x0 to x18 */
++            if ((reg = op->reg) >= 0)
++                goto reg_found;
++            else for (reg = 0; reg <= 18; reg++) {
++                if (!is_reg_allocated(reg))
++                    goto reg_found;
++            }
++            goto try_next;
++          reg_found:
++            /* now we can reload in the register */
++            op->is_llong = 0;
++            op->reg = reg;
++            regs_allocated[reg] |= reg_mask;
++            break;
++        case 'I':
++        case 'J':
++            // immediate
++            if (!((op->vt->r & (VT_VALMASK | VT_LVAL)) == VT_CONST))
++                goto try_next;
++            break;
++        case 'm': // memory operand
++        case 'g': // any register
++            /* nothing special to do because the operand is already in
++               memory, except if the pointer itself is stored in a
++               memory variable (VT_LLOCAL case) */
++            /* XXX: fix constant case */
++            /* if it is a reference to a memory zone, it must lie
++               in a register, so we reserve the register in the
++               input registers and a load will be generated
++               later */
++            if (j < nb_outputs || c == 'm') {
++                if ((op->vt->r & VT_VALMASK) == VT_LLOCAL) {
++                    /* any general register: from x0 to x18 */
++                    for (reg = 0; reg <= 18; reg++) {
++                        if (!(regs_allocated[reg] & REG_IN_MASK))
++                            goto reg_found1;
++                    }
++                    goto try_next;
++                  reg_found1:
++                    /* now we can reload in the register */
++                    regs_allocated[reg] |= REG_IN_MASK;
++                    op->reg = reg;
++                    op->is_memory = 1;
++                }
++            }
++            break;
++        default:
++            tcc_error("asm constraint %d ('%s') could not be satisfied",
++                      j, op->constraint);
++            break;
++        }
++        /* if a reference is present for that operand, we assign it too */
++        if (op->input_index >= 0) {
++            operands[op->input_index].reg = op->reg;
++            operands[op->input_index].is_llong = op->is_llong;
++        }
++    }
++
++    /* compute out_reg. It is used to store outputs registers to memory
++       locations references by pointers (VT_LLOCAL case) */
++    *pout_reg = -1;
++    for (i = 0; i < nb_operands; i++) {
++        op = &operands[i];
++        if (op->reg >= 0 &&
++            (op->vt->r & VT_VALMASK) == VT_LLOCAL && !op->is_memory) {
++            /* From x0 to x18 */
++            for (reg = 0; reg <= 18; reg++) {
++                if (!(regs_allocated[reg] & REG_OUT_MASK))
++                    goto reg_found2;
++            }
++            tcc_error("could not find free output register for reloading");
++          reg_found2:
++            *pout_reg = reg;
++            break;
++        }
++    }
++
++    /* print sorted constraints */
++#ifdef ASM_DEBUG
++    for (i = 0; i < nb_operands; i++) {
++        j = sorted_op[i];
++        op = &operands[j];
++        printf("%%%d [%s]: \"%s\" r=0x%04x reg=%d\n",
++               j,
++               op->id ? get_tok_str(op->id, NULL) : "",
++               op->constraint, op->vt->r, op->reg);
++    }
++    if (*pout_reg >= 0)
++        printf("out_reg=%d\n", *pout_reg);
++#endif
+ }
+ 
+ ST_FUNC void asm_clobber(uint8_t *clobber_regs, const char *str)
+ {
+-    asm_error();
++    int reg;
++    TokenSym *ts;
++
++    if (!strcmp(str, "memory") ||
++        !strcmp(str, "cc") ||
++        !strcmp(str, "flags"))
++        return;
++    ts = tok_alloc(str, strlen(str));
++    reg = asm_parse_regvar(ts->tok);
++    if (reg == -1) {
++        tcc_error("invalid clobber register '%s'", str);
++    }
++    clobber_regs[reg] = 1;
+ }
+ 
+ ST_FUNC int asm_parse_regvar (int t)
+ {
+-    asm_error();
++    /* exclude x31, which is xzr */
++    if (t >= TOK_ASM_x0 && t < TOK_ASM_x31) {
++        return t - TOK_ASM_x0;
++    }
++    if (t >= TOK_ASM_w0 && t < TOK_ASM_w31) {
++        return t - TOK_ASM_w0;
++    }
++    if (t >= TOK_ASM_b0 && t <= TOK_ASM_b31) {
++        return t - TOK_ASM_b0 + 32;
++    }
++    if (t >= TOK_ASM_h0 && t <= TOK_ASM_h31) {
++        return t - TOK_ASM_h0 + 32;
++    }
++    if (t >= TOK_ASM_s0 && t <= TOK_ASM_s31) {
++        return t - TOK_ASM_s0 + 32;
++    }
++    if (t >= TOK_ASM_d0 && t <= TOK_ASM_d31) {
++        return t - TOK_ASM_d0 + 32;
++    }
++    if (t >= TOK_ASM_q0 && t <= TOK_ASM_q31) {
++        return t - TOK_ASM_q0 + 32;
++    }
++    /* do these even make sense? */
++    if (t == TOK_ASM_fp) {
++        return asm_parse_regvar(TOK_ASM_x29);
++    }
++    if (t == TOK_ASM_lr) {
++        return asm_parse_regvar(TOK_ASM_x30);
++    }
+     return -1;
+ }
+ 
+diff --git a/arm64-gen.c b/arm64-gen.c
+index 5bdc29e..48b222e 100644
+--- a/arm64-gen.c
++++ b/arm64-gen.c
+@@ -33,8 +33,16 @@
+ 
+ #define PTR_SIZE 8
+ 
+-#define LDOUBLE_SIZE 16
+-#define LDOUBLE_ALIGN 16
++#define LDOUBLE_SIZE 8
++/* AND THE ALIGNMENT WITH IT. An eight-byte type with sixteen-byte alignment is
++ * not a coherent type: every struct or union containing a long double is
++ * rounded and padded to sixteen, and tcc's own va_arg rounds the argument
++ * offset to sixteen for a value the caller pushed as eight. musl's printf
++ * carries exactly such a union --
++ *     union arg { uintmax_t i; long double f; void *p; };   vfprintf.c
++ * -- which came out sixteen bytes wide while sizeof(long double) reported
++ * eight. */
++#define LDOUBLE_ALIGN 8
+ 
+ #define MAX_ALIGN 16
+ 
+@@ -272,7 +280,18 @@ static int arm64_type_size(int t)
+     case VT_STRUCT: return 3;
+     case VT_FLOAT: return 2;
+     case VT_DOUBLE: return 3;
++#if LDOUBLE_SIZE == 8
++    /* EIGHT BYTES, LIKE THE SIZE SAYS. This is a log2 size and every caller
++     * uses it to lay out arguments and returns: 4 means sixteen bytes, so a
++     * long double parameter was given a Q register and sixteen bytes of stack
++     * while the value occupies eight. Passing a double where a long double was
++     * declared then arrived as garbage even after gen_cvt_ftof was corrected,
++     * because the conversion is a no-op and the CLASSIFICATION was still the
++     * binary128 one. */
++    case VT_LDOUBLE: return 3;
++#else
+     case VT_LDOUBLE: return 4;
++#endif
+     case VT_BOOL: return 0;
+     case VT_VOID: return 0;
+     }
+@@ -557,7 +576,12 @@ ST_FUNC void load(int r, SValue *sv)
+ 
+     if (svr < VT_CONST) {
+         if (IS_FREG(r) && IS_FREG(svr))
++#if LDOUBLE_SIZE == 8
++            /* an 8-byte long double moves with fmov d,d like a double */
++            if (0)
++#else
+             if (svtt == VT_LDOUBLE)
++#endif
+                 o(0x4ea01c00 | fltr(r) | fltr(svr) << 5);
+                     // mov v(r).16b,v(svr).16b
+             else
+@@ -1849,7 +1873,16 @@ ST_FUNC void gen_opf(int op)
+ {
+     uint32_t x, a, b, dbl;
+ 
++#if LDOUBLE_SIZE == 8
++    /* NOT THE BINARY128 HELPERS -- see the note in gen_cvt_ftof. Every
++     * arithmetic operation and every comparison on a long double went to
++     * __addtf3, __lttf2 and the rest, which take sixteen-byte operands. The
++     * ordinary double path below is already right for an eight-byte type; it
++     * only had to be reached. */
++    if (0) {
++#else
+     if (vtop[0].type.t == VT_LDOUBLE) {
++#endif
+         CType type = vtop[0].type;
+         int func = 0;
+         int cond = -1;
+@@ -1880,7 +1913,7 @@ ST_FUNC void gen_opf(int op)
+         return;
+     }
+ 
+-    dbl = vtop[0].type.t != VT_FLOAT;
++    dbl = vtop[0].type.t != VT_FLOAT;   /* long double lands here too, as 8 */
+     gv2(RC_FLOAT, RC_FLOAT);
+     assert(vtop[-1].r < VT_CONST && vtop[0].r < VT_CONST);
+     a = fltr(vtop[-1].r);
+@@ -1964,6 +1997,17 @@ ST_FUNC void gen_cvt_csti(int t)
+ 
+ ST_FUNC void gen_cvt_itof(int t)
+ {
++#if LDOUBLE_SIZE == 8
++    /* int -> long double is int -> double here. This is the one that broke
++     * the self-compilation fixpoint: tcc folds an integer constant into a
++     * float with
++     *     vtop->c.ld = (uint32_t)vtop->c.i;          tccgen.c:3303
++     * so a tcc COMPILED BY mc-tcc ran that through __floatunsitf and every
++     * `(double)1000` it folded came out zero -- while mc-tcc itself, compiled
++     * by micro-c, got it right. gen2 and gen3 disagreed by exactly those two
++     * constants. */
++    if (t == VT_LDOUBLE) t = VT_DOUBLE;
++#endif
+     if (t == VT_LDOUBLE) {
+         int f = vtop->type.t;
+         int func = (f & VT_BTYPE) == VT_LLONG ?
+@@ -1993,6 +2037,11 @@ ST_FUNC void gen_cvt_itof(int t)
+ 
+ ST_FUNC void gen_cvt_ftoi(int t)
+ {
++#if LDOUBLE_SIZE == 8
++    /* long double -> int is double -> int here. Same reason. */
++    if ((vtop->type.t & VT_BTYPE) == VT_LDOUBLE)
++        vtop->type.t = (vtop->type.t & ~VT_BTYPE) | VT_DOUBLE;
++#endif
+     if ((vtop->type.t & VT_BTYPE) == VT_LDOUBLE) {
+         int func = (t & VT_BTYPE) == VT_LLONG ?
+           (t & VT_UNSIGNED ? TOK___fixunstfdi : TOK___fixtfdi) :
+@@ -2027,6 +2076,34 @@ ST_FUNC void gen_cvt_ftof(int t)
+     if (t == f)
+         return;
+ 
++#if LDOUBLE_SIZE == 8
++    /* LONG DOUBLE IS DOUBLE HERE, AND THE CONVERSION HAS TO AGREE.
++     *
++     * tcc-microc patch 0001 sets LDOUBLE_SIZE to 8 so the compiler is
++     * consistent with the eight-byte long double micro-c gives it. This
++     * function was left routing every long double conversion through the
++     * binary128 helpers -- __extenddftf2, __trunctfdf2 -- which read and write
++     * SIXTEEN bytes for a type that now occupies eight. Measured:
++     *
++     *     long double y = x;   x = 5.008
++     *     y                    5000000000000000, not 4014083126e978d5
++     *
++     * That is exactly what musl's printf does with every %f argument
++     * (`arg->f = va_arg(*ap, double)` into a long double member), and what
++     * __floatscan does on the way out of strtod -- so printf("%f") produced
++     * 0.000000 and strtod returned a value that did not compare equal to its
++     * own literal, while the literal's bits were exact and the argument
++     * arrived through varargs intact.
++     *
++     * With the two types identical in representation, double <-> long double
++     * is a no-op and float <-> long double is the ordinary fcvt the branch
++     * below already emits. */
++    if (t == VT_LDOUBLE) t = VT_DOUBLE;
++    if (f == VT_LDOUBLE) f = VT_DOUBLE;
++    if (t == f)
++        return;
++#endif
++
+     if (t == VT_LDOUBLE || f == VT_LDOUBLE) {
+         int func = (t == VT_LDOUBLE) ?
+             (f == VT_FLOAT ? TOK___extendsftf2 : TOK___extenddftf2) :
+diff --git a/arm64-link.c b/arm64-link.c
+index cfdd95e..ba97038 100644
+--- a/arm64-link.c
++++ b/arm64-link.c
+@@ -47,6 +47,8 @@ ST_FUNC int code_reloc (int reloc_type)
+         case R_AARCH64_COPY:
+             return 0;
+ 
++        case R_AARCH64_TSTBR14:
++        case R_AARCH64_CONDBR19:
+         case R_AARCH64_JUMP26:
+         case R_AARCH64_CALL26:
+         case R_AARCH64_JUMP_SLOT:
+@@ -76,6 +78,8 @@ ST_FUNC int gotplt_entry_type (int reloc_type)
+         case R_AARCH64_GLOB_DAT:
+         case R_AARCH64_JUMP_SLOT:
+         case R_AARCH64_COPY:
++        case R_AARCH64_TSTBR14:
++        case R_AARCH64_CONDBR19:
+             return NO_GOTPLT_ENTRY;
+ 
+         case R_AARCH64_ABS32:
+@@ -278,6 +282,20 @@ ST_FUNC void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr,
+                             (uint32_t)(type == R_AARCH64_CALL26) << 31 |
+                             ((val - addr) >> 2 & 0x3ffffff)));
+             return;
++        case R_AARCH64_TSTBR14:
++            if (((val - addr) + ((uint64_t)1 << 15)) & ~(uint64_t)0xffffffc)
++                tcc_error_noabort("R_AARCH64_TSTBR14 relocation failed"
++                          " (val=%lx, addr=%lx)", (long)val, (long)addr);
++            write32le(ptr, ((read32le(ptr) & 0xfff8001f) |
++                            (((val - addr) >> 2 & 0x3fff) << 5)));
++            return;
++        case R_AARCH64_CONDBR19:
++            if (((val - addr) + ((uint64_t)1 << 20)) & ~(uint64_t)0xffffffc)
++                tcc_error_noabort("R_AARCH64_CONDBR19 relocation failed"
++                          " (val=%lx, addr=%lx)", (long)val, (long)addr);
++            write32le(ptr, ((read32le(ptr) & 0xff00001f) |
++                            (((val - addr) >> 2 & 0x7ffff) << 5)));
++            return;
+         case R_AARCH64_ADR_GOT_PAGE: {
+             uint64_t off =
+                 (((s1->got->sh_addr +
+diff --git a/arm64-tok.h b/arm64-tok.h
+new file mode 100644
+index 0000000..c764b0e
+--- /dev/null
++++ b/arm64-tok.h
+@@ -0,0 +1,247 @@
++#define DEF_ASM_REGS(prefix) \
++  DEF(TOK_ASM_##prefix##0, #prefix "0") \
++  DEF(TOK_ASM_##prefix##1, #prefix "1") \
++  DEF(TOK_ASM_##prefix##2, #prefix "2") \
++  DEF(TOK_ASM_##prefix##3, #prefix "3") \
++  DEF(TOK_ASM_##prefix##4, #prefix "4") \
++  DEF(TOK_ASM_##prefix##5, #prefix "5") \
++  DEF(TOK_ASM_##prefix##6, #prefix "6") \
++  DEF(TOK_ASM_##prefix##7, #prefix "7") \
++  DEF(TOK_ASM_##prefix##8, #prefix "8") \
++  DEF(TOK_ASM_##prefix##9, #prefix "9") \
++  DEF(TOK_ASM_##prefix##10, #prefix "10") \
++  DEF(TOK_ASM_##prefix##11, #prefix "11") \
++  DEF(TOK_ASM_##prefix##12, #prefix "12") \
++  DEF(TOK_ASM_##prefix##13, #prefix "13") \
++  DEF(TOK_ASM_##prefix##14, #prefix "14") \
++  DEF(TOK_ASM_##prefix##15, #prefix "15") \
++  DEF(TOK_ASM_##prefix##16, #prefix "16") \
++  DEF(TOK_ASM_##prefix##17, #prefix "17") \
++  DEF(TOK_ASM_##prefix##18, #prefix "18") \
++  DEF(TOK_ASM_##prefix##19, #prefix "19") \
++  DEF(TOK_ASM_##prefix##20, #prefix "20") \
++  DEF(TOK_ASM_##prefix##21, #prefix "21") \
++  DEF(TOK_ASM_##prefix##22, #prefix "22") \
++  DEF(TOK_ASM_##prefix##23, #prefix "23") \
++  DEF(TOK_ASM_##prefix##24, #prefix "24") \
++  DEF(TOK_ASM_##prefix##25, #prefix "25") \
++  DEF(TOK_ASM_##prefix##26, #prefix "26") \
++  DEF(TOK_ASM_##prefix##27, #prefix "27") \
++  DEF(TOK_ASM_##prefix##28, #prefix "28") \
++  DEF(TOK_ASM_##prefix##29, #prefix "29") \
++  DEF(TOK_ASM_##prefix##30, #prefix "30") \
++  DEF(TOK_ASM_##prefix##31, #prefix "31")
++
++#define DEF_ASM_VEC_REGS(suffix) \
++  DEF(TOK_ASM_v0_##suffix, "v0." #suffix) \
++  DEF(TOK_ASM_v1_##suffix, "v1." #suffix) \
++  DEF(TOK_ASM_v2_##suffix, "v2." #suffix) \
++  DEF(TOK_ASM_v3_##suffix, "v3." #suffix) \
++  DEF(TOK_ASM_v4_##suffix, "v4." #suffix) \
++  DEF(TOK_ASM_v5_##suffix, "v5." #suffix) \
++  DEF(TOK_ASM_v6_##suffix, "v6." #suffix) \
++  DEF(TOK_ASM_v7_##suffix, "v7." #suffix) \
++  DEF(TOK_ASM_v8_##suffix, "v8." #suffix) \
++  DEF(TOK_ASM_v9_##suffix, "v9." #suffix) \
++  DEF(TOK_ASM_v10_##suffix, "v10." #suffix) \
++  DEF(TOK_ASM_v11_##suffix, "v11." #suffix) \
++  DEF(TOK_ASM_v12_##suffix, "v12." #suffix) \
++  DEF(TOK_ASM_v13_##suffix, "v13." #suffix) \
++  DEF(TOK_ASM_v14_##suffix, "v14." #suffix) \
++  DEF(TOK_ASM_v15_##suffix, "v15." #suffix) \
++  DEF(TOK_ASM_v16_##suffix, "v16." #suffix) \
++  DEF(TOK_ASM_v17_##suffix, "v17." #suffix) \
++  DEF(TOK_ASM_v18_##suffix, "v18." #suffix) \
++  DEF(TOK_ASM_v19_##suffix, "v19." #suffix) \
++  DEF(TOK_ASM_v20_##suffix, "v20." #suffix) \
++  DEF(TOK_ASM_v21_##suffix, "v21." #suffix) \
++  DEF(TOK_ASM_v22_##suffix, "v22." #suffix) \
++  DEF(TOK_ASM_v23_##suffix, "v23." #suffix) \
++  DEF(TOK_ASM_v24_##suffix, "v24." #suffix) \
++  DEF(TOK_ASM_v25_##suffix, "v25." #suffix) \
++  DEF(TOK_ASM_v26_##suffix, "v26." #suffix) \
++  DEF(TOK_ASM_v27_##suffix, "v27." #suffix) \
++  DEF(TOK_ASM_v28_##suffix, "v28." #suffix) \
++  DEF(TOK_ASM_v29_##suffix, "v29." #suffix) \
++  DEF(TOK_ASM_v30_##suffix, "v30." #suffix) \
++  DEF(TOK_ASM_v31_##suffix, "v31." #suffix)
++
++ DEF_ASM_REGS(x)
++ DEF_ASM_REGS(w)
++ DEF_ASM_REGS(b)
++ DEF_ASM_REGS(h)
++ DEF_ASM_REGS(s)
++ DEF_ASM_REGS(d)
++ DEF_ASM_REGS(q)
++
++/* vector register */
++ DEF_ASM_VEC_REGS(B)
++ DEF_ASM_VEC_REGS(H)
++ DEF_ASM_VEC_REGS(S)
++ DEF_ASM_VEC_REGS(D)
++ DEF_ASM_VEC_REGS(8B)
++ DEF_ASM_VEC_REGS(16B)
++ DEF_ASM_VEC_REGS(4H)
++ DEF_ASM_VEC_REGS(8H)
++ DEF_ASM_VEC_REGS(2S)
++ DEF_ASM_VEC_REGS(4S)
++ DEF_ASM_VEC_REGS(2D)
++
++/* register aliases and non-general purpose registers */
++ DEF_ASM(sp)
++ DEF_ASM(wsp)
++ DEF_ASM(pc)
++
++ DEF_ASM(fp)
++ DEF_ASM(lr)
++ DEF_ASM(xzr)
++ DEF_ASM(wzr)
++
++/* opcode mnemonics */
++/* memory opcodes, order is significant */
++ DEF_ASM(ldr)
++ DEF_ASM(ldrb)
++ DEF_ASM(ldrh)
++ DEF_ASM(str)
++ DEF_ASM(strb)
++ DEF_ASM(strh)
++/* other opcodes, order is insignificant */
++ DEF_ASM(nop)
++ DEF_ASM(svc)
++ DEF_ASM(udf)
++ DEF_ASM(mov)
++ DEF_ASM(ldp)
++ DEF_ASM(stp)
++ DEF_ASM(add)
++ DEF_ASM(adds)
++ DEF_ASM(sub)
++ DEF_ASM(subs)
++ DEF_ASM(cmp)
++ DEF_ASM(cmn)
++ DEF_ASM(ccmp)
++ DEF_ASM(br)
++ DEF_ASM(ret)
++ DEF_ASM(csinc)
++ DEF_ASM(adrp)
++ DEF_ASM(orr)
++ DEF_ASM(and)
++ DEF_ASM(bic)
++ DEF_ASM(b)
++ DEF_ASM(bl)
++ DEF_ASM(blr)
++ DEF_ASM(dmb)
++ DEF_ASM(mrs)
++ DEF_ASM(msr)
++ DEF_ASM(ldaxr)
++ DEF_ASM(stlxr)
++ DEF_ASM(rbit)
++ DEF_ASM(clz)
++ DEF_ASM(frintp)
++ DEF_ASM(fabs)
++ DEF_ASM(frintm)
++ DEF_ASM(fmadd)
++ DEF_ASM(fmaxnm)
++ DEF_ASM(fminnm)
++ DEF_ASM(frintx)
++ DEF_ASM(fcvtzs)
++ DEF_ASM(fcvtas)
++ DEF_ASM(frinti)
++ DEF_ASM(frinta)
++ DEF_ASM(fsqrt)
++ DEF_ASM(frintz)
++ DEF_ASM(tbz)
++ DEF_ASM(tbnz)
++ DEF_ASM(cbz)
++ DEF_ASM(cbnz)
++ DEF_ASM(dup)
++ DEF_ASM(dc)
++
++/* opcodes, but also shift modes; order is significant */
++ DEF_ASM(lsl)
++ DEF_ASM(lsr)
++ DEF_ASM(asr)
++ DEF_ASM(ror)
++
++/* opcodes, but also extend modes; order is significant */
++ DEF_ASM(uxtb)
++ DEF_ASM(uxth)
++ DEF_ASM(uxtw)
++ DEF_ASM(uxtx)
++ DEF_ASM(sxtb)
++ DEF_ASM(sxth)
++ DEF_ASM(sxtw)
++ DEF_ASM(sxtx)
++
++/* conditions for conditional instructions; order is significant */
++ DEF_ASM(eq)
++ DEF_ASM(ne)
++ DEF_ASM(cs)
++ DEF_ASM(cc)
++ DEF_ASM(mi)
++ DEF_ASM(pl)
++ DEF_ASM(vs)
++ DEF_ASM(vc)
++ DEF_ASM(hi)
++ DEF_ASM(ls)
++ DEF_ASM(ge)
++ DEF_ASM(lt)
++ DEF_ASM(gt)
++ DEF_ASM(le)
++ DEF_ASM(al)
++ DEF_ASM(nv)
++/* condition code aliases; order still significant */
++ DEF_ASM(hs)
++ DEF_ASM(lo)
++
++/* conditional jumps; order is significant */
++ DEF(TOK_ASM_b_eq, "b.eq")
++ DEF(TOK_ASM_b_ne, "b.ne")
++ DEF(TOK_ASM_b_cs, "b.cs")
++ DEF(TOK_ASM_b_cc, "b.cc")
++ DEF(TOK_ASM_b_mi, "b.mi")
++ DEF(TOK_ASM_b_pl, "b.pl")
++ DEF(TOK_ASM_b_vs, "b.vs")
++ DEF(TOK_ASM_b_vc, "b.vc")
++ DEF(TOK_ASM_b_hi, "b.hi")
++ DEF(TOK_ASM_b_ls, "b.ls")
++ DEF(TOK_ASM_b_ge, "b.ge")
++ DEF(TOK_ASM_b_lt, "b.lt")
++ DEF(TOK_ASM_b_gt, "b.gt")
++ DEF(TOK_ASM_b_le, "b.le")
++ DEF(TOK_ASM_b_al, "b.al")
++ DEF(TOK_ASM_b_nv, "b.nv")
++/* conditional jump aliases; order still significant */
++ DEF(TOK_ASM_b_hs, "b.hs")
++ DEF(TOK_ASM_b_lo, "b.lo")
++
++/* reloc strings */
++ DEF_ASM(lo12)
++
++/* dmb operands */
++ DEF_ASM(oshld)
++ DEF_ASM(oshst)
++ DEF_ASM(osh)
++ DEF_ASM(nshld)
++ DEF_ASM(nshst)
++ DEF_ASM(nsh)
++ DEF_ASM(ishld)
++ DEF_ASM(ishst)
++ DEF_ASM(ish)
++ DEF_ASM(ld)
++ DEF_ASM(st)
++ DEF_ASM(sy)
++
++/* system registers */
++ DEF_ASM(fpsr)
++ DEF_ASM(fpcr)
++ DEF_ASM(tpidr_el0)
++ DEF_ASM(dczid_el0)
++
++/* DC operations */
++ DEF_ASM(zva)
++
++/* We don't actually have push and pop mnemonics.
++ * But tccpp assumes ASM_TOK_push and ASM_TOK_pop
++ * exist. So we make them available, for #pragma use. */
++ DEF_ASM(push)
++ DEF_ASM(pop)
+diff --git a/i386-asm.c b/i386-asm.c
+index 85fb424..2f50055 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1514,7 +1514,7 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+ }
+ 
+ ST_FUNC void subst_asm_operand(CString *add_str,
+-                              SValue *sv, int modifier)
++                              SValue *sv, int modifier, ASMOperand *op)
+ {
+     int r, reg, size, val;
+ 
+diff --git a/i386-gen.c b/i386-gen.c
+index cabaaf0..d94b4bc 100644
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -271,7 +271,7 @@ static void gen_modrm(int opc, int op_r2, int r, Sym *sym, int c)
+     } else if ((r & VT_VALMASK) == VT_LOCAL) {
+ 	o(opc);
+         /* currently, we use only ebp as base */
+-        if (c == (char)c) {
++        if (c == (signed char)c) {
+             /* short reference */
+             o(0x45 | op_reg);
+             g(c);
+@@ -439,7 +439,7 @@ ST_FUNC void store(int r, SValue *v)
+ 
+ static void gadd_sp(int val)
+ {
+-    if (val == (char)val) {
++    if (val == (signed char)val) {
+         o(0xc483);
+         g(val);
+     } else {
+@@ -774,7 +774,7 @@ ST_FUNC void gjmp_addr(int a)
+ {
+     int r;
+     r = a - ind - 2;
+-    if (r == (char)r) {
++    if (r == (signed char)r) {
+         g(0xeb);
+         g(r);
+     } else {
+@@ -787,7 +787,7 @@ ST_FUNC void gjmp_addr(int a)
+ ST_FUNC void gjmp_cond_addr(int a, int op)
+ {
+     int r = a - ind - 2;
+-    if (r == (char)r)
++    if (r == (signed char)r)
+         g(op - 32), g(r);
+     else
+         g(0x0f), gjmp2(op - 16, r - 4);
+@@ -830,7 +830,7 @@ ST_FUNC void gen_opi(int op)
+             r = gv(RC_INT);
+             vswap();
+             c = vtop->c.i;
+-            if (c == (char)c) {
++            if (c == (signed char)c) {
+                 /* generate inc and dec for smaller code */
+                 if ((c == 1 || c == -1) && (op == '+' || op == '-')) {
+                     opc = (c == 1) ^ (op == '+');
+diff --git a/riscv64-asm.c b/riscv64-asm.c
+index 74cf445..46559a8 100644
+--- a/riscv64-asm.c
++++ b/riscv64-asm.c
+@@ -79,7 +79,7 @@ static void parse_operand(TCCState *s1, Operand *op);
+ static void parse_branch_offset_operand(TCCState *s1, Operand *op);
+ static void parse_operands(TCCState *s1, Operand *ops, int count);
+ static void parse_mem_access_operands(TCCState *s1, Operand* ops);
+-ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier);
++ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier, ASMOperand *op);
+ /* C extension */
+ static void asm_emit_ca(int token, uint16_t opcode, const Operand *rd, const Operand *rs2);
+ static void asm_emit_cb(int token, uint16_t opcode, const Operand *rs1, const Operand *imm);
+@@ -211,8 +211,19 @@ static void parse_operand(TCCState *s1, Operand *op)
+     } else if (op->e.sym->type.t & (VT_EXTERN | VT_STATIC)) {
+         label.type.t = VT_VOID | VT_STATIC;
+ 
+-        /* use the medium PIC model: GOT, auipc, lw */
+-        if (op->e.sym->type.t & VT_STATIC)
++        /* THE SECOND INSTRUCTION IS addi, NOT lw, SO A GOT RELOCATION IS
++           WRONG HERE WHATEVER THE MODEL. R_RISCV_GOT_HI20 names the address
++           of the symbol's GOT SLOT, and is only correct when what follows
++           loads from that slot. What follows is R_RISCV_PCREL_LO12_I on an
++           addi -- an address computation -- so the pair yields &GOT[n]
++           rather than the symbol's value.
++
++           A DLL STILL NEEDS THE GOT, so the choice is made on output type
++           rather than removed. For an executable or an object there is no
++           preemption to defend against and the direct form is both correct
++           and cheaper. */
++        if ((op->e.sym->type.t & VT_STATIC)
++            || s1->output_type != TCC_OUTPUT_DLL)
+             greloca(cur_text_section, op->e.sym, ind, R_RISCV_PCREL_HI20, 0);
+         else
+             greloca(cur_text_section, op->e.sym, ind, R_RISCV_GOT_HI20, 0);
+@@ -1684,7 +1695,7 @@ static int asm_parse_csrvar(int t)
+     }
+ }
+ 
+-ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier)
++ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier, ASMOperand *op)
+ {
+     int r, reg, val;
+ 
+diff --git a/tcc.h b/tcc.h
+index 1c2f694..fdc89aa 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1749,7 +1749,7 @@ ST_FUNC void gen_expr64(ExprValue *pe);
+ ST_FUNC void asm_opcode(TCCState *s1, int opcode);
+ ST_FUNC int asm_parse_regvar(int t);
+ ST_FUNC void asm_compute_constraints(ASMOperand *operands, int nb_operands, int nb_outputs, const uint8_t *clobber_regs, int *pout_reg);
+-ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier);
++ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier, ASMOperand *op);
+ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands, int nb_outputs, int is_output, uint8_t *clobber_regs, int out_reg);
+ ST_FUNC void asm_clobber(uint8_t *clobber_regs, const char *str);
+ #endif
+diff --git a/tccasm.c b/tccasm.c
+index 523cbab..8fc7279 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -494,6 +494,7 @@ static void pop_section(TCCState *s1)
+ 
+ static void asm_parse_directive(TCCState *s1, int global)
+ {
++    int do_nop_fill;
+     int n, offset, v, size, tok1;
+     Section *sec;
+     uint8_t *ptr;
+@@ -516,6 +517,7 @@ static void asm_parse_directive(TCCState *s1, int global)
+             n = 1 << n;
+             tok1 = TOK_ASMDIR_align;
+         }
++        do_nop_fill = 0;
+         if (tok1 == TOK_ASMDIR_align || tok1 == TOK_ASMDIR_balign) {
+             if (n <= 0 || (n & (n-1)) != 0)
+                 tcc_error("alignment must be a positive power of two");
+@@ -524,6 +526,7 @@ static void asm_parse_directive(TCCState *s1, int global)
+             /* the section must have a compatible alignment */
+             if (sec->sh_addralign < n)
+                 sec->sh_addralign = n;
++            do_nop_fill = 1;
+         } else {
+ 	    if (n < 0)
+ 	        n = 0;
+@@ -539,6 +542,20 @@ static void asm_parse_directive(TCCState *s1, int global)
+             sec->data_offset = ind;
+             ptr = section_ptr_add(sec, size);
+             memset(ptr, v, size);
++#ifdef TCC_TARGET_ARM64
++            /* Alignment padding in an EXECUTABLE section must be NOPs, not
++               zeroes: on arm64 a zero word is UDF #0, which faults if control
++               falls through the padding -- as it does in musl's memset.S,
++               where .p2align 4 sits between the count adjustment and the
++               .Lzva_loop head. Only for implicit fill (no ",fill" given) and
++               only when both the offset and the size are whole instructions. */
++            if (do_nop_fill && v == 0 && (sec->sh_flags & SHF_EXECINSTR)
++                && (ind & 3) == 0 && (size & 3) == 0) {
++                int nf; uint32_t *np = (uint32_t *)ptr;
++                for (nf = 0; nf < size / 4; nf++)
++                    write32le((unsigned char *)(np + nf), 0xd503201f);
++            }
++#endif
+         }
+         ind += size;
+         break;
+@@ -1178,6 +1195,8 @@ static void subst_asm_operands(ASMOperand *operands, int nb_operands,
+ 		*str == 'q' || *str == 'l' ||
+ #ifdef TCC_TARGET_RISCV64
+ 		*str == 'z' ||
++#elif defined(TCC_TARGET_ARM64)
++        *str == 'x' || *str == 'w' || *str == 's' || *str == 'd' ||
+ #endif
+ 		/* P in GCC would add "@PLT" to symbol refs in PIC mode,
+ 		   and make literal operands not be decorated with '$'.  */
+@@ -1199,7 +1218,7 @@ static void subst_asm_operands(ASMOperand *operands, int nb_operands,
+                     if ((op->vt->r & VT_VALMASK) == VT_LLOCAL && op->is_memory)
+                       sv.r |= VT_LVAL;
+                 }
+-                subst_asm_operand(out_str, &sv, modifier);
++                subst_asm_operand(out_str, &sv, modifier, op);
+             }
+         } else {
+         add_char:
+@@ -1240,15 +1259,29 @@ static void parse_asm_operands(ASMOperand *operands, int *nb_operands_ptr,
+             if (is_output) {
+                 if (!(vtop->type.t & VT_ARRAY))
+                     test_lvalue();
+-            } else {
++                if (strchr(op->constraint, 'Q')) {
++                    gaddrof();
++                    /*
++                     * Raw cast, bypass C casting semantics.
++                     * We cannot use gen_cast_s() here, because the type of
++                     * vtop remains as typeof(*op) instead of typeof(op),
++                     * despite gaddrof().
++                     */
++                    vtop->type.t = VT_LLONG | VT_UNSIGNED;
++                }
++            } else if (vtop->r & VT_LVAL) {
+                 /* we want to avoid LLOCAL case, except when the 'm'
+                    constraint is used. Note that it may come from
+                    register storage, so we need to convert (reg)
+                    case */
+-                if ((vtop->r & VT_LVAL) &&
+-                    ((vtop->r & VT_VALMASK) == VT_LLOCAL ||
+-                     (vtop->r & VT_VALMASK) < VT_CONST) &&
+-                    !strchr(op->constraint, 'm')) {
++                if (strchr(op->constraint, 'Q')) {
++                    gaddrof();
++                    /* Raw cast, bypass C casting semantics. */
++                    vtop->type.t = VT_LLONG | VT_UNSIGNED;
++                } else if (((vtop->r & VT_VALMASK) == VT_LLOCAL ||
++                            (vtop->r & VT_VALMASK) < VT_CONST) &&
++                           !strchr(op->constraint, 'm'))
++                {
+                     gv(RC_INT);
+                 }
+             }
+diff --git a/tccgen.c b/tccgen.c
+index 6d42de6..8d82112 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -21,6 +21,16 @@
+ #define USING_GLOBALS
+ #include "tcc.h"
+ 
++#if LDOUBLE_SIZE == 8
++/* NAMED, AND AT FILE SCOPE. An anonymous union declared inside a nested block
++ * with three declarators is not a shape micro-c accepts -- it answered
++ * `store(14, (9, 30, 0))` and produced nothing. */
++union sfbits { double d; unsigned long u; };
++#endif
++
++#include <math.h>
++#include <float.h>
++
+ /********************************************************/
+ /* global variables */
+ 
+@@ -1063,8 +1073,36 @@ static void gvtst_set(int inv, int t)
+     if (vtop->r != VT_CMP) {
+         vpushi(0);
+         gen_op(TOK_NE);
+-        if (vtop->r != VT_CMP) /* must be VT_CONST then */
+-            vset_VT_CMP(vtop->c.i != 0);
++        if (vtop->r != VT_CMP) {
++            /* THE COMMENT USED TO SAY "must be VT_CONST then" AND IT IS NOT
++               ALWAYS TRUE.
++ 
++               On arm64 a long double comparison is done by calling a helper
++               (__netf2 and friends) and turning its result into 0/1 with
++               cset, so gen_op leaves a real INTEGER REGISTER rather than
++               VT_CMP or VT_CONST. Reading vtop->c.i in that case reads the
++               constant field of a register-resident value -- garbage, and in
++               practice zero -- so `if (some_long_double)` folded to a
++               compile-time FALSE and no branch was emitted at all.
++ 
++               Measured on aarch64: every explicit comparison was correct and
++               only `if (x)` failed, which is what made it look like a
++               comparison bug rather than a truth-test one. musl's fmt_fp is
++               built on `for (; y; y = ...)` loops, so nothing ever formatted
++               a float: 5.008 printed as 8.000000, the exponent alone.
++ 
++               So only fold when it really is a constant. A value already in
++               a register is tested the ordinary way, which every backend can
++               already do -- gjmp_cond's integer path emits cbz/cbnz on it. */
++            if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST)
++                vset_VT_CMP(vtop->c.i != 0);
++            else {
++                /* A register holding 0/1: compare it against zero so the
++                   flags are set, and record that as the comparison. */
++                vpushi(0);
++                gen_op(TOK_NE);
++            }
++        }
+     }
+ 
+     p = inv ? &vtop->jfalse : &vtop->jtrue;
+@@ -2538,6 +2576,7 @@ void gen_negf(int op)
+ #endif
+ 
+ /* generate a floating point operation with constant propagation */
++
+ static void gen_opif(int op)
+ {
+     int c1, c2, i, bt;
+@@ -2547,6 +2586,11 @@ static void gen_opif(int op)
+     volatile
+ #endif
+     long double f1, f2;
++#if LDOUBLE_SIZE == 8
++    union sfbits sfa;
++    union sfbits sfb;
++    union sfbits sfr;
++#endif
+ 
+     v1 = vtop - 1;
+     v2 = vtop;
+@@ -2572,6 +2616,30 @@ static void gen_opif(int op)
+            NaN or infinity) (ANSI spec) */
+         if (!(ieee_finite(f1) || !ieee_finite(f2)) && !CONST_WANTED)
+             goto general_case;
++#if LDOUBLE_SIZE == 8
++        /* FOLD WITH INTEGER ARITHMETIC. The compiler that builds this tcc has
++         * no floating point, and the four lines below are real float
++         * operations -- so `2 * 4.0` folded to 0 and `2/LDBL_EPSILON`, which
++         * is musl printf's rounding constant, folded to 1. sf_add and friends
++         * live in the bootstrap runtime, work on IEEE bit patterns in integer
++         * arithmetic, and are exact: 4,798,676 of 4,798,676 against glibc,
++         * subnormals, ties and cancellation included.
++         *
++         * Guarded on LDOUBLE_SIZE == 8, so a tcc built normally -- where these
++         * are hardware instructions -- is untouched. */
++        /* `vtop--` SITS BEFORE unary_result, and these are BINARY operations.
++         * Jumping straight to the label skipped the pop, left an extra value
++         * on the stack and the backend hit its unhandled-store assert --
++         *     store(14, (9, 30, 0))
++         * -- which is what a corrupted vtop looks like from the far end.
++         * TOK_NEG jumps there precisely because it must NOT pop. */
++        sfa.d = (double)f1;
++        sfb.d = (double)f2;
++        if (op == '+') { sfr.u = sf_add(sfa.u, sfb.u); f1 = sfr.d; vtop--; goto unary_result; }
++        if (op == '-') { sfr.u = sf_sub(sfa.u, sfb.u); f1 = sfr.d; vtop--; goto unary_result; }
++        if (op == '*') { sfr.u = sf_mul(sfa.u, sfb.u); f1 = sfr.d; vtop--; goto unary_result; }
++        if (op == '/' && f2 != 0.0) { sfr.u = sf_div(sfa.u, sfb.u); f1 = sfr.d; vtop--; goto unary_result; }
++#endif
+         switch(op) {
+         case '+': f1 += f2; break;
+         case '-': f1 -= f2; break;
+@@ -2597,8 +2665,23 @@ static void gen_opif(int op)
+             f1 /= f2;
+             break;
+         case TOK_NEG:
++#if LDOUBLE_SIZE == 8
++            /* `-f1` IS A FLOAT OPERATION TOO, and leaving it out of the
++             * integer path made every negative float constant wrong while
++             * every positive one was right:
++             *      1.0   3ff0000000000000   correct
++             *     -1.0   c010000000000000   that is -4.0
++             *     -3.5   bff4000000000000   that is -1.25
++             * `0.0 - 1.0` was correct all along, because subtraction already
++             * went through sf_sub. */
++            sfa.d = (double)f1;
++            sfr.u = sf_neg(sfa.u);
++            f1 = sfr.d;
++            goto unary_result;
++#else
+             f1 = -f1;
+             goto unary_result;
++#endif
+         case TOK_EQ:
+             i = f1 == f2;
+ 	make_int:
+@@ -3245,6 +3328,10 @@ static void gen_cast_s(int t)
+ /* cast 'vtop' to 'type'. Casting to bitfields is forbidden. */
+ static void gen_cast(CType *type)
+ {
++#if LDOUBLE_SIZE == 8
++    union sfbits sfa;
++    union sfbits sfr;
++#endif
+     int sbt, dbt, sf, df, c;
+     int dbt_bt, sbt_bt, ds, ss, bits, trunc;
+ 
+@@ -3287,12 +3374,44 @@ error:
+         if (c) {
+             /* constant case: we can do it now */
+             /* XXX: in ISOC, cannot do it if error in convert */
++#if LDOUBLE_SIZE == 8
++            /* float <-> double ARE FLOAT OPERATIONS TOO. These two lines and
++             * the pair below narrow and widen a folded constant, so with no
++             * floating point in the compiler `float x = 2;` folded to 0.0f
++             * while every other float path was already right -- literals,
++             * runtime conversion and argument passing all worked, which is
++             * what made this look like a calling-convention fault. */
++            if (sbt == VT_FLOAT) {
++                /* c.tab[0] aliases the float's four bytes; reading c.f
++                 * would be the very operation this avoids. */
++                sfr.u = sf_from_f32((unsigned int)vtop->c.tab[0]);
++                vtop->c.ld = sfr.d;
++            } else if (sbt == VT_DOUBLE)
++                vtop->c.ld = vtop->c.d;
++#else
+             if (sbt == VT_FLOAT)
+                 vtop->c.ld = vtop->c.f;
+             else if (sbt == VT_DOUBLE)
+                 vtop->c.ld = vtop->c.d;
++#endif
+ 
+             if (df) {
++#if LDOUBLE_SIZE == 8
++                /* and the other direction, for the same reason */
++                if (sbt_bt == VT_LLONG) {
++                    if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 63))
++                        sfr.u = sf_from_int((long)vtop->c.i, 1);
++                    else
++                        sfr.u = sf_from_int((long)vtop->c.i, 0);
++                    vtop->c.ld = sfr.d;
++                } else if(!sf) {
++                    if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 31))
++                        sfr.u = sf_from_int((long)(uint32_t)vtop->c.i, 1);
++                    else
++                        sfr.u = sf_from_int((long)(int)(uint32_t)vtop->c.i, 0);
++                    vtop->c.ld = sfr.d;
++                }
++#else
+                 if (sbt_bt == VT_LLONG) {
+                     if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 63))
+                         vtop->c.ld = vtop->c.i;
+@@ -3304,19 +3423,41 @@ error:
+                     else
+                         vtop->c.ld = -(long double)-(uint32_t)vtop->c.i;
+                 }
++#endif
+ 
++#if LDOUBLE_SIZE == 8
++                if (dbt == VT_FLOAT) {
++                    sfa.d = (double)vtop->c.ld;
++                    vtop->c.tab[0] = (int)sf_to_f32(sfa.u);
++                } else if (dbt == VT_DOUBLE)
++                    vtop->c.d = (double)vtop->c.ld;
++#else
+                 if (dbt == VT_FLOAT)
+                     vtop->c.f = (float)vtop->c.ld;
+                 else if (dbt == VT_DOUBLE)
+                     vtop->c.d = (double)vtop->c.ld;
++#endif
+             } else if (sf && dbt == VT_BOOL) {
+                 vtop->c.i = (vtop->c.ld != 0);
+             } else {
+                 if(sf) {
++#if LDOUBLE_SIZE == 8
++                    /* A CAST IS A FLOAT OPERATION TOO. These two lines are
++                     * float-to-integer conversions written in C, so a compiler
++                     * without floating point folded `(int)-1.0` to 0 and
++                     * `(unsigned)3.5` to 0 while the runtime conversion was
++                     * right. sf_to_int truncates toward zero, in integers. */
++                    sfa.d = (double)vtop->c.ld;
++                    if (dbt & VT_UNSIGNED)
++                        vtop->c.i = (uint64_t)sf_to_int(sfa.u, 1);
++                    else
++                        vtop->c.i = (uint64_t)sf_to_int(sfa.u, 0);
++#else
+                     if (dbt & VT_UNSIGNED)
+                         vtop->c.i = (uint64_t)vtop->c.ld;
+                     else
+                         vtop->c.i = (int64_t)vtop->c.ld;
++#endif
+                 }
+                 else if (sbt_bt == VT_LLONG || (PTR_SIZE == 8 && sbt == VT_PTR))
+                     ;
+@@ -7894,10 +8035,88 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
+ #endif
+                 /* For other platforms it should work natively, but may not work
+                    for cross compilers */
++#if defined LDBL_MANT_DIG && LDBL_MANT_DIG == 64
++                if (LDOUBLE_SIZE == 16) {
++                    long double v = vtop->c.ld;
++                    int e = 0, neg = 0;
++                    unsigned long long hi = 0, lo = 0;
++                    if (v != v) {
++                        hi = 0x7fff800000000000ULL;
++                    } else if (v != 0 && v * 0.5L == v) {
++                        hi = 0x7fff000000000000ULL;
++                        if (v < 0) neg = 1;
++                    } else if (v != 0) {
++                        unsigned long long m;
++                        if (v < 0) { neg = 1; v = -v; }
++                        v = frexpl(v, &e);
++                        v = v * 18446744073709551616.0L;
++                        m = (unsigned long long)v;
++                        e = e - 1 + 16383;
++                        /* m holds 64 mantissa bits with x87's EXPLICIT leading
++                           1 at bit 63. binary128's field is 112 bits with an
++                           IMPLICIT leading 1, so drop the top bit and place the
++                           remaining 63 at the top of 112: the high word takes
++                           the first 48, the low word the remaining 15 shifted
++                           to ITS top. */
++                        unsigned long long f = m << 1;   /* drop implicit bit */
++                        hi = ((unsigned long long)e << 48) | (f >> 16);
++                        lo = f << 48;
++                    }
++                    if (neg) hi |= 0x8000000000000000ULL;
++                    write64le(ptr, lo);
++                    write64le(ptr + 8, hi);
++                }
++                else if (sizeof(long double) == LDOUBLE_SIZE)
++                    memcpy(ptr, &vtop->c.ld, LDOUBLE_SIZE);
++#else
+                 if (sizeof(long double) == LDOUBLE_SIZE)
+                     memcpy(ptr, &vtop->c.ld, LDOUBLE_SIZE);
++#endif
+                 else if (sizeof(double) == LDOUBLE_SIZE)
+                     *(double*)ptr = (double)vtop->c.ld;
++                else if (sizeof(long double) < LDOUBLE_SIZE) {
++                    /* THE HOST'S long double IS AN IEEE DOUBLE; THE TARGET'S
++                       IS x87 80-BIT EXTENDED. Different representations, not
++                       just different widths -- convert, do not copy. Patch
++                       0005 copied, which left a double sitting in a long
++                       double's slot and every later fldt reading its bits as
++                       an 80-bit mantissa and exponent.
++
++                       INTEGER ONLY, because micro-c gives this compiler no
++                       float arithmetic -- the same reason patch 0004 exists.
++
++                         double  sign | 11-bit exp bias 1023  | 52-bit mant, implicit 1
++                         x87     sign | 15-bit exp bias 16383 | 64-bit mant, EXPLICIT 1 */
++                    unsigned char *q; unsigned long long b, m; int e, i, s;
++                    q = (unsigned char *)ptr;
++                    b = 0;
++                    memcpy(&b, &vtop->c.ld, 8);
++                    for (i = 0; i < LDOUBLE_SIZE; i++)
++                        q[i] = 0;
++                    s = (int)(b >> 63);
++                    e = (int)((b >> 52) & 0x7ff);
++                    m = b & 0xfffffffffffffULL;
++                    if (e == 0 && m == 0) {
++                        e = 0; m = 0;
++                    } else if (e == 0x7ff) {
++                        e = 0x7fff;
++                        m = (m << 11) | 0x8000000000000000ULL;
++                    } else if (e == 0) {
++                        e = 1 - 1023 + 16383;
++                        while (!(m & 0x10000000000000ULL)) {
++                            m = m << 1;
++                            e = e - 1;
++                        }
++                        m = m << 11;
++                    } else {
++                        e = e - 1023 + 16383;
++                        m = (m << 11) | 0x8000000000000000ULL;
++                    }
++                    for (i = 0; i < 8; i++)
++                        q[i] = (unsigned char)((m >> (i * 8)) & 0xff);
++                    q[8] = (unsigned char)(e & 0xff);
++                    q[9] = (unsigned char)(((e >> 8) & 0x7f) | (s << 7));
++                }
+                 else if (0 == memcmp(ptr, &vtop->c.ld, LDOUBLE_SIZE))
+                     ; /* nothing to do for 0.0 */
+ #ifndef TCC_CROSS_TEST
+diff --git a/tccpp.c b/tccpp.c
+index e19e850..d33e1aa 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -942,7 +942,7 @@ redo_start:
+                 else if (parse_flags & PARSE_FLAG_ASM_FILE)
+                     p = parse_line_comment(p - 1);
+             }
+-#if !defined(TCC_TARGET_ARM)
++#if !defined(TCC_TARGET_ARM) && !defined(TCC_TARGET_ARM64)
+             else if (parse_flags & PARSE_FLAG_ASM_FILE)
+                 p = parse_line_comment(p - 1);
+ #else
+@@ -2234,8 +2234,19 @@ static void parse_string(const char *s, int len)
+     }
+ }
+ 
+-#ifdef TCC_USING_DOUBLE_FOR_LDOUBLE
++#if defined TCC_USING_DOUBLE_FOR_LDOUBLE || LDOUBLE_SIZE == 8
+ /* we use 64 bit (52 needed) numbers */
++/* LDOUBLE_SIZE == 8 BELONGS IN THIS CONDITION. The file already knows a
++ * double-only build needs 64 bits, but it keyed that on a symbol tcc.h defines
++ * only for PE, macOS/arm64 and Win32 -- so this build kept 128, and the
++ * hexadecimal-float path below, which reads bn[1]:bn[0], silently ignored the
++ * top half. Two literals in tcc's own tests2 have mantissas long enough to
++ * reach it:
++ *     0x1.00000000000000000000000000000000000000000000p+12   -> 0.0, want 4096
++ *     0x1000000000000000000000000000000000000000000000p-140  -> 0.0, want 2^40
++ * With 64 bits, bn_lshift stops shifting once the top would overflow and
++ * frac_bits compensates, which is exactly the behaviour a 53-bit mantissa
++ * wants. */
+ #define BN_SIZE 2
+ #else
+ /* we use 128 bit (64/112 needed) numbers */
+@@ -2391,9 +2402,52 @@ static void parse_number(const char *p)
+             
+             /* now we can generate the number */
+             /* XXX: should patch directly float number */
+-#ifdef TCC_USING_DOUBLE_FOR_LDOUBLE
+-            d = (double)bn[1] * 4294967296.0 + (double)bn[0];
+-            d = ldexp(d, exp_val - frac_bits);
++#if LDOUBLE_SIZE == 8 || defined TCC_USING_DOUBLE_FOR_LDOUBLE
++            {
++                unsigned long hm;
++                int he;
++                int hi;
++                int hn;
++                int hd;
++                char hbuf[80];
++                char htmp[40];
++                hm = bn[1];
++                hm = (hm << 32) | bn[0];
++                he = exp_val - frac_bits;
++                hn = 0;
++                if (hm == 0) {
++                    htmp[0] = 48;
++                    hn = 1;
++                } else {
++                    while (hm != 0) {
++                        hd = (int)(hm & 15);
++                        if (hd < 10) htmp[hn] = (char)(48 + hd);
++                        else htmp[hn] = (char)(87 + hd);
++                        hn = hn + 1;
++                        hm = hm >> 4;
++                    }
++                }
++                hi = 0;
++                hbuf[hi] = 48; hi = hi + 1;
++                hbuf[hi] = 120; hi = hi + 1;
++                while (hn > 0) { hn = hn - 1; hbuf[hi] = htmp[hn]; hi = hi + 1; }
++                hbuf[hi] = 112; hi = hi + 1;
++                if (he < 0) { hbuf[hi] = 45; hi = hi + 1; he = 0 - he; }
++                hn = 0;
++                if (he == 0) {
++                    htmp[0] = 48;
++                    hn = 1;
++                } else {
++                    while (he != 0) {
++                        htmp[hn] = (char)(48 + (he % 10));
++                        hn = hn + 1;
++                        he = he / 10;
++                    }
++                }
++                while (hn > 0) { hn = hn - 1; hbuf[hi] = htmp[hn]; hi = hi + 1; }
++                hbuf[hi] = 0;
++                d = strtod(hbuf, 0);
++            }
+ #else
+             d = (long double)bn[3] * 79228162514264337593543950336.0L +
+ 	        (long double)bn[2] * 18446744073709551616.0L +
+@@ -2460,18 +2514,22 @@ static void parse_number(const char *p)
+             if (t == 'F') {
+                 ch = *p++;
+                 tok = TOK_CFLOAT;
+-                tokc.f = strtof(token_buf, NULL);
++                /* THROUGH A LOCAL. Assigning a floating return value straight
++                   into the CValue union is miscompiled by the compiler that
++                   builds this one; the hex path above already stores into a
++                   local first and is correct. See the patch header. */
++                { float fv = strtof(token_buf, NULL); tokc.f = fv; }
+             } else if (t == 'L') {
+                 ch = *p++;
+                 tok = TOK_CLDOUBLE;
+ #ifdef TCC_USING_DOUBLE_FOR_LDOUBLE
+-                tokc.d = strtod(token_buf, NULL);
++                { double dv = strtod(token_buf, NULL); tokc.d = dv; }
+ #else
+-                tokc.ld = strtold(token_buf, NULL);
++                { long double lv = strtold(token_buf, NULL); tokc.ld = lv; }
+ #endif
+             } else {
+                 tok = TOK_CDOUBLE;
+-                tokc.d = strtod(token_buf, NULL);
++                { double dv = strtod(token_buf, NULL); tokc.d = dv; }
+             }
+         }
+     } else {
+@@ -2678,7 +2736,7 @@ maybe_newline:
+                 p++;
+                 tok = TOK_TWOSHARPS;
+             } else {
+-#if !defined(TCC_TARGET_ARM)
++#if !defined(TCC_TARGET_ARM) && !defined(TCC_TARGET_ARM64)
+                 if (parse_flags & PARSE_FLAG_ASM_FILE) {
+                     p = parse_line_comment(p - 1);
+                     goto redo_no_start;
+diff --git a/tcctok.h b/tcctok.h
+index 4a16a22..28c46e8 100644
+--- a/tcctok.h
++++ b/tcctok.h
+@@ -420,10 +420,14 @@
+ #include "i386-tok.h"
+ #endif
+ 
+-#if defined TCC_TARGET_ARM || defined TCC_TARGET_ARM64
++#if defined TCC_TARGET_ARM
+ #include "arm-tok.h"
+ #endif
+ 
++#if defined TCC_TARGET_ARM64
++#include "arm64-tok.h"
++#endif
++
+ #if defined TCC_TARGET_RISCV64
+ #include "riscv64-tok.h"
+ #endif
+diff --git a/x86_64-gen.c b/x86_64-gen.c
+index 2ca1dde..98c65b8 100644
+--- a/x86_64-gen.c
++++ b/x86_64-gen.c
+@@ -322,7 +322,7 @@ static void gen_modrm_impl(int op_reg, int r, Sym *sym, int c, int is_got)
+ 	}
+     } else if ((r & VT_VALMASK) == VT_LOCAL) {
+         /* currently, we use only ebp as base */
+-        if (c == (char)c) {
++        if (c == (signed char)c) {
+             /* short reference */
+             o(0x45 | op_reg);
+             g(c);
+@@ -756,7 +756,7 @@ static int arg_prepare_reg(int idx) {
+ static void gen_offs_sp(int b, int r, int d)
+ {
+     orex(1,0,r & 0x100 ? 0 : r, b);
+-    if (d == (char)d) {
++    if (d == (signed char)d) {
+         o(0x2444 | (REG_VALUE(r) << 3));
+         g(d);
+     } else {
+@@ -1059,7 +1059,7 @@ void gfunc_epilog(void)
+ 
+ static void gadd_sp(int val)
+ {
+-    if (val == (char)val) {
++    if (val == (signed char)val) {
+         o(0xc48348);
+         g(val);
+     } else {
+@@ -1642,7 +1642,7 @@ void gjmp_addr(int a)
+ {
+     int r;
+     r = a - ind - 2;
+-    if (r == (char)r) {
++    if (r == (signed char)r) {
+         g(0xeb);
+         g(r);
+     } else {
+@@ -1711,7 +1711,7 @@ void gen_opi(int op)
+             r = gv(RC_INT);
+             vswap();
+             c = vtop->c.i;
+-            if (c == (char)c) {
++            if (c == (signed char)c) {
+                 /* XXX: generate inc and dec for smaller code ? */
+                 orex(ll, r, 0, 0x83);
+                 o(0xc0 | (opc << 3) | REG_VALUE(r));
