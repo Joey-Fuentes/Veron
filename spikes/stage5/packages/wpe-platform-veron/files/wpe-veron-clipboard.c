@@ -39,6 +39,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <poll.h>
 
 /* FIELDS DIRECTLY IN THE INSTANCE, NOT IN PRIVATE DATA. G_DECLARE_FINAL_TYPE
  * means nothing can derive from this, so there is nobody to hide the layout
@@ -89,8 +90,46 @@ static void dataSourceSend(void *data, struct wl_data_source *source,
         return;
     }
 
-    GBytes *bytes = wpe_clipboard_content_get_bytes(priv->content, mimeType);
+    /* SERIALIZE, DO NOT ASK FOR BYTES, AND THIS IS WHY EVERY COPY OUT OF THE
+     * BROWSER PRODUCED AN EMPTY PASTE.
+     *
+     * wpe_clipboard_content_get_bytes reads content->buffers and nothing else
+     * (WPEClipboard.cpp:431):
+     *
+     *     if (!content->buffers)
+     *         return nullptr;
+     *     return content->buffers->get(g_intern_string(format));
+     *
+     * Text set with wpe_clipboard_content_set_text is stored in
+     * content->text, NOT in buffers. So for text/plain it returns NULL every
+     * time, and the branch below closed the pipe having written nothing --
+     * which a reader cannot distinguish from a successful transfer of zero
+     * bytes. `wl-paste -l` listed both formats and `wl-paste` printed a blank
+     * line, because the offer was real and the content was never sent.
+     *
+     * wpe_clipboard_content_serialize is the accessor that knows about text:
+     * it special-cases the two text/plain formats and writes content->text
+     * directly, falling back to buffers for everything else
+     * (WPEClipboard.cpp:454-462). It is what WPE's own read path uses, which
+     * is why pasting INTO the browser always worked while copying out of it
+     * never did.
+     *
+     * THE STREAM IS IN MEMORY RATHER THAN WRAPPING fd DIRECTLY, so the
+     * non-blocking write loop below is unchanged and the pipe is still never
+     * written to from inside WPE's serializer. */
+    GOutputStream *mem = g_memory_output_stream_new_resizable();
+    gboolean ok = wpe_clipboard_content_serialize(priv->content, mimeType, mem);
+    g_output_stream_close(mem, NULL, NULL);
+    GBytes *bytes = ok
+        ? g_memory_output_stream_steal_as_bytes(G_MEMORY_OUTPUT_STREAM(mem))
+        : NULL;
+    g_object_unref(mem);
+
     if (!bytes) {
+        /* A FORMAT WE ADVERTISED AND CANNOT PRODUCE IS A BUG, NOT A NORMAL
+         * OUTCOME. Saying so once beats another silent empty paste. */
+        g_warning("veron: clipboard cannot serialize %s -- sending nothing",
+                  mimeType ? mimeType : "(null)");
         close(fd);
         return;
     }
@@ -98,6 +137,11 @@ static void dataSourceSend(void *data, struct wl_data_source *source,
     gsize len = 0;
     const char *buf = g_bytes_get_data(bytes, &len);
 
+    /* THE READER MAY NOT HAVE STARTED YET, so a bare EAGAIN is not a reason
+     * to give up -- that turns a slow reader into a truncated paste. poll()
+     * waits for the pipe to become writable, with a bound so a reader that
+     * never reads still cannot wedge the browser. Giving up immediately was
+     * the original behaviour and it traded a hang for silent data loss. */
     g_unix_set_fd_nonblocking(fd, TRUE, NULL);
     gsize off = 0;
     while (off < len) {
@@ -108,8 +152,11 @@ static void dataSourceSend(void *data, struct wl_data_source *source,
         }
         if (n < 0 && errno == EINTR)
             continue;
-        /* EAGAIN on a non-blocking pipe means the reader is not draining.
-         * Give up rather than spin: see the comment above. */
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+            if (poll(&pfd, 1, 2000) > 0 && (pfd.revents & POLLOUT))
+                continue;
+        }
         break;
     }
 
