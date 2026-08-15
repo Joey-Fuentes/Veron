@@ -64,5 +64,12 @@ int veron_card_present(void);
  * NOT YET USED BY ANYTHING IN THIS TREE. It is declared here because the lock
  * screen and the disk unlocker must agree about what a key file means before
  * either of them ships, not afterwards. */
-int veron_keyfile_derive(const char *path, const uint8_t salt[16],
+/* THE SALT IS EIGHT BYTES BECAUSE S2K SAYS SO, NOT BECAUSE EIGHT IS ENOUGH.
+ * GCRY_KDF_ITERSALTED_S2K is OpenPGP's string-to-key, whose salt is defined
+ * as exactly 8 octets; libgcrypt rejects any other length outright with
+ * GPG_ERR_INV_VALUE rather than padding or truncating. Declared 16 here at
+ * first, which made every derivation fail -- and because the caller reported
+ * the failure as "cannot read", the error pointed at the file rather than at
+ * the call. */
+int veron_keyfile_derive(const char *path, const uint8_t salt[8],
                          uint8_t out[32]);

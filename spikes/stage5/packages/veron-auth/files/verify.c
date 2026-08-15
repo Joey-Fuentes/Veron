@@ -210,7 +210,7 @@ int veron_totp_check(const char *seedpath, const char *statepath,
 
 /* ---- key file ---------------------------------------------------------- */
 
-int veron_keyfile_derive(const char *path, const uint8_t salt[16],
+int veron_keyfile_derive(const char *path, const uint8_t salt[8],
                          uint8_t out[32])
 {
     FILE *f = fopen(path, "rb");
@@ -228,9 +228,13 @@ int veron_keyfile_derive(const char *path, const uint8_t salt[16],
      * final instead, and passing GCRY_KDF_ARGON2 here fails rather than
      * degrading. The security therefore rests on the key file being real
      * entropy: 32 or more bytes from /dev/urandom, on something you carry. */
+    /* saltlen 8, AND PASSING 16 IS WHY THIS ALWAYS FAILED. libgcrypt's S2K
+     * requires exactly 8 octets and returns GPG_ERR_INV_VALUE otherwise; the
+     * gnupg call this was modelled on (g10/card-util.c:2138) passes 8, and
+     * veron-pinentry got it right. Only this copy did not. */
     gcry_error_t e = gcry_kdf_derive(buf, n,
                                      GCRY_KDF_ITERSALTED_S2K, GCRY_MD_SHA256,
-                                     salt, 16, 1000000, 32, out);
+                                     salt, 8, 1000000, 32, out);
     explicit_bzero(buf, sizeof buf);
     return e == 0;
 }
@@ -248,7 +252,7 @@ static int keyfile_gate(const char *path)
      * different salt than the one the stored hash was made with, so the key
      * file would be silently and permanently wrong. The two decoders have to
      * agree, which is why this is not a memcpy. */
-    uint8_t salt[16];
+    uint8_t salt[8];
     memset(salt, 0, sizeof salt);
     if (!conf_get("keyfile-salt", saltcfg, sizeof saltcfg))
         return 0;

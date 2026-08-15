@@ -53,14 +53,14 @@ static int mkconfdir(char *out, size_t n)
  * difference is deliberate: the pinentry's salt must be identical everywhere
  * forever or an existing vault stops opening, while this one only has to stay
  * put on this machine, so it can be random and is. */
-static int gen_salt(uint8_t salt[16])
+static int gen_salt(uint8_t salt[8])
 {
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd < 0)
         return 0;
-    ssize_t n = read(fd, salt, 16);
+    ssize_t n = read(fd, salt, 8);
     close(fd);
-    return n == 16;
+    return n == 8;
 }
 
 static void hex(const uint8_t *in, size_t n, char *out)
@@ -215,18 +215,35 @@ int main(int argc, char **argv)
             usage();
             return 1;
         }
-        uint8_t salt[16];
+        uint8_t salt[8];
         if (!gen_salt(salt)) {
             fprintf(stderr, "veron-enroll: no entropy\n");
             return 1;
         }
-        uint8_t key[32];
-        if (!veron_keyfile_derive(argv[2], salt, key)) {
-            fprintf(stderr, "veron-enroll: cannot read %s\n", argv[2]);
+        /* THE TWO FAILURES ARE REPORTED SEPARATELY NOW, because reporting
+         * both as "cannot read" sent a real bug hunt to the wrong place: the
+         * key file was present, 64 bytes and world-readable, while the actual
+         * fault was an 8-byte salt passed as 16. An error that names the
+         * wrong cause is worse than one that says only that something
+         * failed. */
+        FILE *probe = fopen(argv[2], "rb");
+        if (!probe) {
+            fprintf(stderr, "veron-enroll: cannot open %s: %s\n",
+                    argv[2], strerror(errno));
             return 1;
         }
-        char salthex[33], keyhex[65];
-        hex(salt, 16, salthex);
+        fclose(probe);
+
+        uint8_t key[32];
+        if (!veron_keyfile_derive(argv[2], salt, key)) {
+            fprintf(stderr, "veron-enroll: %s is readable but the key "
+                            "derivation failed\n", argv[2]);
+            fprintf(stderr, "  an empty file, or a libgcrypt that rejected "
+                            "the parameters\n");
+            return 1;
+        }
+        char salthex[17], keyhex[65];
+        hex(salt, 8, salthex);
         hex(key, 32, keyhex);
         explicit_bzero(key, sizeof key);
 
