@@ -938,6 +938,24 @@ jobs:
           # its test, in the same file as its pin and its flags.
           python3 tools/veron --overlay packages-amd64 guest-tests --out sysroot/usr/bin/veron-stage5-test
 
+          # STRIP, AND STAGE 5 NEVER DID. stage4/bridge/sysroot-trim.sh strips
+          # the sysroot it publishes; stage 5 merges INTO that sysroot
+          # afterwards, so everything stage 5 builds arrives unstripped and
+          # nothing removes it. Measured on this build: git installs 65
+          # distinct executables at 10-18 MB each where a stripped git is 3-4
+          # MB, and the 52 stage-5 packages over 1 MB come to 508 MB.
+          #
+          # AFTER guest-tests, BEFORE THE IMAGE. The test binary is generated
+          # into the sysroot above, so stripping earlier would miss it; the
+          # image is built from this tree, so stripping later would miss the
+          # image entirely.
+          #
+          # IT EXITS NON-ZERO RATHER THAN REPORTING A SIZE THAT OMITS THE CUT.
+          # That is stage 4's lesson restated: a run that finds no usable strip
+          # and prints "0 MB removed" is the failure this step exists to
+          # prevent, so it fails the job instead.
+          STRIP_LOG=out/strip.txt sh tools/stage5-strip.sh sysroot
+
           # /etc/veron-release -- WHICH COMMIT BUILT THIS MACHINE.
           #
           # Nothing in a running Veron could answer that. Establishing whether
