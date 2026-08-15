@@ -52,6 +52,10 @@ clone_pinned() {
     _cp_dest="$1"
     _cp_sha="$2"
     _cp_urls="$3"
+    # Not a hardcoded /tmp: Termux (Android) has no writable /tmp, and a
+    # failed redirect stops the command it feeds from ever running -- so the
+    # hardcoded path made every clone attempt fail before git started.
+    _cp_err="${TMPDIR:-/tmp}/clone-pinned-err.txt"
 
     if [ -z "$_cp_dest" ] || [ -z "$_cp_sha" ] || [ -z "$_cp_urls" ]; then
         echo "clone_pinned: usage: clone_pinned DEST SHA \"URL [URL ...]\""
@@ -68,13 +72,13 @@ clone_pinned() {
             rm -rf "$_cp_dest"
 
             # --- shallow, by SHA ------------------------------------------
-            if git init -q "$_cp_dest" 2>/tmp/clone-pinned-err.txt \
+            if git init -q "$_cp_dest" 2>"$_cp_err" \
                && git -C "$_cp_dest" remote add origin "$_cp_url" \
-                    2>>/tmp/clone-pinned-err.txt \
+                    2>>"$_cp_err" \
                && timeout 180 git -C "$_cp_dest" fetch -q --depth 1 origin \
-                    "$_cp_sha" 2>>/tmp/clone-pinned-err.txt \
+                    "$_cp_sha" 2>>"$_cp_err" \
                && git -C "$_cp_dest" checkout -q FETCH_HEAD \
-                    2>>/tmp/clone-pinned-err.txt; then
+                    2>>"$_cp_err"; then
                 if _clone_pinned_verify "$_cp_dest" "$_cp_sha"; then
                     echo "  $_cp_url: shallow fetch of $_cp_sha, commit verified"
                     return 0
@@ -87,9 +91,9 @@ clone_pinned() {
             # --- full clone, for servers that refuse a bare SHA ------------
             rm -rf "$_cp_dest"
             if timeout 300 git clone -q "$_cp_url" "$_cp_dest" \
-                    2>>/tmp/clone-pinned-err.txt \
+                    2>>"$_cp_err" \
                && git -C "$_cp_dest" checkout -q "$_cp_sha" \
-                    2>>/tmp/clone-pinned-err.txt; then
+                    2>>"$_cp_err"; then
                 if _clone_pinned_verify "$_cp_dest" "$_cp_sha"; then
                     echo "  $_cp_url: full clone (server refused a bare SHA), commit verified"
                     return 0
@@ -107,7 +111,7 @@ clone_pinned() {
     echo "FAIL: no mirror produced $_cp_sha for $_cp_dest"
     echo "      This is a fetch problem, not a build problem. Re-run; if it"
     echo "      persists, a URL has moved and sources/*.toml needs updating."
-    [ -s /tmp/clone-pinned-err.txt ] && cat /tmp/clone-pinned-err.txt
+    [ -s "$_cp_err" ] && cat "$_cp_err"
     return 1
 }
 
