@@ -176,21 +176,9 @@ def load_recipes():
             # out of the raw bytes would make the key depend on comment placement
             # and key order -- so a reflowed comment would rebuild the world for
             # the same reason this comment block exists.
-            #   build_only    a STAGING decision, not a build input. Every
-            #                 reader of it -- merge, manifest, guest-tests --
-            #                 runs after the build; nothing on the build path
-            #                 consults it, and a build_only package is still
-            #                 built and still staged so its dependents can link
-            #                 it. Hashing it cost a full rebuild: marking 25
-            #                 tools build_only changed 25 recipe-shas, and
-            #                 because pkgconf (82 dependents), python and m4
-            #                 are build-deps of nearly everything, the key
-            #                 change cascaded -- "27 package(s) reusable, 117
-            #                 stale and discarded" for a flag that changes no
-            #                 compiled byte.
             _inputs = {k: v for k, v in r.items()
                        if k not in ("installs", "guest", "declared",
-                                    "undeclarable", "build_only", "_dir")}
+                                    "undeclarable", "_dir")}
             h = hashlib.sha256(
                 json.dumps(_inputs, sort_keys=True, default=str).encode())
             fdir = os.path.join(r["_dir"], "files")
