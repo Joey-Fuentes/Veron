@@ -288,7 +288,14 @@ do_chain() {
       -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I "$M" \
       -f tcc.c -o "$B/libtcc.M1" )
   echo "    libtcc.M1: $(wc -l < libtcc.M1) lines, $(grep -c '^:FUNCTION_' libtcc.M1) functions"
-  run ./micro-c $MCFLAGS -I "$M" \
+  # THE FULL m2libc UNIT, exactly as the spike box compiles it: ctype, the
+  # five definition headers (stddef.h is where NULL lives -- the first
+  # extraction kept only the last three files and died on exactly that),
+  # the syscall layers, stdlib, string, then stdio and bootstrappable.
+  H="-f $M/stdarg.h -f $M/sys/types.h -f $M/stddef.h -f $M/signal.h -f $M/sys/utsname.h"
+  run ./micro-c $MCFLAGS -f "$M/ctype.c" $H \
+    -f "$M/aarch64/linux/unistd.c" -f "$M/aarch64/linux/fcntl.c" \
+    -f "$M/fcntl.c" -f "$M/stdlib.c" -f "$M/string.c" \
     -f "$M/stdio.h" -f "$M/stdio.c" -f "$M/bootstrappable.c" -o m2libc.M1
   run ./micro-c $MCFLAGS -I "$L" -f "$L/impl/runtime.c"      -o runtime.M1
   run ./micro-c $MCFLAGS -f "$L/impl/setjmp-aarch64.c"       -o setjmp.M1
