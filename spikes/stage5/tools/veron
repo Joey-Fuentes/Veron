@@ -1892,7 +1892,7 @@ def cmd_collect(a):
     # record of every path in the merged system with its owner and digest.
     # It was written to out/ and collected by nothing, so the one file that
     # answers "what is actually in this image" did not survive the runner.
-    for fn in ("files.tsv", "IMAGE-SHA256"):
+    for fn in ("files.tsv", "IMAGE-SHA256", "IMAGE-SHA256-FULL"):
         p = os.path.join(a.out, fn)
         if os.path.isfile(p):
             keep(p, os.path.join(diag, "manifest", fn),
@@ -1951,7 +1951,13 @@ def cmd_collect(a):
     # the runner: the harness log was overwritten by the system boot's before
     # anything read it, and no upload step ever looked at either. The dump in
     # the step output is capped and scrolls; these are the whole thing.
+    # strip.txt AND boot-stripped.log ARE COLLECTED FOR THE SAME REASON THE
+    # BOOT LOGS ARE: they are the record of a step that can fail the run, and a
+    # failure whose evidence is only in the job log is one nobody can read
+    # after the fact. The strip step names every file it could not process;
+    # that list is the whole diagnosis when it goes wrong.
     for fn in ("boot-harness.log", "boot-system.log",
+               "boot-stripped.log", "strip.txt",
                "net-server.log", "net-client.log"):
         p = os.path.join(a.out, fn)
         if os.path.isfile(p):

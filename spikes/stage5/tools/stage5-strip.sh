@@ -129,13 +129,41 @@ if [ -z "$STRIP" ]; then
     exit 1
 fi
 
+# STRIP TO A NEW FILE AND RENAME. NEVER IN PLACE.
+#
+# THE SECOND RUN FAILED FOR EXACTLY THIS. The exclusion list kept strip from
+# stripping /usr/bin/strip and ld.so, and it still destroyed itself:
+#
+#     /usr/bin/strip: error while loading shared libraries:
+#     /usr/lib/libbfd-2.47.20260726.so: file too short
+#
+# strip links libbfd, libopcodes and libctf. Stripping libbfd truncated a file
+# the running strip had MAPPED, so the next exec of strip could not load. 674
+# files failed after that. Extending the exclusion list would only move the
+# race -- every library strip depends on, transitively, would have to be
+# listed and kept correct forever.
+#
+# Writing a new file and renaming removes the race instead of enumerating it.
+# A running process keeps its open inode; rename only swaps the directory
+# entry. So strip can rewrite its own libraries mid-walk and stay alive,
+# because it is still mapped to the inode it started with.
+#
+# THE MODE IS CARRIED OVER EXPLICITLY. strip -o creates a fresh file with
+# default permissions, so an executable stripped this way would land 0644 and
+# stop being runnable -- which the manifest records as a mode change and the
+# boot discovers as a missing program.
 do_strip() {
     f=$1
+    tmp="${f}.strip.$$"
     if [ "$STRIP" = OWN ]; then
-        $STRIP_WRAP /usr/bin/strip --strip-debug "${f#$ROOT}"
+        $STRIP_WRAP /usr/bin/strip --strip-debug -o "${tmp#$ROOT}" "${f#$ROOT}" || {
+            rm -f "$tmp"; return 1; }
     else
-        "$STRIP" --strip-debug "$f"
+        "$STRIP" --strip-debug -o "$tmp" "$f" || { rm -f "$tmp"; return 1; }
     fi
+    [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+    chmod --reference="$f" "$tmp" 2>/dev/null || chmod 0755 "$tmp"
+    mv -f "$tmp" "$f"
 }
 
 strip_available() { [ "$STRIP" = OWN ] || [ -x "$STRIP" ]; }

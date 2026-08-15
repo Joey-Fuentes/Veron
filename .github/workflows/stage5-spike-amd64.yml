@@ -2121,6 +2121,7 @@ jobs:
       # only what can still be asserted about a tree whose debug sections are
       # gone: that it boots, and that its own package tests pass.
       - name: 'Strip, rebuild the image, and re-verify it still boots'
+        id: strip
         if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
         run: |
           set -eu
@@ -2143,9 +2144,21 @@ jobs:
               -m 0 -b 4096 "$1" "${SZ}M"
             python3 ../tools/normalize-ext4.py "$1"
           }
-          # THE PUBLISHED DIGEST IS THE STRIPPED IMAGE'S. IMAGE-SHA256 was
-          # written for the unstripped build above; leaving it would publish a
-          # checksum that does not match the artifact beside it.
+          # KEEP THE FULL IMAGE. Everything above -- the guest tests, the
+          # desktop screenshot, the two-instance DHCP run -- was measured
+          # against the UNSTRIPPED tree, and that is the artifact those results
+          # describe. Rebuilding over the top of it would publish a stripped
+          # image carrying a full image's test evidence, and leave no way to
+          # debug the shipped system with symbols in hand.
+          #
+          # So both are published: rootfs-full.img is what was tested, and
+          # rootfs.img is what the strip produced and the boot below re-tests.
+          cp rootfs.img rootfs-full.img
+          sha256sum rootfs-full.img | tee IMAGE-SHA256-FULL
+
+          # THE STRIPPED IMAGE'S OWN DIGEST. IMAGE-SHA256 was written for the
+          # unstripped build; leaving it would publish a checksum that does not
+          # match the artifact beside it.
           build_img rootfs.img
           sha256sum rootfs.img | tee IMAGE-SHA256
           cp rootfs.img /tmp/img-stripped
@@ -2174,7 +2187,14 @@ jobs:
       # because this boot needs no network, the 9p mount because guest/init
       # expects it, and a COPY of the image because the boot writes to it.
       - name: 'Boot the STRIPPED image and re-run its package tests'
-        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
+        id: stripboot
+        # NOT always(). A FAILED STRIP LEAVES A PARTLY STRIPPED TREE, and
+        # booting it proves nothing about anything: the run that produced
+        # VERON-STRIP-BROKEN went on to boot the wreckage and then published
+        # it, because `always()` means "even if the previous step failed" and
+        # that is precisely what it did. steps.strip must have SUCCEEDED, not
+        # merely have run.
+        if: ${{ steps.strip.outcome == 'success' && env.PARTIAL != 'yes' }}
         timeout-minutes: 20
         run: |
           set -eu
@@ -2241,7 +2261,9 @@ jobs:
                 && steps.build.outcome == 'success'
                 && steps.boot.outcome != 'failure'
                 && steps.desktop.outcome != 'failure'
-                && steps.nettest.outcome != 'failure' }}
+                && steps.nettest.outcome != 'failure'
+                && steps.strip.outcome != 'failure'
+                && steps.stripboot.outcome != 'failure' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2277,7 +2299,17 @@ jobs:
           # image seven times larger without rethinking it, which cost about
           # thirty minutes a run for a few percent of size.
           ZSTD_CLEVEL=10 tar --zstd -cf rootfs.img.tar.zst rootfs.img
-          printf '  rootfs.img.tar.zst: %s\n' "$(du -h rootfs.img.tar.zst | cut -f1)"
+          printf '  rootfs.img.tar.zst (stripped): %s\n' "$(du -h rootfs.img.tar.zst | cut -f1)"
+          # THE FULL IMAGE TOO, WHEN THE STRIP RAN. A run where stripping was
+          # skipped or failed has no rootfs-full.img, and publishing a missing
+          # file would fail the step for a reason unrelated to the image.
+          if [ -e rootfs-full.img ]; then
+            ZSTD_CLEVEL=10 tar --zstd -cf rootfs-full.img.tar.zst rootfs-full.img
+            printf '  rootfs-full.img.tar.zst (unstripped): %s\n' \
+              "$(du -h rootfs-full.img.tar.zst | cut -f1)"
+            printf '  the stripped image is what a device runs; the full one\n'
+            printf '  carries symbols and is what the tests above measured.\n'
+          fi
           asset=$(stat -c%s rootfs.img.tar.zst)
           if [ "$asset" -lt 2000000000 ]; then
             # stage5/latest-amd64, ITS OWN TAG, FOR THE REASON stage 4's
@@ -2312,6 +2344,13 @@ jobs:
               sed 's/^/    /' ADOPTED-CHECKPOINT
             fi
             assets="rootfs.img.tar.zst IMAGE-SHA256"
+            # THE FULL IMAGE IS OPTIONAL AND APPENDED THE SAME WAY
+            # ADOPTED-CHECKPOINT IS. A run where the strip was skipped has no
+            # rootfs-full.img.tar.zst, and naming a file that does not exist
+            # makes `gh release upload` fail the whole publish -- losing the
+            # image over a missing extra.
+            [ -f rootfs-full.img.tar.zst ] && \
+              assets="$assets rootfs-full.img.tar.zst IMAGE-SHA256-FULL"
             [ -f ADOPTED-CHECKPOINT ] && assets="$assets ADOPTED-CHECKPOINT"
             for f in "$R/boot/Image" files.tsv initramfs.cpio.gz; do
               [ "$f" = "${f#$R/}" ] || cp "$f" .
@@ -2326,7 +2365,7 @@ jobs:
           else
             echo "  too large to publish: $((asset/1048576)) MB, cap is 2 GB"
           fi
-          rm -f rootfs.img.tar.zst
+          rm -f rootfs.img.tar.zst rootfs-full.img.tar.zst
 
       - name: 'VERON-COLLECT -- preserve the evidence'
         if: always()
