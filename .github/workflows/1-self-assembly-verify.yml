@@ -31,6 +31,8 @@ on:
 
 permissions:
   contents: read
+  id-token: write        # attestation: Fulcio binds the workflow identity
+  attestations: write    # attestation: publish to the GH attestations API
 
 env:
   BINUTILS_VER: '2.47'
@@ -61,6 +63,32 @@ jobs:
 
       - name: 'GATE 2: pinned two-decoder round-trip -- source matches binary'
         run: ./stages/1-self-assembly/roundtrip.sh
+
+      # EXTERNAL VERIFICATION LAYER. After BOTH gates pass, attest the
+      # committed trust-root binaries: a Sigstore keyless signature, logged
+      # in Rekor, binding these exact digests to this repo, this commit and
+      # THIS workflow -- the same workflow that just re-derived them through
+      # the self-host ladder and round-tripped them under two pinned
+      # decoders. A stranger runs:
+      #
+      #   gh attestation verify stages/1-self-assembly/self-assembler-arm64 \
+      #     --repo <owner>/Veron
+      #
+      # WHAT IT PROVES: provenance -- these bytes, this workflow, this
+      # commit, at a log-operator-attested time. WHAT IT DOES NOT PROVE:
+      # correctness or how the build happened -- that is the ledger's job
+      # (substages.toml), which the named commit contains. The attestation
+      # INHERITS the hermetic story by pointing at it, never replaces it.
+      # On-device offline verification remains the C tracer + ledger,
+      # dependency-free by design.
+      - name: 'ATTEST: bind the verified trust root to this workflow identity'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            stages/1-self-assembly/self-assembler-arm64
+            stages/1-self-assembly/elf-wrapper-arm64
+            stages/1-self-assembly/substages.toml
 
       - name: 'PINS.sha256 must be committed after the first green run'
         run: |

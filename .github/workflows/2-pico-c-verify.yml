@@ -1,0 +1,46 @@
+name: 2-pico-c-verify
+# Stage 2's gate: rebuild pico-c-assembler and pico-c through the COMMITTED
+# Stage 1 pair and require the hashes recorded in substages.toml -- plus the
+# canon fixpoint canary and the renamed error prefixes. One script, both
+# homes; this workflow is its caller.
+#
+# Triggers on stages/1-self-assembly/** too, deliberately: stage 2's records
+# pin Stage 1's builder hashes, so a Stage 1 re-baseline must turn this gate
+# red until stage 2's records are regenerated -- that staleness is the
+# design working, not a flake.
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'stages/2-pico-c/**'
+      - 'stages/1-self-assembly/self-assembler-arm64'
+      - 'stages/1-self-assembly/elf-wrapper-arm64'
+      - '.github/workflows/2-pico-c-verify.yml'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+jobs:
+  verify:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3
+      - name: 'GATE: rebuild via Stage 1, match the records, run the canary'
+        run: ./stages/2-pico-c/verify.sh
+
+      # Attest the record file AND the artifacts this run just rebuilt to the
+      # recorded hashes -- so `gh attestation verify` on out/2 artifacts (or
+      # on substages.toml itself) names this repo, commit and gate. Same
+      # honesty split as stage 1: provenance here, mechanics in the ledger.
+      - name: 'ATTEST: bind the verified stage-2 outputs to this workflow'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            stages/2-pico-c/substages.toml
+            out/2/aarch64/pico-c-assembler
+            out/2/aarch64/pico-c
