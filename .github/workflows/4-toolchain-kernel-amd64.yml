@@ -426,8 +426,16 @@ jobs:
           fetch() {   # $1 = newline-separated mirror list, $2 = path under each
             _out=$(basename "$2")
             if [ -s "$_out" ]; then
-              printf '  cached  %-30s %10s bytes\n' "$_out" "$(wc -c < "$_out")"
-              return 0
+              # CACHED IS NOT EXEMPT. The actions cache restored this file
+              # from an earlier run; a stale or poisoned cache is exactly
+              # what verification exists to catch. A mismatch deletes the
+              # file and falls through to a fresh, verified download.
+              if sh "$VERIFY" "$_out"; then
+                printf '  cached  %-30s %10s bytes\n' "$_out" "$(wc -c < "$_out")"
+                return 0
+              fi
+              echo "  cached copy of $_out FAILED verification -- refetching"
+              rm -f "$_out"
             fi
             for _m in "$SRCREL/src/$_out" $1; do
               case "$_m" in "$SRCREL"*) _path="$_out";; *) _path="$2";; esac
@@ -464,6 +472,11 @@ jobs:
           fetch "$GNU_MIRRORS"  "m4/m4-$M4_BOOT_VER.tar.gz"
           fetch "$GNU_MIRRORS"  "bison/bison-$BISON_VER.tar.xz"
 
+          # a legacy hash-prefixed pkgconf may sit in the restored cache from
+          # the hand-made release URL era; remove it so in-box globs match
+          # exactly one pkgconf tarball
+          rm -f 3acd3a8a-pkgconf-*.tar.xz
+
           # The kernel and the two glibc patches are not on a GNU mirror.
           for u in "https://www.cpan.org/src/5.0/perl-$PERL_VER.tar.xz" \
                    "https://github.com/gavinhoward/bc/releases/download/$BC_VER/bc-$BC_VER.tar.xz" \
@@ -473,14 +486,22 @@ jobs:
                    "https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz" \
                    "https://github.com/madler/zlib/releases/download/v$ZLIB_VER/zlib-$ZLIB_VER.tar.gz" \
                    "https://sourceware.org/elfutils/ftp/$ELFUTILS_VER/elfutils-$ELFUTILS_VER.tar.bz2" \
-                   "https://github.com/Joey-Fuentes/Veron/releases/download/src%2Fpkgconf-$PKGCONF_VER.tar.xz/3acd3a8a-pkgconf-$PKGCONF_VER.tar.xz" \
+                   "https://github.com/Joey-Fuentes/Veron/releases/download/src/pkgconf-$PKGCONF_VER.tar.xz/pkgconf-$PKGCONF_VER.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KHDR%%.*}.x/linux-$KHDR.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz" \
                    "https://www.linuxfromscratch.org/patches/lfs/development/glibc-fhs-1.patch"; do
             b=$(basename "$u")
             if [ -s "$b" ]; then
-              printf '  cached  %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
-              continue
+              case "$b" in
+                *.tar.*) if sh "$VERIFY" "$b"; then
+                           printf '  cached  %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
+                           continue
+                         fi
+                         echo "  cached copy of $b FAILED verification -- refetching"
+                         rm -f "$b" ;;   # fall through to the fetch below
+                *)       printf '  cached  %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
+                         continue ;;
+              esac
             fi
             # our own mirror first; fall through to upstream on any miss
             if curl -fsSL --connect-timeout 15 --max-time 900 --retry 2 \
