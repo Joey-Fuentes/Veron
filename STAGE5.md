@@ -609,10 +609,15 @@ deletes the partition they boot from.
   # --- 2. write the root -------------------------------------------------
   sudo dd if="$DL/rootfs.img" of="$ROOT" bs=4M status=progress conv=fsync
 
-  # --- 3. modules + firmware INTO THE ROOT (the generic kernel's way) ----
-  # The generic kernel's amdgpu/rtw89 are MODULES: they load after the root
-  # is up, from /lib/firmware ON THE ROOT, and FW_LOADER_COMPRESS_ZSTD
-  # reads the .zst verbatim -- no decompression dance.
+  # --- 3. modules + THE WHOLE FIRMWARE TREE into the root ----------------
+  # FIRMWARE IS DATA RIDING BESIDE THE IMAGE, exactly as the kernel does:
+  # the image stays byte-identical and firmware installs at flash time from
+  # the PINNED mirror (sources/firmware.toml; mirrored to src/* releases).
+  # The WHOLE tree, not this laptop's two families -- "any laptop" means
+  # every wifi chip, GPU, sound DSP and bluetooth radio in linux-firmware,
+  # zstd-compressed on disk, read verbatim by FW_LOADER_COMPRESS_ZSTD. The
+  # hotplug coldplug replay then loads whatever drivers THIS machine's
+  # devices fingerprint, and the firmware for them is simply there.
   # --keep-directory-symlink IS LOAD-BEARING: the image's /lib is a SYMLINK
   # into usr/lib, and without the flag GNU tar replaces it with a real
   # directory, the ELF interpreter path vanishes, and every dynamic binary
@@ -622,12 +627,31 @@ deletes the partition they boot from.
   sudo mount "$ROOT" /mnt/veron
   sudo tar --zstd --keep-directory-symlink \
        -xf "$DL/modules-7.1.5-generic.tar.zst" -C /mnt/veron
-  sudo mkdir -p /mnt/veron/lib/firmware/amdgpu /mnt/veron/lib/firmware/rtw89
-  sudo cp /lib/firmware/amdgpu/renoir_*.bin.zst /mnt/veron/lib/firmware/amdgpu/
-  sudo cp /lib/firmware/rtw89/rtw8852a_fw.bin.zst /mnt/veron/lib/firmware/rtw89/
-  sudo cp /lib/firmware/regulatory.db /lib/firmware/regulatory.db.p7s \
+
+  FW=linux-firmware-20260810
+  RD=wireless-regdb-2026.05.30
+  gh release download "src/$FW.tar.xz" -R Joey-Fuentes/Veron --clobber \
+    -p "$FW.tar.xz" || curl -fsSLO \
+    "https://www.kernel.org/pub/linux/kernel/firmware/$FW.tar.xz"
+  gh release download "src/$RD.tar.xz" -R Joey-Fuentes/Veron --clobber \
+    -p "$RD.tar.xz" || curl -fsSLO \
+    "https://www.kernel.org/pub/software/network/wireless-regdb/$RD.tar.xz"
+  # the pins, verbatim from sources/firmware.toml -- verify BEFORE the disk
+  printf '%s\n' \
+    "ac17c34fe73756926a961fbafadf8d8f07a3bd2dd2f4ea31a0fb5d50c714a49a  $FW.tar.xz" \
+    "8a27bfc081bafed8c24dd70fab0d96f098e5a0bfcd08d3da672595f225ab8993  $RD.tar.xz" \
+    | sha256sum -c -
+  rm -rf /tmp/fw && mkdir -p /tmp/fw
+  tar -xf "$FW.tar.xz" -C /tmp/fw --strip-components=1
+  # the tree's own installer: dedup + zstd, WHENCE-faithful layout
+  # (needs: make zstd rdfind -- `sudo apt install rdfind` once if absent)
+  ( cd /tmp/fw && sudo make install-zst DESTDIR=/mnt/veron )
+  tar -xf "$RD.tar.xz" -C /tmp/fw --strip-components=1 \
+      "$RD/regulatory.db" "$RD/regulatory.db.p7s"
+  sudo cp /tmp/fw/regulatory.db /tmp/fw/regulatory.db.p7s \
        /mnt/veron/lib/firmware/
-  echo "  modules: $(sudo find /mnt/veron/lib/modules -name '*.ko' | wc -l)"
+  echo "  modules:  $(sudo find /mnt/veron/lib/modules -name '*.ko' | wc -l)"
+  echo "  firmware: $(sudo find /mnt/veron/lib/firmware -type f | wc -l) files"
 
   # --- 3b. the FALLBACK kernel pair, rebuilt every flash -----------------
   # dd wiped Image and initramfs-fw off p5; an old GRUB entry pointing at
@@ -637,11 +661,12 @@ deletes the partition they boot from.
   # so ITS firmware still rides decompressed in ITS initramfs:
   sudo rm -rf /tmp/ir && mkdir -p /tmp/ir && cd /tmp/ir
   zcat "$DL/initramfs.cpio.gz" | sudo cpio -idm
+  # blobs from the tree JUST INSTALLED on p5 -- the flash host needs none
   sudo mkdir -p lib/firmware/amdgpu lib/firmware/rtw89
-  for f in /lib/firmware/amdgpu/renoir_*.bin.zst; do
+  for f in /mnt/veron/lib/firmware/amdgpu/renoir_*.bin.zst; do
     zstd -d -f -c "$f" | sudo tee "lib/firmware/amdgpu/$(basename "${f%.zst}")" >/dev/null
   done
-  zstd -d -f -c /lib/firmware/rtw89/rtw8852a_fw.bin.zst \
+  zstd -d -f -c /mnt/veron/lib/firmware/rtw89/rtw8852a_fw.bin.zst \
     | sudo tee lib/firmware/rtw89/rtw8852a_fw.bin >/dev/null
   sudo sh -c 'find . | cpio -o -H newc' | gzip > "$DL/initramfs-fw.cpio.gz"
   echo "  amdgpu blobs: $(sudo ls lib/firmware/amdgpu | wc -l)  (expect ~12)"

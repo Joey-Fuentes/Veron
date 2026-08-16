@@ -1,5 +1,9 @@
 #!/bin/busybox sh
-# Start hotplug handling: the kernel uevent helper, or a loud nothing.
+# Start hotplug handling: register the kernel uevent helper, replay
+# coldplug, and EXIT -- "started" now MEANS "every device present at boot
+# has been announced and its module load attempted", which is what lets
+# device-nodes and labwc genuinely depend on this service (dinit gates on
+# a scripted service's exit, not on a process merely existing).
 #
 # THE MDEV DAEMON ROAD IS GONE, AND CI'S BOOT LOG IS WHY. The seed busybox
 # turned out to have daemon mode, this script preferred it, and busybox
@@ -8,25 +12,39 @@
 # until `getty: can't open '/dev/null': Permission denied` was printing
 # between service starts and both consoles rate-limited to death. Making
 # mdev safe would mean whitelisting the world in mdev.conf; the handler
-# below only needs four subsystems and leaves everything else exactly as
-# devtmpfs made it. Surgical beats general here.
+# only needs modalias autoload plus four subsystems' permissions, and
+# leaves everything else exactly as devtmpfs made it.
 #
-# The kernel uevent-helper road execs scripts/hotplug-handler per event --
-# input/hidraw/drm permissions, media mount on insertion, unmount on
-# removal -- and touches nothing else. If CONFIG_UEVENT_HELPER is absent
-# from this kernel, that is stated plainly and the service stays green:
-# a loud absence instead of a crash loop, and the m131 enter-kick remains
-# the mount path meanwhile.
+# THE COLDPLUG REPLAY IS THE HALF THAT MAKES IT AUTOMATIC. The handler
+# only sees events that fire AFTER it is registered; everything the kernel
+# discovered before this service ran -- which on a laptop is everything --
+# would stay silent. Writing `add` to every uevent node re-announces the
+# lot: each replayed event carries its MODALIAS, the handler modprobes it,
+# and amdgpu/wifi/sound/webcam load with no human and no per-machine list.
+# This is the mechanism the roadmap promised four times as "mdev is the
+# answer"; the answer turned out to be forty lines and no mdev.
+#
+# Machine #1's proof, 2026-08-16: booted with a dead touchpad and mouse,
+# no runtime root to modprobe them alive -- the exact hole this fills.
 H=/etc/dinit.d/scripts/hotplug-handler
 
 if [ -w /proc/sys/kernel/hotplug ]; then
     echo "hotplug: kernel uevent helper -> $H"
     echo "$H" > /proc/sys/kernel/hotplug
-    trap 'echo "" > /proc/sys/kernel/hotplug 2>/dev/null; exit 0' TERM INT
-    while :; do /bin/busybox sleep 3600 & wait $!; done
+
+    n=0
+    for u in $(/bin/busybox find /sys/devices -name uevent -type f 2>/dev/null); do
+        echo add > "$u" 2>/dev/null && n=$((n+1))
+    done
+    echo "hotplug: coldplug replay complete ($n uevents re-announced)"
+    exit 0
 fi
 
+# A LOUD ABSENCE, AND STILL exit 0: a kernel without CONFIG_UEVENT_HELPER
+# gets the plain statement below, and the service still counts as started
+# -- labwc and device-nodes must not deadlock on a mechanism this kernel
+# does not have. Degraded is stated; blocked is not an option.
 echo "VERON-HOTPLUG-NONE  /proc/sys/kernel/hotplug is not writable"
-echo "  hotplugged devices keep devtmpfs defaults; insertion will not"
-echo "  auto-mount. The enter-kick (m131) remains the mount path."
-while :; do /bin/busybox sleep 86400 & wait $!; done
+echo "  boot-time devices keep devtmpfs defaults; modules will not"
+echo "  autoload; insertion will not auto-mount."
+exit 0

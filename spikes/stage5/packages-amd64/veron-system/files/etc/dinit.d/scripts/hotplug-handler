@@ -11,6 +11,26 @@
 # media mount kicked on insertion so plugging the key stick in IS the
 # mount -- the missing half of the lock-screen recovery flow.
 [ -n "${ACTION:-}" ] || exit 0
+
+# THE UNIVERSAL AUTOLOAD, AND IT IS ONE LINE. Every device uevent carries
+# MODALIAS -- a fingerprint like pci:v00001002d00001636... -- and every
+# module's alias table is exactly the set of fingerprints it drives, so
+# `modprobe $MODALIAS` resolves the right driver WITHOUT ANYONE NAMING IT.
+# Nobody has to know a Realtek 8852 wants rtw89_8852ae; the PCI ID is the
+# lookup key. This is how amdgpu, wifi, sound, webcam, and whatever a
+# stranger's laptop contains all load themselves, on any machine.
+#
+# -q BECAUSE MOST EVENTS MATCH NOTHING: partitions, LEDs, hci sockets --
+# modprobe returns fast and quietly when no alias matches, and quietly
+# again (0) when the module is already in. In an environment with no
+# /lib/modules at all -- the CI guest boots the image with none -- every
+# call is a fast no-op, which is the correct meaning of "nothing to load".
+# NO BACKGROUNDING: the kernel forks one helper per event and coldplug
+# replays thousands; a foreground -q keeps that a queue, not a fork bomb.
+if [ "$ACTION" = add ] && [ -n "${MODALIAS:-}" ]; then
+    /bin/busybox modprobe -q "$MODALIAS" 2>/dev/null
+fi
+
 DEV="${MDEV:-${DEVNAME:-}}"
 DEV="${DEV##*/}"
 [ -n "$DEV" ] || exit 0

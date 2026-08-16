@@ -1,1 +1,97 @@
-../labwc
+# The compositor.
+#
+# IT RUNS BESIDE THE CONSOLE, NOT INSTEAD OF IT, AND THAT IS THE IMPORTANT
+# DECISION. STAGE5.md describes `exec labwc` from /etc/profile, which would
+# replace the login shell -- and a compositor that exits then leaves a machine
+# with no shell at all. This one WILL exit, repeatedly, while it is being
+# brought up: no DRM device, no seat, a broken rc.xml. The serial console has
+# to stay the thing that always works, so labwc is its own service and the
+# getty keeps running.
+#
+# restart = true, AND THE ARGUMENT THAT SAID false IS WORTH KEEPING IN VIEW.
+# It read: "dinit would otherwise respawn a compositor that cannot start, once
+# per second, filling the console with the same error and hiding the boot. One
+# attempt, one message, and `dinitctl start labwc` to try again after fixing
+# something."
+#
+# THAT REASONING ASSUMED A PERSON WHO CAN REACH dinitctl, and the assumption
+# broke on hardware. Killing labwc to recover from a wedged lock screen left
+# `[STOPPD] labwc` and a blank tty1; `dinitctl start labwc` then failed
+# because dinitctl defaults to the USER socket, which this system does not
+# have. Two documented mechanisms, neither of which worked, and no desktop.
+#
+# THE CRASH-LOOP FEAR IS HANDLED WITHOUT A SETTING. dinit(8) describes
+# "automatic rate-limited restart of failing processes" as built in, so a
+# compositor that cannot start is retried at a bounded rate rather than once
+# per second. Nothing here configures that, and an earlier attempt to
+# configure it invented two setting names dinit does not have --
+# restart-limit-count and restart-limit-interval -- which made the service
+# description fail to load and took the whole boot with it.
+#
+# WHAT IT DEPENDS ON, and each is a real failure this ordering prevents:
+#   seatd         no session, no DRM device
+#   xdg-runtime   labwc exits at src/main.c:242 if XDG_RUNTIME_DIR is unset
+#   early-filesystems  /run must be a tmpfs before either of the above
+#   hotplug       amdgpu loads at coldplug; its native probe EVICTS
+#                 simpledrm, so after hotplug there is exactly one card
+#                 and it is the right one. Start before it and the
+#                 compositor binds the firmware framebuffer -- and
+#                 libudev-zero means it never learns a real GPU arrived.
+#
+# THE ENVIRONMENT IS SET HERE AND NOT INHERITED. dinit does not source
+# /etc/profile -- that is a login shell's job -- so a service started at boot
+# gets PID 1's environment, which has neither XDG_RUNTIME_DIR nor a usable
+# PATH. The wrapper script sets both.
+#
+# IN boot.d NOW, AND THE NOTE THAT SAID OTHERWISE IS WORTH KEEPING IN VIEW.
+# It read: "Adding the symlink would start a compositor on every boot,
+# including the harness boots that exist to run package tests, and a failure
+# there would look like a broken system rather than a machine with no display.
+# Start it with `dinitctl start labwc`, or add the symlink once the session is
+# known to work."
+#
+# BOTH OF ITS CONDITIONS ARE NOW MET. A harness boot never reaches dinit at
+# all -- guest/init runs the suite under the default `veron.boot=test` and
+# powers off, and only `veron.boot=system` switch_roots -- so nothing here can
+# be reached by a package test. And the session is known to work: it has been
+# started by hand on a laptop, repeatedly, since.
+#
+# THE FALLBACK IS WHAT MAKES IT SAFE, and it is the paragraph above rather
+# than anything added here: a console service that runs independently means a
+# compositor which cannot start still leaves a shell. That was true when this
+# service did not restart and it is true now -- restarting changes how long
+# the desktop stays gone, not whether there is a way in.
+# run-as = veron IS THE WHOLE POINT OF THIS SERVICE FILE NOW.
+#
+# The compositor, the bar, the terminal and the browser are all children of
+# this process, so this one word is what moves the entire desktop off uid 0. A
+# WebKit bug stops being a whole-machine compromise and becomes one
+# unprivileged account -- on a system where the browser is by far the largest
+# piece of attack surface.
+#
+# IT WORKS BECAUSE OF seatd AND NOT IN SPITE OF IT. wlroots needs the DRM
+# device and the evdev nodes, and a normal user can open neither; seatd runs
+# as root, opens them, and passes the descriptors over /run/seatd.sock. Group
+# `video` is what admits us to that socket -- see etc/dinit.d/seatd, which
+# runs `seatd -g video`.
+#
+# THE CONSOLE STAYS ROOT ON PURPOSE. etc/dinit.d/console is a separate service
+# and is untouched: if the desktop cannot start, or the user account is
+# misconfigured, there must still be a way in. That is the same reasoning that
+# made labwc a service beside the console rather than a replacement for it.
+type = process
+command = /bin/busybox sh /etc/dinit.d/scripts/labwc-session
+run-as = veron
+restart = true
+
+# logfile SO A FAILURE SAYS WHY. labwc terminated with exit code 1 on the boot
+# of run 85938164747 and started fine from dinitctl a moment later; the console
+# carried dinit's report of the exit but not a word from labwc itself, because
+# its stderr went into the same serial stream as everything else and did not
+# survive. With this the reason lands in a file the desktop test can read back.
+logfile = /run/labwc.log
+depends-on = seatd
+depends-on = xdg-runtime
+depends-on = early-filesystems
+depends-on = device-nodes
+depends-on = hotplug

@@ -1,1 +1,33 @@
-../hotplug
+# Hotplug handling -- the mdev integration four documents promised,
+# finished: modalias autoload, coldplug replay, permissions, media kick.
+#
+# scripts/hotplug-start registers scripts/hotplug-handler as the kernel
+# uevent helper and REPLAYS COLDPLUG -- every device present at boot is
+# re-announced, the handler modprobes each MODALIAS, and the drivers this
+# machine needs load themselves with no per-machine list anywhere. The
+# handler then serves everything that arrives later: autoload, node
+# permissions for input/hidraw/drm, block insertion -> media mount.
+#
+# type = scripted, AND THAT IS THE ORDERING MECHANISM: dinit marks a
+# scripted service started when its command EXITS, so "hotplug started"
+# means "replay done, module loads attempted" -- which is what lets
+# device-nodes (regroups nodes those modules create) and labwc (must meet
+# amdgpu before choosing a card; native probe evicts simpledrm, and
+# libudev-zero cannot deliver a GPU that arrives later) depend on it and
+# mean it. stop-command deregisters the helper; no sleep-loop vigil.
+#
+# On a kernel without CONFIG_UEVENT_HELPER the starter states the absence
+# and exits 0 -- degraded, stated, never a deadlock.
+type = scripted
+command = /bin/busybox sh /etc/dinit.d/scripts/hotplug-start
+stop-command = /bin/busybox sh /etc/dinit.d/scripts/hotplug-stop
+restart = false
+depends-on = early-filesystems
+# STRAIGHT TO THE SERIAL CONSOLE, BECAUSE A FILE NEEDS A READER AND THE
+# READER IS DEAD. These services die silently at boot in the CI guest; the
+# /run logfile captured their words and the tmpfs discarded them, and the
+# fixture that was added to cat the file typed into a console that had
+# already rate-limited to death -- qemu echoed the keystrokes back and
+# nothing executed them. /dev/console needs no shell: the dying process
+# speaks directly into the boot log the harness already captures.
+logfile = /dev/console

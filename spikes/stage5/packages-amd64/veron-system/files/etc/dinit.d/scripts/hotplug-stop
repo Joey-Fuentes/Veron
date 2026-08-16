@@ -1,0 +1,6 @@
+#!/bin/busybox sh
+# Deregister the uevent helper. The starter used to hold this in a trap
+# inside a sleep-forever loop, existing only so dinit had a process to
+# stop; scripted + stop-command says the same thing without the vigil.
+echo "" > /proc/sys/kernel/hotplug 2>/dev/null
+exit 0

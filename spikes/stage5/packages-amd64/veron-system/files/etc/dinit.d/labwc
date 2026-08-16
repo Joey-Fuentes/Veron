@@ -32,6 +32,11 @@
 #   seatd         no session, no DRM device
 #   xdg-runtime   labwc exits at src/main.c:242 if XDG_RUNTIME_DIR is unset
 #   early-filesystems  /run must be a tmpfs before either of the above
+#   hotplug       amdgpu loads at coldplug; its native probe EVICTS
+#                 simpledrm, so after hotplug there is exactly one card
+#                 and it is the right one. Start before it and the
+#                 compositor binds the firmware framebuffer -- and
+#                 libudev-zero means it never learns a real GPU arrived.
 #
 # THE ENVIRONMENT IS SET HERE AND NOT INHERITED. dinit does not source
 # /etc/profile -- that is a login shell's job -- so a service started at boot
@@ -89,3 +94,4 @@ depends-on = seatd
 depends-on = xdg-runtime
 depends-on = early-filesystems
 depends-on = device-nodes
+depends-on = hotplug
