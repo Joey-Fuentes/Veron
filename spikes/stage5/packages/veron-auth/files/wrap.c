@@ -44,12 +44,18 @@
 
 const char *veron_home(void)
 {
-    const char *h = getenv("HOME");
-    if (h && *h)
-        return h;
+    /* PASSWD FIRST, ENVIRONMENT SECOND -- the same inversion as verify.c's
+     * home_dir, for the same measured reason: the console inherits
+     * HOME=/root from init, and a set-but-wrong HOME defeated the fallback
+     * entirely. Two copies of this lookup is already one too many; two
+     * copies that DISAGREE would be the drift the config-reader comment
+     * warns about, so change both or neither. */
     struct passwd *pw = getpwuid(getuid());
     if (pw && pw->pw_dir && *pw->pw_dir)
         return pw->pw_dir;
+    const char *h = getenv("HOME");
+    if (h && *h)
+        return h;
     return NULL;
 }
 
@@ -279,16 +285,26 @@ int veron_master_from_keyfile(const char *keyfile, const char *wrappath,
                               uint8_t master[MASTER_LEN])
 {
     uint8_t salt[16], key[32];
-    if (!veron_wrap_salt(wrappath, salt))
+    if (!veron_wrap_salt(wrappath, salt)) {
+        fprintf(stderr, "veron-verify:   wrap %s: missing or malformed\n",
+                wrappath);
         return 0;
+    }
     /* THE FIRST 8 BYTES, BECAUSE S2K TAKES EXACTLY EIGHT. libgcrypt rejects
      * any other length with GPG_ERR_INV_VALUE (cipher/kdf.c) -- passing 16
      * made every derivation fail silently, and the error was reported as a
      * missing file. Sixteen are stored so the salt is not shortened if the
      * KDF is ever changed to one that takes more. */
-    if (!veron_keyfile_derive(keyfile, salt, key))
+    if (!veron_keyfile_derive(keyfile, salt, key)) {
+        fprintf(stderr, "veron-verify:   keyfile %s: unreadable, or the "
+                "key derivation itself failed (libgcrypt)\n", keyfile);
         return 0;
+    }
     int ok = wrap_read(wrappath, key, master, NULL);
+    if (!ok)
+        fprintf(stderr, "veron-verify:   wrap %s: authentication failed -- "
+                "this key file is not the one that made this wrap\n",
+                wrappath);
     explicit_bzero(key, sizeof key);
     return ok;
 }

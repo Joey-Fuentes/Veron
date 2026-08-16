@@ -4,13 +4,16 @@
 # killing labwc left it running, restarting labwc started another, and the
 # pkill meant to clean up raced the old session's teardown -- two yambars
 # on one output, verified on hardware, with the pkill verifiably present in
-# the image. `depends-on = labwc` gives the lifetime an owner: stopping the
-# compositor stops the bar by construction.
+# the image. `depends-on = labwc` gives the lifetime an owner -- measured on
+# hardware as dinit REFUSING `dinitctl stop labwc` while this runs, naming
+# this service and pointing at --force. Stop-the-desktop is therefore
+# `dinitctl stop labwc --force`, which takes the dependents down with it;
+# nothing stops implicitly, and after a compositor CRASH nothing is left
+# for a kill to chase, because a dependent cannot outlive its dependency.
 #
 # THE OLD AUTOSTART ENTRY'S TWO JOBS ARE KEPT, JUST RELOCATED:
-#   the while-loop      -> restart = true (the bar exits on a VT switch and
-#                          does not reconnect; dinit's rate-limited restart
-#                          replaces the loop AND its sleep-1 brake)
+#   the while-loop      -> restart = true (see the measured VT-switch note
+#                          below for what it does and does not cover)
 #   the session env     -> scripts/wayland-app, which also waits for the
 #                          compositor's socket, because dinit says "started"
 #                          the moment labwc is running and the socket comes
@@ -24,12 +27,16 @@
 # and that message going nowhere is how a broken config looks like a bar
 # that simply is not there.
 #
-# ONE ASYMMETRY, STATED PLAINLY: `dinitctl stop labwc` stops this too, but a
-# later `dinitctl start labwc` does not restart it -- dinit starts
-# dependencies, not dependents. After a manual stop/start of the
-# compositor: `dinitctl start yambar`. A labwc CRASH is unaffected -- the
-# service restarts in place, the bar loses its socket and exits, and its
-# own restart brings it back through the socket wait.
+# TWO MEASURED LIMITS, STATED PLAINLY. First: after a manual
+# stop/start of the compositor, `dinitctl start labwc` does not restart this
+# -- dinit starts dependencies, not dependents -- so start it by hand too.
+# Second, THE VT SWITCH: the old autostart comment claimed yambar exits on a
+# VT switch and does not reconnect. Measured on hardware, it does not exit
+# either -- the boot-era process survives with its bar surface gone and
+# never recreates it when the output returns, so `restart = true` has
+# nothing to act on. `dinitctl restart yambar` brings the bar back in a
+# second; why yambar ignores the output re-add is an upstream question,
+# recorded rather than guessed at.
 type = process
 command = /bin/busybox sh /etc/dinit.d/scripts/wayland-app /usr/bin/yambar -c /etc/xdg/yambar/config.yml
 run-as = veron

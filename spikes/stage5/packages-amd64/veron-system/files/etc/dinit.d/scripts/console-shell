@@ -26,5 +26,18 @@
 # extension is the sort of thing that works until the shell is swapped. A
 # script that sources the file itself needs no argv[0] trick and works under
 # any POSIX shell.
+# THE HOME INIT HANDS DOWN IS ROOT'S, AND IT REACHED THE VERIFIER. This
+# shell inherits PID 1's environment, which carries HOME=/root -- set,
+# non-empty, and wrong for the veron user this getty runs as. Measured on
+# hardware: `veron-enroll check` here printed `confdir: /root/.config/veron`
+# beside `getpwuid(1000): /home/veron` and refused every factor, while the
+# same binary passed the moment HOME was overridden. The verifier now asks
+# the passwd entry first and cannot be misled -- but every OTHER program a
+# person runs from this console reads HOME the ordinary way, so the value
+# is corrected at the door rather than left for each of them to survive.
+# From /etc/passwd, the same place getpwuid answers from, with busybox awk.
+HOME=$(awk -F: -v u="$(id -u)" '$3==u{print $6}' /etc/passwd)
+[ -n "$HOME" ] && export HOME || export HOME=/home/veron
+
 [ -r /etc/profile ] && . /etc/profile
 exec /bin/busybox sh -i

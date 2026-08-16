@@ -56,6 +56,14 @@ mkdir -p "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" 2>/dev/null || :
 # inherits whatever the service had -- naming it makes the socket a decision.
 export XDG_SESSION_TYPE=wayland
 
+# THE SYSTEM dinit SOCKET, FOR EVERY TERMINAL THE DESKTOP OPENS. /etc/profile
+# exports this too -- for LOGIN shells, which a foot window launched from the
+# session is not. Measured on hardware: a fresh desktop terminal's bare
+# `dinitctl status` failed looking for /run/user/1000/dinitctl, the same
+# mistake-shape as getty and HOME. Everything in the session inherits this
+# process's environment, so the export belongs here beside the rest of it.
+export DINIT_SOCKET_PATH=${DINIT_SOCKET_PATH:-/run/dinitctl}
+
 # FLTK_SCHEME, FOR THE FLTK PROGRAM THIS PROJECT DOES NOT OWN.
 #
 # veron-about and veron-filechooser call veron_fltk_style() and set their own

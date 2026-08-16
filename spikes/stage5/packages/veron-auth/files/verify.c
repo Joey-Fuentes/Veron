@@ -14,31 +14,33 @@
 
 /* ---- configuration ---------------------------------------------------- */
 
-/* THE HOME DIRECTORY IS LOOKED UP, NOT READ FROM THE ENVIRONMENT, AND THIS IS
- * WHY CONSOLE LOGIN REFUSED EVERY ATTEMPT.
+/* THE PASSWD ENTRY FIRST, THE ENVIRONMENT SECOND -- INVERTED, TWICE, EACH
+ * TIME FOR A FAILURE MEASURED ON HARDWARE.
  *
- * getty does not set HOME. On an ordinary system login(1) sets it AFTER
- * authenticating -- and login(1) is precisely what veron-login replaces, so
- * by the time the verifier runs there is no HOME to read. getenv returned
- * NULL, no configuration file was found, no factors were configured as far as
- * the verifier could tell, and `veron_verify` refused: "not accepted", for
- * every input, with a correctly enrolled key file sitting on disk.
+ * Round one: getty does not set HOME at all, so getenv returned NULL and
+ * console login refused everything. getpwuid was added -- as the FALLBACK.
  *
- * The lock screen was unaffected because it runs inside a session that
- * already has HOME set, which is exactly why this only showed up on tty3.
+ * Round two: the console shell inherits init's environment, and on this
+ * machine that carries HOME=/root -- set, non-empty, and WRONG for uid
+ * 1000. The fallback never fired, the verifier looked for its config in
+ * /root/.config/veron, found nothing, and refused everything: `veron-enroll
+ * check` on the console printed `confdir: /root/.config/veron` beside
+ * `getpwuid(1000): /home/veron`, the same binary flipping to `unwrap: OK`
+ * the moment HOME was overridden by hand.
  *
- * getpwuid IS THE ANSWER RATHER THAN HARDCODING /home/<user>: the passwd
- * entry is where a home directory is actually defined, and it is correct for
- * root, for a relocated home, and for any user this is ever run as. HOME is
- * still preferred when set, so nothing changes for the session case. */
+ * The passwd entry is where a home directory is DEFINED; the environment
+ * is hearsay about it. So the lookup now asks the definition first and
+ * falls back to the environment only when there is no passwd entry to ask
+ * -- the reverse of before, and the version that cannot be lied to by
+ * whatever a getty or an init happened to leave behind. */
 static const char *home_dir(void)
 {
-    const char *h = getenv("HOME");
-    if (h && *h)
-        return h;
     struct passwd *pw = getpwuid(getuid());
     if (pw && pw->pw_dir && *pw->pw_dir)
         return pw->pw_dir;
+    const char *h = getenv("HOME");
+    if (h && *h)
+        return h;
     return NULL;
 }
 
@@ -346,15 +348,32 @@ int veron_verify(const char *input, int len)
      * whether anybody typed anything. */
     uint8_t master[VERON_MASTER_LEN];
     int have_master = 0;
+    int slots_seen = 0;
     for (int i = 0; i < 8 && !have_master; i++) {
         char k[32], kf[1024], wp[1200];
         snprintf(k, sizeof k, "keyfile%d", i);
         if (!conf_get_pub(k, kf, sizeof kf))
             continue;
+        slots_seen++;
         snprintf(wp, sizeof wp, "%s/master.%d.wrap", wrapdir, i);
         if (veron_master_from_keyfile(kf, wp, master))
             have_master = 1;
+        else
+            /* SAY WHICH SLOT AND WHY-SHAPED, ON stderr. "Not accepted" was
+             * the only output for every distinct failure this system has
+             * had -- wrong HOME, absent mount, stale wrap -- and each cost
+             * a diagnostic session to tell apart. Paths are not secrets;
+             * the master secret and the key bytes never appear here. The
+             * lock screen's stderr lands in the compositor's logfile and
+             * the console's on the tty, so the reason is readable where
+             * the refusal happened. */
+            fprintf(stderr, "veron-verify: slot %d: %s did not unwrap %s "
+                    "(missing/unreadable file, wrong key file, or damaged "
+                    "wrap)\n", i, kf, wp);
     }
+    if (!slots_seen)
+        fprintf(stderr, "veron-verify: no keyfile slots configured under "
+                "%s -- wrong home resolution or nothing enrolled\n", wrapdir);
 
     /* THE CARD, IF ENROLLED, IS A POSSESSION FACTOR TOO -- but presence alone
      * proves only that A card is plugged in, not that it is yours. It cannot

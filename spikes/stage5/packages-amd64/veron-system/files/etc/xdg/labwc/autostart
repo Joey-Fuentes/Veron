@@ -39,5 +39,15 @@
 if [ -x /usr/bin/veron-lock ] \
    && grep -qx 'autologin=off' "$HOME/.config/veron/auth.conf" 2>/dev/null
 then
+    # THE FACTOR LIVES ON REMOVABLE MEDIA, AND NOTHING ELSE MOUNTS IT AT
+    # BOOT -- measured on the first armed boot: the gate came up, the stick
+    # was in, and every Enter was refused because the key file's PATH did
+    # not exist until a hand-run `dinitctl start media` from the spare
+    # console. So the gate mounts it first: veron is in `power`, the socket
+    # is group-writable by now, and a failure (no stick inserted) leaves
+    # the lock up and refusing -- the correct state -- until the person
+    # inserts it and `dinitctl start media` from Ctrl+Alt+F2, which stays
+    # the documented way in.
+    /usr/bin/dinitctl -p /run/dinitctl start media 2>/dev/null || true
     /usr/bin/veron-lock &
 fi

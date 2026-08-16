@@ -137,6 +137,22 @@ if [ -S /run/dinitctl ]; then
     echo "  /run/dinitctl -> power 0660"
 fi
 
+# THE SESSION SERVICES' LOGFILES, READABLE BY THE USER WHOSE SESSION THEY
+# DESCRIBE. dinit opens a service's `logfile` as root before dropping to
+# run-as, so /run/labwc.log and /run/yambar.log came out root 0600 -- and
+# `cat /run/labwc.log` from the console said Permission denied, measured on
+# hardware while diagnosing the lock screen, on the exact log holding the
+# answer. Created here first, owned by the session user, dinit's open then
+# APPENDS to a file whose ownership is already right. The verifier's own
+# failure breadcrumbs land in labwc.log, so this is what makes a refusal
+# explain itself without a root shell.
+for lf in labwc.log yambar.log; do
+    /bin/busybox touch "/run/$lf" 2>/dev/null
+    /bin/busybox chown veron:veron "/run/$lf" 2>/dev/null
+    /bin/busybox chmod 0644 "/run/$lf" 2>/dev/null
+done
+echo "  /run/{labwc,yambar}.log -> veron 0644"
+
 # THE CONSOLE TTY, WHICH THE SHELL RUNS AS veron ON.
 #
 # devtmpfs creates /dev/tty* as root:tty 0620 -- writable by group tty, not

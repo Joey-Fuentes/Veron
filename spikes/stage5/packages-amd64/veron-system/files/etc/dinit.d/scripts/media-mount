@@ -105,7 +105,13 @@ for disk in /sys/block/*; do
 
     # vfat shape first (ownership is a mount option), plain second
     # (ownership is on disk, granted by the chown below).
-    if /bin/busybox mount -o rw,uid=1000,gid=1000,fmask=0133,dmask=0022 \
+    # `flush` MAKES WRITES REACH THE FLASH PROMPTLY. vfat batches dirty
+    # pages like any filesystem, and a key file written moments before a
+    # forced reboot (the menu's Restart is `reboot -f`, the recorded
+    # workaround) would otherwise exist only in page cache -- read back
+    # fine, gone after power. flush is vfat's own option for exactly the
+    # removable-media case.
+    if /bin/busybox mount -o rw,flush,uid=1000,gid=1000,fmask=0133,dmask=0022 \
             "$dev" "$MNT" 2>/dev/null; then
         echo "media: mounted $dev at $MNT (vfat options)"
         exit 0

@@ -33,14 +33,18 @@
 
 static int mkconfdir(char *out, size_t n)
 {
-    /* THE SAME LOOKUP THE VERIFIER USES, so enrolment cannot write to one
-     * place while the check reads another. veron-enroll is normally run from
-     * a shell where HOME is set, but a mismatch here would produce the worst
-     * kind of failure: a config file written successfully and never found. */
-    const char *home = getenv("HOME");
-    if (!home || !*home) {
-        struct passwd *pw = getpwuid(getuid());
-        home = (pw && pw->pw_dir && *pw->pw_dir) ? pw->pw_dir : NULL;
+    /* THE SAME LOOKUP THE VERIFIER USES -- passwd first, environment second,
+     * inverted alongside verify.c and wrap.c after HOME=/root on the console
+     * sent this exact binary writing to and reading from /root/.config while
+     * uid 1000's real config sat untouched in /home/veron. A mismatch here
+     * produces the worst kind of failure: a config file written successfully
+     * and never found. */
+    struct passwd *pw = getpwuid(getuid());
+    const char *home = (pw && pw->pw_dir && *pw->pw_dir) ? pw->pw_dir : NULL;
+    if (!home) {
+        home = getenv("HOME");
+        if (home && !*home)
+            home = NULL;
     }
     if (!home) {
         fprintf(stderr, "veron-enroll: cannot determine the home directory\n");

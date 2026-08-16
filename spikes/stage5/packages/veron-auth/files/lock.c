@@ -60,6 +60,8 @@
 
 #include "verify.h"
 
+#include <gcrypt.h>
+
 #define MAX_OUTPUTS 8
 #define MAX_ENTRY   256
 
@@ -494,6 +496,17 @@ int main(int argc, char **argv)
             printf("veron-lock 1.0\n");
             return 0;
         }
+
+    /* INITIALIZE libgcrypt, WHICH THIS PROGRAM ALONE FORGOT. veron-login and
+     * veron-enroll both do this before their first verify; veron-lock never
+     * did, and it is the only difference in the verify path between the
+     * binaries that accept a valid factor and the one that was measured on
+     * hardware refusing it -- same environment, same files, same uid, same
+     * mount, all confirmed against the running process. Some libgcrypt
+     * builds self-initialize on first use; relying on that is exactly the
+     * kind of works-on-one-build behaviour this tree keeps paying for. */
+    gcry_check_version(NULL);
+    gcry_control(GCRYCTL_INITIALIZATION_FINISHED, 0);
 
     display = wl_display_connect(NULL);
     if (!display) {
