@@ -24,4 +24,11 @@ run-as = veron
 restart = true
 depends-on = early-filesystems
 depends-on = device-nodes
-logfile = /run/console-auth.log
+# STRAIGHT TO THE SERIAL CONSOLE, BECAUSE A FILE NEEDS A READER AND THE
+# READER IS DEAD. These services die silently at boot in the CI guest; the
+# /run logfile captured their words and the tmpfs discarded them, and the
+# fixture that was added to cat the file typed into a console that had
+# already rate-limited to death -- qemu echoed the keystrokes back and
+# nothing executed them. /dev/console needs no shell: the dying process
+# speaks directly into the boot log the harness already captures.
+logfile = /dev/console
