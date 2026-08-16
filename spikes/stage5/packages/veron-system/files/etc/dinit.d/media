@@ -1,0 +1,23 @@
+# Removable media, mounted on request.
+#
+# NOT IN boot.d, AND THAT IS THE DESIGN RATHER THAN AN OMISSION. Media is
+# mounted when a person asks -- enrolling a key file, mostly -- and stays
+# out of the boot entirely: a boot that waits on an absent stick, or mounts
+# whatever happens to be plugged in, is a boot doing things nobody asked.
+#
+#     dinitctl start media       # mounts at /run/media/veron/stick
+#     dinitctl stop media        # sync + umount, then unplug
+#
+# ROOT ON PURPOSE. mount(2) is privileged and this image has no udisks, no
+# sudo and no su -- privileged actions are root-owned dinit services the
+# `power` group reaches through /run/dinitctl (see device-nodes for the
+# socket's group and mode). This is that pattern, applied to mounting.
+#
+# `type = scripted` because mounting is one action with a defined end; the
+# stop-command is the other half, and doing the umount there means "stop the
+# service" and "make the stick safe to pull" are the same operation.
+type = scripted
+command = /bin/busybox sh /etc/dinit.d/scripts/media-mount start
+stop-command = /bin/busybox sh /etc/dinit.d/scripts/media-mount stop
+restart = false
+depends-on = early-filesystems

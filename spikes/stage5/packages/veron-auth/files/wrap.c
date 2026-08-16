@@ -72,19 +72,96 @@ int veron_confdir(char *out, size_t outlen)
  * the entire security property. On the internal disk it protects nothing at
  * all: whoever takes the disk takes the key with it.
  *
- * COMPARED BY DEVICE, NOT BY PATH. st_dev on the key file against st_dev on
- * "/" catches ~, /persist, /tmp and anywhere else on the same filesystem
- * without needing a list of mount points or a guess about naming. A live
- * image satisfies it naturally, because there the root IS removable.
+ * THE KERNEL IS ASKED, NOT THE MOUNT TABLE. The first version compared
+ * st_dev of the key file against st_dev of "/", which measures WHICH
+ * FILESYSTEM and not WHETHER REMOVABLE -- and on the test machine
+ * /home/veron is a bind mount from a different partition of the SAME
+ * internal disk, so a key file in $HOME passed the check and was enrolled.
+ * That is exactly the arrangement the check exists to prevent, verified on
+ * hardware.
+ *
+ * So this walks from the file's st_dev to the block device behind it:
+ * /sys/dev/block/<maj>:<min> resolves to the device's sysfs node, a
+ * partition is stepped up to its whole disk, and the answer comes from two
+ * facts the kernel states about that disk:
+ *
+ *   removable    the disk's own `removable` attribute -- 1 for USB sticks
+ *                and SD cards, 0 for internal SATA/NVMe
+ *   the bus      the resolved sysfs path names every bus on the way to the
+ *                device, so "/usb" in it means USB-attached -- which covers
+ *                USB SSDs and hard drives, most of which report
+ *                removable=0 because their MEDIA is fixed even though the
+ *                device unplugs
+ *
+ * Either is enough: both are things you carry away from the machine.
+ *
+ * THE KNOWN OVER-ACCEPT IS AN INTERNAL SD READER, which reports removable=1
+ * while living inside the laptop. That errs toward accepting a card the
+ * user can in fact pull out and pocket, which is the tolerable direction.
+ *
+ * -1 MEANS "COULD NOT DETERMINE", AND IT IS A REFUSAL, NOT A PASS. A file
+ * on tmpfs, an overlay upper, or anything whose st_dev has no
+ * /sys/dev/block entry cannot be traced to a disk -- and a key file that
+ * cannot be shown to be on removable media must not be enrolled as though
+ * it were.
+ *
+ * VERON_SYSFS_ROOT is a test seam: it relocates the /sys prefix so the
+ * walk can be driven through a fixture tree and PROVEN TO FAIL (AGENTS.md
+ * section 2c). It grants nothing the caller does not already have --
+ * whoever sets the environment of veron-enroll already holds
+ * VERON_ALLOW_ONDISK_KEYFILE.
  */
+#include <sys/sysmacros.h>
+#include <limits.h>
+
 int veron_is_removable(const char *path)
 {
-    struct stat sf, sr;
+    struct stat sf;
     if (stat(path, &sf) != 0)
         return -1;                 /* cannot tell; caller reports the errno */
-    if (stat("/", &sr) != 0)
+
+    const char *sysroot = getenv("VERON_SYSFS_ROOT");
+    if (!sysroot || !*sysroot)
+        sysroot = "/sys";
+
+    char link[PATH_MAX];
+    snprintf(link, sizeof link, "%s/dev/block/%u:%u", sysroot,
+             major(sf.st_dev), minor(sf.st_dev));
+
+    char node[PATH_MAX];
+    if (!realpath(link, node))
+        return -1;                 /* tmpfs, overlay: no block device */
+
+    /* A PARTITION'S removable ATTRIBUTE LIVES ON ITS DISK. The partition
+     * node carries a `partition` file and the whole-disk node does not, so
+     * one step up is taken exactly when the kernel says to. */
+    char probe[PATH_MAX + 16];
+    snprintf(probe, sizeof probe, "%s/partition", node);
+    if (access(probe, F_OK) == 0) {
+        char *slash = strrchr(node, '/');
+        if (!slash)
+            return -1;
+        *slash = '\0';
+    }
+
+    snprintf(probe, sizeof probe, "%s/removable", node);
+    FILE *f = fopen(probe, "r");
+    if (!f)
+        return -1;                 /* not a disk we understand: refuse */
+    int c = fgetc(f);
+    fclose(f);
+    if (c == '1')
+        return 1;
+    if (c != '0')
         return -1;
-    return sf.st_dev != sr.st_dev;
+
+    /* removable=0 BUT USB-ATTACHED IS STILL SOMETHING YOU CARRY. The
+     * resolved path names the buses: .../usb3/3-2/... appears for anything
+     * hanging off USB, and never for an internal SATA or NVMe device. */
+    if (strstr(node, "/usb"))
+        return 1;
+
+    return 0;
 }
 
 /* ---- wrapping ---------------------------------------------------------- */

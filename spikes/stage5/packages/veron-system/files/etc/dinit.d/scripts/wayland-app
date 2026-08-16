@@ -1,0 +1,64 @@
+#!/bin/busybox sh
+# Run a Wayland session helper as a dinit service: build the session
+# environment, wait for the compositor's socket, exec the program.
+#
+#     wayland-app /usr/bin/yambar -c /etc/xdg/yambar/config.yml
+#
+# WHY THE HELPERS ARE SERVICES NOW. They used to be labwc autostart
+# entries, and cleanup of the previous session's copies was a pkill at the
+# start of the NEXT session -- which races the old session's teardown, so
+# anything not yet running when the pkill fired survived it. Verified on
+# hardware: the pkill was present in the image and two yambars still stood
+# after a restart. No placement of a kill fixes a race; ownership does.
+# As dinit services with `depends-on = labwc`, stopping the compositor
+# stops them by construction, and there is nothing left over to kill.
+#
+# READINESS IS THE SOCKET, BECAUSE THERE IS NO NOTIFY PROTOCOL. dinit
+# considers a process service started the moment it is running, but labwc
+# creates its wayland socket some time after exec -- so a helper started on
+# the service dependency alone races the compositor and loses. The wait
+# below is what "the session is ready" means here: the socket exists and is
+# a socket. wayland-1.lock and friends are files beside it, which is why
+# -S does the deciding rather than the glob.
+#
+# THE ENVIRONMENT IS REBUILT, NOT INHERITED, for the same reason
+# labwc-session rebuilds it: dinit services get PID 1's environment. The
+# values are the session's fixed points -- uid 1000's runtime dir and home
+# -- and are the same ones labwc-session exports, which is what keeps a
+# helper and its compositor in one world.
+#
+# exec, SO dinit SUPERVISES THE HELPER ITSELF. The helper dying (a VT
+# switch takes the bar down, and it does not reconnect) is then a service
+# exit, and `restart = true` in the service file is what brings it back --
+# replacing the while-loop the autostart entry used to carry.
+set -u
+
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export XDG_RUNTIME_DIR=/run/user/1000
+export XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}
+export HOME=/home/veron
+export XDG_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
+
+if [ $# -lt 1 ]; then
+    echo "wayland-app: nothing to run" >&2
+    exit 1
+fi
+
+# UP TO 60 SECONDS, THEN FAIL AND SAY SO. A compositor that has not made a
+# socket in a minute is not starting; exiting lets dinit's rate-limited
+# restart own the retry instead of this script polling forever, and puts a
+# line in the log instead of a helper silently absent.
+n=0
+while [ "$n" -lt 60 ]; do
+    for s in "$XDG_RUNTIME_DIR"/wayland-*; do
+        [ -S "$s" ] || continue
+        WAYLAND_DISPLAY=${s##*/}
+        export WAYLAND_DISPLAY
+        exec "$@"
+    done
+    /bin/busybox sleep 1
+    n=$((n + 1))
+done
+
+echo "wayland-app: no wayland socket in $XDG_RUNTIME_DIR after 60s" >&2
+exit 1

@@ -190,14 +190,19 @@ static void usage(void)
     printf(
 "veron-enroll -- configure the factors that unlock this machine\n"
 "\n"
-"  veron-enroll keyfile <path>   record a key file as a factor\n"
-"  veron-enroll totp             generate a TOTP seed and print it\n"
-"  veron-enroll card             require an OpenPGP card to be present\n"
-"  veron-enroll require any|all  one factor is enough, or all are needed\n"
-"  veron-enroll show             what is configured now\n"
-"  veron-enroll remove <factor>  keyfile | totp | card\n"
+"  veron-enroll keyfile <path>    record a key file as a factor\n"
+"  veron-enroll totp              generate a TOTP seed and print it\n"
+"  veron-enroll card              require an OpenPGP card to be present\n"
+"  veron-enroll require any|all   one factor is enough, or all are needed\n"
+"  veron-enroll autologin on|off  off = the session starts locked\n"
+"  veron-enroll show              what is configured now\n"
+"  veron-enroll check             walk every factor and say what works\n"
+"  veron-enroll remove keyfile <slot>|all\n"
+"  veron-enroll remove totp|card\n"
 "\n"
-"A key file should be real entropy on something you carry:\n"
+"A key file should be real entropy on something you carry. The `media`\n"
+"service mounts the first removable device at /run/media/veron/stick:\n"
+"  dinitctl start media\n"
 "  head -c 64 /dev/urandom > /run/media/veron/stick/veron.key\n");
 }
 
@@ -214,6 +219,104 @@ int main(int argc, char **argv)
 
     gcry_check_version(NULL);
     gcry_control(GCRYCTL_INITIALIZATION_FINISHED, 0);
+
+    /* check IS READ-ONLY AND RUNS BEFORE mkconfdir ON PURPOSE: a diagnostic
+     * that creates directories changes the thing it is diagnosing.
+     *
+     * WHY THIS EXISTS. `veron-login` on tty3 said `not accepted` with a
+     * correctly enrolled key file on disk, and said nothing else -- every
+     * failure inside veron_verify collapses to the same two words, which is
+     * right for a gate and useless for finding out why. This walks the same
+     * steps the verifier walks and names the first one that fails.
+     *
+     * RUN IT TWO WAYS AND COMPARE:
+     *
+     *     veron-enroll check              # the session's environment
+     *     env -u HOME veron-enroll check  # what getty gives veron-login
+     *
+     * The second strips HOME, which getty never sets -- if it fails where
+     * the first succeeds, the fault is the home lookup on this machine, and
+     * the line below that says `getpwuid:` is the one to read. */
+    if (!strcmp(argv[1], "check")) {
+        const char *env_home = getenv("HOME");
+        printf("HOME (environment):   %s\n",
+               env_home && *env_home ? env_home : "(unset)");
+        struct passwd *pw = getpwuid(getuid());
+        printf("getpwuid(%u):         %s\n", (unsigned)getuid(),
+               (pw && pw->pw_dir && *pw->pw_dir) ? pw->pw_dir
+                                                 : "(no passwd entry -- "
+                                                   "the getty path is broken)");
+        char cdir[1024];
+        if (!veron_confdir(cdir, sizeof cdir)) {
+            printf("confdir:              CANNOT RESOLVE -- every check "
+                   "below would fail the same way\n");
+            return 1;
+        }
+        printf("confdir:              %s\n", cdir);
+
+        char cpath[1088];
+        snprintf(cpath, sizeof cpath, "%s/auth.conf", cdir);
+        FILE *cf = fopen(cpath, "r");
+        printf("auth.conf:            %s\n",
+               cf ? "readable" : strerror(errno));
+        if (cf)
+            fclose(cf);
+
+        int usable = 0;
+        for (int i = 0; i < 8; i++) {
+            char k[32], kf[1024], wp[1200];
+            snprintf(k, sizeof k, "keyfile%d", i);
+            if (!conf_get_pub(k, kf, sizeof kf))
+                continue;
+            printf("keyfile%d:             %s\n", i, kf);
+
+            int rm = veron_is_removable(kf);
+            printf("  removable:          %s\n",
+                   rm == 1 ? "yes" : rm == 0 ? "NO -- internal disk"
+                                             : "cannot determine");
+
+            FILE *pf = fopen(kf, "rb");
+            printf("  readable:           %s\n",
+                   pf ? "yes" : strerror(errno));
+            if (pf)
+                fclose(pf);
+
+            snprintf(wp, sizeof wp, "%s/master.%d.wrap", cdir, i);
+            uint8_t salt[16];
+            printf("  wrap %s: %s\n", wp,
+                   veron_wrap_salt(wp, salt) ? "present, well-formed"
+                                             : "MISSING or malformed");
+
+            uint8_t master[VERON_MASTER_LEN];
+            if (veron_master_from_keyfile(kf, wp, master)) {
+                printf("  unwrap:             OK -- this factor works\n");
+                explicit_bzero(master, sizeof master);
+                usable++;
+            } else {
+                printf("  unwrap:             FAILED -- wrong file, wrong "
+                       "wrap, or unreadable\n");
+            }
+        }
+        if (!usable)
+            printf("keyfiles:             none enrolled or none usable\n");
+
+        char v[64];
+        printf("totp:                 %s\n",
+               conf_get_pub("totp", v, sizeof v) ? v : "(not enrolled)");
+        printf("card:                 %s\n",
+               conf_get_pub("card", v, sizeof v) ? v : "(not enrolled)");
+        printf("require:              %s\n",
+               conf_get_pub("require", v, sizeof v) ? v : "(default: any)");
+        printf("autologin:            %s\n",
+               conf_get_pub("autologin", v, sizeof v) ? v : "(default: on)");
+
+        printf("verdict:              %s\n",
+               usable ? "a possession factor unwraps -- veron_verify can "
+                        "succeed in THIS environment"
+                      : "NO possession factor unwraps -- veron_verify "
+                        "refuses everything in THIS environment");
+        return usable ? 0 : 1;
+    }
 
     char dir[1024];
     if (!mkconfdir(dir, sizeof dir))
@@ -241,21 +344,31 @@ int main(int argc, char **argv)
          * removable, so this rule needs no exception for the case it would
          * otherwise break. */
         int rm = veron_is_removable(argv[2]);
-        if (rm < 0) {
-            fprintf(stderr, "veron-enroll: cannot stat %s: %s\n",
-                    argv[2], strerror(errno));
-            return 1;
-        }
-        if (rm == 0) {
+        if (rm != 1) {
+            if (rm < 0)
+                fprintf(stderr,
+                  "veron-enroll: %s cannot be traced to a removable disk --\n"
+                  "  refused. Either the file does not exist, or it lives on\n"
+                  "  tmpfs or an overlay, where it would not survive a reboot\n"
+                  "  and cannot be shown to be on media you carry.\n\n",
+                  argv[2]);
+            else
+                fprintf(stderr,
+                  "veron-enroll: %s is on this machine's internal disk --\n"
+                  "  refused.\n\n"
+                  "  A key file on the disk it unlocks protects nothing:\n"
+                  "  whoever takes the disk takes the key with it.\n\n",
+                  argv[2]);
             fprintf(stderr,
-              "veron-enroll: %s is on the root filesystem -- refused.\n\n"
-              "  A key file on the disk it unlocks protects nothing: whoever\n"
-              "  takes the disk takes the key with it. Put it on removable\n"
-              "  media, which is the thing you carry and the disk does not:\n\n"
+              "  Put it on removable media -- the thing you carry and the\n"
+              "  disk does not. The `media` service mounts the first\n"
+              "  removable device it finds at /run/media/veron/stick:\n\n"
+              "    dinitctl start media\n"
               "    head -c 64 /dev/urandom > /run/media/veron/stick/veron.key\n"
-              "    veron-enroll keyfile /run/media/veron/stick/veron.key\n\n"
+              "    veron-enroll keyfile /run/media/veron/stick/veron.key\n"
+              "    dinitctl stop media       # before unplugging\n\n"
               "  VERON_ALLOW_ONDISK_KEYFILE=1 overrides this for testing, and\n"
-              "  produces a configuration that is not secure.\n", argv[2]);
+              "  produces a configuration that is not secure.\n");
             if (!getenv("VERON_ALLOW_ONDISK_KEYFILE"))
                 return 1;
             fprintf(stderr, "  overridden -- continuing INSECURELY\n\n");
@@ -465,15 +578,136 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    if (!strcmp(argv[1], "autologin")) {
+        if (argc < 3 || (strcmp(argv[2], "on") && strcmp(argv[2], "off"))) {
+            usage();
+            return 1;
+        }
+        if (!strcmp(argv[2], "off")) {
+            /* PROVE A FACTOR WORKS BEFORE ARMING THE GATE. `autologin off`
+             * makes the session start locked, and a lock that no enrolled
+             * factor can open is a machine reachable only from the spare
+             * console. So the exact check the lock screen will run is run
+             * HERE, NOW, with the media plugged in -- turning the gate on
+             * requires demonstrating, once, that it can be turned back off. */
+            char wrapdir[1024];
+            if (!veron_confdir(wrapdir, sizeof wrapdir))
+                return 1;
+            uint8_t master[VERON_MASTER_LEN];
+            int have_master = 0;
+            for (int i = 0; i < 8 && !have_master; i++) {
+                char k[32], kf[1024], wp[1200];
+                snprintf(k, sizeof k, "keyfile%d", i);
+                snprintf(wp, sizeof wp, "%s/master.%d.wrap", wrapdir, i);
+                if (conf_get_pub(k, kf, sizeof kf) &&
+                    veron_master_from_keyfile(kf, wp, master))
+                    have_master = 1;
+            }
+            if (!have_master) {
+                fprintf(stderr,
+                  "veron-enroll: refused -- no enrolled possession factor\n"
+                  "  unwrapped just now. Turning autologin off would lock a\n"
+                  "  session nothing can open. Plug the key file in and run\n"
+                  "  `veron-enroll check`; when a factor shows `unwrap: OK`,\n"
+                  "  this command will accept.\n");
+                return 1;
+            }
+            explicit_bzero(master, sizeof master);
+        }
+        if (!conf_set(dir, "autologin", argv[2]))
+            return 1;
+        printf("autologin = %s\n", argv[2]);
+        if (!strcmp(argv[2], "off"))
+            printf("  the session now STARTS LOCKED. The factor that just\n"
+                   "  unwrapped is what opens it. Ctrl+Alt+F2 remains the\n"
+                   "  escape hatch.\n");
+        return 0;
+    }
+
     if (!strcmp(argv[1], "remove")) {
         if (argc < 3) {
             usage();
             return 1;
         }
         if (!strcmp(argv[2], "keyfile")) {
+            /* THE OLD FORM DELETED KEYS THE ENROLLER NO LONGER WRITES.
+             * Enrolment stores keyfile0..7 plus a wrap file per slot; this
+             * used to delete `keyfile`, `keyfile-salt` and `keyfile-hash`,
+             * all from the pre-wrap design -- so an enrolled key file could
+             * not be removed at all. It now takes a slot number or `all`,
+             * and deletes the wrap beside the config line, because a wrap
+             * with no config line is a wrap the verifier can never reach
+             * and the next enroller would silently reuse. */
+            if (argc < 4) {
+                fprintf(stderr, "veron-enroll: remove keyfile <slot>|all "
+                                "(see `veron-enroll show` for slots)\n");
+                return 1;
+            }
+            int lo = 0, hi = 7;
+            if (strcmp(argv[3], "all")) {
+                char *end = NULL;
+                long s = strtol(argv[3], &end, 10);
+                if (!end || *end || s < 0 || s > 7) {
+                    fprintf(stderr, "veron-enroll: slot must be 0..7 or "
+                                    "all\n");
+                    return 1;
+                }
+                lo = hi = (int)s;
+            }
+
+            /* COUNT WHAT WOULD REMAIN BEFORE REMOVING ANYTHING. Removing
+             * the last possession factor while the session gate is armed
+             * is a lockout by definition -- the gate would refuse every
+             * input at the next session start. Refused, with the way out
+             * named, rather than performed with a warning nobody reads. */
+            int enrolled = 0, removing = 0;
+            for (int i = 0; i < 8; i++) {
+                char k[32], v[1024];
+                snprintf(k, sizeof k, "keyfile%d", i);
+                if (!conf_get_pub(k, v, sizeof v))
+                    continue;
+                enrolled++;
+                if (i >= lo && i <= hi)
+                    removing++;
+            }
+            char al[64];
+            int gate_armed = conf_get_pub("autologin", al, sizeof al)
+                          && !strcmp(al, "off");
+            if (gate_armed && removing >= enrolled && enrolled > 0) {
+                fprintf(stderr,
+                  "veron-enroll: refused -- that is every enrolled key file\n"
+                  "  and autologin is off, so the next session would start\n"
+                  "  locked with nothing able to open it. First:\n"
+                  "    veron-enroll autologin on\n");
+                return 1;
+            }
+
+            char tv[64];
+            if (removing >= enrolled && enrolled > 0 &&
+                conf_get_pub("totp", tv, sizeof tv) && !strcmp(tv, "yes"))
+                fprintf(stderr,
+                  "veron-enroll: note -- TOTP stays enrolled but its seed is\n"
+                  "  encrypted under the master secret, which no factor can\n"
+                  "  now unwrap. Re-enrol a key file or remove totp too.\n");
+
+            for (int i = lo; i <= hi; i++) {
+                char k[32], v[1024], wp[1200];
+                snprintf(k, sizeof k, "keyfile%d", i);
+                if (!conf_get_pub(k, v, sizeof v))
+                    continue;
+                conf_set(dir, k, NULL);
+                snprintf(wp, sizeof wp, "%s/master.%d.wrap", dir, i);
+                if (unlink(wp) == 0)
+                    printf("removed slot %d: %s (and its wrap)\n", i, v);
+                else
+                    printf("removed slot %d: %s (wrap was already gone: "
+                           "%s)\n", i, v, strerror(errno));
+            }
+            /* The pre-wrap keys, if an old enrolment left them behind. */
             conf_set(dir, "keyfile", NULL);
             conf_set(dir, "keyfile-salt", NULL);
             conf_set(dir, "keyfile-hash", NULL);
+            return 0;
         } else if (!strcmp(argv[2], "totp")) {
             conf_set(dir, "totp", NULL);
         } else if (!strcmp(argv[2], "card")) {

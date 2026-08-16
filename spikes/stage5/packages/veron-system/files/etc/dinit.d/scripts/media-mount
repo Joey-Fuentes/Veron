@@ -1,0 +1,123 @@
+#!/bin/busybox sh
+# Mount the first removable block device at /run/media/veron/stick -- and
+# unmount it again -- as a root-owned dinit action the desktop user can
+# reach through /run/dinitctl.
+#
+# WHY THIS EXISTS. veron-enroll refuses a key file on the internal disk and
+# tells the user to put it on removable media -- and nothing could create
+# that path: no udev, no udisks, no automount, no su from the desktop, and
+# mount(2) needs root. The instruction the tool printed could not be
+# followed by the user it was printed to. This is the missing capability,
+# shaped like everything else privileged here: a root service, started and
+# stopped by the `power` group through the dinit socket.
+#
+#     dinitctl start media       # plug the stick in first
+#     ...write or read the key file...
+#     dinitctl stop media        # before unplugging
+#
+# WHICH DEVICE. The same two kernel facts veron-enroll now checks: the
+# disk's own `removable` attribute, or a /usb segment in its resolved sysfs
+# path (a USB SSD reports removable=0 -- the media is fixed -- while the
+# device as a whole unplugs). The two tools MUST agree, or this mounts a
+# stick the enroller then refuses.
+#
+# NEVER THE DISK THE SYSTEM IS RUNNING FROM. On a live boot the root image
+# is itself a USB stick and would match; any disk with a partition already
+# in /proc/mounts is skipped, which covers the root device, /persist, and
+# anything else the boot claimed -- by what is MOUNTED rather than by a
+# guess about device names.
+#
+# FIRST PARTITION, ELSE THE WHOLE DEVICE. Sticks from a factory carry one
+# partition; sticks made with `head -c` over the raw device carry none.
+# Both shapes work.
+#
+# TWO MOUNT ATTEMPTS, AND THE ORDER IS THE POINT. vfat has no on-disk
+# ownership, so without uid= the mount is root-only and the desktop user
+# cannot write the key file to it; ext4 REJECTS uid= outright. So vfat's
+# options are tried first and a plain mount is the fallback, whose root
+# directory is then chown'd -- which on ext4 is an on-disk write to the
+# stick's own root inode, exactly what is wanted.
+#
+# THE FAT DRIVER MAY NOT BE IN THIS KERNEL. That is a real limit recorded
+# in the handoff: a typical store-bought stick is vfat, and if the kernel
+# cannot mount it the plain attempt fails too and this script says so. An
+# ext4-formatted stick sidesteps it. KERNEL-CHANGES.md is where adding
+# CONFIG_VFAT_FS belongs, as a deliberate change, not here.
+set -u
+
+MNT=/run/media/veron/stick
+
+stop_media() {
+    if grep -q " $MNT " /proc/mounts; then
+        # sync FIRST: the whole point of stopping is unplugging next, and
+        # busybox umount does not imply a sync of data still in flight.
+        /bin/busybox sync
+        if /bin/busybox umount "$MNT"; then
+            echo "media: unmounted $MNT -- safe to unplug"
+        else
+            echo "media: umount failed -- something still has files open" >&2
+            exit 1
+        fi
+    else
+        echo "media: nothing mounted at $MNT"
+    fi
+    exit 0
+}
+
+[ "${1:-}" = stop ] && stop_media
+
+# start
+/bin/busybox mkdir -p "$MNT"
+
+if grep -q " $MNT " /proc/mounts; then
+    echo "media: already mounted at $MNT"
+    exit 0
+fi
+
+for disk in /sys/block/*; do
+    name=${disk##*/}
+
+    # Virtual devices are never media anyone carries.
+    case "$name" in
+        loop*|ram*|zram*|dm-*|md*) continue ;;
+    esac
+
+    removable=$(/bin/busybox cat "$disk/removable" 2>/dev/null)
+    real=$(/bin/busybox readlink -f "$disk")
+    usb=0
+    case "$real" in */usb*) usb=1 ;; esac
+    [ "$removable" = 1 ] || [ "$usb" = 1 ] || continue
+
+    # The disk the system is using -- root, /persist, anything mounted --
+    # is not "media". Prefix match catches the whole device and every
+    # partition of it in one look.
+    grep -q "^/dev/$name" /proc/mounts && continue
+
+    # First partition if there is one, the raw device if not.
+    dev=""
+    for part in "$disk/$name"*; do
+        [ -d "$part" ] || continue
+        dev=/dev/${part##*/}
+        break
+    done
+    [ -n "$dev" ] || dev=/dev/$name
+    [ -b "$dev" ] || continue
+
+    # vfat shape first (ownership is a mount option), plain second
+    # (ownership is on disk, granted by the chown below).
+    if /bin/busybox mount -o rw,uid=1000,gid=1000,fmask=0133,dmask=0022 \
+            "$dev" "$MNT" 2>/dev/null; then
+        echo "media: mounted $dev at $MNT (vfat options)"
+        exit 0
+    fi
+    if /bin/busybox mount -o rw "$dev" "$MNT" 2>/dev/null; then
+        /bin/busybox chown 1000:1000 "$MNT" 2>/dev/null || :
+        echo "media: mounted $dev at $MNT"
+        exit 0
+    fi
+    echo "media: $dev matched but would not mount -- is its filesystem" >&2
+    echo "  in this kernel? (vfat is not; see KERNEL-CHANGES.md)" >&2
+done
+
+echo "media: no removable device found -- is it plugged in?" >&2
+exit 1

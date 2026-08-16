@@ -1,79 +1,43 @@
 # Run when labwc starts.
 #
 # UPSTREAM SHIPS AN autostart EXAMPLE TO share/doc/labwc/ AND INSTALLS NOTHING.
-# Without this file the session starts with a bare compositor: no wallpaper, no
-# status bar, nothing but whatever the user launches by hand.
+# Without this file the session starts bare: nothing but whatever the user
+# launches by hand.
 #
-# EACH LINE IS GUARDED because this file runs on every start and a missing
-# binary would print a shell error into the session log on every boot. The
-# guard makes an absent package silent rather than noisy -- and the packages
-# ARE optional: labwc runs without any of them.
+# THE HELPERS ARE NOT HERE ANY MORE, AND THE ABSENCE IS THE FIX. swaybg and
+# yambar used to be launched from this file, and cleanup of a previous
+# session's copies was a pkill in labwc-session -- which races the old
+# session's teardown, so anything not yet running when the pkill fired
+# survived it. Verified on hardware: two yambars after a restart, with the
+# pkill demonstrably present in the image. They are dinit services now
+# (etc/dinit.d/yambar, etc/dinit.d/swaybg): `depends-on = labwc` gives their
+# lifetime an owner, `restart = true` replaces the supervision loop this
+# file carried, and scripts/wayland-app waits for the compositor's socket,
+# which is the readiness this file used to get for free by running inside
+# the session. Launching them here AS WELL would recreate the duplicate.
+#
+# WHAT REMAINS HERE IS WHAT MUST RUN INSIDE THE SESSION, ONCE, AT ITS START.
 
-# A background. swaybg reads PNG ONLY here: gdk-pixbuf is declined in its
-# recipe, so background-image.c:41 goes straight to
-# cairo_image_surface_create_from_png and any other format fails to load.
+# THE BOOT GATE. tty1 autologins straight to the desktop, so without this
+# anyone who powers the machine on is in; the lock screen protected only a
+# session someone had already locked. If the person has armed the gate --
+# `veron-enroll autologin off`, which refuses unless an enrolled factor
+# demonstrably unwraps -- the session starts locked, behind the same
+# ext-session-lock-v1 surface and the same factors as Super+L.
 #
-# THE IMAGE IS A GRADIENT WITH A CENTRED MARKER, NOT A FLAT COLOUR, AND THAT IS
-# FOR THE SCREENSHOT. A screenshot of a solid field looks identical whether the
-# compositor rendered it or the framebuffer was never written at all. A
-# gradient proves per-pixel output; the marker block proves geometry and
-# orientation. -c is kept as the fallback so a missing file still gives a
-# desktop rather than a black screen.
-if [ -x /usr/bin/swaybg ]; then
-    if [ -f /usr/share/veron/wallpaper.png ]; then
-        /usr/bin/swaybg -m fill -i /usr/share/veron/wallpaper.png &
-    else
-        /usr/bin/swaybg -c '#1a1a1a' &
-    fi
-fi
-
-# The status bar. THE config.yml GUARD USED TO BE TRUE OF A FILE THAT DID NOT
-# EXIST, so yambar was built with ten plugins enabled and never started, and
-# the guard is what made that silent. The file is now shipped beside this one.
+# THE DEFAULT IS OPEN, AND MUST STAY OPEN: the live image is a demo that
+# must not demand a key file the user has not got, and a fresh install has
+# no factors yet. `autologin=off` can only be written by an enrolment that
+# proved a factor works, so the exact-match grep below fails safe in every
+# other state: no config, no line, or `on`.
 #
-# Its foreign-toplevel module is what shows the window list: labwc implements
-# wlr-foreign-toplevel-management through wlroots, so opening a terminal makes
-# an entry appear in the bar. That is the cheapest end-to-end proof that
-# compositor, protocol and bar are all talking.
-#
-# -c IS REQUIRED: yambar DOES NOT SEARCH XDG_CONFIG_DIRS. main.c's
-# get_config_path checks $HOME/.config/yambar/config.yml and then
-# $XDG_CONFIG_HOME/yambar/config.yml, and stops. /etc/xdg is in
-# XDG_CONFIG_DIRS, which it never consults -- so the file shipped beside this
-# one was invisible and yambar died with
-#
-#     err: main.c:316: could not find a configuration (see man 5 yambar)
-#
-# labwc reads /etc/xdg through XDG_CONFIG_DIRS and yambar does not; assuming
-# one spec-adjacent behaviour implies the other is what cost this. -c names
-# the path outright (main.c:220, which stats it before accepting).
-# THE BAR IS SUPERVISED, BECAUSE IT DOES NOT SURVIVE A VT SWITCH.
-#
-# Ctrl+Alt+F2 and back leaves the desktop running -- the browser keeps going,
-# the wallpaper is still there -- and the bar is gone. A layer-shell surface
-# does not survive the compositor's output being taken away and given back,
-# and yambar exits rather than reconnecting. Started once from here, nothing
-# brought it back and the only remedy was to type the command again.
-#
-# A LOOP, NOT A dinit SERVICE. The bar needs the session's environment --
-# WAYLAND_DISPLAY, XDG_RUNTIME_DIR, the uid labwc runs as -- and it is part of
-# the session rather than part of the boot. dinit would need all of that
-# passed across for no benefit.
-#
-# THE SLEEP IS NOT POLITENESS, IT IS A BRAKE. Without it a config error makes
-# this spin at whatever rate the process can fail, which fills the log and
-# heats the machine. One second is imperceptible after a VT switch and stops
-# a broken config from becoming a busy loop.
-#
-# THE OUTPUT IS KEPT. yambar says why it exited -- a parse error names the
-# line -- and that message went nowhere before, which is how a config that
-# could not start looked like a bar that simply was not there.
-if [ -x /usr/bin/yambar ] && [ -f /etc/xdg/yambar/config.yml ]; then
-    (
-        while :; do
-            /usr/bin/yambar -c /etc/xdg/yambar/config.yml \
-                >> "${XDG_STATE_HOME:-/tmp}/yambar.log" 2>&1
-            sleep 1
-        done
-    ) &
+# FAILURE FAILS LOCKED, NOT OPEN, AND THAT IS THE PROTOCOL'S PROPERTY
+# RATHER THAN THIS FILE'S: the compositor holds the lock whether or not
+# veron-lock survives, so a gate that crashes strands the GUI locked --
+# better than a display manager that segfaults to a shell. Ctrl+Alt+F2
+# stays reachable as the escape hatch, and veron-login guards tty3.
+if [ -x /usr/bin/veron-lock ] \
+   && grep -qx 'autologin=off' "$HOME/.config/veron/auth.conf" 2>/dev/null
+then
+    /usr/bin/veron-lock &
 fi

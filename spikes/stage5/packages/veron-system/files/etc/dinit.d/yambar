@@ -1,0 +1,40 @@
+# The status bar, owned by dinit rather than by autostart.
+#
+# WHY IT MOVED. As an autostart entry its lifetime belonged to nobody:
+# killing labwc left it running, restarting labwc started another, and the
+# pkill meant to clean up raced the old session's teardown -- two yambars
+# on one output, verified on hardware, with the pkill verifiably present in
+# the image. `depends-on = labwc` gives the lifetime an owner: stopping the
+# compositor stops the bar by construction.
+#
+# THE OLD AUTOSTART ENTRY'S TWO JOBS ARE KEPT, JUST RELOCATED:
+#   the while-loop      -> restart = true (the bar exits on a VT switch and
+#                          does not reconnect; dinit's rate-limited restart
+#                          replaces the loop AND its sleep-1 brake)
+#   the session env     -> scripts/wayland-app, which also waits for the
+#                          compositor's socket, because dinit says "started"
+#                          the moment labwc is running and the socket comes
+#                          later
+#
+# -c IS STILL REQUIRED: yambar does not search XDG_CONFIG_DIRS -- it checks
+# $HOME/.config and $XDG_CONFIG_HOME and stops (main.c, get_config_path) --
+# so the shipped config must be named outright.
+#
+# logfile FOR THE SAME REASON labwc HAS ONE: a parse error names the line,
+# and that message going nowhere is how a broken config looks like a bar
+# that simply is not there.
+#
+# ONE ASYMMETRY, STATED PLAINLY: `dinitctl stop labwc` stops this too, but a
+# later `dinitctl start labwc` does not restart it -- dinit starts
+# dependencies, not dependents. After a manual stop/start of the
+# compositor: `dinitctl start yambar`. A labwc CRASH is unaffected -- the
+# service restarts in place, the bar loses its socket and exits, and its
+# own restart brings it back through the socket wait.
+type = process
+command = /bin/busybox sh /etc/dinit.d/scripts/wayland-app /usr/bin/yambar -c /etc/xdg/yambar/config.yml
+run-as = veron
+restart = true
+logfile = /run/yambar.log
+depends-on = labwc
+depends-on = xdg-runtime
+depends-on = device-nodes

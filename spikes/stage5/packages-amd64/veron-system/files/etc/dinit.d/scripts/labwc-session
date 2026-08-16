@@ -272,20 +272,14 @@ echo "labwc-session: starting labwc (runtime=$XDG_RUNTIME_DIR config=$XDG_CONFIG
 # exec SO dinit SUPERVISES labwc ITSELF rather than this wrapper. Without it
 # dinit would watch a shell that had already finished its work, and killing
 # the service would kill the wrapper and orphan the compositor.
-# ORPHANS FROM A PREVIOUS SESSION ARE CLEARED BEFORE STARTING A NEW ONE.
 #
-# labwc's autostart launches yambar, swaybg and friends as ordinary
-# processes -- not children that die with the compositor. So killing labwc
-# left them running, and restarting it ran autostart again: two yambars
-# stacked on one output, and another with every restart. Observed on hardware
-# after recovering from a wedged lock screen.
-#
-# BY NAME, NARROWLY, AND ONLY THIS USER. `pkill -u` cannot reach another
-# user's processes, and the list is explicit rather than a pattern, because a
-# session script that kills by wildcard eventually kills something nobody was
-# thinking about. -x requires an exact name match for the same reason.
-for helper in yambar swaybg fuzzel; do
-    /bin/busybox pkill -u "$(id -u)" -x "$helper" 2>/dev/null || true
-done
-
+# THE pkill OVER yambar/swaybg/fuzzel THAT USED TO SIT HERE IS GONE, AND
+# NOTHING REPLACES IT IN THIS FILE. It ran at NEW session start, which races
+# the OLD session's teardown -- anything not yet running when it fired
+# survived it, and two yambars stood on one output with the pkill verifiably
+# present in the image. No placement of a kill fixes a race; ownership does.
+# yambar and swaybg are dinit services now (`depends-on = labwc`), so
+# stopping the compositor stops them by construction and there is nothing
+# left over for a kill to catch. fuzzel needed no cleanup to begin with: it
+# is keybind-launched and exits with each use.
 exec /usr/bin/labwc

@@ -84,10 +84,15 @@ int veron_keyfile_derive(const char *path, const uint8_t salt[8],
 const char *veron_home(void);
 int  veron_confdir(char *out, size_t outlen);
 
-/* IS THIS PATH ON SOMETHING OTHER THAN THE ROOT FILESYSTEM. Returns 1 for
- * removable, 0 for the root device, -1 if it cannot be determined. A key file
- * on the disk it unlocks protects nothing; this is how that is refused rather
- * than merely discouraged. */
+/* IS THIS PATH ON REMOVABLE MEDIA -- ASKED OF THE KERNEL, NOT THE MOUNT
+ * TABLE. Returns 1 if the block device behind the file is removable or
+ * USB-attached (sysfs `removable`, or a /usb bus segment in the device
+ * path), 0 for a fixed internal disk, and -1 if the file cannot be traced
+ * to a disk at all (tmpfs, overlay upper) -- which callers must treat as a
+ * refusal. The first version compared st_dev against "/" and enrolled a key
+ * file from a bind-mounted $HOME on the same internal disk; see wrap.c for
+ * the full account. A key file on the disk it unlocks protects nothing;
+ * this is how that is refused rather than merely discouraged. */
 int  veron_is_removable(const char *path);
 
 int  veron_master_new(uint8_t master[VERON_MASTER_LEN]);
