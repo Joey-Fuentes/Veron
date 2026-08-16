@@ -1,0 +1,22 @@
+# The kernel and its headers — pinned per the tree's own doctrine (see the
+# KHDR/KERNEL comment in 4-toolchain-kernel-amd64.yml: the boot kernel may be
+# newer than the headers glibc was compiled against; today they are equal).
+#
+# VERSION POLICY (decided 2026-08): Veron pins the LATEST STABLE kernel, not
+# an LTS. LTS exists for fleets that cannot revalidate; every Veron bump is
+# revalidated by the chain itself (built by our toolchain, booted, in-guest
+# tests, stage-5 tests). A generic live ISO additionally WANTS the newest
+# kernel for hardware coverage. Bump the pin, let the gates judge it.
+#
+# sha256 entries follow the minting doctrine: a run prints the hash
+# (tools/verify-source.sh emits the MINT line), then it is committed here.
+
+[[source]]
+name     = "linux"
+version  = "7.1.5"
+url      = "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.1.5.tar.xz"
+mirrors  = ["https://mirrors.kernel.org/pub/linux/kernel/v7.x/linux-7.1.5.tar.xz"]
+sha256   = ""   # MINT on first fetch (or pre-fill from the PGP-signed
+                # https://cdn.kernel.org/pub/linux/kernel/v7.x/sha256sums.asc)
+license  = "GPL-2.0-only"
+role     = "stage-4 boot kernel + (currently) the KHDR headers source"

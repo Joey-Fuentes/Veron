@@ -1,0 +1,163 @@
+# EVERY REMAINING STAGE-4 INPUT, NAMED. Versions read from the workflow's own
+# env block (4-toolchain-kernel-amd64.yml) on 2026-08-16 -- the one place they
+# were already pinned. Hashes follow the minting doctrine: sha256 = "" until
+# tools/mirror-sources.sh (or the first enforced fetch) prints the measured
+# hash, which is then committed here. NOTHING in this file is guessed: a
+# wrong URL fails loudly at mirror time and gets corrected, never papered over.
+#
+# Already pinned elsewhere (do not duplicate): gcc 4.7.4 / 4.8.5 / 10.2.0
+# (gcc.toml), gmp/mpfr/mpc (prereqs.toml), musl (musl.toml), busybox has
+# busybox.toml -- CHECK it before trusting this file's entry and delete
+# whichever is the duplicate.
+
+[[source]]
+name = "gcc"
+version = "15.2.0"
+url = "https://mirrors.kernel.org/gnu/gcc/gcc-15.2.0/gcc-15.2.0.tar.xz"
+mirrors = ["https://ftpmirror.gnu.org/gcc/gcc-15.2.0/gcc-15.2.0.tar.xz", "https://ftp.gnu.org/gnu/gcc/gcc-15.2.0/gcc-15.2.0.tar.xz"]
+sha256 = ""
+license = "GPL-3.0-or-later"
+
+[[source]]
+name = "glibc"
+version = "2.44"
+url = "https://mirrors.kernel.org/gnu/glibc/glibc-2.44.tar.xz"
+mirrors = ["https://ftpmirror.gnu.org/glibc/glibc-2.44.tar.xz", "https://ftp.gnu.org/gnu/glibc/glibc-2.44.tar.xz"]
+sha256 = ""
+license = "LGPL-2.1-or-later"
+
+[[source]]
+name = "binutils"
+version = "2.30"
+url = "https://mirrors.kernel.org/gnu/binutils/binutils-2.30.tar.xz"
+mirrors = ["https://ftpmirror.gnu.org/binutils/binutils-2.30.tar.xz"]
+sha256 = ""
+license = "GPL-3.0-or-later"
+
+[[source]]
+name = "binutils"
+version = "2.47"
+url = "https://mirrors.kernel.org/gnu/binutils/binutils-2.47.tar.xz"
+mirrors = ["https://ftpmirror.gnu.org/binutils/binutils-2.47.tar.xz"]
+sha256 = ""
+license = "GPL-3.0-or-later"
+
+[[source]]
+name = "make"
+version = "3.82"
+url = "https://mirrors.kernel.org/gnu/make/make-3.82.tar.gz"
+mirrors = ["https://ftpmirror.gnu.org/make/make-3.82.tar.gz"]
+sha256 = ""
+license = "GPL-3.0-or-later"
+
+[[source]]
+name = "make"
+version = "4.4"
+url = "https://mirrors.kernel.org/gnu/make/make-4.4.tar.gz"
+mirrors = ["https://ftpmirror.gnu.org/make/make-4.4.tar.gz"]
+sha256 = ""
+license = "GPL-3.0-or-later"
+
+[[source]]
+name = "m4"
+version = "1.4.21"
+url = "https://mirrors.kernel.org/gnu/m4/m4-1.4.21.tar.xz"
+mirrors = ["https://ftpmirror.gnu.org/m4/m4-1.4.21.tar.xz"]
+sha256 = ""
+license = "GPL-3.0-or-later"
+
+[[source]]
+name = "m4"
+version = "1.4.7"
+url = "https://mirrors.kernel.org/gnu/m4/m4-1.4.7.tar.gz"
+mirrors = ["https://ftpmirror.gnu.org/m4/m4-1.4.7.tar.gz"]
+sha256 = ""
+license = "GPL-2.0-or-later"
+
+[[source]]
+name = "gawk"
+version = "5.3.2"
+url = "https://mirrors.kernel.org/gnu/gawk/gawk-5.3.2.tar.xz"
+mirrors = ["https://ftpmirror.gnu.org/gawk/gawk-5.3.2.tar.xz"]
+sha256 = ""
+license = "GPL-3.0-or-later"
+
+[[source]]
+name = "bison"
+version = "3.8.2"
+url = "https://mirrors.kernel.org/gnu/bison/bison-3.8.2.tar.xz"
+mirrors = ["https://ftpmirror.gnu.org/bison/bison-3.8.2.tar.xz"]
+sha256 = ""
+license = "GPL-3.0-or-later"
+
+[[source]]
+name = "perl"
+version = "5.44.0"
+url = "https://www.cpan.org/src/5.0/perl-5.44.0.tar.xz"
+mirrors = []
+sha256 = ""
+license = "Artistic-1.0-Perl OR GPL-1.0-or-later"
+
+[[source]]
+name = "bc"
+version = "7.0.3"
+url = "https://github.com/gavinhoward/bc/releases/download/7.0.3/bc-7.0.3.tar.xz"
+mirrors = []
+sha256 = ""
+license = "BSD-2-Clause"
+
+[[source]]
+name = "flex"
+version = "2.6.4"
+url = "https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz"
+mirrors = []
+sha256 = ""
+license = "BSD-2-Clause"
+
+[[source]]
+name = "openssl"
+version = "3.5.4"
+url = "https://www.openssl.org/source/openssl-3.5.4.tar.gz"
+mirrors = ["https://github.com/openssl/openssl/releases/download/openssl-3.5.4/openssl-3.5.4.tar.gz"]
+sha256 = ""
+license = "Apache-2.0"
+
+[[source]]
+name = "zlib"
+version = "1.3.2"
+url = "https://zlib.net/zlib-1.3.2.tar.gz"
+mirrors = ["https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz"]
+sha256 = ""
+license = "Zlib"
+
+[[source]]
+name = "pkgconf"
+version = "3.0.5"
+url = "https://distfiles.ariadne.space/pkgconf/pkgconf-3.0.5.tar.xz"
+mirrors = []
+sha256 = ""
+license = "ISC"
+
+[[source]]
+name = "elfutils"
+version = "0.195"
+url = "https://sourceware.org/elfutils/ftp/0.195/elfutils-0.195.tar.bz2"
+mirrors = []
+sha256 = ""
+license = "GPL-3.0-or-later AND (GPL-2.0-or-later OR LGPL-3.0-or-later)"
+
+[[source]]
+name = "python"
+version = "3.14.6"
+url = "https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz"
+mirrors = []
+sha256 = ""
+license = "PSF-2.0"
+
+[[source]]
+name = "busybox"
+version = "1.36.1"
+url = "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
+mirrors = []
+sha256 = ""
+license = "GPL-2.0-only"

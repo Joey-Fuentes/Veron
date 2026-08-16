@@ -1,0 +1,37 @@
+# Firmware and microcode for the GENERIC live-boot kernel (stage 4's kernel
+# work). The tree ships COMPLETE on the squashfs, zstd-compressed, with
+# WHENCE and every LICENCE.* preserved -- that is the redistribution
+# requirement. Drivers load it at module time (CONFIG_FW_LOADER_COMPRESS_ZSTD);
+# nothing is compiled into vmlinuz (CONFIG_EXTRA_FIRMWARE stays off: linking
+# non-GPL blobs into the kernel image is a GPL problem).
+#
+# PROVENANCE OF THESE HASHES: read on 2026-08-16 from kernel.org's
+# PGP-SIGNED sha256sums.asc in each directory -- not from memory, not from a
+# report. tools/verify-source.sh re-checks them on every fetch regardless.
+
+[[source]]
+name     = "linux-firmware"
+version  = "20260810"          # newest dated release (published 2026-08-10)
+url      = "https://www.kernel.org/pub/linux/kernel/firmware/linux-firmware-20260810.tar.xz"
+mirrors  = ["https://mirrors.edge.kernel.org/pub/linux/kernel/firmware/linux-firmware-20260810.tar.xz"]
+sha256   = "ac17c34fe73756926a961fbafadf8d8f07a3bd2dd2f4ea31a0fb5d50c714a49a"
+license  = "Redistributable per WHENCE; per-vendor LICENCE.* files govern"
+role     = "complete firmware tree for the generic live kernel (squashfs); 619 MB xz"
+
+[[source]]
+name     = "wireless-regdb"
+version  = "2026.05.30"        # newest release (published 2026-05-30)
+url      = "https://www.kernel.org/pub/software/network/wireless-regdb/wireless-regdb-2026.05.30.tar.xz"
+mirrors  = ["https://mirrors.edge.kernel.org/pub/software/network/wireless-regdb/wireless-regdb-2026.05.30.tar.xz"]
+sha256   = "8a27bfc081bafed8c24dd70fab0d96f098e5a0bfcd08d3da672595f225ab8993"
+license  = "ISC"
+role     = "regulatory.db -- without it Wi-Fi falls back to the world domain; the RTL8852AE wants this"
+
+[[source]]
+name     = "intel-ucode"
+version  = "VERIFY-FIRST"      # check https://github.com/intel/Intel-Linux-Processor-Microcode-Data-Files/releases
+url      = ""                  # fill after checking: .../archive/refs/tags/microcode-YYYYMMDD.tar.gz
+mirrors  = []
+sha256   = ""                  # MINT on first verified fetch
+license  = "Intel microcode license (redistributable)"
+role     = "early-cpio microcode for Intel machines; AMD microcode ships inside linux-firmware (amd-ucode/). NOT YET PINNED: the version was never verified against Intel's releases page -- do that before filling this in."
