@@ -464,7 +464,9 @@ int main(int argc, char **argv)
                 if (conf_set(dir, "autologin", "off"))
                     printf("\n  autologin is now OFF: the session STARTS "
                            "LOCKED and every console\n  asks for this "
-                           "factor. `veron-enroll autologin on` disarms.\n");
+                           "factor. Consoles already open stay open until\n"
+                           "  exit or reboot. `veron-enroll autologin on` "
+                           "disarms.\n");
             }
         }
 
