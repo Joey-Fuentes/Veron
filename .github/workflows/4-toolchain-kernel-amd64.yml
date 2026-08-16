@@ -1734,15 +1734,19 @@ jobs:
             echo "kernel   $(sha256sum rel/Image | cut -d' ' -f1)"
             echo "initrd   $(sha256sum rel/initramfs.cpio.gz | cut -d' ' -f1)"
             echo
-            echo "built by .github/workflows/stage4-arch-spike-amd64.yml"
+            echo "built by .github/workflows/4-toolchain-kernel-amd64.yml"
             echo "from tcc, through gcc 4.7.4 and 10.2.0, in a box holding"
-            echo "busybox and tcc and nothing else. The tcc itself is built"
-            echo "by the host compiler -- the one declared hole."
+            echo "busybox and tcc and nothing else. The tcc is tcc-amd64"
+            echo "from the 3/latest-x86_64 contract -- there is no host"
+            echo "compiler anywhere in this lineage:"
+            echo "  self-assembler -> pico-c -> micro-c -> tcc-arm64"
+            echo "  -> tcc-arm64-to-amd64 -> tcc-amd64 -> this sysroot"
+            [ -f in/4/PROVENANCE ] && { echo; sed 's/^/  /' in/4/PROVENANCE; }
           } > rel/PROVENANCE
           ls -l rel/ | sed 's/^/    /'
 
           gh release create "$TAG" --title 'Veron stage 4 (x86_64)' \
-            --notes 'The bootable stage-4 system for x86_64: sysroot, kernel and initramfs. See PROVENANCE for the commit. Separate from stage4/latest, which is aarch64.' \
+            --notes 'The bootable stage-4 system for x86_64, seed-true: its toolchain descends from the hand-audited trust root via the 3/latest-x86_64 contract, no host compiler anywhere. See PROVENANCE for the lineage and commit.' \
             2>/dev/null || true
           if gh release upload "$TAG" rel/* --clobber; then
             echo "VERON-STAGE4-PUBLISHED-AMD64  $(cut -d' ' -f1 rel/SYSROOT-SHA256)"
