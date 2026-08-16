@@ -51,6 +51,7 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -298,6 +299,34 @@ static const struct ext_session_lock_v1_listener lock_listener = {
 
 /* ---- input ------------------------------------------------------------ */
 
+/* KICK THE MEDIA MOUNT, WITHOUT WAITING FOR IT. Measured on hardware: an
+ * armed boot with no stick leaves the one-shot media service failed, and
+ * every console that could restart it is itself behind the factor that
+ * needs the mount -- inserting the stick after boot had NO path to being
+ * mounted short of a reboot. So a refused attempt kicks the service: the
+ * person's Enter is the signal that they believe the factor is present.
+ * dinitctl can block up to twelve seconds (the enumeration wait), so this
+ * must not run in-process: double-fork, the grandchild execs, init reaps
+ * it, and the caller returns immediately. "Already mounted" exits 0, so
+ * kicking on every refusal is harmless when the mount is fine. */
+static void kick_media(void)
+{
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (fork() == 0) {
+            setsid();
+            execl("/usr/bin/dinitctl", "dinitctl", "-p", "/run/dinitctl",
+                  "start", "media", (char *)NULL);
+            _exit(127);
+        }
+        _exit(0);
+    }
+    if (pid > 0) {
+        int st;
+        waitpid(pid, &st, 0);
+    }
+}
+
 static void try_unlock(void)
 {
     checking = 1;
@@ -317,6 +346,7 @@ static void try_unlock(void)
         running = 0;
         return;
     }
+    kick_media();
     failed_attempt = 1;
     /* A DELIBERATE PAUSE ON FAILURE. Not a lockout -- see the note at the end
      * of this file about why this program must never refuse forever -- but

@@ -32,6 +32,7 @@
 #include <termios.h>
 #include <time.h>
 #include <pwd.h>
+#include <sys/wait.h>
 
 /* ECHO OFF WHILE A FACTOR IS TYPED. A TOTP code is short-lived and a key file
  * path is not secret, but the same prompt may later carry something that is,
@@ -128,6 +129,25 @@ int main(int argc, char **argv)
             return 1;
         }
 
+        /* KICK THE MEDIA MOUNT ON REFUSAL -- same reasoning and shape as
+         * lock.c's kick_media: an armed boot without the stick leaves the
+         * one-shot media service failed with no console able to restart
+         * it, so the person's refused Enter doubles as the mount signal.
+         * Double-fork so the up-to-twelve-second dinitctl never blocks
+         * this prompt and init reaps the grandchild. */
+        {
+            pid_t kp = fork();
+            if (kp == 0) {
+                if (fork() == 0) {
+                    setsid();
+                    execl("/usr/bin/dinitctl", "dinitctl", "-p",
+                          "/run/dinitctl", "start", "media", (char *)NULL);
+                    _exit(127);
+                }
+                _exit(0);
+            }
+            if (kp > 0) { int st; waitpid(kp, &st, 0); }
+        }
         fputs("not accepted\n", stdout);
         struct timespec ts = { 2, 0 };
         nanosleep(&ts, NULL);
