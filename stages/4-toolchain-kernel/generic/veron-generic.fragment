@@ -41,13 +41,18 @@ CONFIG_EXT4_FS=y
 CONFIG_USB_STORAGE=y
 CONFIG_USB_UAS=y
 
-# --- early input: a keyboard must work before any module policy exists ---
+# --- early input: a keyboard must work before any module policy exists.
+#     AND A POINTER IS INPUT -- machine #1 (2026-08-16) booted to a desktop
+#     with a dead touchpad and a dead USB mouse, and the image's auth model
+#     has no runtime root to modprobe them alive. The whole input stack
+#     rides in the spine, as the proven laptop kernel always did; amdgpu
+#     and wifi stay modular as the hotplug work's first customers. ---
 CONFIG_USB_XHCI_HCD=y
 CONFIG_USB_EHCI_HCD=m
-CONFIG_USB_HID=m
-CONFIG_HID_GENERIC=m
-CONFIG_I2C_HID_ACPI=m
-CONFIG_I2C_HID_CORE=m
+CONFIG_USB_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_I2C_HID_ACPI=y
+CONFIG_I2C_HID_CORE=y
 # the touchpad stack, whole, from the tree's own war story: AMD64.md
 # ("Exactly the PINCTRL lesson, one layer down") and the spike's proven
 # set_cfg block, spikes/stage4/bridge/sysroot-amd64.sh:1496 -- in 7.x the
@@ -55,8 +60,8 @@ CONFIG_I2C_HID_CORE=m
 # the core must be stated or olddefconfig discards the platform in silence
 CONFIG_COMMON_CLK=y
 CONFIG_I2C=y
-CONFIG_I2C_DESIGNWARE_CORE=m
-CONFIG_I2C_DESIGNWARE_PLATFORM=m
+CONFIG_I2C_DESIGNWARE_CORE=y
+CONFIG_I2C_DESIGNWARE_PLATFORM=y
 CONFIG_PINCTRL=y
 CONFIG_PINCTRL_AMD=y
 CONFIG_GPIOLIB=y
@@ -164,7 +169,7 @@ CONFIG_SND_SOC_SOF_AMD_RENOIR=m
 CONFIG_SND_USB_AUDIO=m
 
 # --- input breadth: any keyboard, any touchpad, any mouse ---
-CONFIG_HID_MULTITOUCH=m
+CONFIG_HID_MULTITOUCH=y
 CONFIG_HID_APPLE=m
 CONFIG_HID_ELAN=m
 
