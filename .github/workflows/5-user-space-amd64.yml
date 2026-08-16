@@ -1610,7 +1610,11 @@ jobs:
           tl=$(grep -a "VERON-STAGE5-TESTS" "$O/boot-generic.log" | tail -1 || true)
           echo "  $tl"
           case "$tl" in *"fail=0"*) : ;; *) echo "VERON-STAGE5-GENERIC-TESTS-FAIL"; fail=1 ;; esac
-          grep -aq "VERON-STAGE5-FAIL" "$O/boot-generic.log" && fail=1
+          # UNDER set -e, AN UNGUARDED `grep && x` DIES WHEN GREP FINDS
+          # NOTHING -- i.e. on the HEALTHY boot. Found in audit before this
+          # step's first-ever execution; it would have failed a passing
+          # image at the last gate of a ten-hour climb.
+          if grep -aq "VERON-STAGE5-FAIL" "$O/boot-generic.log"; then fail=1; fi
           [ "$fail" = 0 ] || exit 1
           echo "VERON-STAGE5-GENERIC-BOOT-OK  the image runs under the generic kernel"
 
