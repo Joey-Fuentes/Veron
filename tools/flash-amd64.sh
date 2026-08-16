@@ -27,21 +27,21 @@
   fi
 
   # --- 1. fetch: the image, and BOTH kernels ------------------------------
-  # ONE ASSET PER CALL, EACH VERIFIED BY NAME. `gh release download` with
-  # several --pattern flags exits 0 when only SOME match -- a release
-  # missing one asset sailed straight through to tar on 2026-08-16, and
-  # the first anyone heard of it was tar's "Cannot open". One asset, one
-  # command, one named check: a missing asset now says WHICH release is
+  # PLAIN curl AGAINST PUBLIC RELEASE URLS, NO gh, NO AUTH: the repo is
+  # public and this script must run on a machine that has never heard of
+  # `gh auth login` (it demanded one on 2026-08-16 and stopped the flash).
+  # Slash-in-tag download URLs work literally -- the stage-4 workflow
+  # fetches src/* releases exactly this way. ONE ASSET PER CALL, EACH
+  # VERIFIED BY NAME: a release missing an asset says WHICH release is
   # short WHAT, before anything else runs.
+  REL=https://github.com/Joey-Fuentes/Veron/releases/download
   for a in rootfs.img.tar.zst Image initramfs.cpio.gz; do
-    gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
-      --pattern "$a" --clobber \
+    curl -fSL --retry 2 -o "$a" "$REL/stage5/latest-amd64/$a" \
       || { echo "FAIL: stage5/latest-amd64 has no asset '$a'"; exit 1; }
     [ -s "$DL/$a" ] || { echo "FAIL: '$a' downloaded empty"; exit 1; }
   done
   for a in vmlinuz-generic modules-7.1.5-generic.tar.zst KERNEL-GENERIC-SHA256; do
-    gh release download 4/kernel-x86_64 -R Joey-Fuentes/Veron \
-      --pattern "$a" --clobber \
+    curl -fSL --retry 2 -o "$a" "$REL/4/kernel-x86_64/$a" \
       || { echo "FAIL: 4/kernel-x86_64 has no asset '$a'"; exit 1; }
     [ -s "$DL/$a" ] || { echo "FAIL: '$a' downloaded empty"; exit 1; }
   done
@@ -83,11 +83,11 @@
 
   FW=linux-firmware-20260810
   RD=wireless-regdb-2026.05.30
-  gh release download "src/$FW.tar.xz" -R Joey-Fuentes/Veron --clobber \
-    -p "$FW.tar.xz" || curl -fsSLO \
+  curl -fSL --retry 2 -o "$FW.tar.xz" "$REL/src/$FW.tar.xz/$FW.tar.xz" \
+    || curl -fsSLO \
     "https://www.kernel.org/pub/linux/kernel/firmware/$FW.tar.xz"
-  gh release download "src/$RD.tar.xz" -R Joey-Fuentes/Veron --clobber \
-    -p "$RD.tar.xz" || curl -fsSLO \
+  curl -fSL --retry 2 -o "$RD.tar.xz" "$REL/src/$RD.tar.xz/$RD.tar.xz" \
+    || curl -fsSLO \
     "https://www.kernel.org/pub/software/network/wireless-regdb/$RD.tar.xz"
   # the pins, verbatim from sources/firmware.toml -- verify BEFORE the disk
   printf '%s\n' \
