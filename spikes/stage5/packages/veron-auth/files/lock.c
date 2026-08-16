@@ -400,7 +400,18 @@ static void kb_modifiers(void *data, struct wl_keyboard *k, uint32_t serial,
 
 static void kb_enter(void *d, struct wl_keyboard *k, uint32_t s,
                      struct wl_surface *su, struct wl_array *a)
-{ (void)d; (void)k; (void)s; (void)su; (void)a; }
+{
+    (void)d; (void)k; (void)s; (void)su; (void)a;
+    /* FRESH FOCUS, FRESH SCREEN. After a VT round-trip the reattached
+     * surfaces redrew whatever state the last attempt left -- a "Not
+     * accepted" from before a person fixed the mount looked exactly like a
+     * new refusal, and cost a diagnostic session. Keyboard focus arriving
+     * means a person is here now; show the current state, not history. */
+    if (failed_attempt) {
+        failed_attempt = 0;
+        draw_all();
+    }
+}
 static void kb_leave(void *d, struct wl_keyboard *k, uint32_t s,
                      struct wl_surface *su)
 { (void)d; (void)k; (void)s; (void)su; }
@@ -414,6 +425,23 @@ static const struct wl_keyboard_listener kb_listener = {
 static void seat_caps(void *data, struct wl_seat *s, uint32_t caps)
 {
     (void)data;
+    /* THE KEYBOARD GOES AWAY ON EVERY VT SWITCH, EXACTLY LIKE THE OUTPUTS,
+     * AND ONLY THE OUTPUTS WERE HANDLED. wlroots removes the input devices
+     * when the session deactivates (Ctrl+Alt+F2) and re-adds them on
+     * return; the capability bit drops and comes back. This handler only
+     * ever ACQUIRED: on re-add, `keyboard` was still the stale non-NULL
+     * object -- inert, per protocol, once its capability was withdrawn --
+     * so nothing re-bound, and every keystroke after a VT round-trip went
+     * nowhere. Measured on hardware, repeatedly, as the lock screen
+     * "refusing" Enter while showing a frozen last-drawn message: the
+     * refusal was never fresh, the screen was a photograph and the
+     * keyboard was dead. Releasing on drop makes the existing acquire
+     * branch fire again on return, and the compositor resends the keymap
+     * to the new object (kb_keymap already replaces the xkb state). */
+    if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && keyboard) {
+        wl_keyboard_release(keyboard);
+        keyboard = NULL;
+    }
     if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !keyboard) {
         keyboard = wl_seat_get_keyboard(s);
         wl_keyboard_add_listener(keyboard, &kb_listener, NULL);
