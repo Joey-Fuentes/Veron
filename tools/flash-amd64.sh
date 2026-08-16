@@ -13,25 +13,40 @@
   mkdir -p "$DL"; cd "$DL"
 
   # --- 1. fetch: the image, and BOTH kernels ------------------------------
-  gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
-    --pattern 'rootfs.img.tar.zst' --pattern 'Image' \
-    --pattern 'initramfs.cpio.gz' --clobber
-  gh release download 4/kernel-x86_64 -R Joey-Fuentes/Veron --clobber
-  tar --zstd -xf rootfs.img.tar.zst
-
-  # AN EXPLICIT exit, NOT `[ a ] && [ b ]`. `set -e` does NOT fire on a
-  # trailing AND-OR list -- `sh -c 'set -e; [ -f /no ] && [ -f /no ]; echo ran'`
-  # prints `ran` -- so the obvious one-liner would have checked nothing and
-  # let a failed download reach `dd`. Verified before this was written down.
-  for f in rootfs.img Image initramfs.cpio.gz vmlinuz-generic \
-           modules-7.1.5-generic.tar.zst KERNEL-GENERIC-SHA256; do
-    [ -s "$DL/$f" ] || { echo "missing or empty: $DL/$f"; exit 1; }
+  # ONE ASSET PER CALL, EACH VERIFIED BY NAME. `gh release download` with
+  # several --pattern flags exits 0 when only SOME match -- a release
+  # missing one asset sailed straight through to tar on 2026-08-16, and
+  # the first anyone heard of it was tar's "Cannot open". One asset, one
+  # command, one named check: a missing asset now says WHICH release is
+  # short WHAT, before anything else runs.
+  for a in rootfs.img.tar.zst Image initramfs.cpio.gz; do
+    gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
+      --pattern "$a" --clobber \
+      || { echo "FAIL: stage5/latest-amd64 has no asset '$a'"; exit 1; }
+    [ -s "$DL/$a" ] || { echo "FAIL: '$a' downloaded empty"; exit 1; }
   done
+  for a in vmlinuz-generic modules-7.1.5-generic.tar.zst KERNEL-GENERIC-SHA256; do
+    gh release download 4/kernel-x86_64 -R Joey-Fuentes/Veron \
+      --pattern "$a" --clobber \
+      || { echo "FAIL: 4/kernel-x86_64 has no asset '$a'"; exit 1; }
+    [ -s "$DL/$a" ] || { echo "FAIL: '$a' downloaded empty"; exit 1; }
+  done
+  # EXTRACTION ONLY AFTER EVERY INPUT IS PROVEN PRESENT -- the old order
+  # extracted first and checked after, which is backwards.
+  tar --zstd -xf rootfs.img.tar.zst
+  [ -s "$DL/rootfs.img" ] || { echo "FAIL: rootfs.img.tar.zst held no rootfs.img"; exit 1; }
   # the generic kernel is PINNED -- verify before it touches a disk
   grep -E 'vmlinuz-generic|modules' KERNEL-GENERIC-SHA256 | sha256sum -c -
 
-  # --- 2. write the root -------------------------------------------------
+  # --- 2. write the root, then GROW THE FILESYSTEM TO THE PARTITION ------
+  # The image carries an ext4 sized at image-creation size; the partition
+  # is bigger, and the extra space is INVISIBLE until the filesystem is
+  # told about it. The full firmware tree was the first payload big enough
+  # to hit that ceiling -- "No space left on device" with gigabytes free
+  # on p5, 2026-08-16. e2fsck first because resize2fs refuses without it.
   sudo dd if="$DL/rootfs.img" of="$ROOT" bs=4M status=progress conv=fsync
+  sudo e2fsck -f -y "$ROOT"
+  sudo resize2fs "$ROOT"
 
   # --- 3. modules + THE WHOLE FIRMWARE TREE into the root ----------------
   # FIRMWARE IS DATA RIDING BESIDE THE IMAGE, exactly as the kernel does:
