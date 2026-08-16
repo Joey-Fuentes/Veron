@@ -20,17 +20,24 @@ CONFIG_BLK_DEV_DM=m
 CONFIG_VFAT_FS=m
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
-CONFIG_EXT4_FS=m
 CONFIG_BLK_DEV_INITRD=y
 
-# --- storage: any disk the medium or target may be on ---
-CONFIG_BLK_DEV_NVME=m
-CONFIG_SATA_AHCI=m
-CONFIG_USB_STORAGE=m
-CONFIG_USB_UAS=m
+# --- storage spine: BUILT IN, deliberately against distro habit. A
+#     distro ships dracut to choreograph storage modules in an initramfs;
+#     Veron has no such tool and wants none. =y costs a couple MB of
+#     vmlinuz and buys a kernel that can reach ANY root or live medium
+#     before a single module loads -- the initramfs's job shrinks to
+#     "find medium, overlay, switch_root", and bare metal can mount an
+#     ext4-on-nvme root with no initramfs plumbing at all. ---
+CONFIG_BLK_DEV_NVME=y
+CONFIG_SATA_AHCI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_EXT4_FS=y
+CONFIG_USB_STORAGE=y
+CONFIG_USB_UAS=y
 
 # --- early input: a keyboard must work before any module policy exists ---
-CONFIG_USB_XHCI_HCD=m
+CONFIG_USB_XHCI_HCD=y
 CONFIG_USB_EHCI_HCD=m
 CONFIG_USB_HID=m
 CONFIG_HID_GENERIC=m
