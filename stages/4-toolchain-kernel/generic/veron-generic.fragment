@@ -150,6 +150,18 @@ CONFIG_HID_MULTITOUCH=m
 CONFIG_HID_APPLE=m
 CONFIG_HID_ELAN=m
 
+# --- hotplug: the userspace has NO udev (libudev-zero, no daemon;
+#     devtmpfs makes the nodes). veron-system's device-nodes script names
+#     its own limit and its plan: "wiring busybox mdev as the kernel's
+#     hotplug helper". That is the legacy /proc/sys/kernel/hotplug
+#     mechanism, which modern kernels DEFAULT OFF -- without these lines
+#     the planned fix hits a kernel with the mechanism compiled out.
+#     (The netlink path needs nothing; it is unconditional.) ---
+CONFIG_UEVENT_HELPER=y
+CONFIG_UEVENT_HELPER_PATH=""
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+
 # --- platform: power, type-c, thunderbolt, efi vars, webcam, bluetooth ---
 CONFIG_X86_AMD_PSTATE=y
 CONFIG_TYPEC=m
