@@ -1,0 +1,76 @@
+#!/bin/busybox sh
+# The one hotplug handler, whichever road delivered the event.
+#
+# TWO ROADS INTO THIS SCRIPT, ONE SET OF DECISIONS. busybox mdev in daemon
+# mode sets MDEV/SUBSYSTEM/ACTION; the kernel's uevent helper sets
+# DEVNAME/DEVPATH/SUBSYSTEM/ACTION. Normalized here so the policy below is
+# written once -- the roadmap said "mdev is the answer" four times across
+# four documents while the tree shipped hand-chowned nodes and no hotplug
+# at all; this file is where that stops. Everything a hotplugged device
+# needs lives here: permissions for the session's device classes, and the
+# media mount kicked on insertion so plugging the key stick in IS the
+# mount -- the missing half of the lock-screen recovery flow.
+[ -n "${ACTION:-}" ] || exit 0
+DEV="${MDEV:-${DEVNAME:-}}"
+DEV="${DEV##*/}"
+[ -n "$DEV" ] || exit 0
+
+case "${SUBSYSTEM:-}" in
+input)
+    # HOTPLUGGED KEYBOARDS AND MICE WERE DEAD ON ARRIVAL: devtmpfs makes
+    # /dev/input/event* root:root 600 and libinput (running as veron, in
+    # `input`) never learns they exist. Boot-time nodes are fixed by
+    # device-nodes; this is the same fix for devices that arrive later.
+    if [ "$ACTION" = add ]; then
+        for n in "/dev/input/$DEV" "/dev/$DEV"; do
+            [ -e "$n" ] || continue
+            /bin/busybox chgrp input "$n" 2>/dev/null
+            /bin/busybox chmod 0660 "$n" 2>/dev/null
+        done
+    fi
+    ;;
+hidraw)
+    # FIDO2/security-key transport, per AUTHENTICATION.md: the browser or
+    # ssh client runs unprivileged and needs the node. Group input keeps
+    # one group for "things the person at the seat may touch".
+    if [ "$ACTION" = add ] && [ -e "/dev/$DEV" ]; then
+        /bin/busybox chgrp input "/dev/$DEV" 2>/dev/null
+        /bin/busybox chmod 0660 "/dev/$DEV" 2>/dev/null
+    fi
+    ;;
+drm)
+    if [ "$ACTION" = add ]; then
+        case "$DEV" in
+        renderD*) /bin/busybox chgrp render "/dev/dri/$DEV" 2>/dev/null
+                  /bin/busybox chmod 0660 "/dev/dri/$DEV" 2>/dev/null ;;
+        card*)    /bin/busybox chgrp video "/dev/dri/$DEV" 2>/dev/null
+                  /bin/busybox chmod 0660 "/dev/dri/$DEV" 2>/dev/null ;;
+        esac
+    fi
+    ;;
+block)
+    case "$ACTION" in
+    add)
+        # INSERTION IS THE MOUNT SIGNAL. The media service already does
+        # everything hard -- picks the first removable unmounted disk,
+        # mounts at the canonical path, self-heals stale corpses -- so
+        # insertion just kicks it. Multiple events per device (disk +
+        # partitions) all no-op after the first succeeds. Backgrounded:
+        # the enumeration wait can hold 12s and hotplug must not.
+        [ -S /run/dinitctl ] || exit 0
+        DINIT_SOCKET_PATH=/run/dinitctl /usr/bin/dinitctl start media \
+            >/dev/null 2>&1 &
+        ;;
+    remove)
+        # THE YANK, HANDLED AT THE MOMENT IT HAPPENS rather than found as
+        # a corpse later. If the departed device is what the canonical
+        # mountpoint was serving, unmount it now; the next insertion then
+        # mounts fresh instead of hitting the stale-mount self-heal path.
+        if /bin/busybox grep -q "^/dev/$DEV /run/media/veron/stick " /proc/mounts; then
+            /bin/busybox umount -f /run/media/veron/stick 2>/dev/null
+        fi
+        ;;
+    esac
+    ;;
+esac
+exit 0

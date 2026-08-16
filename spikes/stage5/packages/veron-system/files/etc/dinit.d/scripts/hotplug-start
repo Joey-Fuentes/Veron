@@ -1,0 +1,37 @@
+#!/bin/busybox sh
+# Start hotplug handling on whichever road this kernel+busybox pair has.
+#
+# TWO MECHANISMS EXIST AND NEITHER IS GUARANTEED HERE. busybox mdev has a
+# netlink daemon mode (-d), but only if CONFIG_FEATURE_MDEV_DAEMON was in
+# the seed's config; the kernel can exec a helper per uevent via
+# /proc/sys/kernel/hotplug, but only if CONFIG_UEVENT_HELPER was kept.
+# Neither is inspectable from the stage5 tree (busybox is seed-chain, the
+# kernel is a prior stage), and this project has already paid twice for
+# services built on an unverified assumption (swaybg's quoting, veron-idle
+# would have been next). So: PROBE, USE WHAT EXISTS, AND SAY WHICH.
+#
+# Every branch leaves this process running and the service STARTED, so a
+# machine with neither road boots green and its log says plainly what is
+# missing -- a loud absence instead of a crash loop.
+H=/etc/dinit.d/scripts/hotplug-handler
+
+if /bin/busybox mdev --help 2>&1 | /bin/busybox grep -q '\-d'; then
+    echo "hotplug: busybox mdev daemon (netlink)"
+    # mdev.conf routes events; perms there mirror hotplug-handler's rules.
+    exec /bin/busybox mdev -df
+fi
+
+if [ -w /proc/sys/kernel/hotplug ]; then
+    echo "hotplug: kernel uevent helper -> $H"
+    echo "$H" > /proc/sys/kernel/hotplug
+    # The kernel execs the handler per event; this process just holds the
+    # service open so `dinitctl status hotplug` reflects reality, and
+    # clears the helper again if stopped.
+    trap 'echo "" > /proc/sys/kernel/hotplug 2>/dev/null; exit 0' TERM INT
+    while :; do /bin/busybox sleep 3600 & wait $!; done
+fi
+
+echo "VERON-HOTPLUG-NONE  neither mdev -d nor /proc/sys/kernel/hotplug"
+echo "  hotplugged devices will keep devtmpfs defaults; insertion will"
+echo "  not auto-mount. The enter-kick (m131) remains the mount path."
+while :; do /bin/busybox sleep 86400 & wait $!; done

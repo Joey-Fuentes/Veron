@@ -1,0 +1,17 @@
+# Hotplug handling -- the mdev integration four documents promised.
+#
+# scripts/hotplug-start probes which mechanism this kernel+busybox pair
+# actually has (mdev netlink daemon, or the kernel uevent helper) and
+# wires scripts/hotplug-handler to it; the handler fixes permissions on
+# hotplugged input/hidraw/drm nodes and turns block-device insertion into
+# a `media` service kick -- so plugging the key stick in mounts it, and
+# yanking it unmounts cleanly at the moment it happens.
+#
+# depends-on early-filesystems for /proc and /run; device-nodes still owns
+# the BOOT-time nodes (coldplug), this owns everything that arrives later.
+# restart=false: the starter never exits in normal operation, and if it
+# ever does, once-and-visible beats a loop.
+type = process
+command = /bin/busybox sh /etc/dinit.d/scripts/hotplug-start
+restart = false
+depends-on = early-filesystems
