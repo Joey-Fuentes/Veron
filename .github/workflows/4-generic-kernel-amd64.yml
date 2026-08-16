@@ -93,7 +93,7 @@ jobs:
           done
           [ "$fail" = 0 ] || { echo "FAIL: the sysroot lacks tools named above"; exit 1; }
 
-      - name: 'CONFIG: defconfig + the Veron fragment, then the 86-line gate'
+      - name: 'CONFIG: defconfig + the Veron fragment, then the REQUIRED-CONFIGS gate'
         run: |
           set -eu
           box() { bwrap --unshare-all --die-with-parent \
@@ -114,7 +114,7 @@ jobs:
             grep -Fxq "$line" build/.config || { echo "  DROPPED $line"; miss=1; }
           done < stages/4-toolchain-kernel/generic/REQUIRED-CONFIGS
           [ "$miss" = 0 ] || { echo "FAIL: the config gate lists every dropped line above"; exit 1; }
-          echo "VERON-CONFIG-GATE-OK  $(grep -c '^CONFIG_' build/.config) options, 86 required lines held"
+          echo "VERON-CONFIG-GATE-OK  $(grep -c '^CONFIG_' build/.config) options, all required lines held"
 
       - name: 'BUILD: the generic kernel, by the chain, reproducibly'
         run: |
