@@ -890,6 +890,8 @@ follow any chain by hand.
 
 ---
 
+**Logging law (see AGENTS.md invariant 9): CI never truncates logs; diagnostics show everything; long steps stream live; runaway output is a producer bug, not a suppression target.**
+
 ## 7. Order of work (each step leaves the repo green)
 
 ### 7.0 The prime directive: redo properly; spikes stay live and untouched

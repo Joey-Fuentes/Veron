@@ -103,9 +103,9 @@ jobs:
                   --chdir /build \
                   /usr/bin/sh -c "$*"; }
           cp stages/4-toolchain-kernel/generic/veron-generic.fragment build/
-          box "make ARCH=x86_64 defconfig >/dev/null"
-          box "sh scripts/kconfig/merge_config.sh -m .config veron-generic.fragment >/dev/null"
-          box "make ARCH=x86_64 olddefconfig >/dev/null"
+          box "make ARCH=x86_64 defconfig"
+          box "sh scripts/kconfig/merge_config.sh -m .config veron-generic.fragment"
+          box "make ARCH=x86_64 olddefconfig"
           # THE GATE: every fragment line must survive dependency resolution
           # verbatim. olddefconfig silently dropping a line is the classic
           # failure; here it is a listed, fatal one.
@@ -130,8 +130,14 @@ jobs:
                   /usr/bin/sh -c "$*"; }
           KBUILD_TS="$(date -u -d @$(stat -c %Y linux-$KERNEL.tar.xz) '+%Y-%m-%d')"
           export KBUILD_TS
-          box "make ARCH=x86_64 -j\$(nproc) >/tmp/kbuild.log 2>&1 || { tail -40 /tmp/kbuild.log; exit 1; }"
-          box "make ARCH=x86_64 INSTALL_MOD_PATH=/build/staging modules_install >/dev/null"
+          # AGENTS.md invariant 9: NEVER TRUNCATE LOGS IN CI. The build
+          # streams live -- the output is the heartbeat -- AND tees to
+          # /build/kbuild.log, which is bind-mounted so the file survives
+          # the box and uploads whole. An earlier revision wrote to the
+          # box's tmpfs and tail -40'd failures: destroyed evidence, twice.
+          box "make ARCH=x86_64 -j\$(nproc) 2>&1 | tee /build/kbuild.log; exit \${PIPESTATUS:-\$?}" \
+            || { echo "FAIL: kbuild failed -- the FULL log streamed above and is in the kbuild-log artifact"; exit 1; }
+          box "make ARCH=x86_64 INSTALL_MOD_PATH=/build/staging modules_install 2>&1 | tee /build/modinstall.log; exit \${PIPESTATUS:-\$?}"
           ls -la build/arch/x86/boot/bzImage
           echo "modules: $(find build/staging/lib/modules -name '*.ko' | wc -l)"
 
@@ -174,6 +180,18 @@ jobs:
           grep -q "VERON-GENERIC-TESTS pass=2 fail=0" boot.log \
             || { echo "FAIL: the boot gate did not pass"; exit 1; }
           echo "VERON-GENERIC-BOOT-OK"
+
+      - name: 'EVIDENCE: the whole logs, uploaded, always'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generic-kernel-evidence
+          path: |
+            build/kbuild.log
+            build/modinstall.log
+            build/.config
+            boot.log
+          if-no-files-found: ignore
 
       - name: 'PUBLISH: 4/kernel-x86_64'
         env:

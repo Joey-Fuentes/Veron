@@ -94,6 +94,21 @@ because an older doc predates it.
    frozen in the tree, enforced by compare gates** — never hand-authored.
    If a step can't be hermetic and reproducible, stop and flag it.
 
+9. **NEVER TRUNCATE LOGS IN CI. Logs are evidence; a truncated log is
+   destroyed evidence.** No `tail -N` on a failure path, no `head` on a
+   diagnostic, no `>/dev/null` on build or install output, no "last 40
+   lines" summaries standing in for the log itself. Long steps stream
+   their output live (the output IS the heartbeat), the full log is
+   written somewhere that survives the box, and diagnostic files uploaded
+   from jobs contain EVERYTHING. "Runaway logs" are not a reason to
+   truncate: unbounded output is a bug in the thing producing it — fix
+   the producer, never suppress the evidence. A boolean probe may be
+   quiet (`command -v x >/dev/null` decides, it does not diagnose), but
+   anything a human might read to understand a failure is shown whole.
+   This invariant exists because it was violated repeatedly by agents
+   "tidying" output and then debugging blind against their own tidiness;
+   the pattern cost real runs. It does not get relitigated per-workflow.
+
 ---
 
 ## 2a. When to STOP and escalate
