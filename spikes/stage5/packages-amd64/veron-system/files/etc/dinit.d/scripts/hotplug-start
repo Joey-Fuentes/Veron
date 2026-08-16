@@ -1,37 +1,32 @@
 #!/bin/busybox sh
-# Start hotplug handling on whichever road this kernel+busybox pair has.
+# Start hotplug handling: the kernel uevent helper, or a loud nothing.
 #
-# TWO MECHANISMS EXIST AND NEITHER IS GUARANTEED HERE. busybox mdev has a
-# netlink daemon mode (-d), but only if CONFIG_FEATURE_MDEV_DAEMON was in
-# the seed's config; the kernel can exec a helper per uevent via
-# /proc/sys/kernel/hotplug, but only if CONFIG_UEVENT_HELPER was kept.
-# Neither is inspectable from the stage5 tree (busybox is seed-chain, the
-# kernel is a prior stage), and this project has already paid twice for
-# services built on an unverified assumption (swaybg's quoting, veron-idle
-# would have been next). So: PROBE, USE WHAT EXISTS, AND SAY WHICH.
+# THE MDEV DAEMON ROAD IS GONE, AND CI'S BOOT LOG IS WHY. The seed busybox
+# turned out to have daemon mode, this script preferred it, and busybox
+# mdev's rule engine applies a default root:root 0660 policy to EVERY
+# uevent node it touches -- it fought devtmpfs over the whole of /dev
+# until `getty: can't open '/dev/null': Permission denied` was printing
+# between service starts and both consoles rate-limited to death. Making
+# mdev safe would mean whitelisting the world in mdev.conf; the handler
+# below only needs four subsystems and leaves everything else exactly as
+# devtmpfs made it. Surgical beats general here.
 #
-# Every branch leaves this process running and the service STARTED, so a
-# machine with neither road boots green and its log says plainly what is
-# missing -- a loud absence instead of a crash loop.
+# The kernel uevent-helper road execs scripts/hotplug-handler per event --
+# input/hidraw/drm permissions, media mount on insertion, unmount on
+# removal -- and touches nothing else. If CONFIG_UEVENT_HELPER is absent
+# from this kernel, that is stated plainly and the service stays green:
+# a loud absence instead of a crash loop, and the m131 enter-kick remains
+# the mount path meanwhile.
 H=/etc/dinit.d/scripts/hotplug-handler
-
-if /bin/busybox mdev --help 2>&1 | /bin/busybox grep -q '\-d'; then
-    echo "hotplug: busybox mdev daemon (netlink)"
-    # mdev.conf routes events; perms there mirror hotplug-handler's rules.
-    exec /bin/busybox mdev -df
-fi
 
 if [ -w /proc/sys/kernel/hotplug ]; then
     echo "hotplug: kernel uevent helper -> $H"
     echo "$H" > /proc/sys/kernel/hotplug
-    # The kernel execs the handler per event; this process just holds the
-    # service open so `dinitctl status hotplug` reflects reality, and
-    # clears the helper again if stopped.
     trap 'echo "" > /proc/sys/kernel/hotplug 2>/dev/null; exit 0' TERM INT
     while :; do /bin/busybox sleep 3600 & wait $!; done
 fi
 
-echo "VERON-HOTPLUG-NONE  neither mdev -d nor /proc/sys/kernel/hotplug"
-echo "  hotplugged devices will keep devtmpfs defaults; insertion will"
-echo "  not auto-mount. The enter-kick (m131) remains the mount path."
+echo "VERON-HOTPLUG-NONE  /proc/sys/kernel/hotplug is not writable"
+echo "  hotplugged devices keep devtmpfs defaults; insertion will not"
+echo "  auto-mount. The enter-kick (m131) remains the mount path."
 while :; do /bin/busybox sleep 86400 & wait $!; done
