@@ -33,6 +33,12 @@ jobs:
           sudo apt-get update >/dev/null
           sudo apt-get install -y --no-install-recommends \
             bubblewrap qemu-system-x86 cpio zstd python3 file >/dev/null
+          # ubuntu-24.04 apparmor blocks unprivileged user namespaces;
+          # without this, EVERY bwrap --unshare-all dies at namespace
+          # creation. Stage 4 line 342 does the same. Two runs of this
+          # workflow died with the message suppressed (86667281511,
+          # 86667856298) -- hence also the unsuppressed canary in PROBE.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           mkdir -p in/4
           gh release download 4/latest-x86_64 -D in/4 --clobber
           got=$(sha256sum in/4/sysroot.tar.zst | cut -d' ' -f1)
@@ -64,6 +70,15 @@ jobs:
           # RELATIVE bind and env(1) -- bwrap printed usage to a suppressed
           # stderr and every tool probed MISSING (run 86667281511).
           ls -ld lfs/usr/bin/sh || { echo "FAIL: sysroot has no /usr/bin/sh"; exit 1; }
+          # THE CANARY: one box invocation with stderr WIDE OPEN. If bwrap
+          # itself cannot run, this says so in its own words, and the loop
+          # below never gets to print a false MISSING about the sysroot.
+          bwrap --unshare-all --die-with-parent \
+            --bind "$PWD/lfs" / --proc /proc --dev /dev \
+            --tmpfs /tmp --tmpfs /run \
+            --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
+            /usr/bin/sh -c 'echo "  canary: the box opens; sh is $(command -v sh)"' \
+            || { echo "FAIL: bwrap cannot open the box -- its own message is above"; exit 1; }
           fail=0
           for t in gcc make flex bison bc perl gzip gawk; do
             if bwrap --unshare-all --die-with-parent \
