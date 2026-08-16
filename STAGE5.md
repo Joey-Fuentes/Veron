@@ -588,42 +588,72 @@ deletes the partition they boot from.
 
   mkdir -p "$DL"; cd "$DL"
 
-  # --- 1. fetch ----------------------------------------------------------
+  # --- 1. fetch: the image, and BOTH kernels ------------------------------
   gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
     --pattern 'rootfs.img.tar.zst' --pattern 'Image' \
     --pattern 'initramfs.cpio.gz' --clobber
+  gh release download 4/kernel-x86_64 -R Joey-Fuentes/Veron --clobber
   tar --zstd -xf rootfs.img.tar.zst
 
   # AN EXPLICIT exit, NOT `[ a ] && [ b ]`. `set -e` does NOT fire on a
   # trailing AND-OR list -- `sh -c 'set -e; [ -f /no ] && [ -f /no ]; echo ran'`
   # prints `ran` -- so the obvious one-liner would have checked nothing and
   # let a failed download reach `dd`. Verified before this was written down.
-  for f in rootfs.img Image initramfs.cpio.gz; do
+  for f in rootfs.img Image initramfs.cpio.gz vmlinuz-generic \
+           modules-7.1.5-generic.tar.zst KERNEL-GENERIC-SHA256; do
     [ -s "$DL/$f" ] || { echo "missing or empty: $DL/$f"; exit 1; }
   done
+  # the generic kernel is PINNED -- verify before it touches a disk
+  grep -E 'vmlinuz-generic|modules' KERNEL-GENERIC-SHA256 | sha256sum -c -
 
   # --- 2. write the root -------------------------------------------------
   sudo dd if="$DL/rootfs.img" of="$ROOT" bs=4M status=progress conv=fsync
 
-  # --- 3. firmware into the initramfs ------------------------------------
+  # --- 3. modules + firmware INTO THE ROOT (the generic kernel's way) ----
+  # The generic kernel's amdgpu/rtw89 are MODULES: they load after the root
+  # is up, from /lib/firmware ON THE ROOT, and FW_LOADER_COMPRESS_ZSTD
+  # reads the .zst verbatim -- no decompression dance.
+  # --keep-directory-symlink IS LOAD-BEARING: the image's /lib is a SYMLINK
+  # into usr/lib, and without the flag GNU tar replaces it with a real
+  # directory, the ELF interpreter path vanishes, and every dynamic binary
+  # fails execve ("not found" on a file that exists, rc=127). One missing
+  # flag took down every compiled binary in the image, 2026-08-16.
+  sudo mkdir -p /mnt/veron
+  sudo mount "$ROOT" /mnt/veron
+  sudo tar --zstd --keep-directory-symlink \
+       -xf "$DL/modules-7.1.5-generic.tar.zst" -C /mnt/veron
+  sudo mkdir -p /mnt/veron/lib/firmware/amdgpu /mnt/veron/lib/firmware/rtw89
+  sudo cp /lib/firmware/amdgpu/renoir_*.bin.zst /mnt/veron/lib/firmware/amdgpu/
+  sudo cp /lib/firmware/rtw89/rtw8852a_fw.bin.zst /mnt/veron/lib/firmware/rtw89/
+  sudo cp /lib/firmware/regulatory.db /lib/firmware/regulatory.db.p7s \
+       /mnt/veron/lib/firmware/
+  echo "  modules: $(sudo find /mnt/veron/lib/modules -name '*.ko' | wc -l)"
+
+  # --- 3b. the FALLBACK kernel pair, rebuilt every flash -----------------
+  # dd wiped Image and initramfs-fw off p5; an old GRUB entry pointing at
+  # nothing is how one field run ended ("error: file '/initramfs-fw.cpio.gz'
+  # not found"). A fallback entry is only a fallback while its files exist.
+  # The minimal kernel's drivers are BUILT IN and probe before p5 mounts,
+  # so ITS firmware still rides decompressed in ITS initramfs:
   sudo rm -rf /tmp/ir && mkdir -p /tmp/ir && cd /tmp/ir
   zcat "$DL/initramfs.cpio.gz" | sudo cpio -idm
   sudo mkdir -p lib/firmware/amdgpu lib/firmware/rtw89
-
   for f in /lib/firmware/amdgpu/renoir_*.bin.zst; do
     zstd -d -f -c "$f" | sudo tee "lib/firmware/amdgpu/$(basename "${f%.zst}")" >/dev/null
   done
   zstd -d -f -c /lib/firmware/rtw89/rtw8852a_fw.bin.zst \
     | sudo tee lib/firmware/rtw89/rtw8852a_fw.bin >/dev/null
-
   sudo sh -c 'find . | cpio -o -H newc' | gzip > "$DL/initramfs-fw.cpio.gz"
   echo "  amdgpu blobs: $(sudo ls lib/firmware/amdgpu | wc -l)  (expect ~12)"
+  cd "$DL"
 
-  # --- 4. kernel and initramfs where GRUB can read them ------------------
-  sudo mkdir -p /mnt/veron
-  sudo mount "$ROOT" /mnt/veron
-  sudo cp "$DL/Image" "$DL/initramfs-fw.cpio.gz" /mnt/veron/
-  ls -l /mnt/veron/Image /mnt/veron/initramfs-fw.cpio.gz
+  # --- 4. BOTH kernel pairs where GRUB can read them ----------------------
+  # generic: vmlinuz-generic + the STOCK initramfs (overlayfs is built in
+  # as of fragment v6, so the two-file initramfs needs nothing added)
+  sudo cp "$DL/vmlinuz-generic" "$DL/initramfs.cpio.gz" \
+          "$DL/Image" "$DL/initramfs-fw.cpio.gz" /mnt/veron/
+  ls -l /mnt/veron/vmlinuz-generic /mnt/veron/initramfs.cpio.gz \
+        /mnt/veron/Image /mnt/veron/initramfs-fw.cpio.gz
   sudo umount /mnt/veron
 
   # --- 5. empty the persistence partition --------------------------------
@@ -648,6 +678,15 @@ deletes the partition they boot from.
 
 ```
 menuentry 'Veron' --class unknown {
+    insmod part_gpt
+    insmod ext2
+    search --no-floppy --fs-uuid --set=root 00000000-0000-4000-8000-000000000001
+    linux  /vmlinuz-generic console=tty0 rdinit=/init panic=1 loglevel=4 \
+           veron.boot=system veron.root=/dev/nvme0n1p5
+    initrd /initramfs.cpio.gz
+}
+
+menuentry 'Veron (minimal kernel)' --class unknown {
     insmod part_gpt
     insmod ext2
     search --no-floppy --fs-uuid --set=root 00000000-0000-4000-8000-000000000001
@@ -687,150 +726,6 @@ alternative if that ever matters.
 | `console=tty0` | read by `scripts/console-getty`, which execs getty on whatever `console=` names. No `sed` on `/etc/dinit.d/console` any more -- that file used to hardcode `ttyAMA0` |
 | `panic=1` | reboot rather than hang on a kernel panic |
 | `rdinit=/init` | the initramfs init, not the image's |
-
-#### The same flash, generic kernel edition
-
-The script above, adapted for `vmlinuz-generic` from `4/kernel-x86_64` -- the
-second stage-4 kernel: owned config, drivers as modules, storage spine built
-in. **Steps 3 and 4 invert the doc's own rule above**: firmware lived in the
-initramfs *because the drivers were built into the kernel and probed before
-p5 was mounted*. The generic kernel's `amdgpu`/`rtw89` are modules -- they
-load after the root is up, from `/lib/firmware` ON THE ROOT, and
-`FW_LOADER_COMPRESS_ZSTD` reads the `.zst` files verbatim, so the
-decompression loop (and its symlink-eats-seven-files trap) is gone entirely.
-The initramfs ships UNMODIFIED: the built-in spine mounts ext4-on-nvme with
-no module plumbing at all. The old `Image` + entry stay as the fallback.
-
-```sh
-( set -eu
-
-  DL="${DL:-$HOME/Downloads}"
-  ROOT=/dev/nvme0n1p5          # Veron's root -- OVERWRITTEN
-  PERSIST=/dev/nvme0n1p7       # Veron's /persist -- EMPTIED
-
-  # --- refuse to touch a partition that is not the one meant -------------
-  lbl=$(sudo blkid -s LABEL -o value "$PERSIST" 2>/dev/null || true)
-  [ "$lbl" = "veron-persist" ] || {
-    echo "refusing: $PERSIST is labelled '${lbl:-<none>}', not veron-persist"
-    exit 1; }
-
-  mkdir -p "$DL"; cd "$DL"
-
-  # --- 1. fetch: image as before, PLUS the generic kernel ----------------
-  gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
-    --pattern 'rootfs.img.tar.zst' --pattern 'Image' \
-    --pattern 'initramfs.cpio.gz' --clobber
-  gh release download 4/kernel-x86_64 -R Joey-Fuentes/Veron --clobber
-  tar --zstd -xf rootfs.img.tar.zst
-
-  # AN EXPLICIT exit, NOT `[ a ] && [ b ]` -- see the note in the script
-  # above; `set -e` does not fire on a trailing AND-OR list.
-  for f in rootfs.img Image initramfs.cpio.gz vmlinuz-generic \
-           modules-7.1.5-generic.tar.zst KERNEL-GENERIC-SHA256; do
-    [ -s "$DL/$f" ] || { echo "missing or empty: $DL/$f"; exit 1; }
-  done
-  # the generic kernel is PINNED -- verify before it touches a disk
-  grep -E 'vmlinuz-generic|modules' KERNEL-GENERIC-SHA256 | sha256sum -c -
-
-  # --- 2. write the root (unchanged) --------------------------------------
-  sudo dd if="$DL/rootfs.img" of="$ROOT" bs=4M status=progress conv=fsync
-
-  # --- 3. modules + firmware INTO THE ROOT, not the initramfs -------------
-  sudo mkdir -p /mnt/veron
-  sudo mount "$ROOT" /mnt/veron
-  # --keep-directory-symlink IS LOAD-BEARING. The image's /lib is a
-  # SYMLINK into usr/lib, and the modules tar carries ./lib/ as a
-  # directory member -- without this flag GNU tar REPLACES the symlink
-  # with a real directory, the ELF interpreter path vanishes, and every
-  # dynamic binary on the system fails execve with ENOENT ("not found"
-  # on a file that exists, rc=127). Found on bare metal, 2026-08-16:
-  # one missing flag took down every compiled binary in the image while
-  # scripts kept running.
-  sudo tar --zstd --keep-directory-symlink \
-       -xf "$DL/modules-7.1.5-generic.tar.zst" -C /mnt/veron
-  sudo mkdir -p /mnt/veron/lib/firmware/amdgpu /mnt/veron/lib/firmware/rtw89
-  sudo cp /lib/firmware/amdgpu/renoir_*.bin.zst /mnt/veron/lib/firmware/amdgpu/
-  sudo cp /lib/firmware/rtw89/rtw8852a_fw.bin.zst /mnt/veron/lib/firmware/rtw89/
-  # the regulatory db: without it the 8852AE sits in the world domain
-  sudo cp /lib/firmware/regulatory.db /lib/firmware/regulatory.db.p7s \
-       /mnt/veron/lib/firmware/
-  echo "  modules: $(sudo find /mnt/veron/lib/modules -name '*.ko' | wc -l)"
-  echo "  amdgpu blobs: $(sudo ls /mnt/veron/lib/firmware/amdgpu | wc -l)  (expect ~12)"
-
-  # --- 3b. KEEP THE FALLBACK TRUE. dd wiped Image and initramfs-fw off
-  # p5; an old GRUB entry pointing at nothing is how this section's first
-  # field run ended at "error: file '/initramfs-fw.cpio.gz' not found"
-  # (2026-08-16). So the old kernel pair is rebuilt and re-copied on every
-  # flash, exactly as the original script above does it.
-  sudo rm -rf /tmp/ir && mkdir -p /tmp/ir && cd /tmp/ir
-  zcat "$DL/initramfs.cpio.gz" | sudo cpio -idm
-  sudo mkdir -p lib/firmware/amdgpu lib/firmware/rtw89
-  for f in /lib/firmware/amdgpu/renoir_*.bin.zst; do
-    zstd -d -f -c "$f" | sudo tee "lib/firmware/amdgpu/$(basename "${f%.zst}")" >/dev/null
-  done
-  zstd -d -f -c /lib/firmware/rtw89/rtw8852a_fw.bin.zst \
-    | sudo tee lib/firmware/rtw89/rtw8852a_fw.bin >/dev/null
-  sudo sh -c 'find . | cpio -o -H newc' | gzip > "$DL/initramfs-fw.cpio.gz"
-  cd "$DL"
-
-  # --- 4. BOTH kernel pairs where GRUB can read them ----------------------
-  sudo cp "$DL/vmlinuz-generic" "$DL/initramfs.cpio.gz" \
-          "$DL/Image" "$DL/initramfs-fw.cpio.gz" /mnt/veron/
-  ls -l /mnt/veron/vmlinuz-generic /mnt/veron/initramfs.cpio.gz \
-        /mnt/veron/Image /mnt/veron/initramfs-fw.cpio.gz
-  sudo umount /mnt/veron
-
-  # --- 5. empty the persistence partition (same rule: rm, NOT mkfs) -------
-  sudo mkdir -p /mnt/veron-persist
-  sudo mount "$PERSIST" /mnt/veron-persist
-  sudo find /mnt/veron-persist -mindepth 1 -maxdepth 1 \
-       ! -name 'lost+found' -exec rm -rf {} +
-  ls -A /mnt/veron-persist
-  sudo umount /mnt/veron-persist
-
-  echo "VERON-GENERIC-READY  reboot and pick 'Veron (generic kernel)'"
-)
-```
-
-**One-time GRUB entry**, beside the existing one in
-`/etc/grub.d/40_custom` -- same UUID, same arguments, only the kernel and
-initrd lines differ:
-
-```
-menuentry 'Veron (generic kernel)' --class unknown {
-    insmod part_gpt
-    insmod ext2
-    search --no-floppy --fs-uuid --set=root 00000000-0000-4000-8000-000000000001
-    linux  /vmlinuz-generic console=tty0 rdinit=/init panic=1 loglevel=4 \
-           veron.boot=system veron.root=/dev/nvme0n1p5
-    initrd /initramfs.cpio.gz
-}
-```
-
-```sh
-sudo grub-script-check /etc/grub.d/40_custom
-sudo cp /boot/grub/grub.cfg ~/grub.cfg.bak
-sudo update-grub
-sudo grep -A7 "menuentry 'Veron (generic" /boot/grub/grub.cfg
-```
-
-**First boot, expected and by design:** nothing autoloads modules yet, so
-the console comes up on simpledrm (working, unaccelerated) and wifi is
-absent until
-
-```sh
-modprobe amdgpu
-modprobe rtw89_8852ae
-```
-
-run once from the console. `dmesg | grep -E 'amdgpu|rtw89'` should show
-firmware loading from the `.zst` files directly -- the loader decompressing,
-no hand-prepared copies anywhere. Then wire the modprobes permanently as a
-small dinit one-shot, or through the mdev hotplug work -- which is exactly
-the userspace `CONFIG_UEVENT_HELPER` in this kernel exists to serve. If
-anything disappoints, the old 'Veron' entry boots the old world -- which
-step 3b keeps true across every flash: a fallback entry is only a fallback
-while its files exist.
 
 #### Secure Boot has to be off
 
@@ -1684,32 +1579,3 @@ versus `OR` in a compound expression changes what a distributor must do.
 `spikes/stage5/tools/license.py` detects against the SPDX guidelines and
 reports **two confidence tiers** rather than one answer, which is the honest
 shape for a field that will be wrong sometimes.
-
-#### Overlay workaround for the generic kernel (until overlayfs is built in)
-
-The generic kernel v5 carries overlayfs as a MODULE, but `guest/init` mounts
-the overlay FROM THE INITRAMFS -- two files, no modules, nothing to autoload
-from -- so the mount fails into a suppressed `2>/dev/null`, and init falls
-through to the harness and powers off even with `veron.boot=system` present.
-Proven on machine #1, 2026-08-16: `grep overlay /proc/filesystems` empty
-until `insmod .../overlayfs/overlay.ko`. This rebuilds the initramfs with one
-insmod (pulling overlay.ko from the just-mounted root) ahead of the overlay
-mount. It becomes unnecessary the moment the generic kernel ships with
-`CONFIG_OVERLAY_FS=y`.
-
-```sh
-DL="$HOME/Downloads"
-rm -rf /tmp/ir2 && mkdir -p /tmp/ir2 && cd /tmp/ir2
-zcat "$DL/initramfs.cpio.gz" | cpio -idm
-sed -i 's|mount -t overlay overlay|busybox insmod "$ROOT/lib/modules/7.1.5/kernel/fs/overlayfs/overlay.ko" 2>/dev/null; mount -t overlay overlay|' init
-grep -c "insmod.*overlayfs" init      # must print 1
-find . | cpio -o -H newc | gzip > "$DL/initramfs-ovl.cpio.gz"
-sudo mkdir -p /mnt/veron && sudo mount /dev/nvme0n1p5 /mnt/veron
-sudo cp "$DL/initramfs-ovl.cpio.gz" /mnt/veron/ && sudo umount /mnt/veron
-```
-
-Then the generic GRUB entry boots with one change:
-
-```
-initrd /initramfs-ovl.cpio.gz
-```
