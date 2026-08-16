@@ -35,8 +35,19 @@ CONFIG_USB_EHCI_HCD=m
 CONFIG_USB_HID=m
 CONFIG_HID_GENERIC=m
 CONFIG_I2C_HID_ACPI=m
+CONFIG_I2C_HID_CORE=m
+# the touchpad stack, whole, from the tree's own war story: AMD64.md
+# ("Exactly the PINCTRL lesson, one layer down") and the spike's proven
+# set_cfg block, spikes/stage4/bridge/sysroot-amd64.sh:1496 -- in 7.x the
+# designware PLATFORM depends on the CORE rather than selecting it, so
+# the core must be stated or olddefconfig discards the platform in silence
 CONFIG_COMMON_CLK=y
+CONFIG_I2C=y
+CONFIG_I2C_DESIGNWARE_CORE=m
 CONFIG_I2C_DESIGNWARE_PLATFORM=m
+CONFIG_PINCTRL=y
+CONFIG_PINCTRL_AMD=y
+CONFIG_GPIOLIB=y
 
 # --- display: simpledrm drives the firmware framebuffer from boot;
 #     native DRM drivers take over at module load (labwc needs DRM/KMS) ---
