@@ -1616,6 +1616,16 @@ jobs:
             # has to be read before the test restarts it and overwrites it.
             printf 'echo ---LABWC-LOG---\n'
             printf 'cat /run/labwc.log 2>&1 | tail -20\n'
+            printf 'echo ---CONSOLE-LOGS---\n'
+            # THE SILENT EXIT. console and console-auth die with code 1 at
+            # boot in this harness and never say why on the serial console:
+            # no getty error, no login prompt, no verifier breadcrumb --
+            # the dying process speaks only into its dinit logfile, which
+            # this step never printed, so the evidence rode the tmpfs into
+            # oblivion every run. Print it. One line here is the difference
+            # between a mystery and a diagnosis, which is this tree's most
+            # repeated lesson.
+            printf 'cat /run/console.log /run/console-auth.log /run/hotplug.log 2>&1 | tail -30\n'
             printf 'echo ---SEAT-STATE---\n'
             printf 'ls -l /run/seatd.sock /dev/dri /dev/input 2>&1 | head -20\n'
             printf 'dinitctl status seatd 2>&1 | head -6\n'
