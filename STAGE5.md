@@ -573,6 +573,21 @@ persistence partition by its `veron-persist` label, which is the same string
 `guest/init:349` looks for. A mistyped device number is otherwise how someone
 deletes the partition they boot from.
 
+**The script is a FILE, not a paste.** A 120-line terminal paste dropped
+chunks mid-stream on 2026-08-16 -- prose from elsewhere in this document
+fused into an `echo`, and the mangled remainder executed piecemeal. Files
+do not truncate. It lives at `tools/flash-amd64.sh` (committed, reviewed
+like everything else); run it with one line:
+
+```sh
+cd ~/Downloads && curl -fsSL \
+  https://raw.githubusercontent.com/Joey-Fuentes/Veron/main/tools/flash-amd64.sh \
+  -o flash-amd64.sh && sh flash-amd64.sh
+```
+
+The full annotated text follows, FOR READING -- it is the same bytes as
+the file, and the file is what you execute:
+
 ```sh
 ( set -eu
 
