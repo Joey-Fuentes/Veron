@@ -1,0 +1,24 @@
+# The idle locker, owned by dinit like the other session helpers.
+#
+# It watches the seat through ext-idle-notify-v1 and starts veron-lock
+# when the person has walked away -- but ONLY on an armed machine
+# (autologin=off, re-checked at every idle event, so arming and disarming
+# take effect without touching this service). A manual-only lock protects
+# only the disciplined; the canonical session contract is that the screen
+# locks itself. Default timeout 600s; `idle=<seconds>` in auth.conf
+# overrides, `idle=0` disables the timer while staying armed.
+#
+# Firing while already locked is harmless by construction: the spawned
+# locker receives `finished` from the compositor and exits without
+# drawing -- lock.c's own documented sequence.
+#
+# restart = true FOR THE SAME REASON AS yambar: the client dies with the
+# compositor's socket on labwc restart and comes back through
+# wayland-app's socket wait. Same stop/start asymmetry as yambar applies.
+type = process
+command = /bin/busybox sh /etc/dinit.d/scripts/wayland-app /usr/bin/veron-idle
+run-as = veron
+restart = true
+depends-on = labwc
+depends-on = xdg-runtime
+depends-on = device-nodes

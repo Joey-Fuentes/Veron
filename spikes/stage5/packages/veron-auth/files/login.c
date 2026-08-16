@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <termios.h>
 #include <time.h>
+#include <pwd.h>
 
 /* ECHO OFF WHILE A FACTOR IS TYPED. A TOTP code is short-lived and a key file
  * path is not secret, but the same prompt may later carry something that is,
@@ -93,6 +94,31 @@ int main(int argc, char **argv)
         explicit_bzero(input, sizeof input);
 
         if (ok) {
+            /* THE ENVIRONMENT IS ESTABLISHED HERE, BECAUSE THIS IS NOW THE
+             * ONLY login(1) THERE IS. login(1) sets HOME, USER, LOGNAME and
+             * SHELL from the passwd entry AFTER authenticating -- and this
+             * program replaces login(1) on every console, so the duty is
+             * its. Without this, the shell inherits init's HOME=/root (the
+             * measured value on this hardware) and every program the person
+             * runs resolves the wrong home -- the same class of failure the
+             * verifier itself had until it went passwd-first. The passwd
+             * entry is the definition; the inherited environment is
+             * discarded in its favor. */
+            struct passwd *pw = getpwuid(getuid());
+            if (pw) {
+                if (pw->pw_dir && *pw->pw_dir) {
+                    setenv("HOME", pw->pw_dir, 1);
+                    if (chdir(pw->pw_dir) != 0)
+                        (void)chdir("/");
+                }
+                if (pw->pw_name && *pw->pw_name) {
+                    setenv("USER", pw->pw_name, 1);
+                    setenv("LOGNAME", pw->pw_name, 1);
+                }
+                if (pw->pw_shell && *pw->pw_shell)
+                    shell = pw->pw_shell;
+            }
+            setenv("SHELL", shell, 1);
             /* exec, NOT fork: this process IS the session's shell as far as
              * getty is concerned, and forking would leave a parent doing
              * nothing while the tty's controlling process is the wrong one. */

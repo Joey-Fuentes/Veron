@@ -70,9 +70,49 @@ stop_media() {
 /bin/busybox mkdir -p "$MNT"
 
 if grep -q " $MNT " /proc/mounts; then
-    echo "media: already mounted at $MNT"
-    exit 0
+    # A MOUNT CAN OUTLIVE ITS DEVICE. A stick yanked while mounted leaves
+    # this entry serving EIO from a corpse, and the reinserted stick
+    # enumerates as a NEW device that nothing mounts -- measured on
+    # hardware as sda1 mounted-and-dead beside a fresh sdb, with "already
+    # mounted" reported over the corpse. A mountpoint that cannot be read
+    # is not a success to report; unmount it and fall through to a fresh
+    # scan, so pull-and-reinsert heals with one `dinitctl start media`.
+    if /bin/busybox ls "$MNT" >/dev/null 2>&1; then
+        echo "media: already mounted at $MNT"
+        exit 0
+    fi
+    echo "media: stale mount at $MNT (device gone) -- replacing it"
+    /bin/busybox umount -f "$MNT" 2>/dev/null || :
 fi
+
+# WAIT FOR THE DEVICE, BECAUSE AT BOOT IT IS NOT THERE YET. The armed boot
+# gate starts this service within a second of the compositor coming up, and
+# a USB stick takes several seconds to enumerate from cold power-on -- so
+# the scan below found nothing, exited 1, nothing retried, and the lock
+# screen refused a key that was physically plugged in the whole time.
+# Measured on hardware: `dinitctl status media` after an armed boot read
+# STOPPED (failed to start; exited - status 1). This is the same readiness
+# shape as scripts/wayland-app waiting for the compositor's socket:
+# readiness means polling, and giving up means saying so. Twelve seconds
+# covers cold USB enumeration with room; an interactive caller with the
+# stick already present passes on the first iteration and never waits.
+_try=0
+while [ "$_try" -lt 12 ]; do
+    for disk in /sys/block/*; do
+        name=${disk##*/}
+        case "$name" in loop*|ram*|zram*|dm-*|md*) continue ;; esac
+        removable=$(/bin/busybox cat "$disk/removable" 2>/dev/null)
+        real=$(/bin/busybox readlink -f "$disk")
+        case "$real" in */usb*) _found=1 ;; *) [ "$removable" = 1 ] && _found=1 ;; esac
+        if [ "${_found:-0}" = 1 ] && ! grep -q "^/dev/$name" /proc/mounts; then
+            break 2
+        fi
+        _found=0
+    done
+    [ "$_try" = 0 ] && echo "media: no removable device yet -- waiting for USB enumeration"
+    /bin/busybox sleep 1
+    _try=$((_try + 1))
+done
 
 for disk in /sys/block/*; do
     name=${disk##*/}

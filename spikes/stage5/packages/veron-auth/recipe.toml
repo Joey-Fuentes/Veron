@@ -82,16 +82,19 @@ cwd  = "$B"
 # THE STUBS ARE GENERATED, NOT VENDORED, for the same reason
 # wpe-platform-veron generates its own: a checked-in copy of a protocol header
 # drifts from the XML the system actually installs, and nothing notices.
-run  = [["sh", "-c", "cp /packages/veron-auth/files/*.c /packages/veron-auth/files/*.h . && WLPROTO=$(pkg-config --variable=pkgdatadir wayland-protocols) && wayland-scanner client-header \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-protocol.c"]]
+run  = [["sh", "-c", "cp /packages/veron-auth/files/*.c /packages/veron-auth/files/*.h . && WLPROTO=$(pkg-config --variable=pkgdatadir wayland-protocols) && wayland-scanner client-header \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-protocol.c && wayland-scanner client-header \"$WLPROTO/staging/ext-idle-notify/ext-idle-notify-v1.xml\" ext-idle-notify-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/staging/ext-idle-notify/ext-idle-notify-v1.xml\" ext-idle-notify-v1-protocol.c"]]
 
 [[steps]]
 name = "build"
 cwd  = "$B"
-# THREE BINARIES, ONE VERIFIER. veron-lock, veron-login and veron-enroll all
+# FOUR BINARIES, ONE VERIFIER -- and one deliberately without it. veron-lock,
+# veron-login and veron-enroll all
 # link the same verify.c, which is the point of shipping them together: a
 # factor cannot mean one thing to the lock screen and another to the console.
-# Only veron-lock needs Wayland; the other two are libgcrypt alone.
-run  = [["sh", "-c", "GC=$(pkgconf --cflags --libs libgcrypt 2>/dev/null || libgcrypt-config --cflags --libs) && cc -O2 -Wall -std=c11 -I. -o veron-lock lock.c verify.c wrap.c ext-session-lock-v1-protocol.c $(pkg-config --cflags --libs wayland-client cairo xkbcommon) $GC && cc -O2 -Wall -std=c11 -I. -o veron-login login.c verify.c wrap.c $GC && cc -O2 -Wall -std=c11 -I. -o veron-enroll enroll.c verify.c wrap.c $GC"]]
+# Only veron-lock needs Wayland+gcrypt together. veron-idle links wayland
+# alone: it makes no security decision, it only STARTS the program that
+# does, so the verifier stays out of a process that never needs it.
+run  = [["sh", "-c", "GC=$(pkgconf --cflags --libs libgcrypt 2>/dev/null || libgcrypt-config --cflags --libs) && cc -O2 -Wall -std=c11 -I. -o veron-lock lock.c verify.c wrap.c ext-session-lock-v1-protocol.c $(pkg-config --cflags --libs wayland-client cairo xkbcommon) $GC && cc -O2 -Wall -std=c11 -I. -o veron-login login.c verify.c wrap.c $GC && cc -O2 -Wall -std=c11 -I. -o veron-enroll enroll.c verify.c wrap.c $GC && cc -O2 -Wall -std=c11 -I. -o veron-idle idle.c ext-idle-notify-v1-protocol.c $(pkg-config --cflags --libs wayland-client)"]]
 
 [[steps]]
 name = "install"
@@ -99,10 +102,10 @@ cwd  = "$B"
 # NO .desktop ENTRY. Locking the screen from an application menu is a control
 # that only ever gets pressed by accident; it belongs on a keybind and on an
 # idle timer, which is where labwc puts it.
-run  = [["sh", "-c", "mkdir -p $D/usr/bin && for b in veron-lock veron-login veron-enroll; do cp $b $D/usr/bin/$b && chmod 0755 $D/usr/bin/$b; done"]]
+run  = [["sh", "-c", "mkdir -p $D/usr/bin && for b in veron-lock veron-login veron-enroll veron-idle; do cp $b $D/usr/bin/$b && chmod 0755 $D/usr/bin/$b; done"]]
 
 [guest]
 # --version, BECAUSE ANYTHING ELSE LOCKS THE SESSION. There is no compositor
 # at package-test time and no way to unlock one if there were.
-test   = [["/bin/sh", "-c", "/usr/bin/veron-lock --version && /usr/bin/veron-login --version && /usr/bin/veron-enroll --version"]]
+test   = [["/bin/sh", "-c", "/usr/bin/veron-lock --version && /usr/bin/veron-login --version && /usr/bin/veron-enroll --version && /usr/bin/veron-idle --version"]]
 expect = ["veron-enroll 1.0"]

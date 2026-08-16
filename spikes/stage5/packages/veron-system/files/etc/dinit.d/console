@@ -1,43 +1,29 @@
-# An autologin root shell on the console.
+# The console, gated when there is a gate -- every door asks, once a
+# factor exists to ask for.
 #
-# WHY busybox getty AND NOT agetty. agetty is util-linux, which is not in this
-# set and is not planned for it. busybox is in the sysroot, statically linked,
-# and already PID 1's shell in the initramfs -- so this adds no package.
+# THIS USED TO BE AN AUTOLOGIN SHELL, and the file that shipped it said
+# plainly when that had to end: "WHEN IT HAS BEEN PROVEN, the console
+# service's own getty line is the thing to change." veron-login is now
+# proven on hardware -- Enter with the factor present gives a shell,
+# without it a refusal that prints its reason -- so the spare-console hole
+# closes. A lock screen beside an unauthenticated VT is decoration: the
+# session layer's one invariant is COMPLETE MEDIATION, no input path into
+# a session that does not ask.
 #
-# `-n` skips the login prompt. There is no password database worth
-# authenticating against yet: /etc/passwd names root with an `x` and there is
-# no /etc/shadow, so a real login would fail closed and leave an unusable
-# console. Autologin is the honest state of a system that has no user
-# management, and saying so here is better than shipping a prompt nobody can
-# satisfy.
+# scripts/console-or-login IS THE -l TARGET, NOT veron-login DIRECTLY,
+# because a machine with nothing enrolled has no factor to ask for: the
+# live image and a fresh install must land in a shell, and a login prompt
+# that cannot be satisfied is a machine you reinstall. The chooser execs
+# veron-login when a keyfile slot is enrolled and the open shell when not
+# -- the same conditional the boot gate applies, read from the same file.
 #
-# `-l` NAMES A WRAPPER, NOT /bin/sh, AND THAT IS NOT A STYLE CHOICE. getty
-# execs the -l program with argv[0] set to the path given, so /bin/sh started
-# as a NON-login shell and /etc/profile was never sourced -- measured on the
-# real kernel as PATH=/sbin:/usr/sbin:/bin:/usr/bin, which is busybox's
-# built-in default and the REVERSE of the one /etc/profile sets. See
-# scripts/console-shell for why that ordering matters.
-# run-as = veron, LIKE EVERYTHING ELSE A PERSON TOUCHES.
-#
-# This was the last thing in the session running as uid 0, and it was the
-# largest hole in moving the desktop off root: a shell on a VT with no
-# authentication in front of it is root for anyone who presses Ctrl+Alt+F2.
-# There is no su, no sudo and no doas in this image, and no /etc/shadow for
-# busybox su to consult, so the shell being unprivileged is the whole of the
-# boundary.
-#
-# THE RECOVERY PATH IS DELIBERATE AND IS NOT HERE. A machine that needs root
-# gets it from GRUB with `rdinit=/bin/busybox sh`, which requires physical
-# access and a reboot. Anything privileged the running system needs is a dinit
-# service in this directory -- root-owned, unwritable by veron, and startable
-# through /run/dinitctl by group power.
-#
-# IT NEEDS THE TTY TO BE OPENABLE. devtmpfs creates /dev/tty* as root:tty
-# 0620, which a non-root getty cannot use; the device-nodes service regroups
-# the one this will land on. If that service did not run, this fails to start
-# and says so rather than silently falling back to root.
+# THE ESCAPE HATCH MOVES TO THE BOOT, WHERE IT ALWAYS REALLY WAS. A person
+# locked out (lost factor) recovers with physical access via GRUB
+# `rdinit=/bin/busybox sh` -- reboot-required, documented, honest. On a
+# machine with no disk encryption that hatch is unavoidable anyway;
+# closing the live VT while naming the physical one is the honest shape.
 type = process
-command = /bin/busybox getty -n -l /etc/dinit.d/scripts/console-shell 115200 ttyAMA0
+command = /bin/busybox getty -n -l /etc/dinit.d/scripts/console-or-login 115200 ttyAMA0
 run-as = veron
 restart = true
 depends-on = early-filesystems

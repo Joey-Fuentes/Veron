@@ -177,3 +177,18 @@ for _d in /dev/input/event*; do
 done
 
 exit $rc
+
+# THE SYSRQ KEY IS DISABLED, AS A DECISION RATHER THAN A DEFAULT. An
+# unrestricted magic-sysrq lets anyone at the keyboard kill processes and
+# force state changes regardless of any lock -- a side channel around
+# every gate the session layer builds. Under ext-session-lock killing the
+# LOCKER keeps the session locked (the protocol's property), but sysrq's
+# wider surface (OOM-kill sprees, forced signals) has no place on a
+# machine whose consoles authenticate. Recovery does not need it: the
+# documented hatch is GRUB rdinit, and REISUB-style rescue is what that
+# hatch is for. Set to 0 outright; loosening it later is one deliberate
+# line, not an inherited default nobody chose.
+if [ -w /proc/sys/kernel/sysrq ]; then
+    echo 0 > /proc/sys/kernel/sysrq
+    echo "  kernel.sysrq -> 0"
+fi

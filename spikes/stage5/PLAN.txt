@@ -837,7 +837,7 @@ package veron-fltk-style 1
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   91d62561223547e0d6530272a18121aa58fdeec91cf6e1dca11ee63968e5a79e
+  recipe-sha   f30d55aff25546be2319c5e12c6628ac7f83ff866f6a99f2913ff8f4084b4d43
 
   source
     url        this repository
@@ -4638,7 +4638,7 @@ package swaybg 1.2.2
 package veron-auth 1.0
   group        desktop
   license      BSD-2-Clause
-  recipe-sha   37e8329c3b686e593629f1ec885843ed0c89d858c892e4da88150155674810e2
+  recipe-sha   533aaf81c80efb3d822be0a654acd491bd907e0ac7de9d4c4277e77ea87ba5ba
 
   source
     url        this repository
@@ -4655,13 +4655,13 @@ package veron-auth 1.0
   commands (literal; this is exactly what runs)
     [01] protocol
          cwd  build/veron-auth-1.0
-         argv ["sh", "-c", "cp /packages/veron-auth/files/*.c /packages/veron-auth/files/*.h . && WLPROTO=$(pkg-config --variable=pkgdatadir wayland-protocols) && wayland-scanner client-header \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-protocol.c"]
+         argv ["sh", "-c", "cp /packages/veron-auth/files/*.c /packages/veron-auth/files/*.h . && WLPROTO=$(pkg-config --variable=pkgdatadir wayland-protocols) && wayland-scanner client-header \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/staging/ext-session-lock/ext-session-lock-v1.xml\" ext-session-lock-v1-protocol.c && wayland-scanner client-header \"$WLPROTO/staging/ext-idle-notify/ext-idle-notify-v1.xml\" ext-idle-notify-v1-client-protocol.h && wayland-scanner private-code \"$WLPROTO/staging/ext-idle-notify/ext-idle-notify-v1.xml\" ext-idle-notify-v1-protocol.c"]
     [02] build
          cwd  build/veron-auth-1.0
-         argv ["sh", "-c", "GC=$(pkgconf --cflags --libs libgcrypt 2>/dev/null || libgcrypt-config --cflags --libs) && cc -O2 -Wall -std=c11 -I. -o veron-lock lock.c verify.c wrap.c ext-session-lock-v1-protocol.c $(pkg-config --cflags --libs wayland-client cairo xkbcommon) $GC && cc -O2 -Wall -std=c11 -I. -o veron-login login.c verify.c wrap.c $GC && cc -O2 -Wall -std=c11 -I. -o veron-enroll enroll.c verify.c wrap.c $GC"]
+         argv ["sh", "-c", "GC=$(pkgconf --cflags --libs libgcrypt 2>/dev/null || libgcrypt-config --cflags --libs) && cc -O2 -Wall -std=c11 -I. -o veron-lock lock.c verify.c wrap.c ext-session-lock-v1-protocol.c $(pkg-config --cflags --libs wayland-client cairo xkbcommon) $GC && cc -O2 -Wall -std=c11 -I. -o veron-login login.c verify.c wrap.c $GC && cc -O2 -Wall -std=c11 -I. -o veron-enroll enroll.c verify.c wrap.c $GC && cc -O2 -Wall -std=c11 -I. -o veron-idle idle.c ext-idle-notify-v1-protocol.c $(pkg-config --cflags --libs wayland-client)"]
     [03] install
          cwd  build/veron-auth-1.0
-         argv ["sh", "-c", "mkdir -p dest/veron-auth/usr/bin && for b in veron-lock veron-login veron-enroll; do cp $b dest/veron-auth/usr/bin/$b && chmod 0755 dest/veron-auth/usr/bin/$b; done"]
+         argv ["sh", "-c", "mkdir -p dest/veron-auth/usr/bin && for b in veron-lock veron-login veron-enroll veron-idle; do cp $b dest/veron-auth/usr/bin/$b && chmod 0755 dest/veron-auth/usr/bin/$b; done"]
 
 ======================================================================
 package yambar 1.11.0

@@ -1,0 +1,28 @@
+#!/bin/busybox sh
+# The console's -l target: veron-login where a factor exists, the open
+# shell where none does.
+#
+# WHY A CHOOSER AND NOT veron-login OUTRIGHT. Complete mediation -- every
+# input path asks for the factor -- is the session layer's invariant, but
+# a machine with NOTHING ENROLLED has no factor to ask for. The live image
+# and a fresh install must land in a working shell; a login prompt that
+# cannot be satisfied is a machine you reinstall. So the same conditional
+# the boot gate applies decides here too, read from the same file the
+# verifier owns: a keyfile slot enrolled means this console asks, nothing
+# enrolled means it opens. Enrolment therefore closes every door at once
+# -- the boot, the lock, and each VT -- in the same moment it arms them,
+# which is what an owner enrolling a key expects to have happened.
+#
+# THE HOME LOOKUP MATCHES THE VERIFIER: /etc/passwd, not the environment,
+# which carries init's HOME=/root on this hardware (measured; it broke the
+# console gate for a full session before the verifier went passwd-first).
+set -u
+
+HOME=$(awk -F: -v u="$(id -u)" '$3==u{print $6}' /etc/passwd)
+[ -n "$HOME" ] || HOME=/home/veron
+export HOME
+
+if grep -q '^keyfile[0-7]=' "$HOME/.config/veron/auth.conf" 2>/dev/null; then
+    exec /usr/bin/veron-login
+fi
+exec /bin/busybox sh /etc/dinit.d/scripts/console-shell

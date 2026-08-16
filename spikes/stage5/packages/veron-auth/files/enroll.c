@@ -447,6 +447,27 @@ int main(int argc, char **argv)
         printf("keyfile enrolled in slot %d: %s\n", slot, argv[2]);
         printf("  the file itself is NOT copied anywhere\n");
 
+        /* ENROLLING A FACTOR ARMS THE GATE -- the recorded design, enabled
+         * now that the lock and the console gate are both proven on
+         * hardware. A person who enrolls a key expects the machine to
+         * demand it; a gate that stays open after enrolment until a second
+         * command nobody knows about is a gate that surprises its owner in
+         * the wrong direction (measured: "it should have the login prompt"
+         * was the owner's exact reading). The proof-of-unwrap requirement
+         * is satisfied by construction here -- the wrap that arms the gate
+         * was created seconds ago from the very file that opens it. First
+         * enrolment only; re-enrolling a spare does not overwrite an
+         * explicit later choice of `autologin on`. */
+        {
+            char av[64];
+            if (!conf_get_pub("autologin", av, sizeof av)) {
+                if (conf_set(dir, "autologin", "off"))
+                    printf("\n  autologin is now OFF: the session STARTS "
+                           "LOCKED and every console\n  asks for this "
+                           "factor. `veron-enroll autologin on` disarms.\n");
+            }
+        }
+
         /* ONE FACTOR IS A SINGLE POINT OF FAILURE AND THE PERSON SHOULD BE
          * TOLD SO IN WORDS. There is no recovery in this system by design:
          * no escrow, no reset, no master password. Redundancy is the user's
