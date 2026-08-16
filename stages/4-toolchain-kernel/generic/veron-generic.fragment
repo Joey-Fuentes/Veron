@@ -114,6 +114,12 @@ CONFIG_VIRTIO_BLK=y
 CONFIG_VIRTIO_NET=m
 CONFIG_SCSI_VIRTIO=m
 CONFIG_DRM_VIRTIO_GPU=m
+# the stage-5 harness mounts its sysroot over virtio-9p and plugs a
+# virtio keyboard; built in so the guest needs no module plumbing
+CONFIG_NET_9P=y
+CONFIG_NET_9P_VIRTIO=y
+CONFIG_9P_FS=y
+CONFIG_VIRTIO_INPUT=y
 
 # --- wifi families beyond machine #1's rtw89: the big five cover the
 #     overwhelming majority of laptops in the field ---

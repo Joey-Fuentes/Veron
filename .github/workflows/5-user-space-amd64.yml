@@ -88,6 +88,16 @@ on:
         type: string
         required: false
         default: ''
+      relay:
+        description: 'relay -- if this round ends banked-but-unfinished, re-dispatch this workflow with use_checkpoint=true until a round publishes. Progress-guarded: no relay unless this round banked MORE than it restored. Depth-capped at 8.'
+        type: boolean
+        required: false
+        default: false
+      relay_depth:
+        description: 'relay_depth -- internal loop counter; leave at 0'
+        type: string
+        required: false
+        default: '0'
       boot_system:
         description: 'boot_system -- switch_root into dinit instead of running the test harness'
         type: boolean
@@ -151,6 +161,7 @@ permissions:
   # publish a bad cache, which the prefix key and the ledger's attestations=0
   # both already account for.
   contents: write
+  actions: write    # the relay re-dispatches this workflow
   actions: read
 
 jobs:
@@ -569,6 +580,7 @@ jobs:
           else
             echo "  no checkpoint published yet -- building everything"
           fi
+          echo "RESTORED_N=$(ls dest 2>/dev/null | wc -l)" >> "$GITHUB_ENV"
 
       - name: 'VERON-SEAL + build both packages'
         id: build
@@ -884,6 +896,7 @@ jobs:
              || true; then :; fi
           if gh release upload 5/ckpt-x86_64 dest.tar.zst --clobber; then
             echo "VERON-CHECKPOINT-PUBLISHED  $(ls dest | wc -l) package(s)"
+            echo "BANKED_N=$(ls dest | wc -l)" >> "$GITHUB_ENV"
           else
             echo "VERON-CHECKPOINT-UNPUBLISHED -- the next run rebuilds"
           fi
@@ -1559,6 +1572,54 @@ jobs:
       # failure. ppm2png.py counts distinct colours: the wallpaper is a
       # gradient with a centred marker precisely so that a rendered desktop and
       # an untouched framebuffer cannot produce the same number.
+      - name: 'Boot the image under the GENERIC kernel'
+        id: bootgeneric
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # THE SECOND KERNEL MEETS THE USER SPACE. 4/kernel-x86_64 is the
+          # generic kernel (owned config, same seed-true toolchain); the image
+          # must run under it before it may publish, because that pairing --
+          # this image, that kernel -- is what stage 6 puts on the ISO and
+          # what bare metal boots. Same image, same initramfs, same harness;
+          # only -kernel changes. The mdev/hotplug work in veron-system is
+          # exercised HERE, where CONFIG_UEVENT_HELPER exists, not under the
+          # minimal kernel, where it does not.
+          O=spikes/stage5/out
+          [ -s "$O/initramfs.cpio.gz" ] || { echo "VERON-GENERIC-BOOT-SKIP  no initramfs"; exit 0; }
+          mkdir -p boot-generic
+          gh release download 4/kernel-x86_64 -D boot-generic --clobber \
+            || { echo "VERON-GENERIC-BOOT-SKIP  no 4/kernel-x86_64 release yet"; exit 0; }
+          ( cd boot-generic && grep vmlinuz-generic KERNEL-GENERIC-SHA256 | sha256sum -c - )
+          set +e
+          timeout 900 qemu-system-x86_64 \
+            -cpu qemu64 -smp 4 -m 4096 \
+            -nographic -no-reboot -nic none \
+            -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
+            -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
+            -device virtio-9p-pci,fsdev=vs,mount_tag=veronsysroot \
+            -device virtio-gpu-pci -device virtio-keyboard-pci \
+            -kernel boot-generic/vmlinuz-generic -initrd "$O/initramfs.cpio.gz" \
+            -append "console=ttyS0 earlycon rdinit=/init panic=1 loglevel=7" \
+            > "$O/boot-generic.log" 2>&1
+          rc=$?
+          set -e
+          echo "=== boot: the SAME image under the GENERIC kernel ==="
+          echo "  qemu rc=$rc (0 expected: the harness powers off)"
+          # AGENTS.md invariant 9: the whole log, always
+          sed 's/^/    /' "$O/boot-generic.log"
+          fail=0
+          grep -aq "VERON-STAGE5-INIT" "$O/boot-generic.log" \
+            || { echo "VERON-STAGE5-GENERIC-BOOT-FAIL  init never reached userspace"; fail=1; }
+          tl=$(grep -a "VERON-STAGE5-TESTS" "$O/boot-generic.log" | tail -1 || true)
+          echo "  $tl"
+          case "$tl" in *"fail=0"*) : ;; *) echo "VERON-STAGE5-GENERIC-TESTS-FAIL"; fail=1 ;; esac
+          grep -aq "VERON-STAGE5-FAIL" "$O/boot-generic.log" && fail=1
+          [ "$fail" = 0 ] || exit 1
+          echo "VERON-STAGE5-GENERIC-BOOT-OK  the image runs under the generic kernel"
+
       - name: 'Screenshot the desktop'
         id: desktop
         if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' && !inputs.skip_boot && inputs.boot_system }}
@@ -2347,6 +2408,7 @@ jobs:
         if: ${{ always()
                 && steps.build.outcome == 'success'
                 && steps.boot.outcome != 'failure'
+                && steps.bootgeneric.outcome != 'failure'
                 && steps.desktop.outcome != 'failure'
                 && steps.nettest.outcome != 'failure'
                 && steps.strip.outcome != 'failure'
@@ -2446,6 +2508,7 @@ jobs:
             echo "  uploading: $assets"
             if gh release upload 5/latest-x86_64 $assets --clobber; then
               echo "VERON-STAGE5-PUBLISHED-AMD64  $(cut -d' ' -f1 IMAGE-SHA256)"
+              echo "IMAGE_PUBLISHED=yes" >> "$GITHUB_ENV"
             else
               echo "VERON-STAGE5-UNPUBLISHED -- the image stands"
             fi
@@ -2477,3 +2540,35 @@ jobs:
           path: spikes/stage5/out/diag
           if-no-files-found: error
           retention-days: 30
+
+      - name: 'RELAY: banked but unfinished -- dispatch the next round'
+        if: ${{ always() && inputs.relay }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # THE LOOP LIVES HERE AND NOWHERE ELSE, WITH THREE EXITS:
+          #   published -> done (the loop's success exit)
+          #   no progress this round -> STOP LOUDLY: a stuck package must not
+          #     spin runner-hours; a human reads this run's build log
+          #   depth >= 8 -> STOP: eight 340-minute rounds is not a build,
+          #     it is a bug wearing one's clothes
+          if [ "${IMAGE_PUBLISHED:-no}" = "yes" ]; then
+            echo "RELAY-DONE  the image published; the loop ends"
+            exit 0
+          fi
+          restored="${RESTORED_N:-0}"; banked="${BANKED_N:-0}"
+          if [ "$banked" -le "$restored" ]; then
+            echo "RELAY-STOP  no progress: restored $restored, banked $banked"
+            exit 1
+          fi
+          depth="${{ inputs.relay_depth }}"
+          case "$depth" in *[!0-9]*) depth=0;; esac
+          if [ "$depth" -ge 8 ]; then
+            echo "RELAY-STOP  depth cap reached: $depth prior rounds"
+            exit 1
+          fi
+          echo "RELAY  restored $restored -> banked $banked; dispatching the next round ($((depth+2)))"
+          gh workflow run 5-user-space-amd64.yml --ref "$GITHUB_REF_NAME" \
+            -f use_checkpoint=true -f save_checkpoint=true \
+            -f relay=true -f relay_depth="$((depth+1))"
