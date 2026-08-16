@@ -643,8 +643,11 @@ deletes the partition they boot from.
     | sha256sum -c -
   rm -rf /tmp/fw && mkdir -p /tmp/fw
   tar -xf "$FW.tar.xz" -C /tmp/fw --strip-components=1
-  # the tree's own installer: dedup + zstd, WHENCE-faithful layout
-  # (needs: make zstd rdfind -- `sudo apt install rdfind` once if absent)
+  # the tree's own installer: dedup + zstd, WHENCE-faithful layout.
+  # Its host-side tools, installed HERE so this script has no hidden
+  # steps -- apt is a no-op when they already exist:
+  sudo apt-get install -y --no-install-recommends \
+       rdfind zstd make cpio >/dev/null
   ( cd /tmp/fw && sudo make install-zst DESTDIR=/mnt/veron )
   tar -xf "$RD.tar.xz" -C /tmp/fw --strip-components=1 \
       "$RD/regulatory.db" "$RD/regulatory.db.p7s"
