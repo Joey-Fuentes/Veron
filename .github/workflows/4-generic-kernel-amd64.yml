@@ -164,15 +164,20 @@ jobs:
           echo "the payload" > sqroot/proof.txt
           mksquashfs sqroot payload.squashfs -comp zstd -quiet
           cp lfs/usr/bin/busybox initrd/bin/busybox 2>/dev/null || cp lfs/bin/busybox initrd/bin/busybox
-          ov=$(find build/staging -name 'overlay.ko*' | head -1)
-          cp "$ov" initrd/overlay.ko
+          # overlay is =y as of fragment v6 (machine #1's fall-through,
+          # 2026-08-16), so there is normally no overlay.ko -- the guest
+          # then skips the insmod and the mount exercises the BUILT-IN fs,
+          # which is exactly the bare-metal shape. The module path stays
+          # handled so a future =m flip does not break this gate.
+          ov=$(find build/staging -name 'overlay.ko*' | head -1 || true)
+          [ -n "$ov" ] && cp "$ov" initrd/overlay.ko || : > initrd/no-overlay-module
           cat > initrd/init << 'INIT'
           #!/bin/busybox sh
           /bin/busybox mkdir -p /proc /sys /dev /ro /rw /work /merged
           /bin/busybox mount -t proc proc /proc
           /bin/busybox mount -t sysfs sys /sys
           /bin/busybox mount -t devtmpfs dev /dev
-          /bin/busybox insmod /overlay.ko
+          [ -f /overlay.ko ] && /bin/busybox insmod /overlay.ko
           /bin/busybox mount -t squashfs -o ro /dev/vda /ro || { echo VERON-GENERIC-FAIL squashfs; /bin/busybox poweroff -f; }
           /bin/busybox mount -t tmpfs tmpfs /rw
           /bin/busybox mkdir -p /rw/up /rw/work

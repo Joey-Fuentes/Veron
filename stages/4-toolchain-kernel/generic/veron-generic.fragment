@@ -13,7 +13,12 @@
 CONFIG_SQUASHFS=y
 CONFIG_SQUASHFS_ZSTD=y
 CONFIG_SQUASHFS_XZ=y
-CONFIG_OVERLAY_FS=m
+# =y, NOT =m, and machine #1 proved why (2026-08-16): guest/init mounts
+# the overlay FROM THE INITRAMFS -- two files, no modules, nothing to
+# autoload from -- and on failure falls through to the harness and powers
+# off. The ro-base + tmpfs-upper overlay is Veron's boot model, not
+# optional live-media plumbing: it rides in the spine.
+CONFIG_OVERLAY_FS=y
 CONFIG_ISO9660_FS=m
 CONFIG_BLK_DEV_LOOP=y
 CONFIG_BLK_DEV_DM=m
