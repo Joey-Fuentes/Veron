@@ -416,18 +416,27 @@ jobs:
                         https://distfiles.macports.org/musl
                         https://ftp.barfooze.de/pub/sabotage/tarballs"
 
+          # EVERY TARBALL VERIFIES AGAINST sources/*.toml OR THE BUILD DIES.
+          # tools/verify-source.sh: pinned -> sha256 must match; named-but-
+          # unpinned -> MINT line (commit it); unnamed -> FAIL. Our own
+          # src/<file> releases are tried before any upstream mirror -- the
+          # mirror we run is the mirror we trust first.
+          VERIFY="$GITHUB_WORKSPACE/tools/verify-source.sh"
+          SRCREL="https://github.com/$GITHUB_REPOSITORY/releases/download"
           fetch() {   # $1 = newline-separated mirror list, $2 = path under each
             _out=$(basename "$2")
             if [ -s "$_out" ]; then
               printf '  cached  %-30s %10s bytes\n' "$_out" "$(wc -c < "$_out")"
               return 0
             fi
-            for _m in $1; do
+            for _m in "$SRCREL/src/$_out" $1; do
+              case "$_m" in "$SRCREL"*) _path="$_out";; *) _path="$2";; esac
               if curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 \
-                      -o "$_out.part" "$_m/$2" 2>/dev/null; then
+                      -o "$_out.part" "$_m/$_path" 2>/dev/null; then
                 mv "$_out.part" "$_out"
                 printf '  fetched %-30s %10s bytes  from %s\n' \
                   "$_out" "$(wc -c < "$_out")" "$_m"
+                sh "$VERIFY" "$_out" || { rm -f "$_out"; return 1; }
                 return 0
               fi
               echo "    no answer from $_m"
@@ -473,6 +482,15 @@ jobs:
               printf '  cached  %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
               continue
             fi
+            # our own mirror first; fall through to upstream on any miss
+            if curl -fsSL --connect-timeout 15 --max-time 900 --retry 2 \
+                    -o "$b.part" "$SRCREL/src/$b/$b" 2>/dev/null && [ -s "$b.part" ]; then
+              mv "$b.part" "$b"
+              printf '  fetched %-30s %10s bytes  from src/ release\n' "$b" "$(wc -c < "$b")"
+              case "$b" in *.tar.*) sh "$VERIFY" "$b" || exit 1;; esac
+              continue
+            fi
+            rm -f "$b.part"
             # STAGE 4's curl FLAGS, VERBATIM, AND THEY ARE NOT DECORATION.
             #
             # This fetched sixteen tarballs and glibc-fhs-1.patch from the same
@@ -491,6 +509,9 @@ jobs:
                     --connect-timeout 20 --max-time 900 -o "$b.part" "$u" 2>/dev/null; then
               mv "$b.part" "$b"
               printf '  fetched %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
+              # verify tarballs; *.patch is exempt -- the vendored in-repo copy
+              # is its authority and is compared right below
+              case "$b" in *.tar.*) sh "$VERIFY" "$b" || exit 1;; esac
             else
               rm -f "$b.part"
               # A MISSING glibc PATCH IS NOT FATAL HERE. The vendored copy is
