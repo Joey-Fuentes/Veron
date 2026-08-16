@@ -603,6 +603,20 @@ the file, and the file is what you execute:
 
   mkdir -p "$DL"; cd "$DL"
 
+  # --- clean up any PRIOR RUN'S wreckage, and never leak our own ---------
+  # A failed run exits mid-script with /mnt/veron still mounted; the rerun
+  # then dd's over a mounted filesystem and e2fsck rightly refuses
+  # ("is mounted. Cannot continue", 2026-08-16). Reruns are the contract,
+  # so: unmount stale mounts on entry, and an EXIT trap guarantees the
+  # same on ANY exit, success or failure.
+  sudo umount /mnt/veron 2>/dev/null || true
+  sudo umount /mnt/veron-persist 2>/dev/null || true
+  trap 'sudo umount /mnt/veron 2>/dev/null; sudo umount /mnt/veron-persist 2>/dev/null' EXIT
+  if mount | grep -q "^$ROOT "; then
+    echo "FAIL: $ROOT is still mounted somewhere else -- unmount it first"
+    exit 1
+  fi
+
   # --- 1. fetch: the image, and BOTH kernels ------------------------------
   # ONE ASSET PER CALL, EACH VERIFIED BY NAME. `gh release download` with
   # several --pattern flags exits 0 when only SOME match -- a release
