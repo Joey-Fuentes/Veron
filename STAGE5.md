@@ -688,6 +688,121 @@ alternative if that ever matters.
 | `panic=1` | reboot rather than hang on a kernel panic |
 | `rdinit=/init` | the initramfs init, not the image's |
 
+#### The same flash, generic kernel edition
+
+The script above, adapted for `vmlinuz-generic` from `4/kernel-x86_64` -- the
+second stage-4 kernel: owned config, drivers as modules, storage spine built
+in. **Steps 3 and 4 invert the doc's own rule above**: firmware lived in the
+initramfs *because the drivers were built into the kernel and probed before
+p5 was mounted*. The generic kernel's `amdgpu`/`rtw89` are modules -- they
+load after the root is up, from `/lib/firmware` ON THE ROOT, and
+`FW_LOADER_COMPRESS_ZSTD` reads the `.zst` files verbatim, so the
+decompression loop (and its symlink-eats-seven-files trap) is gone entirely.
+The initramfs ships UNMODIFIED: the built-in spine mounts ext4-on-nvme with
+no module plumbing at all. The old `Image` + entry stay as the fallback.
+
+```sh
+( set -eu
+
+  DL="${DL:-$HOME/Downloads}"
+  ROOT=/dev/nvme0n1p5          # Veron's root -- OVERWRITTEN
+  PERSIST=/dev/nvme0n1p7       # Veron's /persist -- EMPTIED
+
+  # --- refuse to touch a partition that is not the one meant -------------
+  lbl=$(sudo blkid -s LABEL -o value "$PERSIST" 2>/dev/null || true)
+  [ "$lbl" = "veron-persist" ] || {
+    echo "refusing: $PERSIST is labelled '${lbl:-<none>}', not veron-persist"
+    exit 1; }
+
+  mkdir -p "$DL"; cd "$DL"
+
+  # --- 1. fetch: image as before, PLUS the generic kernel ----------------
+  gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
+    --pattern 'rootfs.img.tar.zst' \
+    --pattern 'initramfs.cpio.gz' --clobber
+  gh release download 4/kernel-x86_64 -R Joey-Fuentes/Veron --clobber
+  tar --zstd -xf rootfs.img.tar.zst
+
+  # AN EXPLICIT exit, NOT `[ a ] && [ b ]` -- see the note in the script
+  # above; `set -e` does not fire on a trailing AND-OR list.
+  for f in rootfs.img initramfs.cpio.gz vmlinuz-generic \
+           modules-7.1.5-generic.tar.zst KERNEL-GENERIC-SHA256; do
+    [ -s "$DL/$f" ] || { echo "missing or empty: $DL/$f"; exit 1; }
+  done
+  # the generic kernel is PINNED -- verify before it touches a disk
+  grep -E 'vmlinuz-generic|modules' KERNEL-GENERIC-SHA256 | sha256sum -c -
+
+  # --- 2. write the root (unchanged) --------------------------------------
+  sudo dd if="$DL/rootfs.img" of="$ROOT" bs=4M status=progress conv=fsync
+
+  # --- 3. modules + firmware INTO THE ROOT, not the initramfs -------------
+  sudo mkdir -p /mnt/veron
+  sudo mount "$ROOT" /mnt/veron
+  sudo tar --zstd -xf "$DL/modules-7.1.5-generic.tar.zst" -C /mnt/veron
+  sudo mkdir -p /mnt/veron/lib/firmware/amdgpu /mnt/veron/lib/firmware/rtw89
+  sudo cp /lib/firmware/amdgpu/renoir_*.bin.zst /mnt/veron/lib/firmware/amdgpu/
+  sudo cp /lib/firmware/rtw89/rtw8852a_fw.bin.zst /mnt/veron/lib/firmware/rtw89/
+  # the regulatory db: without it the 8852AE sits in the world domain
+  sudo cp /lib/firmware/regulatory.db /lib/firmware/regulatory.db.p7s \
+       /mnt/veron/lib/firmware/
+  echo "  modules: $(sudo find /mnt/veron/lib/modules -name '*.ko' | wc -l)"
+  echo "  amdgpu blobs: $(sudo ls /mnt/veron/lib/firmware/amdgpu | wc -l)  (expect ~12)"
+
+  # --- 4. kernel + UNMODIFIED initramfs where GRUB can read them ----------
+  sudo cp "$DL/vmlinuz-generic" "$DL/initramfs.cpio.gz" /mnt/veron/
+  ls -l /mnt/veron/vmlinuz-generic /mnt/veron/initramfs.cpio.gz
+  sudo umount /mnt/veron
+
+  # --- 5. empty the persistence partition (same rule: rm, NOT mkfs) -------
+  sudo mkdir -p /mnt/veron-persist
+  sudo mount "$PERSIST" /mnt/veron-persist
+  sudo find /mnt/veron-persist -mindepth 1 -maxdepth 1 \
+       ! -name 'lost+found' -exec rm -rf {} +
+  ls -A /mnt/veron-persist
+  sudo umount /mnt/veron-persist
+
+  echo "VERON-GENERIC-READY  reboot and pick 'Veron (generic kernel)'"
+)
+```
+
+**One-time GRUB entry**, beside the existing one in
+`/etc/grub.d/40_custom` -- same UUID, same arguments, only the kernel and
+initrd lines differ:
+
+```
+menuentry 'Veron (generic kernel)' --class unknown {
+    insmod part_gpt
+    insmod ext2
+    search --no-floppy --fs-uuid --set=root 00000000-0000-4000-8000-000000000001
+    linux  /vmlinuz-generic console=tty0 rdinit=/init panic=1 loglevel=4 \
+           veron.boot=system veron.root=/dev/nvme0n1p5
+    initrd /initramfs.cpio.gz
+}
+```
+
+```sh
+sudo grub-script-check /etc/grub.d/40_custom
+sudo cp /boot/grub/grub.cfg ~/grub.cfg.bak
+sudo update-grub
+sudo grep -A7 "menuentry 'Veron (generic" /boot/grub/grub.cfg
+```
+
+**First boot, expected and by design:** nothing autoloads modules yet, so
+the console comes up on simpledrm (working, unaccelerated) and wifi is
+absent until
+
+```sh
+modprobe amdgpu
+modprobe rtw89_8852ae
+```
+
+run once from the console. `dmesg | grep -E 'amdgpu|rtw89'` should show
+firmware loading from the `.zst` files directly -- the loader decompressing,
+no hand-prepared copies anywhere. Then wire the modprobes permanently as a
+small dinit one-shot, or through the mdev hotplug work -- which is exactly
+the userspace `CONFIG_UEVENT_HELPER` in this kernel exists to serve. If
+anything disappoints, the old 'Veron' entry boots the old world untouched.
+
 #### Secure Boot has to be off
 
 The first attempt did not reach the kernel:
