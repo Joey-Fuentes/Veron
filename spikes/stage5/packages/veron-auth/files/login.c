@@ -84,7 +84,19 @@ int main(int argc, char **argv)
      * exiting simply produces a fresh prompt -- the delay is what makes
      * guessing slow, and there is nothing here that can refuse forever. The
      * lock screen makes the same argument for the same reason. */
-    for (int attempt = 0; attempt < 3; attempt++) {
+    /* THE PROMPT PERSISTS; ONLY EOF OR SUCCESS ENDS IT. This used to cap
+     * at three attempts and exit 1 -- login(1)'s habit -- and CI measured
+     * what that costs under a getty: the serial harness's readiness
+     * newlines scored as three refusals, the process exited 1, dinit
+     * restarted it, and three probes later the console was rate-limited
+     * to death on a machine nobody had touched. agetty and every real
+     * console login prompt forever and throttle with the DELAY, because
+     * under a respawning getty "exit after N failures" is a self-denial-
+     * of-service: the fresh prompt was always coming back anyway, so the
+     * exit bought no security and sold availability. The 1s pause below
+     * is the rate limit; a bare Enter stays a legitimate attempt because
+     * with a possession factor it IS the login gesture. */
+    for (;;) {
         char input[512];
         if (!read_secret("veron: ", input, sizeof input)) {
             /* EOF -- getty will start a new session. */
@@ -152,5 +164,5 @@ int main(int argc, char **argv)
         struct timespec ts = { 2, 0 };
         nanosleep(&ts, NULL);
     }
-    return 1;
+    /* not reached: the loop above ends only via EOF (return 0) or exec. */
 }

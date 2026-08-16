@@ -146,7 +146,7 @@ fi
 # APPENDS to a file whose ownership is already right. The verifier's own
 # failure breadcrumbs land in labwc.log, so this is what makes a refusal
 # explain itself without a root shell.
-for lf in labwc.log yambar.log; do
+for lf in labwc.log yambar.log console.log console-auth.log hotplug.log; do
     /bin/busybox touch "/run/$lf" 2>/dev/null
     /bin/busybox chown veron:veron "/run/$lf" 2>/dev/null
     /bin/busybox chmod 0644 "/run/$lf" 2>/dev/null
