@@ -1,0 +1,147 @@
+# stages/4-toolchain-kernel/generic/veron-generic.fragment
+#
+# THE VERON DELTA for the generic kernel: applied on top of the pinned Arch
+# base config with scripts/kconfig/merge_config.sh. Arch's config is the
+# generic-hardware baseline (it tracks latest stable, so it exists FOR our
+# kernel version); this fragment is everything Veron requires regardless of
+# what the base drifts to. The gate file REQUIRED-CONFIGS checks the RESULT,
+# so a base change that silently drops something we need fails the build.
+#
+# WHY EACH GROUP (research: live-ISO kernel, 2026-08; STAGE5.md hardware table):
+
+# --- the live-boot spine: find the medium, mount the system ---
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_ZSTD=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_OVERLAY_FS=m
+CONFIG_ISO9660_FS=m
+CONFIG_BLK_DEV_LOOP=y
+CONFIG_BLK_DEV_DM=m
+CONFIG_VFAT_FS=m
+CONFIG_FAT_FS=m
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_EXT4_FS=m
+CONFIG_BLK_DEV_INITRD=y
+
+# --- storage: any disk the medium or target may be on ---
+CONFIG_BLK_DEV_NVME=m
+CONFIG_SATA_AHCI=m
+CONFIG_USB_STORAGE=m
+CONFIG_USB_UAS=m
+
+# --- early input: a keyboard must work before any module policy exists ---
+CONFIG_USB_XHCI_HCD=m
+CONFIG_USB_EHCI_HCD=m
+CONFIG_USB_HID=m
+CONFIG_HID_GENERIC=m
+CONFIG_I2C_HID_ACPI=m
+CONFIG_I2C_DESIGNWARE_PLATFORM=m
+
+# --- display: simpledrm drives the firmware framebuffer from boot;
+#     native DRM drivers take over at module load (labwc needs DRM/KMS) ---
+CONFIG_DRM=y
+CONFIG_DRM_SIMPLEDRM=y
+CONFIG_SYSFB_SIMPLEFB=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_DRM_I915=m
+CONFIG_DRM_AMDGPU=m
+CONFIG_DRM_NOUVEAU=m
+
+# --- firmware loading: the full tree ships zstd-compressed on the medium;
+#     the loader decompresses; NOTHING is compiled into vmlinuz
+#     (CONFIG_EXTRA_FIRMWARE off: non-GPL blobs in a GPL image) ---
+CONFIG_FW_LOADER=y
+CONFIG_FW_LOADER_COMPRESS=y
+CONFIG_FW_LOADER_COMPRESS_ZSTD=y
+CONFIG_FW_LOADER_COMPRESS_XZ=y
+
+# --- microcode: early-cpio, both vendors ---
+CONFIG_MICROCODE=y
+
+# --- wireless spine (drivers ride the Arch base; these must not drop) ---
+CONFIG_CFG80211=m
+CONFIG_MAC80211=m
+CONFIG_RTW89=m
+CONFIG_RTW89_8852AE=m
+
+# --- compression. DECOMPRESSION support is in-kernel code and costs the
+#     sysroot nothing: zstd firmware, zstd squashfs, zstd initramfs all
+#     load fine. BUILD-time compression needs the zstd BINARY, which the
+#     stage-4 sysroot does not carry yet -- so the kernel image is gzip and
+#     modules are uncompressed IN THE BOX; stage 6 compresses modules at
+#     packaging time. WHEN stage 4 gains zstd (LFS builds it one chapter
+#     over), flip these two lines to KERNEL_ZSTD / MODULE_COMPRESS_ZSTD. ---
+CONFIG_KERNEL_GZIP=y
+CONFIG_MODULE_COMPRESS_NONE=y
+CONFIG_RD_ZSTD=y
+CONFIG_RD_GZIP=y
+
+# --- reproducibility ---
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+
+# =========================================================================
+# GENERIC HARDWARE SURFACE, v1. OWNED, NOT COPIED: the base is the pinned
+# kernel's own x86_64 defconfig (arch/x86/configs/ inside linux-7.1.5 --
+# already under our pin); everything below is Veron's editorial voice.
+# Distro configs (Arch, Debian, Alpine) were read as REFERENCE ONLY.
+# COVERAGE POLICY: a family earns its lines from evidence -- machine #0 is
+# the CI qemu gate, machine #1 is the STAGE5.md laptop; new hardware adds
+# lines when its lspci demands them, with the machine named in the comment.
+# =========================================================================
+
+# --- machine #0: the CI boot gate is a qemu guest ---
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=m
+CONFIG_SCSI_VIRTIO=m
+CONFIG_DRM_VIRTIO_GPU=m
+
+# --- wifi families beyond machine #1's rtw89: the big five cover the
+#     overwhelming majority of laptops in the field ---
+CONFIG_IWLWIFI=m
+CONFIG_IWLMVM=m
+CONFIG_ATH9K=m
+CONFIG_ATH10K_PCI=m
+CONFIG_ATH11K_PCI=m
+CONFIG_ATH12K=m
+CONFIG_RTW88_8822CE=m
+CONFIG_MT7921E=m
+CONFIG_MT7925E=m
+CONFIG_BRCMFMAC=m
+
+# --- wired: the common laptop/desktop NICs and usb dongles ---
+CONFIG_E1000E=m
+CONFIG_IGB=m
+CONFIG_IGC=m
+CONFIG_R8169=m
+CONFIG_USB_RTL8152=m
+CONFIG_USB_NET_AX88179_178A=m
+CONFIG_USB_USBNET=m
+
+# --- sound: HDA spine (machine #1: ALC236) + SOF for modern laptop mics
+#     + usb audio ---
+CONFIG_SND_HDA_INTEL=m
+CONFIG_SND_HDA_CODEC_REALTEK=m
+CONFIG_SND_HDA_CODEC_HDMI=m
+CONFIG_SND_SOC_SOF_PCI=m
+CONFIG_SND_SOC_SOF_AMD_RENOIR=m
+CONFIG_SND_USB_AUDIO=m
+
+# --- input breadth: any keyboard, any touchpad, any mouse ---
+CONFIG_HID_MULTITOUCH=m
+CONFIG_HID_LOGITECH=m
+CONFIG_HID_LOGITECH_HIDPP=m
+CONFIG_HID_APPLE=m
+CONFIG_HID_ELAN=m
+
+# --- platform: power, type-c, thunderbolt, efi vars, webcam, bluetooth ---
+CONFIG_X86_AMD_PSTATE=y
+CONFIG_TYPEC=m
+CONFIG_UCSI_ACPI=m
+CONFIG_USB4=m
+CONFIG_EFIVAR_FS=y
+CONFIG_USB_VIDEO_CLASS=m
+CONFIG_BT=m
+CONFIG_BT_HCIBTUSB=m
