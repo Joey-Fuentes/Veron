@@ -24,10 +24,12 @@ for m in sorted(glob.glob("sources/*.toml")):
         urls = [u for u in [s.get("url","")] + s.get("mirrors",[]) if u]
         if not urls: continue
         b = os.path.basename(urls[0])
-        print("\t".join([b, s.get("sha256",""), "|".join(urls), m]))
+        print("\t".join([b, s.get("sha256","") or "-", "|".join(urls), m]))
 PY
 total=0; ok=0; up=0; mint=0
 while IFS="$(printf '\t')" read -r b sha urls m; do
+  [ "$sha" = "-" ] && sha=""   # sentinel: POSIX read collapses adjacent tabs,
+                               # so an empty field must never be emitted
   total=$((total+1))
   # already mirrored?
   if gh release view "src/$b" --repo "$REPO" >/dev/null 2>&1; then
