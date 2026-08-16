@@ -580,10 +580,13 @@ do not truncate. It lives at `tools/flash-amd64.sh` (committed, reviewed
 like everything else); run it with one line:
 
 ```sh
-cd ~/Downloads && curl -fsSL \
-  https://raw.githubusercontent.com/Joey-Fuentes/Veron/main/tools/flash-amd64.sh \
-  -o flash-amd64.sh && sh flash-amd64.sh
+cd ~/Downloads && gh api repos/Joey-Fuentes/Veron/contents/tools/flash-amd64.sh \
+  -H "Accept: application/vnd.github.raw" > flash-amd64.sh && sh flash-amd64.sh
 ```
+
+`gh api`, NOT raw.githubusercontent: the raw CDN caches for minutes, and a
+fetch right after a push served the PREVIOUS script twice on 2026-08-16 --
+the API serves HEAD, always, through the same `gh` the script itself uses.
 
 The full annotated text follows, FOR READING -- it is the same bytes as
 the file, and the file is what you execute:
