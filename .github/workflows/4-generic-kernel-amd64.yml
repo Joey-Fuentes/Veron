@@ -57,11 +57,20 @@ jobs:
           set -eu
           # a refusal says why: a missing tool fails HERE with its name, not
           # forty minutes into the build with a cryptic recipe error
+          # THE BOX SHAPE IS PHASE B's ("THE SYSROOT IS THE FILESYSTEM"),
+          # copied from 4-toolchain-kernel-amd64.yml, which paid for it:
+          # absolute bind, /usr/bin/sh entry, PATH=/usr/bin:/usr/sbin,
+          # --unshare-all --die-with-parent. The first revision here used a
+          # RELATIVE bind and env(1) -- bwrap printed usage to a suppressed
+          # stderr and every tool probed MISSING (run 86667281511).
+          ls -ld lfs/usr/bin/sh || { echo "FAIL: sysroot has no /usr/bin/sh"; exit 1; }
           fail=0
           for t in gcc make flex bison bc perl gzip gawk; do
-            if bwrap --bind lfs / --dev /dev --proc /proc --tmpfs /tmp \
-                 --setenv PATH /usr/bin:/usr/sbin:/bin:/sbin \
-                 /usr/bin/env sh -c "command -v $t" >/dev/null 2>&1; then
+            if bwrap --unshare-all --die-with-parent \
+                 --bind "$PWD/lfs" / --proc /proc --dev /dev \
+                 --tmpfs /tmp --tmpfs /run \
+                 --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
+                 /usr/bin/sh -c "command -v $t" >/dev/null 2>&1; then
               echo "  ok      $t"
             else
               echo "  MISSING $t"; fail=1
@@ -72,11 +81,12 @@ jobs:
       - name: 'CONFIG: defconfig + the Veron fragment, then the 86-line gate'
         run: |
           set -eu
-          box() { bwrap --bind lfs / --bind "$PWD/build" /build --dev /dev \
-                  --proc /proc --tmpfs /tmp \
-                  --setenv PATH /usr/bin:/usr/sbin:/bin:/sbin \
-                  --setenv HOME /tmp \
-                  /usr/bin/env sh -c "cd /build && $*"; }
+          box() { bwrap --unshare-all --die-with-parent \
+                  --bind "$PWD/lfs" / --bind "$PWD/build" /build \
+                  --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
+                  --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
+                  --chdir /build \
+                  /usr/bin/sh -c "$*"; }
           cp stages/4-toolchain-kernel/generic/veron-generic.fragment build/
           box "make ARCH=x86_64 defconfig >/dev/null"
           box "sh scripts/kconfig/merge_config.sh -m .config veron-generic.fragment >/dev/null"
@@ -94,14 +104,15 @@ jobs:
       - name: 'BUILD: the generic kernel, by the chain, reproducibly'
         run: |
           set -eu
-          box() { bwrap --bind lfs / --bind "$PWD/build" /build --dev /dev \
-                  --proc /proc --tmpfs /tmp \
-                  --setenv PATH /usr/bin:/usr/sbin:/bin:/sbin \
-                  --setenv HOME /tmp \
+          box() { bwrap --unshare-all --die-with-parent \
+                  --bind "$PWD/lfs" / --bind "$PWD/build" /build \
+                  --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
+                  --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
                   --setenv KBUILD_BUILD_TIMESTAMP "$KBUILD_TS" \
                   --setenv KBUILD_BUILD_USER veron \
                   --setenv KBUILD_BUILD_HOST veron \
-                  /usr/bin/env sh -c "cd /build && $*"; }
+                  --chdir /build \
+                  /usr/bin/sh -c "$*"; }
           KBUILD_TS="$(date -u -d @$(stat -c %Y linux-$KERNEL.tar.xz) '+%Y-%m-%d')"
           export KBUILD_TS
           box "make ARCH=x86_64 -j\$(nproc) >/tmp/kbuild.log 2>&1 || { tail -40 /tmp/kbuild.log; exit 1; }"
