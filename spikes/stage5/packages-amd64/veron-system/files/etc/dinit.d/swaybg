@@ -4,12 +4,15 @@
 # full account, including the stop/start asymmetry -- everything there
 # applies here unchanged.
 #
-# THE FILE-OR-COLOUR CHOICE MOVED HERE FROM AUTOSTART, in sh so a missing
-# wallpaper still gives a desktop rather than a failed service: swaybg
-# reads PNG only (gdk-pixbuf is declined in its recipe), and -c is the
-# fallback for an image that is not there.
+# THE FILE-OR-COLOUR CHOICE LIVES IN scripts/swaybg-start, AND THE MOVE WAS
+# PAID FOR: the first version inlined it here as `sh -c '...'`, and dinit's
+# parser honours double quotes only -- the single quotes passed through as
+# literal characters, the shell died on an unterminated quoted string, and
+# the service crash-looped with exit code 2 until the restart limit stopped
+# it (run 86565312453). Anything worth quoting goes in a script; a command
+# line here stays plain tokens.
 type = process
-command = /bin/busybox sh -c 'if [ -f /usr/share/veron/wallpaper.png ]; then exec /bin/busybox sh /etc/dinit.d/scripts/wayland-app /usr/bin/swaybg -m fill -i /usr/share/veron/wallpaper.png; else exec /bin/busybox sh /etc/dinit.d/scripts/wayland-app /usr/bin/swaybg -c "#1a1a1a"; fi'
+command = /bin/busybox sh /etc/dinit.d/scripts/swaybg-start
 run-as = veron
 restart = true
 depends-on = labwc

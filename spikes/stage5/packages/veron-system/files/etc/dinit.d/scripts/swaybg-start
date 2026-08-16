@@ -1,0 +1,30 @@
+#!/bin/busybox sh
+# Pick the wallpaper or the fallback colour, then hand off to wayland-app.
+#
+# THIS USED TO BE AN INLINE `sh -c '...'` IN THE SERVICE FILE, AND THE
+# QUOTES ARE WHY IT IS A SCRIPT NOW. dinit's parser honours DOUBLE quotes
+# and backslash escapes; single quotes are ordinary characters. So the
+# shell received a fragment beginning with a literal ' and died with
+# "unterminated quoted string" -- exit code 2, on every restart, until
+# dinit's rate limit stopped it:
+#
+#     dinit: Service swaybg process terminated with exit code 2
+#     dinit: Service swaybg restarting too quickly; stopping.
+#
+# Measured in run 86565312453, where yambar -- whose command line has no
+# quotes at all -- ran fine beside it. A service command with anything
+# worth quoting belongs in a file like this one, which is the shape every
+# other conditional in this directory already uses (see scripts/).
+#
+# THE CHOICE ITSELF IS UNCHANGED FROM THE OLD AUTOSTART ENTRY: swaybg
+# reads PNG only (gdk-pixbuf is declined in its recipe), and -c is the
+# fallback so a missing image still gives a desktop rather than a black
+# screen or a failed service.
+set -u
+
+if [ -f /usr/share/veron/wallpaper.png ]; then
+    exec /bin/busybox sh /etc/dinit.d/scripts/wayland-app \
+        /usr/bin/swaybg -m fill -i /usr/share/veron/wallpaper.png
+fi
+exec /bin/busybox sh /etc/dinit.d/scripts/wayland-app \
+    /usr/bin/swaybg -c '#1a1a1a'
