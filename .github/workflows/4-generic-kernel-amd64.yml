@@ -137,7 +137,19 @@ jobs:
           # box's tmpfs and tail -40'd failures: destroyed evidence, twice.
           box "make ARCH=x86_64 -j\$(nproc) 2>&1 | tee /build/kbuild.log; exit \${PIPESTATUS:-\$?}" \
             || { echo "FAIL: kbuild failed -- the FULL log streamed above and is in the kbuild-log artifact"; exit 1; }
-          box "make ARCH=x86_64 INSTALL_MOD_PATH=/build/staging modules_install 2>&1 | tee /build/modinstall.log; exit \${PIPESTATUS:-\$?}"
+          # DEPMOD=: SKIPS DEPMOD IN THE BOX. The sysroot has no kmod (it was
+          # never in the LFS list; the minimal kernel is all built-in and
+          # never needed it), so depmod resolves to busybox's applet, which
+          # ignores INSTALL_MOD_PATH and chdirs to bare /lib/modules --
+          # "No such file or directory", run of 2026-08-16. modules.dep is
+          # DERIVED METADATA computed from the .ko set, so the host's real
+          # kmod generates it below, same doctrine as mksquashfs preparing
+          # test data. (kmod joins the sysroot alongside zstd when stage 4
+          # next grows -- then this moves back in the box.)
+          box "make ARCH=x86_64 INSTALL_MOD_PATH=/build/staging DEPMOD=: modules_install 2>&1 | tee /build/modinstall.log; exit \${PIPESTATUS:-\$?}"
+          krel=$(ls build/staging/lib/modules)
+          /usr/sbin/depmod -b "$PWD/build/staging" -F build/System.map -e "$krel"
+          echo "depmod (host kmod): $(ls build/staging/lib/modules/$krel/modules.dep | head -1) written for $krel"
           ls -la build/arch/x86/boot/bzImage
           echo "modules: $(find build/staging/lib/modules -name '*.ko' | wc -l)"
 
