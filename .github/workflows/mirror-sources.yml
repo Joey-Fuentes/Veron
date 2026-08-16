@@ -1,0 +1,41 @@
+name: mirror-sources
+# THE MIRROR JOB: make the src/* releases a complete, verified mirror of
+# every sources/*.toml entry. A thin caller of tools/mirror-sources.sh --
+# the same script that runs on a phone, except a runner has the bandwidth
+# for the 619 MB firmware tarball and the phone does not.
+#
+# Idempotent: existing releases verify, missing ones fetch-check-upload.
+# Unpinned entries print MINT lines in the log; committing those hashes
+# into the manifests is the human's move (the minting doctrine: a run
+# prints the hash, then it is committed).
+on:
+  workflow_dispatch: {}
+  push:
+    # BRANCHES ONLY -- NEVER TAGS (a tag push matches paths and once fired
+    # 19 workflows at once; see the stage-4 workflow's trigger comment).
+    branches: ['**']
+    paths:
+      - 'sources/*.toml'
+      - 'tools/mirror-sources.sh'
+      - '.github/workflows/mirror-sources.yml'
+permissions:
+  contents: write     # release create/upload
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: 'MIRROR: every manifest entry into src/* releases'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y --no-install-recommends python3 curl >/dev/null
+          sh tools/mirror-sources.sh
+      - name: 'REMINDER: commit any MINT lines above into their manifests'
+        if: always()
+        run: |
+          echo "If the mirror step printed MINT lines, paste each sha256 into"
+          echo "its sources/*.toml entry and commit -- that arms enforcement."
