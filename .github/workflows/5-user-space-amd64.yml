@@ -89,15 +89,10 @@ on:
         required: false
         default: ''
       relay:
-        description: 'relay -- if this round ends banked-but-unfinished, re-dispatch this workflow with use_checkpoint=true until a round publishes. Progress-guarded: no relay unless this round banked MORE than it restored. Depth-capped at 8.'
-        type: boolean
-        required: false
-        default: false
-      relay_depth:
-        description: 'relay_depth -- internal loop counter; leave at 0'
+        description: 'relay -- non-empty enables self-relaying rounds: banked-but-unfinished re-dispatches with use_checkpoint=true until a round publishes. Dispatch with "true"; the loop passes its own depth here (GitHub caps inputs at 10, so one input carries both). Progress-guarded, depth-capped at 8.'
         type: string
         required: false
-        default: '0'
+        default: ''
       boot_system:
         description: 'boot_system -- switch_root into dinit instead of running the test harness'
         type: boolean
@@ -2542,7 +2537,7 @@ jobs:
           retention-days: 30
 
       - name: 'RELAY: banked but unfinished -- dispatch the next round'
-        if: ${{ always() && inputs.relay }}
+        if: ${{ always() && inputs.relay != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2553,6 +2548,7 @@ jobs:
           #     spin runner-hours; a human reads this run's build log
           #   depth >= 8 -> STOP: eight 340-minute rounds is not a build,
           #     it is a bug wearing one's clothes
+          [ -n "${{ inputs.relay }}" ] || { echo "RELAY-OFF"; exit 0; }
           if [ "${IMAGE_PUBLISHED:-no}" = "yes" ]; then
             echo "RELAY-DONE  the image published; the loop ends"
             exit 0
@@ -2562,8 +2558,8 @@ jobs:
             echo "RELAY-STOP  no progress: restored $restored, banked $banked"
             exit 1
           fi
-          depth="${{ inputs.relay_depth }}"
-          case "$depth" in *[!0-9]*) depth=0;; esac
+          depth="${{ inputs.relay }}"
+          case "$depth" in *[!0-9]*) depth=0;; esac   # "true" -> depth 0
           if [ "$depth" -ge 8 ]; then
             echo "RELAY-STOP  depth cap reached: $depth prior rounds"
             exit 1
@@ -2571,4 +2567,4 @@ jobs:
           echo "RELAY  restored $restored -> banked $banked; dispatching the next round ($((depth+2)))"
           gh workflow run 5-user-space-amd64.yml --ref "$GITHUB_REF_NAME" \
             -f use_checkpoint=true -f save_checkpoint=true \
-            -f relay=true -f relay_depth="$((depth+1))"
+            -f relay="$((depth+1))"

@@ -83,6 +83,13 @@ on:
     branches: ['**']
     paths:
       - 'stages/4-toolchain-kernel/**'
+      # THE GENERIC-KERNEL DIRECTORY IS EXCLUDED. Its fragment iterates
+      # often and is consumed ONLY by the dispatch-only 4-generic-kernel
+      # workflow; without this exclusion a one-line fragment push fired
+      # the full multi-hour bootstrap and republished the sysroot --
+      # which is the one event that stales a stage-5 checkpoint mid-climb
+      # (commit "generic kernel v5...", 2026-08-16).
+      - '!stages/4-toolchain-kernel/generic/**'
       - 'stages/3-micro-c/substages-amd64.toml'
       - '.github/workflows/4-toolchain-kernel-amd64.yml'
 # NO concurrency GROUP, DELIBERATELY.
