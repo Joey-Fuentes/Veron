@@ -34,10 +34,13 @@ while IFS="$(printf '\t')" read -r b sha urls m; do
   [ "$sha" = "-" ] && sha=""   # sentinel: POSIX read collapses adjacent tabs,
                                # so an empty field must never be emitted
   total=$((total+1))
-  # already mirrored?
-  if gh release view "src/$b" --repo "$REPO" >/dev/null 2>&1; then
+  # already mirrored? MIRRORED MEANS THE ASSET EXISTS BY NAME -- a release
+  # tag with no asset (or the wrong one) is a shell, and a shell is not a
+  # mirror ("no assets match the file pattern", run 86664011600).
+  if gh release view "src/$b" --repo "$REPO" --json assets \
+       -q '.assets[].name' 2>/dev/null | grep -Fxq "$b"; then
     if [ -z "$sha" ]; then
-      # release exists but the manifest has no pin: mint from the RELEASE
+      # asset exists but the manifest has no pin: mint from the RELEASE
       # asset itself, so "mirrored" can never hide an unpinned entry
       gh release download "src/$b" --repo "$REPO" -p "$b" -O "$WORK/$b" --clobber
       got=$(sha256sum "$WORK/$b" | cut -d' ' -f1); rm -f "$WORK/$b"
@@ -47,6 +50,8 @@ while IFS="$(printf '\t')" read -r b sha urls m; do
     echo "mirrored   $b"
     ok=$((ok+1)); continue
   fi
+  # a shell release (tag, no matching asset) falls through to the fetch
+  # path below, whose create-or-upload tail heals it with the real file
   got=""
   old_ifs=$IFS; IFS='|'
   for u in $urls; do
