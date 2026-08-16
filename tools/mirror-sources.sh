@@ -23,6 +23,9 @@ for m in sorted(glob.glob("sources/*.toml")):
         if not isinstance(s, dict): continue
         urls = [u for u in [s.get("url","")] + s.get("mirrors",[]) if u]
         if not urls: continue
+        if any(u.endswith(".git") for u in urls): continue   # git pins are
+        # commit-sha based (tools/clone-pinned.sh territory); curl-ing a repo
+        # URL hashes an HTML page -- the tinycc.git lesson of 2026-08-16.
         b = os.path.basename(urls[0])
         print("\t".join([b, s.get("sha256","") or "-", "|".join(urls), m]))
 PY
@@ -33,6 +36,14 @@ while IFS="$(printf '\t')" read -r b sha urls m; do
   total=$((total+1))
   # already mirrored?
   if gh release view "src/$b" --repo "$REPO" >/dev/null 2>&1; then
+    if [ -z "$sha" ]; then
+      # release exists but the manifest has no pin: mint from the RELEASE
+      # asset itself, so "mirrored" can never hide an unpinned entry
+      gh release download "src/$b" --repo "$REPO" -p "$b" -O "$WORK/$b" --clobber
+      got=$(sha256sum "$WORK/$b" | cut -d' ' -f1); rm -f "$WORK/$b"
+      echo "  MINT ($(basename "$m")): sha256 = \"$got\"  (from existing release)"
+      mint=$((mint+1))
+    fi
     echo "mirrored   $b"
     ok=$((ok+1)); continue
   fi
