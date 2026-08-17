@@ -628,7 +628,16 @@ int main(int argc, char **argv)
 
     explicit_bzero(entry, sizeof entry);
     wl_display_disconnect(display);
-    return 0;
+    /* THE EXIT CODE IS THE CONTRACT, AND 0 MEANS ONE THING: a person
+     * demonstrated a factor and unlocked. Every other way out of the
+     * event loop -- the compositor refusing the lock (`finished`), the
+     * display dying mid-session, a protocol error disconnecting us --
+     * used to fall through here and ALSO return 0, so a gate that
+     * crashed reported success and nothing supervising it could tell.
+     * Observed on machine #1 (2026-08-16): armed reboot, no stick, the
+     * face for a split second, then an open desktop and no process.
+     * The autostart's relock loop keys on exactly this distinction. */
+    return unlocking ? 0 : 2;
 }
 
 /* LOCKOUT, AND WHY THIS PROGRAM NEVER REFUSES FOREVER.
