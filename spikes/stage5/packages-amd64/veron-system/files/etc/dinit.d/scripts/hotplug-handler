@@ -80,6 +80,23 @@ drm)
         esac
     fi
     ;;
+backlight)
+    # THE BACKLIGHT NODE APPEARS AT COLDPLUG, AFTER device-nodes RAN. On the
+    # generic kernel amdgpu is a MODULE loaded during coldplug replay, so its
+    # /sys/class/backlight/*/brightness is created AFTER the one-shot
+    # device-nodes service already finished its scan -- which found no
+    # backlight node to regroup, and left it root:root 0644. The bar's
+    # buttons (desktop user) then could not write it: brightness worked on
+    # the built-in-amdgpu minimal kernel and silently failed on the generic
+    # one (machine #1, 2026-08-17). Re-asserting here, on the add event,
+    # catches it whenever the driver actually publishes it. DEVPATH points
+    # at the class device; its brightness attribute is what must be writable.
+    if [ "$ACTION" = add ] && [ -n "${DEVPATH:-}" ] && \
+       [ -e "/sys${DEVPATH}/brightness" ]; then
+        /bin/busybox chgrp video "/sys${DEVPATH}/brightness" 2>/dev/null
+        /bin/busybox chmod 0664 "/sys${DEVPATH}/brightness" 2>/dev/null
+    fi
+    ;;
 block)
     case "$ACTION" in
     add)
