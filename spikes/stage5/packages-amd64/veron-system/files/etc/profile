@@ -1,7 +1,18 @@
 # Minimal login environment. PATH mirrors policy/defaults.toml's build PATH so
 # a shell in the booted image resolves the same binaries the build did.
 export PATH=/usr/bin:/usr/sbin:/bin:/sbin
-export PS1='veron# '
+# THE PROMPT TELLS THE TRUTH ABOUT PRIVILEGE. `#` is the universal
+# "you are root" signal and `$` means an ordinary user; this image's
+# entire design is that the desktop account is uid 1000, NOT root, so a
+# hardcoded `veron# ' misreported every console all the way through
+# machine #1's bring-up (2026-08-17) -- a `whoami` said `veron` under a
+# `#` prompt. Keyed on the real uid now: root (0) keeps `#`, everyone
+# else gets `$`. busybox sh evaluates this at each login.
+if [ "$(id -u)" = 0 ]; then
+    export PS1='veron# '
+else
+    export PS1='veron$ '
+fi
 export TERM=${TERM:-linux}
 
 # XDG_RUNTIME_DIR, CREATED BY THE xdg-runtime SERVICE AND EXPORTED HERE.
