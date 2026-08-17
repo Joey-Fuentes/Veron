@@ -54,6 +54,18 @@ while [ "$n" -lt 60 ]; do
         [ -S "$s" ] || continue
         WAYLAND_DISPLAY=${s##*/}
         export WAYLAND_DISPLAY
+        # AN OUTPUT IS PART OF "READY" NOW. The uevent feed means the
+        # socket appears seconds before the first display does (the DRM
+        # connector lands ~28s into machine #1's boot); yambar started in
+        # that window, exited on "no monitors", and dinit's rate limiter
+        # rightly gave up (2026-08-16). Wait for a lit connector inside
+        # the same 60-second budget; if none comes, exec anyway and let
+        # dinit's restart own whatever happens next.
+        while [ "$n" -lt 60 ]; do
+            /bin/busybox grep -qs '^enabled$' /sys/class/drm/card*/card*/enabled && break
+            /bin/busybox sleep 1
+            n=$((n + 1))
+        done
         exec "$@"
     done
     /bin/busybox sleep 1

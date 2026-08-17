@@ -47,11 +47,23 @@ if ! /bin/busybox grep -q "GROUP=veron" "$CONF" 2>/dev/null; then
 fi
 
 IFACE=
-for d in /sys/class/net/*; do
-    [ -d "$d/wireless" ] && { IFACE=$(basename "$d"); break; }
+# FOUND BY WAITING, NOT BY LOOKING ONCE. Under the minimal kernel the
+# driver is built in and the interface predates dinit; under the generic
+# kernel rtw89 loads at coldplug and the NIC registers only after its
+# firmware does -- a single-pass probe looks too early and exits, and the
+# machine boots to "no supplicant" (machine #1, 2026-08-16). Up to 60
+# seconds, one second at a time, same shape as wayland-app's socket wait;
+# a machine with genuinely no wifi still exits 0, after saying it waited.
+n=0
+while [ "$n" -lt 60 ]; do
+    for d in /sys/class/net/*; do
+        [ -d "$d/wireless" ] && { IFACE=$(basename "$d"); break 2; }
+    done
+    /bin/busybox sleep 1
+    n=$((n + 1))
 done
 [ -n "$IFACE" ] || {
-    echo "VERON-WIFI-NO-INTERFACE  no wireless device present"
+    echo "VERON-WIFI-NO-INTERFACE  no wireless device present after ${n}s"
     exit 0
 }
 

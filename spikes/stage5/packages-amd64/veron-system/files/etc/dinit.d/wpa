@@ -18,3 +18,8 @@ type = process
 command = /etc/dinit.d/scripts/wpa-start
 restart = false
 depends-on = early-filesystems
+# AND AFTER hotplug, because on the generic kernel the wifi driver is a
+# MODULE loaded at coldplug -- the minimal kernel built it in, so the
+# interface predated dinit and this edge was invisible until machine #1
+# booted the generic kernel to "no supplicant" (2026-08-16).
+depends-on = hotplug
