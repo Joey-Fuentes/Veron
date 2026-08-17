@@ -28,14 +28,17 @@ export HOME=/var/lib/greeter
 # assert wl_list_empty(new_input), wlroots commit 8f56f7ca, >=0.19.0.)
 export WLR_RENDERER=pixman
 export WLR_RENDERER_ALLOW_SOFTWARE=1
-# BELT AND SUSPENDERS: if anything still reaches the GL path, force the
-# whole Mesa stack to software so it cannot abort on a missing GPU.
-export LIBGL_ALWAYS_SOFTWARE=1
-export GALLIUM_DRIVER=llvmpipe
-export WLR_BACKENDS=drm
-# and make the greeter's home writable-cache location exist, or fontconfig
-# and the shader cache spam "Permission denied" every frame (harmless but
-# noisy, and a wedged cache dir can slow first paint).
+# PIXMAN ALONE, NO BACKEND FORCING. The dl build proved pixman renders
+# (log showed a cursor, no signal 6, no EGL errors) -- but WLR_BACKENDS=
+# drm made labwc take an exclusive DRM/input grab that WEDGED: the pointer
+# drew once and never moved, and ALL VTs froze until SysRq+R force-ungrabbed
+# the keyboard (machine #1, 2026-08-17). Removing WLR_BACKENDS lets wlroots
+# auto-select the backend and share the seat the way the working user
+# session does. LIBGL/GALLIUM dropped too -- pixman never touches GL, so
+# they were pure cargo-culting and one may have contributed to the grab.
+# LOG-TO-DRM MUST BE SHAREABLE: the greeter and the eventual user session
+# both drive eDP-1 through seatd, one at a time; forcing drm broke that.
+# Cache dir so fontconfig/shader spam stops.
 /bin/busybox mkdir -p "$HOME/.cache" 2>/dev/null || true
 cd /
 # THE CRASH NOTE LANDS WHERE veron CAN READ IT. The service's console
