@@ -69,48 +69,9 @@ fi
 # ONE LINE PER SSID, STRONGEST FIRST, DUPLICATES REMOVED. scan_results is
 # tab-separated: bssid / frequency / signal / flags / ssid. A network with no
 # SSID is hidden and cannot be joined from a list.
-# THE DOMINOES ARE BACK -- AND BUILT WHERE ESCAPES ARE SAFE. The first
-# version wrote the bar glyphs as \xHH escapes inside the awk program;
-# GNU awk accepts those, BUSYBOX awk does not, and the whole program
-# died -- an empty network list on machine #1's clean flash
-# (2026-08-16) where the sandbox test had shown perfect bars. The
-# glyphs are therefore built by the SHELL with busybox printf (octal,
-# guaranteed) and handed to awk as -v variables: no awk dialect's
-# string semantics are load-bearing anywhere. scan_results is
-# strongest-first, so the first line per SSID carries its best BSS and
-# field 3 is that BSS's dBm. TWO SPACES separate bars from name; the
-# selection strips through them, and the special rows contain none.
-B4=$(/bin/busybox printf '\342\226\202\342\226\204\342\226\206\342\226\210')
-B3=$(/bin/busybox printf '\342\226\202\342\226\204\342\226\206 ')
-B2=$(/bin/busybox printf '\342\226\202\342\226\204  ')
-B1=$(/bin/busybox printf '\342\226\202   ')
 ssid_list() {
-    # THE FIELD SEPARATOR IS A LITERAL TAB, PASSED AS A VARIABLE. busybox
-    # awk's handling of -F'\t' (backslash-t) is not something to gamble on
-    # -- the last wifi regression came from exactly that kind of dialect
-    # assumption. A real tab byte in $TAB works identically under busybox
-    # awk, mawk and gawk. And NR>1: scan_results prints ONE header line
-    # ("bssid / frequency / ..."), so NR>2 silently dropped the FIRST real
-    # network every scan -- which, with few networks, looked like an empty
-    # list and showed only "Rescan" (machine #1, 2026-08-17).
-    # FS SET IN BEGIN WITH A LITERAL \t IN THE PROGRAM, not via -F and a
-    # shell variable. busybox awk honours FS="\t" assigned in BEGIN, but a
-    # raw tab byte passed through a shell var to -F did NOT parse under the
-    # laptop's awk (machine #1, 2026-08-17: scan_results held a warm
-    # 14-network cache with wpa_state=INACTIVE, yet the picker showed
-    # nothing -- proving it was the parse, not the scan timing). A \t inside
-    # the program is interpreted by awk itself, immune to shell quoting.
-    # $3 is coerced numeric (s = $3 + 0) so a malformed row cannot abort it.
     /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan_results 2>/dev/null \
-        | awk -v b4="$B4" -v b3="$B3" -v b2="$B2" -v b1="$B1" \
-          'BEGIN { FS = "\t" }
-           NR > 1 && $5 != "" {
-              if (!seen[$5]++) {
-                  s = $3 + 0
-                  b = (s >= -50) ? b4 : (s >= -60) ? b3 : (s >= -70) ? b2 : b1
-                  printf "%s  %s\n", b, $5
-              }
-           }'
+        | awk -F'\t' 'NR>2 && $5 != "" { if (!seen[$5]++) print $5 }'
 }
 
 # WHAT THE SUPPLICANT ALREADY KNOWS, BEFORE ASKING IT FOR MORE.
@@ -129,46 +90,19 @@ ssid_list() {
 # been instant.
 #
 # So: read the cache first and only wait if it is empty.
-# READ THE WARM CACHE FIRST AND KEEP IT. wpa_supplicant scans on its own and
-# the cache is usually already populated (the user's machine: wpa_state=
-# INACTIVE with 14 networks sitting in scan_results). This value is GOLD --
-# it must not be clobbered by a mid-scan empty read below.
 CACHED=$(ssid_list)
 
-# Kick a fresh scan so the list is current, but a scan FLIPS wpa_state to
-# SCANNING and empties scan_results until it completes. On the generic
-# kernel's slower rtw89 that is a real window, and the bug that hid here for
-# an entire session was the poll below overwriting the good pre-scan CACHED
-# with an empty mid-scan read (machine #1, 2026-08-17: every command worked
-# by hand, yet the picker showed nothing, because the forced rescan wiped
-# the cache the poll then read).
 /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan >/dev/null 2>&1 || \
     die "the supplicant would not scan -- is it running on $IFACE?"
 
-# POLL UNTIL RESULTS APPEAR OR THE SCAN FINISHES, WITH A GENEROUS DEADLINE.
-# ALWAYS poll (not only when CACHED is empty): the pre-scan read can catch a
-# stale or mid-scan-partial cache, and skipping the poll then showed an empty
-# list with "Status: SCANNING" -- exactly what the generic kernel did, because
-# rtw89 (the RTL8852AE driver, a MODULE now, not built in) scans SLOWER than
-# the minimal kernel's did and did not finish inside the old 8-second window.
-# The deadline is 20s and the loop also breaks the moment wpa_state leaves
-# SCANNING, so a fast radio is still instant and a slow one is waited out.
-# ONLY POLL IF THE WARM CACHE WAS EMPTY. If CACHED already has networks from
-# the pre-scan read, show them immediately -- never overwrite them with a
-# mid-scan empty read. This is the fix: the previous loop reassigned CACHED
-# unconditionally on its first iteration, throwing away good data the instant
-# the forced scan had blanked scan_results.
 if [ -z "$CACHED" ]; then
+    # POLLED, NOT SLEPT, AND WITH A DEADLINE. A fixed sleep is simultaneously
+    # too long when the answer arrives in 400 ms and too short when the radio
+    # is cold, which is how one number managed to cause both complaints.
     n=0
-    while [ "$n" -lt 40 ]; do
-        _fresh=$(ssid_list)
-        [ -n "$_fresh" ] && { CACHED=$_fresh; break; }
-        _st=$(/usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" status 2>/dev/null \
-              | awk -F= '$1 == "wpa_state" { print $2 }')
-        if [ "$_st" != "SCANNING" ] && [ "$n" -gt 2 ]; then
-            CACHED=$(ssid_list)
-            break
-        fi
+    while [ "$n" -lt 16 ]; do
+        CACHED=$(ssid_list)
+        [ -n "$CACHED" ] && break
         sleep 0.5
         n=$((n + 1))
     done
@@ -209,11 +143,6 @@ case "$SSID" in
         # already issued has had the time the user spent reading the menu.
         exec "$0" ;;
 esac
-
-# STRIP THE BARS: everything through the first double-space is decoration.
-# The special rows carry none, so the strip no-ops on them.
-case "$SSID" in *"  "*) SSID="${SSID#*  }" ;; esac
-[ -n "$SSID" ] || exit 0
 
 # fuzzel HAS NO PASSWORD FIELD, and pretending otherwise would be worse than
 # saying so. The passphrase is typed into a normal dmenu prompt, which means it
