@@ -173,6 +173,13 @@ CONFIG_HID_MULTITOUCH=y
 CONFIG_HID_APPLE=m
 CONFIG_HID_ELAN=m
 
+# --- sandboxing: WebKit's bubblewrap web-process sandbox creates user
+#     namespaces at spawn; defconfig leaves USER_NS off and the browser
+#     dies in under a second (machine #1, 2026-08-16). The proven laptop
+#     kernel set this explicitly (sysroot-amd64.sh set_cfg block) -- the
+#     last gap the proven-vs-generic diff found. ---
+CONFIG_USER_NS=y
+
 # --- hotplug: the userspace has NO udev (libudev-zero, no daemon;
 #     devtmpfs makes the nodes). veron-system's device-nodes script names
 #     its own limit and its plan: "wiring busybox mdev as the kernel's
