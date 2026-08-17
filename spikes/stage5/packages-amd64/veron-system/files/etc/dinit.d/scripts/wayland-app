@@ -38,6 +38,17 @@ export XDG_RUNTIME_DIR=/run/user/1000
 export XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}
 export HOME=/home/veron
 export XDG_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
+# THE SAME TWO LINES labwc-session CARRIES, AND FOR THE SAME REASONS: a
+# helper's CHILDREN inherit this environment -- the bar's launcher click
+# spawns fuzzel, its terminal click spawns foot -- and without these the
+# menu lists upstream .desktop files instead of the curated set in
+# /usr/share/veron, and the terminal opens in dinit's OWN cwd, which is
+# /etc/dinit.d (it chdirs there to load services and never leaves, and
+# every service inherits it). Both seen on machine #1's FLASHED image,
+# dinit-started bar, first click (2026-08-16): the uncurated menu and a
+# shell born in the service directory.
+export XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/share/veron:/usr/local/share:/usr/share}
+cd "$HOME" 2>/dev/null || cd / || true
 
 if [ $# -lt 1 ]; then
     echo "wayland-app: nothing to run" >&2
