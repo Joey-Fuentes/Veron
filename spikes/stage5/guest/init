@@ -370,15 +370,21 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
             # loaded later) and silently left the group `veron` -- the
             # exact symptom on machine #1. `.` separator + numeric both
             # sides is the form busybox chown always honors.
-            # NUMERIC uid:gid. The initramfs /etc/group has no `auth`
-            # entry (that lives in the booted image's group file), so a
-            # NAME would not resolve here -- both sides must be raw
-            # numbers. If busybox chown still leaves the wrong group in
-            # this early context, veron-enroll re-asserts it in the booted
-            # system where getgrnam works; this is the best-effort first
-            # pass so a never-enrolled boot is still greeter-readable.
-            chown 1000:110 "$PERSIST/veron-auth" 2>/dev/null \
-                || chown 1000.110 "$PERSIST/veron-auth" 2>/dev/null
+            # OWNERSHIP IS NOT TOUCHED HERE, AND THAT IS THE FIX.
+            # guest/init runs in the initramfs, whose /etc/group has no
+            # `auth` entry, so `chown 1000:110` could not resolve the gid
+            # -- and busybox chown, given a gid it cannot map, RESET the
+            # group to veron's primary (veron) every boot, CLOBBERING the
+            # correct group that veron-enroll had set in the booted system.
+            # That was machine #1's "enrol works, reboot breaks it" loop
+            # (2026-08-17): image 1 showed group auth right after enrol,
+            # image 2 showed group veron after the very next boot. So the
+            # rule now: the initramfs sets ONLY what it can prove correct
+            # (the mode and the setgid bit), and NEVER the group. The group
+            # is auth, and only veron-enroll -- which runs where getgrnam
+            # ("auth") works -- is allowed to set it. A never-yet-enrolled
+            # store has no files to read anyway, so leaving its group alone
+            # costs nothing.
             chmod 2750 "$PERSIST/veron-auth"
             # PROVE IT, LOUDLY: a store the greeter cannot read is a
             # lockout, so the boot log states the resulting ownership.
