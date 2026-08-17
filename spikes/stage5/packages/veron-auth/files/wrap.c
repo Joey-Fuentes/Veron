@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <grp.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/stat.h>
@@ -238,7 +239,19 @@ static int wrap_write(const char *path, const uint8_t key[32],
         unlink(tmp);
         return 0;
     }
-    return rename(tmp, path) == 0;
+    if (rename(tmp, path) != 0)
+        return 0;
+    /* GROUP auth ON THE WRAP, same reason as auth.conf in enroll.c: the
+     * temp is created group veron and rename keeps it, so the greeter
+     * (group auth) could not read the wrap it must unwrap. The wrap is
+     * ciphertext -- group-readable reveals nothing without the key file. */
+    {
+        struct group *ag = getgrnam("auth");
+        gid_t agid = ag ? ag->gr_gid : 110;
+        chown(path, (uid_t)-1, agid);
+    }
+    chmod(path, 0640);
+    return 1;
 }
 
 static int wrap_read(const char *path, const uint8_t key[32],

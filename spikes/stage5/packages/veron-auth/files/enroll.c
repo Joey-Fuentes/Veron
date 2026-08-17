@@ -200,6 +200,20 @@ static int conf_set(const char *dir, const char *key, const char *val)
         return 0;
     }
     chmod(path, 0640);
+    /* GROUP auth ON THE FILE ITSELF, not just the dir. The setgid dir does
+     * NOT help here: auth.conf is written to auth.conf.new (created group
+     * veron, the writer's primary) and renamed into place, and rename
+     * keeps the temp's group. So the greeter saw group veron and got
+     * EACCES -- machine #1, 2026-08-17, a fresh 01:47 enrol STILL group
+     * veron. The hand-fix that worked was `chgrp -R auth`, i.e. the FILES,
+     * not just the dir; this does the same at the source. */
+    {
+        struct group *ag = getgrnam("auth");
+        gid_t agid = ag ? ag->gr_gid : 110;
+        if (chown(path, (uid_t)-1, agid) < 0)
+            fprintf(stderr, "veron-enroll: warning: cannot set %s group: %s\n",
+                    path, strerror(errno));
+    }
     return 1;
 }
 
