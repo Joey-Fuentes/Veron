@@ -49,6 +49,23 @@ pick_card() {
     return 1
 }
 
+# WAIT FOR A CARD TO EXIST. Even depends-on=hotplug is not a hard guarantee
+# the ALSA card class device is registered the instant coldplug's uevents
+# are replayed -- snd_hda_intel probes asynchronously. A bounded poll closes
+# the gap: 20 x 0.5s = 10s, exits the instant a playback PCM appears. Without
+# it, sound-setup could still race the module and write no asound.conf, which
+# was the whole "cannot find card 0 / no sound" failure (machine #1,
+# 2026-08-17: card enumerated as 1, no card 0, and asound.conf was absent).
+_w=0
+while [ "$_w" -lt 20 ]; do
+    for _p in /proc/asound/card*/pcm*p; do
+        [ -d "$_p" ] && { _w=99; break; }
+    done
+    [ "$_w" = 99 ] && break
+    /bin/busybox sleep 0.5
+    _w=$((_w + 1))
+done
+
 CARD=$(pick_card) || {
     echo "VERON-SOUND-NONE  no playback device on any card"
     exit 0
@@ -86,6 +103,14 @@ ctl.!default {
     card $CARD
 }
 CONF
+
+# PERSIST THE CARD NUMBER FOR THE MIXER POPUP. alsamixer with no -c resolves
+# `default`, and on the generic kernel that resolution was failing -- the
+# Volume popup (foot running alsamixer) opened card 0 (HDMI, no usable
+# controls) and alsamixer exited instantly, closing the window (machine #1,
+# 2026-08-17). The keybinds already dodge this with `amixer -c 1`; the popup
+# now reads the card sound-setup actually chose, so it is never wrong.
+echo "$CARD" > /run/veron-audio-card 2>/dev/null || true
 
 # THE VOLUME, FROM LAST TIME IF THERE IS A LAST TIME.
 #

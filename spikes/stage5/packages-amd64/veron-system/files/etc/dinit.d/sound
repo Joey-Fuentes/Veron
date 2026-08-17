@@ -26,3 +26,11 @@ command = /etc/dinit.d/scripts/sound-setup
 stop-command = /bin/sh -c "alsactl store 2>/dev/null || true"
 restart = false
 depends-on = early-filesystems
+# AND hotplug, because snd_hda_intel is a MODULE on the generic kernel,
+# loaded during coldplug replay -- not built in as it was on the minimal
+# kernel. Without this edge, sound ran before any card existed,
+# /proc/asound/card* was empty, pick_card found nothing, and no
+# asound.conf was written -- so ALSA had no default and everything fell to
+# card 0, which on this machine does not exist ("cannot find card 0").
+# Same late-module timing that device-nodes and the backlight poll fixed.
+depends-on = hotplug
