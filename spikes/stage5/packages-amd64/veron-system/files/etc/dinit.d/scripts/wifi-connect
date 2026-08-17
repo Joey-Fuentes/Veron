@@ -69,20 +69,27 @@ fi
 # ONE LINE PER SSID, STRONGEST FIRST, DUPLICATES REMOVED. scan_results is
 # tab-separated: bssid / frequency / signal / flags / ssid. A network with no
 # SSID is hidden and cannot be joined from a list.
-# THE DOMINOES ARE BACK. The rewrite for the unprivileged desktop dropped
-# the per-network signal bars the old menu drew, and nobody noticed until
-# machine #1 asked where they went (2026-08-16). scan_results is already
+# THE DOMINOES ARE BACK -- AND BUILT WHERE ESCAPES ARE SAFE. The first
+# version wrote the bar glyphs as \xHH escapes inside the awk program;
+# GNU awk accepts those, BUSYBOX awk does not, and the whole program
+# died -- an empty network list on machine #1's clean flash
+# (2026-08-16) where the sandbox test had shown perfect bars. The
+# glyphs are therefore built by the SHELL with busybox printf (octal,
+# guaranteed) and handed to awk as -v variables: no awk dialect's
+# string semantics are load-bearing anywhere. scan_results is
 # strongest-first, so the first line per SSID carries its best BSS and
-# field 3 is that BSS's dBm -- the bars cost nothing new. TWO SPACES
-# separate bars from name; the selection strips through them, and the
-# special rows (Connected:/Rescan/...) contain none, so the strip no-ops.
+# field 3 is that BSS's dBm. TWO SPACES separate bars from name; the
+# selection strips through them, and the special rows contain none.
+B4=$(/bin/busybox printf '\342\226\202\342\226\204\342\226\206\342\226\210')
+B3=$(/bin/busybox printf '\342\226\202\342\226\204\342\226\206 ')
+B2=$(/bin/busybox printf '\342\226\202\342\226\204  ')
+B1=$(/bin/busybox printf '\342\226\202   ')
 ssid_list() {
     /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan_results 2>/dev/null \
-        | awk -F'\t' 'NR>2 && $5 != "" { if (!seen[$5]++) {
-              b = ($3 >= -50) ? "\xe2\x96\x82\xe2\x96\x84\xe2\x96\x86\xe2\x96\x88" \
-                : ($3 >= -60) ? "\xe2\x96\x82\xe2\x96\x84\xe2\x96\x86 "             \
-                : ($3 >= -70) ? "\xe2\x96\x82\xe2\x96\x84  "                          \
-                :               "\xe2\x96\x82   ";
+        | awk -F'\t' -v b4="$B4" -v b3="$B3" -v b2="$B2" -v b1="$B1" \
+          'NR>2 && $5 != "" { if (!seen[$5]++) {
+              b = ($3 >= -50) ? b4 : ($3 >= -60) ? b3 \
+                : ($3 >= -70) ? b2 : b1;
               printf "%s  %s\n", b, $5 } }'
 }
 
