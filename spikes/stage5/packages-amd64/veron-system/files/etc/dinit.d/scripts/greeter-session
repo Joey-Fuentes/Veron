@@ -13,6 +13,20 @@ export HOME=/var/lib/greeter
 # WLR_RENDERER... to proceed", then the backend assertion, signal 6).
 # With the render group fixed GL should come up; this makes the
 # fallback a slower face instead of a corpse.
+# PIXMAN, NOT just "allow software". WLR_RENDERER_ALLOW_SOFTWARE=1 only
+# WHITELISTS the GLES2/EGL path to run on llvmpipe -- it still needs a
+# working EGL/GBM stack and a render node the greeter can open, and when
+# that failed the greeter fell to "Software rendering detected, please
+# use WLR_RENDERER..." then aborted (signal 6 = a wlroots 0.19 teardown
+# assertion firing because renderer init never completed). WLR_RENDERER=
+# pixman selects the Pixman renderer, which composites on the CPU into
+# DRM dumb buffers and needs NO EGL, NO GL, NO GPU access at all -- so a
+# greeter with only a seat (no render-node/amdgpu access) always starts.
+# A lock screen does trivial 2D; Pixman is the right tool and removes GPU
+# probing, seat-master contention, and driver timing as failure modes.
+# (2026-08-17 research: render/egl.c error branch + backend/backend.c
+# assert wl_list_empty(new_input), wlroots commit 8f56f7ca, >=0.19.0.)
+export WLR_RENDERER=pixman
 export WLR_RENDERER_ALLOW_SOFTWARE=1
 cd /
 # THE CRASH NOTE LANDS WHERE veron CAN READ IT. The service's console

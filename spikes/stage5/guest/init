@@ -348,6 +348,29 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
             _lbl=$(dd if="$_c" bs=1 skip=1144 count=16 2>/dev/null | tr -d '\0')
             [ "$_lbl" = "veron-persist" ] && { _pdev=$_c; break; }
         done
+        # DURABLE ON-DISK MODES, COMMITTED BEFORE THE PIVOT. The bug this
+        # closes (2026-08-17 research): chmod on the overlay-mounted persist
+        # set the ext4 root inode to 711 in cache, but busybox switch_root
+        # does MS_MOVE+chroot+exec with NO sync(), and ext4's default 5s
+        # commit window meant the 711 never reached disk before the pivot --
+        # so every boot the initramfs proved 711 and the booted system read
+        # the stale on-disk 0700. Fix: set the modes on a STANDALONE mount
+        # and umount (which forces the jbd2 commit) so the on-disk inodes
+        # are correct; the real overlay mount below then inherits them and
+        # no post-pivot chmod is load-bearing. Inode 2 is the ext4 root.
+        if [ -n "$_pdev" ]; then
+            mkdir -p /tmp/p7
+            if mount -t ext4 "$_pdev" /tmp/p7 2>/dev/null; then
+                chmod 0711 /tmp/p7
+                mkdir -p /tmp/p7/veron-auth
+                chmod 2750 /tmp/p7/veron-auth
+                chown 1000:110 /tmp/p7/veron-auth 2>/dev/null
+                sync
+                umount /tmp/p7   # umount forces the ext4 journal to commit
+                echo "  VERON-PERSIST-DURABLE  on-disk modes committed (711 / veron-auth 2750)"
+            fi
+            rmdir /tmp/p7 2>/dev/null
+        fi
         if [ -n "$_pdev" ] && mount -t ext4 "$_pdev" "$PERSIST" 2>/dev/null; then
             echo "  VERON-PERSIST-OK    $_pdev at /persist"
             mkdir -p "$PERSIST/alsa"
