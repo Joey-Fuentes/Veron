@@ -85,9 +85,18 @@ B3=$(/bin/busybox printf '\342\226\202\342\226\204\342\226\206 ')
 B2=$(/bin/busybox printf '\342\226\202\342\226\204  ')
 B1=$(/bin/busybox printf '\342\226\202   ')
 ssid_list() {
+    # THE FIELD SEPARATOR IS A LITERAL TAB, PASSED AS A VARIABLE. busybox
+    # awk's handling of -F'\t' (backslash-t) is not something to gamble on
+    # -- the last wifi regression came from exactly that kind of dialect
+    # assumption. A real tab byte in $TAB works identically under busybox
+    # awk, mawk and gawk. And NR>1: scan_results prints ONE header line
+    # ("bssid / frequency / ..."), so NR>2 silently dropped the FIRST real
+    # network every scan -- which, with few networks, looked like an empty
+    # list and showed only "Rescan" (machine #1, 2026-08-17).
+    TAB=$(/bin/busybox printf '\t')
     /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan_results 2>/dev/null \
-        | awk -F'\t' -v b4="$B4" -v b3="$B3" -v b2="$B2" -v b1="$B1" \
-          'NR>2 && $5 != "" { if (!seen[$5]++) {
+        | awk -F"$TAB" -v b4="$B4" -v b3="$B3" -v b2="$B2" -v b1="$B1" \
+          'NR>1 && $5 != "" { if (!seen[$5]++) {
               b = ($3 >= -50) ? b4 : ($3 >= -60) ? b3 \
                 : ($3 >= -70) ? b2 : b1;
               printf "%s  %s\n", b, $5 } }'
