@@ -248,6 +248,129 @@ def extras(root, records):
           "the packages" % len(extra))
 
 
+def plan_commands(plan, records):
+    """THE LITERAL COMMANDS, SHIPPED WHERE THE TRACER CAN READ THEM. The
+    PLAN already records, for every package, the exact argv of every step
+    that ran -- 'commands (literal; this is exactly what runs)' -- and the
+    plan --check gate keeps that claim true. But the PLAN lives in the
+    repository and the image deliberately carries no repo, so 'how was this
+    file compiled' stopped one hop short of the answer on the machine that
+    was asking. This flattens the command blocks into commands.tsv:
+        U <pkg> <source-url>
+        S <pkg> <idx> <step-name> <cwd>
+        E <pkg> <idx> <env line>
+        V <pkg> <idx> <argv, verbatim>
+    The argv is copied byte-for-byte, not reformatted: the literal string
+    IS the record, and a pretty-printer is an opportunity to lie."""
+    pkg = None
+    idx = None
+    in_cmds = False
+    url_done = False
+    lines = []
+    with open(plan, encoding="utf-8", errors="replace") as f:
+        for ln in f:
+            ln = ln.rstrip("\n")
+            if ln.startswith("package "):
+                parts = ln.split()
+                pkg = parts[1]
+                in_cmds = False
+                url_done = False
+                continue
+            if pkg is None:
+                continue
+            st = ln.strip()
+            if not url_done and st.startswith("url "):
+                lines.append("U\t%s\t%s" % (pkg, st[4:].strip()))
+                url_done = True
+                continue
+            if st.startswith("commands (literal"):
+                in_cmds = True
+                continue
+            if in_cmds:
+                if ln.startswith("===") or st == "":
+                    if ln.startswith("==="):
+                        in_cmds = False
+                    continue
+                if st.startswith("[") and "]" in st:
+                    idx = st[1:st.index("]")]
+                    name = st[st.index("]") + 1:].strip()
+                    lines.append("S\t%s\t%s\t%s\t" % (pkg, idx, name))
+                elif st.startswith("cwd "):
+                    # cwd belongs to the S line just written
+                    if lines and lines[-1].startswith("S\t"):
+                        lines[-1] = lines[-1] + st[4:].strip()
+                    else:
+                        lines.append("S\t%s\t%s\t?\t%s" % (pkg, idx, st[4:].strip()))
+                elif st.startswith("env "):
+                    lines.append("E\t%s\t%s\t%s" % (pkg, idx, st[4:].strip()))
+                elif st.startswith("argv "):
+                    lines.append("V\t%s\t%s\t%s" % (pkg, idx, st[5:].strip()))
+    with open(os.path.join(records, "commands.tsv"), "w") as f:
+        f.write("\n".join(lines) + ("\n" if lines else ""))
+    npkg = len({l.split("\t")[1] for l in lines})
+    print("veron-trace-records: commands -- literal argv for %d package(s) "
+          "recorded from %s" % (npkg, plan))
+
+
+def boot_chain(records, generic_dir, initramfs):
+    """THE BOOT ARTIFACTS GET THEIR PINS INTO THE RECORDS THE IMAGE CARRIES.
+    A person at the flashed machine could hash /vmlinuz-generic and had
+    nothing on-device to compare it against -- the pin
+    (KERNEL-GENERIC-SHA256) was verified at flash time on another machine
+    and never shipped. The stage-5 workflow already downloads and verifies
+    the 4/kernel-x86_64 release for its generic-boot gate, so its digests
+    are folded into CHAIN here: the tracer then verifies the kernel pair
+    and the initramfs by hash, offline. initramfs-fw.cpio.gz is NOT here
+    and cannot be: it is assembled at flash time from firmware blobs, so no
+    pre-flash record of it can exist -- the tracer says that instead of
+    silence. Idempotent: keyed lines are replaced, others kept."""
+    lines = {}
+    chain = os.path.join(records, "CHAIN")
+    order = []
+    try:
+        with open(chain) as f:
+            for ln in f:
+                parts = ln.split()
+                if len(parts) >= 2:
+                    k = parts[0] + " " + parts[1]
+                    lines[k] = ln.rstrip("\n")
+                    order.append(k)
+    except OSError:
+        pass
+
+    def put(key, val):
+        if key not in lines:
+            order.append(key)
+        lines[key] = "%s %s" % (key, val)
+
+    if generic_dir:
+        pin = os.path.join(generic_dir, "KERNEL-GENERIC-SHA256")
+        try:
+            with open(pin) as f:
+                for ln in f:
+                    p = ln.split()
+                    if len(p) >= 2:
+                        name = p[1]
+                        if name.startswith("modules-"):
+                            put("generic modules", "%s %s" % (p[0], name))
+                        else:
+                            put("generic " + name, p[0])
+            gp = sha256_of(os.path.join(generic_dir, "PROVENANCE"))
+            if gp:
+                put("generic provenance", gp)
+            print("veron-trace-records: boot chain -- generic kernel pins folded in")
+        except OSError:
+            print("veron-trace-records: boot chain -- no %s; generic pins "
+                  "omitted (stated, not silent)" % pin)
+    if initramfs:
+        h = sha256_of(initramfs)
+        if h:
+            put("stage5 initrd", h)
+            print("veron-trace-records: boot chain -- initramfs digest recorded")
+    with open(chain, "w") as f:
+        f.write("\n".join(lines[k] for k in order) + "\n")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--strip-overlay", metavar="ROOT", default=None,
@@ -256,6 +379,15 @@ def main():
     ap.add_argument("--extras", metavar="ROOT", default=None,
                     help="walk ROOT and record every path no package "
                          "installed into extra.tsv in --records")
+    ap.add_argument("--plan-commands", metavar="PLANFILE", default=None,
+                    help="flatten the PLAN's literal command blocks into "
+                         "commands.tsv in --out (or --records)")
+    ap.add_argument("--boot-chain", action="store_true",
+                    help="fold boot-artifact pins into CHAIN in --records")
+    ap.add_argument("--generic-dir", default=None,
+                    help="downloaded 4/kernel-x86_64 dir (with --boot-chain)")
+    ap.add_argument("--initramfs", default=None,
+                    help="built initramfs to record (with --boot-chain)")
     ap.add_argument("--records", default=None,
                     help="records dir (with --strip-overlay)")
     ap.add_argument("--repo", help="repository root")
@@ -273,13 +405,17 @@ def main():
     ap.set_defaults()
     a = ap.parse_args()
 
-    if a.strip_overlay or a.extras:
+    if a.strip_overlay or a.extras or a.boot_chain or (a.plan_commands and a.records):
         if not a.records:
-            ap.error("--strip-overlay/--extras require --records")
+            ap.error("--strip-overlay/--extras/--boot-chain require --records")
         if a.strip_overlay:
             strip_overlay(a.strip_overlay, a.records)
         if a.extras:
             extras(a.extras, a.records)
+        if a.boot_chain:
+            boot_chain(a.records, a.generic_dir, a.initramfs)
+        if a.plan_commands:
+            plan_commands(a.plan_commands, a.records)
         return 0
     if not (a.repo and a.ledger and a.out):
         ap.error("--repo, --ledger and --out are required (or use --strip-overlay)")
@@ -305,6 +441,9 @@ def main():
         prov_sha = sha256_of(s4p) or "unknown"
         if os.path.exists(s4p):
             shutil.copy(s4p, os.path.join(a.out, "stage4-PROVENANCE"))
+
+    if a.plan_commands:
+        plan_commands(a.plan_commands, a.out)
 
     tcc3 = committed_tcc(a.repo) or "unknown"
     with open(os.path.join(a.out, "CHAIN"), "w") as f:

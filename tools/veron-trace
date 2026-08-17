@@ -40,6 +40,7 @@ ROOT=/
 MODE=trace
 TARGET=
 HASH_FILES=no
+DEPTH=short
 STRAYS=no
 INVENTORY=no
 SNAPSHOT=no
@@ -55,6 +56,10 @@ while [ $# -gt 0 ]; do
         --snapshot)  SNAPSHOT=yes; INVENTORY=yes; STRAYS=yes; shift ;;
         --baseline)  BASELINE=$2; shift 2 ;;
         --forward) MODE=forward; TARGET=$2; shift 2 ;;
+        --commands) MODE=commands; TARGET=$2; shift 2 ;;
+        --kernel)   MODE=kernel; shift ;;
+        --with-deps) DEPTH=deps; shift ;;
+        --full)      DEPTH=full; shift ;;
         --hash-files) HASH_FILES=yes; shift ;;
         --help|-h)
             echo "usage: veron-trace [--records DIR] [--root DIR] <path>"
@@ -435,6 +440,149 @@ lost+found|filesystem structure'
 fi
 
 # =========================================================================
+if [ "$MODE" = kernel ]; then
+    # WHAT IS RUNNING, AND IS IT WHAT WAS SHIPPED. The running kernel's
+    # bytes cannot be re-hashed from userspace, so this is the honest
+    # chain of custody, stated as such: uname names what booted, the disk
+    # files are hashed against their CHAIN pins, and the link between the
+    # two is grub having loaded those files -- as strong as the platform
+    # allows without Secure Boot, and not stronger.
+    echo "running: $(uname -sr 2>/dev/null || echo unknown)  ($(uname -v 2>/dev/null || true))"
+    case "$(uname -r 2>/dev/null)" in
+        *generic*) echo "  -> the GENERIC kernel (grub entry: Veron)" ;;
+        *)         echo "  -> the MINIMAL kernel, or not a Veron kernel" ;;
+    esac
+    echo ""
+    rc=0
+    for pair in "Image stage4 kernel" "vmlinuz-generic generic vmlinuz-generic"; do
+        f=${pair%% *}; key=${pair#* }
+        want=$(chain $key)
+        if [ ! -f "$ROOT/$f" ]; then echo "  /$f: not present under $ROOT"; continue; fi
+        if [ -z "$want" ] || [ "$want" = unknown ]; then
+            echo "  /$f: on disk, no pin in CHAIN (records predate the boot-chain shipping)"
+            rc=1; continue
+        fi
+        got=$(sha256sum "$ROOT/$f" | cut -d' ' -f1)
+        if [ "$got" = "$want" ]; then
+            echo "  /$f: matches its record ($(printf %.16s "$want")...)"
+        else
+            echo "  /$f: DOES NOT MATCH its record"; rc=1
+        fi
+    done
+    exit $rc
+fi
+
+# =========================================================================
+if [ "$MODE" = commands ]; then
+    # HOW A FILE WAS COMPILED, IN THE WORDS THAT COMPILED IT. commands.tsv
+    # carries the PLAN's literal argv per step -- copied verbatim at build
+    # time, kept true by the plan --check gate -- so this prints the exact
+    # commands, cwd and env of every step, offline. Three depths:
+    #   (default)    this package alone
+    #   --with-deps  the package and its transitive dependency closure, in
+    #                BUILD ORDER (commands.tsv preserves the PLAN's order,
+    #                which is the topological order the build ran in), then
+    #                the boundary: every argv above executed under the
+    #                stage-4 sysroot's toolchain -- the leaves were compiled
+    #                by gcc 15.2.0 from that sysroot, which is where stage
+    #                5's own records end and the seam records take over.
+    #   --full       the closure, then the chain below it: the stage-4
+    #                interior as the coarse edge it is (its commands are the
+    #                committed bridge scripts at this image's commit, named
+    #                rather than reproduced -- per-substage records pending),
+    #                then stages 3..1, whose substage records are walked
+    #                with their hashes and whose commands are the committed
+    #                stage scripts. Pointers with digests below stage 5,
+    #                verbatim argv within it: exactly as much as is
+    #                recorded, and no smoother.
+    CMDS=$RECORDS/commands.tsv
+    [ -s "$CMDS" ] || { echo "veron-trace: no commands.tsv in $RECORDS" >&2
+                        echo "  (records predate the command shipping)" >&2; exit 2; }
+    [ -n "$TARGET" ] || { echo "veron-trace: --commands needs a package or path" >&2; exit 2; }
+    PKGN=$TARGET
+    if ! awk -F'	' -v p="$PKGN" '$1=="P" && $2==p { found=1; exit } END { exit !found }' "$PKG"; then
+        REL=${TARGET#/}
+        line=$(awk -F'	' -v p="$REL" '($1=="F" && $4==p) || ($1=="L" && $3==p) { print; exit }' "$PKG")
+        [ -n "$line" ] || { case "$REL" in usr/*) ;; *) REL=usr/$REL
+            line=$(awk -F'	' -v p="$REL" '($1=="F" && $4==p) || ($1=="L" && $3==p) { print; exit }' "$PKG") ;; esac; }
+        [ -n "$line" ] || { echo "veron-trace: $TARGET is neither a package nor a recorded path" >&2; exit 1; }
+        [ "$(printf '%s' "$line" | cut -f1)" = L ]             && PKGN=$(printf '%s' "$line" | cut -f4)             || PKGN=$(printf '%s' "$line" | cut -f5)
+        echo "$TARGET is installed by package $PKGN"
+        echo ""
+    fi
+
+    print_pkg() {
+        awk -F'\t' -v p="$1" '
+            $1=="P" && $2==p { printf "== %s %s ==\n", $2, $3
+                               printf "   source sha256 %s   recipe-sha %s\n", $4, $5 }' "$PKG"
+        awk -F'\t' -v p="$1" '
+            $2 != p { next }
+            $1=="U" { printf "   source %s\n", $3 }
+            $1=="S" { printf "   [%s] %-14s cwd %s\n", $3, $4, $5 }
+            $1=="E" { printf "        env  %s\n", $4 }
+            $1=="V" { printf "        %s\n", $4 }' "$CMDS"
+        echo ""
+    }
+
+    case "$DEPTH" in
+    short)
+        print_pkg "$PKGN"
+        ;;
+    deps|full)
+        CLOSURE=$(awk -F'	' -v t="$PKGN" '
+            $1=="D" { dep[$2] = dep[$2] " " $3 }
+            END {
+                q[1] = t; head = 1; tail = 1; seen[t] = 1
+                while (head <= tail) {
+                    split(dep[q[head++]], ds, " ")
+                    for (i in ds) if (ds[i] != "" && !(ds[i] in seen)) {
+                        seen[ds[i]] = 1; q[++tail] = ds[i] }
+                }
+                for (p in seen) print p
+            }' "$PKG")
+        n=$(printf '%s
+' "$CLOSURE" | wc -l | tr -d ' ')
+        echo "$PKGN and its $((n - 1)) transitive dependencies, in the build order that ran:"
+        echo ""
+        # commands.tsv preserves PLAN order == build order; walk it and
+        # print members of the closure as they appear.
+        for p in $(awk -F'	' '$1=="U" { print $2 }' "$CMDS"); do
+            printf '%s
+' "$CLOSURE" | grep -qx "$p" && print_pkg "$p"
+        done
+        echo "-- the boundary --"
+        echo "Every argv above executed against the stage-4 sysroot: its gcc"
+        echo "15.2.0 is the cc/c++ those steps resolved, its headers and"
+        echo "libraries are what they compiled and linked against. The leaf"
+        echo "dependencies have no stage-5 dependencies precisely because the"
+        echo "sysroot IS their dependency. That sysroot, digest-checked before"
+        echo "any of the above ran:"
+        s4=$(chain stage4 sysroot); echo "    sysroot  ${s4:-unknown}   [4/latest-x86_64]"
+        if [ "$DEPTH" = full ]; then
+            echo ""
+            echo "-- below the boundary, to stage 1 --"
+            echo "The stage-4 interior is one coarse edge: its commands are the"
+            echo "committed bridge scripts under spikes/stage4/bridge/ at this"
+            echo "image's commit ($(chain stage5 commit)), building"
+            echo "  tcc-amd64 -> gcc 4.7.4 -> gcc 10.2.0 -> gcc 15.2.0 -> the sysroot"
+            echo "in a box holding busybox and tcc and nothing else. Per-substage"
+            echo "records for that interior are pending, and this line will keep"
+            echo "saying so until they exist."
+            reftcc=$(chain stage4 ref-tcc)
+            [ -n "$reftcc" ] && [ "$reftcc" != unknown ]                 && echo "  the tcc stage 4 received:  $reftcc  (verified against the committed stage-3 record)"
+            echo ""
+            echo "Stages 3..1, hash-verified per substage; their commands are the"
+            echo "committed stage scripts (stages/3-micro-c/, stages/2-pico-c/,"
+            echo "stages/1-self-assembly/) at the same commit:"
+            top=$(awk '$1=="stage3" && $2=="tcc-amd64" { print $3; exit }' "$CHAIN")
+            walk_down "${top:-3/6/tcc-amd64}"
+        fi
+        ;;
+    esac
+    exit 0
+fi
+
+# =========================================================================
 if [ "$MODE" = forward ]; then
     [ -n "$TARGET" ] || { echo "veron-trace: --forward needs a package name" >&2; exit 2; }
     # The post-CVE question: what is downstream of this package. The reverse
@@ -465,6 +613,59 @@ fi
 # trace <path>
 [ -n "$TARGET" ] || { echo "veron-trace: nothing to trace (try --help)" >&2; exit 2; }
 REL=${TARGET#/}
+
+# THE BOOT ARTIFACTS: no package installs them, but CHAIN carries their
+# pins (folded in at build time from stage-4's PROVENANCE, the 4/kernel
+# release and the built initramfs), so they trace like anything else: by
+# hash, offline. initramfs-fw.cpio.gz is the stated exception -- it is
+# assembled AT FLASH TIME from firmware blobs, so no pre-flash record of
+# it can exist, and this says that instead of "unrecorded".
+boot_key=""; boot_desc=""
+case "$REL" in
+    Image)             boot_key="stage4 kernel"
+                       boot_desc="the minimal kernel, built by stage 4 beside the sysroot it ships with" ;;
+    vmlinuz-generic)   boot_key="generic vmlinuz-generic"
+                       boot_desc="the generic kernel, published by 4-generic-kernel-amd64, pinned by KERNEL-GENERIC-SHA256, installed by the flash" ;;
+    config-generic)    boot_key="generic config-generic"
+                       boot_desc="the generic kernel's build config, published beside it" ;;
+    initramfs.cpio.gz) boot_key="stage5 initrd"
+                       boot_desc="the stage-5 initramfs, built by guest/mkinitramfs.py in the publishing run" ;;
+    initramfs-fw.cpio.gz)
+        echo "$TARGET: assembled at flash time from the initramfs plus the"
+        echo "  pinned firmware tarballs (sources/firmware.toml); the assembly"
+        echo "  itself happens on the flashing machine, so no build-time"
+        echo "  record of the combined file can exist. Its INPUTS are pinned;"
+        echo "  trace those instead: /initramfs.cpio.gz and the firmware pins."
+        exit 0 ;;
+esac
+if [ -n "$boot_key" ]; then
+    want=$(chain $boot_key)
+    if [ -z "$want" ] || [ "$want" = unknown ]; then
+        echo "$TARGET: $boot_desc"
+        echo "  no pin in CHAIN -- these records predate the boot-chain shipping"
+        exit 1
+    fi
+    state="not checked (no such file under $ROOT)"; MISMATCH=0
+    if [ -f "$ROOT/$REL" ]; then
+        got=$(sha256sum "$ROOT/$REL" | cut -d' ' -f1)
+        if [ "$got" = "$want" ]; then state="matches the bytes on disk"
+        else state="DOES NOT MATCH the bytes on disk"; MISMATCH=1; fi
+    fi
+    printf '%s   sha256 %.16s...   [%s]\n' "$REL" "$want" "$state"
+    echo ""
+    echo "  $boot_desc"
+    echo ""
+    echo "  built with  the stage-4 toolchain"
+    s4=$(chain stage4 sysroot)
+    echo "    sysroot   ${s4:-unknown}   [4/latest-x86_64, digest-checked before use]"
+    echo "    interior  substage records pending -- one coarse edge"
+    echo ""
+    top=$(awk '$1=="stage3" && $2=="tcc-amd64" { print $3; exit }' "$CHAIN")
+    walk_down "${top:-3/6/tcc-amd64}"
+    rc=$?
+    [ "$MISMATCH" -eq 0 ] || exit 1
+    exit $rc
+fi
 
 # F lines carry the path in field 4 (F sha size path pkg); L lines in
 # field 3 (L target path pkg). One predicate per shape, or a file is

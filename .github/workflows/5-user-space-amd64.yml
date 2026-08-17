@@ -969,10 +969,15 @@ jobs:
           # failed the gate on exactly that -- a correct build read as a
           # conflict. Tagged staged-not-shipped, the duplicate check judges
           # only what the image actually carries.
+          # --plan-commands ships the PLAN's literal argv into the records:
+          # "how was this file compiled" then answers OFFLINE, on the
+          # machine asking, in the exact words that ran -- kept true by the
+          # plan --check gate above.
           python3 ../../tools/veron-trace-records \
             --repo ../.. --ledger ledger \
             --stage4-dir ../../dl-sysroot \
             --build-only "$(python3 tools/veron --overlay packages-amd64 build-only-names)" \
+            --plan-commands PLAN-amd64.txt \
             --out out/trace-records
           sh ../../tools/veron-trace --records out/trace-records --verify
 
@@ -2365,6 +2370,19 @@ jobs:
             python3 ../../tools/veron-trace-records \
               --extras sysroot \
               --records sysroot/usr/share/veron/trace
+            # THE BOOT ARTIFACTS' PINS, INTO THE IMAGE THAT BOOTS FROM THEM.
+            # boot-generic/ was downloaded and digest-verified by the
+            # generic-boot gate; the initramfs was built above. Folding
+            # their digests into CHAIN here means the flashed machine can
+            # verify /vmlinuz-generic, /Image and /initramfs.cpio.gz by
+            # hash, offline (veron-trace --kernel, or trace the path). The
+            # tool states omissions: a run without the generic release
+            # writes what it has and says what it lacks.
+            python3 ../../tools/veron-trace-records \
+              --boot-chain \
+              --records sysroot/usr/share/veron/trace \
+              --generic-dir ../../boot-generic \
+              --initramfs out/initramfs.cpio.gz
           else
             echo "  no trace records in the tree -- overlay skipped"
           fi
