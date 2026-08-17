@@ -78,18 +78,29 @@ def flatten_substages(repo, out):
     return len(lines)
 
 
-def flatten_ledger(ledger, out):
+def flatten_ledger(ledger, out, build_only):
+    """build_only: package names whose DESTDIR is staged for a bootstrap
+    cycle and OVERWRITTEN before the image exists (recipe build_only=true --
+    freetype-bootstrap under harfbuzz is the case that found this). Their
+    ledger records are true records of a build that happened, so they are
+    kept -- but their file lines are tagged Fb/Lb rather than F/L, because
+    the paths they name are owned by the shipping package in the image, and
+    a duplicate-path check that reads a declared bootstrap as a conflict
+    fails a correct build (run 86917062743, five freetype paths)."""
     lines = []
     for j in sorted(glob.glob(os.path.join(ledger, "*.json"))):
         with open(j) as f:
             rec = json.load(f)
         name = rec["name"]
+        staged_only = name in build_only
+        ftag, ltag = ("Fb", "Lb") if staged_only else ("F", "L")
         prov = rec.get("provenance", {})
         inputs = rec.get("inputs", {})
         lines.append("\t".join(["P", name, str(rec.get("version", "-")),
                                 str(prov.get("sha256", "-")),
                                 str(inputs.get("recipe_sha256", "-")),
-                                str(rec.get("license", "-"))]))
+                                str(rec.get("license", "-")),
+                                "build-only" if staged_only else "ships"]))
         deps = inputs.get("deps", {})
         seen = set()
         for kind in ("runtime", "link", "build"):
@@ -100,10 +111,10 @@ def flatten_ledger(ledger, out):
         for fe in rec.get("files", []):
             path = fe.get("path", "-")
             if fe.get("kind") == "l":
-                lines.append("\t".join(["L", str(fe.get("value", "-")),
+                lines.append("\t".join([ltag, str(fe.get("value", "-")),
                                         path, name]))
             else:
-                lines.append("\t".join(["F", str(fe.get("value", "-")),
+                lines.append("\t".join([ftag, str(fe.get("value", "-")),
                                         str(fe.get("size", "-")), path, name]))
     with open(os.path.join(out, "packages.tsv"), "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -157,12 +168,16 @@ def main():
                          "(SYSROOT-SHA256, PROVENANCE); optional")
     ap.add_argument("--commit", default=os.environ.get("GITHUB_SHA", "unknown"))
     ap.add_argument("--run", default=os.environ.get("GITHUB_RUN_ID", "unknown"))
+    ap.add_argument("--build-only", default="",
+                    help="space-separated package names that are staged but "
+                         "never installed (from `veron build-only-names`); "
+                         "their file lines are tagged staged-not-shipped")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
     os.makedirs(a.out, exist_ok=True)
     ns = flatten_substages(a.repo, a.out)
-    np_ = flatten_ledger(a.ledger, a.out)
+    np_ = flatten_ledger(a.ledger, a.out, set(a.build_only.split()))
 
     sysroot_sha = kernel_sha = prov_sha = reftcc = "unknown"
     if a.stage4_dir:

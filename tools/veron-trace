@@ -218,6 +218,19 @@ if [ -z "$line" ]; then
     case "$REL" in usr/*) ;; *) REL=usr/$REL; line=$(lookup "$REL") ;;
     esac
 fi
+if [ -z "$line" ]; then
+    # A path only a BOOTSTRAP staged: the record is real, the bytes in the
+    # image are not its -- the shipping package overwrote them. Say which
+    # cycle rather than "unrecorded", and keep walking under the OWNER.
+    staged=$(awk -F'\t' -v p="$REL" \
+        '($1=="Fb" && $4==p) || ($1=="Lb" && $3==p) { print ($1=="Fb" ? $5 : $4); exit }' "$PKG")
+    if [ -n "$staged" ]; then
+        echo "$TARGET: staged by $staged (build-only) and overwritten before"
+        echo "  the image was made -- no shipping package records this exact"
+        echo "  path, which is a record gap worth reporting, not a trace."
+        exit 1
+    fi
+fi
 [ -n "$line" ] || {
     echo "$TARGET: not in any package record."
     echo "  Files the workflow writes directly (/etc/veron-release) and"
@@ -248,7 +261,8 @@ fi
 
 awk -F'\t' -v p="$pkgname" '
     $1 == "P" && $2 == p {
-        printf "\n  built by  %s %s   [stage 5]\n", $2, $3
+        ship = (NF >= 7 && $7 == "build-only") ? "   (build-only: staged, never ships)" : ""
+        printf "\n  built by  %s %s   [stage 5]%s\n", $2, $3, ship
         printf "    source  sha256 %.16s...\n", $4
         printf "    recipe  recipe-sha %.16s...\n", $5
         printf "    license %s\n", $6
