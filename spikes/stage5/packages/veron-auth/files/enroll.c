@@ -14,7 +14,7 @@
  *
  * WHAT IT WRITES, all under ~/.config/veron/:
  *   auth.conf    keyfile=, keyfile-salt=, keyfile-hash=, totp=, card=, require=
- *   totp.key     the base32 seed, mode 0600
+ *   totp.key     the base32 seed, mode 0640
  *   totp.state   the last accepted time step, so a code cannot be replayed
  */
 #define _GNU_SOURCE 1
@@ -44,9 +44,16 @@ static int mkconfdir(char *out, size_t n)
      * partition; the mkdirs below cover the harness, where / is a
      * writable overlay and no such preparation ran. 0750 so the auth
      * group (the greeter) can verify what only veron can write. */
+    /* /persist 0755 so anyone can traverse (matches guest/init's o+x on
+     * hardware); the store dir 2750 -- setgid, so files created inside
+     * inherit the dir's group (auth) no matter who enrols, which is what
+     * lets the greeter read what veron wrote (machine #1's group-veron
+     * lockout, 2026-08-17). The harness path (no guest/init) creates the
+     * dir here; on hardware guest/init already made it and these are
+     * no-ops. */
     mkdir("/persist", 0755);
     snprintf(out, n, "/persist/veron-auth");
-    if (mkdir(out, 0750) < 0 && errno != EEXIST) {
+    if (mkdir(out, 02750) < 0 && errno != EEXIST) {
         fprintf(stderr, "veron-enroll: cannot create %s: %s\n",
                 out, strerror(errno));
         return 0;
@@ -177,7 +184,7 @@ static int conf_set(const char *dir, const char *key, const char *val)
                 path, strerror(errno));
         return 0;
     }
-    chmod(path, 0600);
+    chmod(path, 0640);
     return 1;
 }
 
@@ -547,7 +554,7 @@ int main(int argc, char **argv)
          * the wrong order. */
         char path[1200];
         snprintf(path, sizeof path, "%s/totp.state", wrapdir);
-        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0640);
         if (fd >= 0) {
             dprintf(fd, "0\n");
             close(fd);

@@ -214,11 +214,17 @@ static int wrap_write(const char *path, const uint8_t key[32],
     if (!ok)
         return 0;
 
-    /* WRITTEN 0600 AND RENAMED INTO PLACE, so a crash cannot leave a
+    /* WRITTEN 0640 -- GROUP-READABLE ON PURPOSE. This is the wrapped
+     * master: ciphertext whose only key is the factor the person holds.
+     * The greeter (group auth) must read it to verify, and reading it
+     * reveals nothing without the key file -- the design's whole premise.
+     * 0600 here was the second half of machine #1's lockout (2026-08-17):
+     * even with the dir traversable, the wrap itself refused the group.
+     * RENAMED INTO PLACE, so a crash cannot leave a
      * half-written wrap where a whole one used to be. */
     char tmp[1088];
     snprintf(tmp, sizeof tmp, "%s.new", path);
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0640);
     if (fd < 0)
         return 0;
     ok = write(fd, WRAP_MAGIC, 10) == 10

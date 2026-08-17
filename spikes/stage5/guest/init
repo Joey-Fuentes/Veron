@@ -353,11 +353,26 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
             mkdir -p "$PERSIST/alsa"
             # THE AUTH STORE, BORN WITH THE MOUNT: machine credentials,
             # not user data -- enrolment (veron, 1000) writes, the auth
-            # group (110: the greeter) reads to verify, nobody walks a
-            # home to reach them. See veron_confdir in veron-auth.
+            # group (110) reads to verify, nobody walks a home to reach
+            # them. See veron_confdir in veron-auth.
+            #
+            # TRAVERSAL ON /persist ITSELF, o+x, is the piece machine #1's
+            # 2026-08-17 lockout was missing: the mount left /persist 0700
+            # veron, so the greeter (uid 999) could not even enter it to
+            # reach a correctly-grouped subdir. o+x grants pass-through,
+            # not listing -- the store's own 0750 still gates who reads.
+            chmod o+x "$PERSIST"
             mkdir -p "$PERSIST/veron-auth"
-            chown 1000:110 "$PERSIST/veron-auth"
-            chmod 750 "$PERSIST/veron-auth"
+            # NUMERIC gid VIA sh, because this initramfs busybox chown may
+            # not resolve the name `auth` (its /etc/group is the image's,
+            # loaded later) and silently left the group `veron` -- the
+            # exact symptom on machine #1. `.` separator + numeric both
+            # sides is the form busybox chown always honors.
+            chown 1000.110 "$PERSIST/veron-auth"
+            chmod 2750 "$PERSIST/veron-auth"
+            # PROVE IT, LOUDLY: a store the greeter cannot read is a
+            # lockout, so the boot log states the resulting ownership.
+            echo "  VERON-AUTH-STORE    $(ls -ldn "$PERSIST/veron-auth" | awk '{print $1, $3, $4}')"
         else
             echo "  VERON-PERSIST-NONE  no LABEL=veron-persist -- state is not kept"
         fi
