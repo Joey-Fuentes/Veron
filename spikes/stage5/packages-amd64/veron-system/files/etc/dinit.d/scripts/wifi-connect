@@ -93,13 +93,24 @@ ssid_list() {
     # ("bssid / frequency / ..."), so NR>2 silently dropped the FIRST real
     # network every scan -- which, with few networks, looked like an empty
     # list and showed only "Rescan" (machine #1, 2026-08-17).
-    TAB=$(/bin/busybox printf '\t')
+    # FS SET IN BEGIN WITH A LITERAL \t IN THE PROGRAM, not via -F and a
+    # shell variable. busybox awk honours FS="\t" assigned in BEGIN, but a
+    # raw tab byte passed through a shell var to -F did NOT parse under the
+    # laptop's awk (machine #1, 2026-08-17: scan_results held a warm
+    # 14-network cache with wpa_state=INACTIVE, yet the picker showed
+    # nothing -- proving it was the parse, not the scan timing). A \t inside
+    # the program is interpreted by awk itself, immune to shell quoting.
+    # $3 is coerced numeric (s = $3 + 0) so a malformed row cannot abort it.
     /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan_results 2>/dev/null \
-        | awk -F"$TAB" -v b4="$B4" -v b3="$B3" -v b2="$B2" -v b1="$B1" \
-          'NR>1 && $5 != "" { if (!seen[$5]++) {
-              b = ($3 >= -50) ? b4 : ($3 >= -60) ? b3 \
-                : ($3 >= -70) ? b2 : b1;
-              printf "%s  %s\n", b, $5 } }'
+        | awk -v b4="$B4" -v b3="$B3" -v b2="$B2" -v b1="$B1" \
+          'BEGIN { FS = "\t" }
+           NR > 1 && $5 != "" {
+              if (!seen[$5]++) {
+                  s = $3 + 0
+                  b = (s >= -50) ? b4 : (s >= -60) ? b3 : (s >= -70) ? b2 : b1
+                  printf "%s  %s\n", b, $5
+              }
+           }'
 }
 
 # WHAT THE SUPPLICANT ALREADY KNOWS, BEFORE ASKING IT FOR MORE.
