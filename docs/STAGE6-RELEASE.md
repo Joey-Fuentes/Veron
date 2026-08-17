@@ -77,7 +77,12 @@ There is no version scheme and no timestamp anywhere in a name.
 - 7 chars in both places because it is git's own standard short form and
   therefore what every reader's eyes are calibrated to. Full digests appear
   in SHA256SUMS, the site index, and the attestations; the short forms are
-  display names over verifiable identities.
+  DISPLAY NAMES ONLY -- 28 bits is neither collision- nor preimage-
+  resistant, so nothing ever verifies against the short form, exactly as
+  git shows short hashes but trusts full ones.
+- Release assets must each stay under GitHub's 2 GiB per-file ceiling; the
+  Pages site itself stays under 1 GB by carrying no images at all -- it
+  links to release assets.
 - Accepted knowingly: content names carry no chronology. The site is the
   source of "current"; the About window answers "what am I on."
 
@@ -120,14 +125,62 @@ belongs to the committed slot.
 `/persist` is outside both slots and survives every update and every
 rollback, which is the property enrollment and wifi state already rely on.
 
-**The efivars writer is a research task before it is code.** Writing UEFI
+**The A/B authority is ON DISK; BootNext is only the trigger.** The
+research verdict (docs/STAGE6-EFIVARS-RESEARCH, ruled): real firmware may
+ignore, volatilize, or reset NVRAM boot variables, so NVRAM must never be
+the sole record of slot health. Per-slot state -- priority, tries left,
+successful -- lives in GPT partition attribute bits on the slot partitions
+(the ChromeOS model), written atomically. The boot flow refines to:
+
+1. update writes the inactive slot (root partition + ESP kernel), verifies
+   both BY HASH after writing;
+2. sets that slot's tries=N, successful=0 in its GPT attributes;
+3. sets BootNext to the slot's fixed Boot#### entry; reboots. BootNext is
+   deleted by firmware before control transfer (UEFI 2.11 §3) -- try-once
+   by construction, no rollback code on the failure path;
+4. early in boot, a dinit service decrements tries for the running slot
+   (identified via BootCurrent, cross-checked against root=PARTUUID);
+5. the health target -- rootfs verified, critical services up -- gates
+   veron-bless, which sets successful=1, rewrites BootOrder, and copies
+   the new kernel over the fallback \EFI\BOOT\BOOTX64.EFI. Until bless,
+   the old slot remains the default; if NVRAM is wiped entirely, the
+   fallback still boots the committed slot.
+
+**Partition constants, ruled from the research:** root-A and root-B use a
+PRIVATE Veron partition type GUID, NOT the Discoverable Partitions
+Specification x86-64 root type -- two identically-DPS-typed roots make
+auto-discovery ambiguous on any rescue system running systemd-gpt-auto,
+and Veron selects by root=PARTUUID explicitly. The no-auto (bit 63) and
+read-only (bit 60) GPT flags are set on both roots; Veron's own tries/
+successful bits use the vendor-free attribute range the way ChromeOS does.
+Boot entry numbers are fixed constants (one per slot, reused forever) to
+minimize NVRAM churn.
+
+**The boot artifact per slot is a single PE binary** -- the EFI-stub
+kernel with the initramfs baked in (CONFIG_INITRAMFS_SOURCE), cmdline
+inside the image. One file per slot is the whole boot chain, which is
+exactly the signing-friendly shape the §9 roadmap needs: sign one PE,
+everything in it is covered.
+
+**The efivars writer is ruled and specified** (was: a research task). Writing UEFI
 variables has bricked real machines when done naively; the ruled bar is the
 most professional, robust, current approach with no security compromise.
-The research covers: efivarfs immutable-flag semantics, the known firmware
-quirks and their mitigations, systemd's hardened efivars write path as the
-reference implementation to learn from (not to import), and how modern
-boot-counting / UKI conventions map onto this BootNext design. Findings get
-written up and ruled on before the first line of the writer exists.
+From the research (systemd's efi_set_variable studied as reference and
+REIMPLEMENTED -- it is LGPL, not copied; rhboot/efivar's raw-ioctl pattern
+for the flag): clear FS_IMMUTABLE_FL via FS_IOC_GETFLAGS/SETFLAGS before
+writing and restore it after (the flag exists because rm -rf bricked real
+laptops -- kernel commit ed8b0de5a33d); write the 4-byte little-endian
+attributes word (NV|BS|RT = 0x7) and the payload in ONE EINTR-retrying
+write; read-first and skip if already correct (NVRAM wear); delete is
+unlink(), never a zero-length write; retry EINTR/EBUSY with ~50ms backoff;
+NEVER set efi_no_storage_paranoia -- the kernel's QueryVariableInfo free-
+space margin is the guard against the documented Samsung/Lenovo store-
+exhaustion bricks and stays on. The writer lives at
+stages/6-verification-distribution (source: spikes/stage6/efiboot/ until
+the move), pure C, no dependencies, and is testable off-target: the
+variable ENCODING (EFI_LOAD_OPTION, HD()+File() device paths, mixed-endian
+GUIDs) is pure bytes with golden tests; only the final efivarfs write
+needs the laptop.
 
 ## 7. Kernels: the two that exist
 
@@ -143,10 +196,15 @@ site.
 ## 8. Live ISO: persistence or none, chosen by the user
 
 The hybrid ISO boots live (squashfs + tmpfs overlay) and must support BOTH
-modes: pure live (nothing kept) and opt-in persistence. Persistence uses
-fscrypt on an ext4 `.dat` volume -- the arrangement that survives Ventoy,
-which recreates the ISO's block device via device-mapper and therefore
-forbids stacking a second dm device under the persistence volume.
+modes: pure live (nothing kept) and opt-in persistence. Persistence, refined by the research: the v1 default is a PLAIN ext4
+`.dat` overlay -- no device-mapper layer at all, which is what survives
+Ventoy (it recreates the ISO's block device via dm, so nothing may stack
+another dm device under the persistence volume, ruling out dm-crypt
+there). Encrypted persistence is a later opt-in via fscrypt v2 -- three
+ioctls plus a passphrase KDF, feasible as a minimal from-source C tool,
+so the Go fscrypt userspace never ships. Stated plainly beside it: fscrypt
+does not hide filesystem metadata; a user needing full-disk secrecy
+installs to disk rather than carrying an encrypted live stick.
 
 ## 9. Secure Boot: disabled for v1, said plainly; signing is the roadmap
 
