@@ -2356,6 +2356,15 @@ jobs:
             python3 ../../tools/veron-trace-records \
               --strip-overlay sysroot \
               --records sysroot/usr/share/veron/trace
+            # AND THE OTHER LIST: every path in this tree that no package
+            # installed -- veron-release, the tracer, these records --
+            # written down so the on-device strays walk (--strays) can tell
+            # "the build added this" from "someone added this". Computed
+            # from the tree, not remembered, and AFTER the strip overlay so
+            # stripped.tsv is itself on the list.
+            python3 ../../tools/veron-trace-records \
+              --extras sysroot \
+              --records sysroot/usr/share/veron/trace
           else
             echo "  no trace records in the tree -- overlay skipped"
           fi

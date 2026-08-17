@@ -40,12 +40,14 @@ ROOT=/
 MODE=trace
 TARGET=
 HASH_FILES=no
+STRAYS=no
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --records) RECORDS=$2; shift 2 ;;
         --root)    ROOT=$2; shift 2 ;;
         --verify)  MODE=verify; shift ;;
+        --strays)  STRAYS=yes; shift ;;
         --forward) MODE=forward; TARGET=$2; shift 2 ;;
         --hash-files) HASH_FILES=yes; shift ;;
         --help|-h)
@@ -187,6 +189,118 @@ if [ "$MODE" = verify ]; then
         done < "$PKG"
         echo "  symlinks re-read under $ROOT: $ln checked, $lbad mismatched"
         edges=$((edges + ln)); fails=$((fails + lbad))
+    fi
+
+    # (6) THE OTHER DIRECTION: a FULL CENSUS, not a filtered walk. The
+    # package records prove the shipped files are intact; this proves the
+    # rest of the disk is ACCOUNTED FOR. Every path on the root filesystem
+    # lands in exactly one named category with a count and a stated reason
+    # -- "excluded" is never "unmentioned":
+    #   package files/symlinks -- the records above own these;
+    #   build extras           -- extra.tsv, computed at image time;
+    #   flash payload          -- modules/firmware/kernels, written by
+    #                             tools/flash-amd64.sh from PINNED tarballs
+    #                             (KERNEL-GENERIC-SHA256, firmware.toml);
+    #                             pinned at the tarball, not yet per file,
+    #                             and the census says that rather than
+    #                             hiding it;
+    #   mutable state          -- what the SYSTEM writes (home, var, the
+    #                             runtime wifi/resolv files) -- named and
+    #                             counted, not verifiable by a build record;
+    #   STRAY                  -- everything else. Named individually, and
+    #                             the only category that FAILS: a file the
+    #                             build did not ship, the flash did not
+    #                             install and the system did not write is
+    #                             exactly /usr/bin/backdoor.
+    # Other filesystems are censused BY MOUNT below rather than silently
+    # skipped by -xdev: a clean boot should be able to say "/tmp: 0 files"
+    # out loud.
+    if [ "$STRAYS" = yes ]; then
+        EXTRA=$RECORDS/extra.tsv
+        [ -f "$EXTRA" ] || EXTRA=/dev/null
+        CATS='lib/modules/|flash payload: kernel modules (pinned tarball at flash)
+lib/firmware/|flash payload: firmware tree (pinned tarball at flash)
+boot/|flash payload: boot files
+vmlinuz-generic|flash payload: generic kernel
+Image|flash payload: minimal kernel
+initramfs.cpio.gz|flash payload: initramfs
+initramfs-fw.cpio.gz|flash payload: fallback initramfs
+home/|mutable state: user data
+root/|mutable state: root user data
+var/|mutable state: system logs and spool
+srv/|mutable state
+opt/|mutable state
+mnt/|mutable state: mountpoints
+media/|mutable state: mountpoints
+tmp/|runtime scratch (on the root fs; expected empty on a clean boot)
+etc/wpa_supplicant.conf|runtime state: written by wpa-start
+etc/resolv.conf|runtime state: written by dhcp
+lost+found|filesystem structure'
+        out=$( { awk -F'\t' '($1=="F"||$1=="Fb"){print $4} ($1=="L"||$1=="Lb"){print $3}' "$PKG"
+                 echo "===RECORDS-END==="
+                 find "$ROOT" -xdev \( -type f -o -type l \) 2>/dev/null
+               } | awk -v root="$ROOT" -v extra="$EXTRA" -v cats="$CATS" '
+            BEGIN {
+                while ((getline ln < extra) > 0) xt[ln] = 1
+                nc = split(cats, C, "\n")
+                for (i = 1; i <= nc; i++) {
+                    split(C[i], kv, "|"); pref[i] = kv[1]; lab[i] = kv[2]
+                }
+                loading = 1
+            }
+            loading { if ($0 == "===RECORDS-END===") { loading = 0; next }
+                      rec[$0] = 1; next }
+            {
+                rel = $0
+                sub("^" root, "", rel); sub("^/*", "", rel)
+                if (rel == "") next
+                total++
+                if (rel in rec)  { pkg++;    next }
+                if (rel in xt)   { extras++; next }
+                for (i = 1; i <= nc; i++)
+                    if (index(rel, pref[i]) == 1) { cnt[i]++; next }
+                print "  STRAY  " rel " -- on the disk, in no record"
+                stray++
+            }
+            END {
+                printf "  census of the root filesystem: %d path(s), every one categorised:\n", total
+                printf "    %6d  package files and symlinks (the records above)\n", pkg
+                printf "    %6d  build extras (extra.tsv, recorded at image time)\n", extras
+                for (i = 1; i <= nc; i++)
+                    if (cnt[i] > 0) printf "    %6d  %s  [%s]\n", cnt[i], lab[i], pref[i]
+                printf "    %6d  STRAY\n", stray + 0
+                print "COUNT " stray + 0
+            }')
+        scount=$(printf '%s\n' "$out" | awk '$1=="COUNT"{print $2}')
+        printf '%s\n' "$out" | grep -v '^COUNT'
+        edges=$((edges + 1)); fails=$((fails + scount))
+
+        # THE OTHER MOUNTS, EACH NAMED. -xdev keeps the walk above on the
+        # root device; what it skipped is enumerated here from the mount
+        # table so nothing is silently out of scope. Kernel-virtual
+        # filesystems are stated as such rather than walked (their entries
+        # are live kernel objects, not shipped files); real filesystems --
+        # tmpfs scratch, /persist -- get a file count, which on a clean
+        # boot is itself a meaningful number.
+        MTAB=${VERON_TRACE_MOUNTS:-/proc/mounts}
+        if [ -r "$MTAB" ]; then
+            echo "  other filesystems (from $MTAB):"
+            while read -r dev mp fstype rest; do
+                [ "$mp" = / ] && continue
+                # Mountpoints are counted where they LIVE ($mp, not under
+                # --root): the mount table is a fact about the running
+                # system, and this census only means something live.
+                case "$fstype" in
+                    proc|sysfs|devtmpfs|devpts|cgroup*|securityfs|debugfs|tracefs|bpf|mqueue|pstore|efivarfs|hugetlbfs|autofs|fusectl|configfs|binfmt_misc)
+                        echo "    $mp  $fstype  kernel-virtual -- live kernel objects, not shipped files" ;;
+                    *)
+                        n=$(find "$mp" -xdev \( -type f -o -type l \) 2>/dev/null | wc -l)
+                        echo "    $mp  $fstype  $n file(s)" ;;
+                esac
+            done < "$MTAB"
+        else
+            echo "  no mount table readable at $MTAB -- other filesystems not censused"
+        fi
     fi
 
     if [ "$fails" -eq 0 ]; then

@@ -208,11 +208,54 @@ def strip_overlay(root, records):
           "%d changed by the strip" % (checked, len(changed)))
 
 
+def extras(root, records):
+    """EVERYTHING THE IMAGE SHIPS THAT NO PACKAGE INSTALLED, written down.
+    The package records answer "are the shipped files intact"; a strays walk
+    needs the other list -- what ELSE the build deliberately put in the tree
+    (veron-release, this tracer, these records, the test fixtures) -- or
+    every one of those reads as an intruder. COMPUTED, NOT MAINTAINED: the
+    tree is walked and every path absent from packages.tsv is recorded, so
+    a new workflow-installed file can never silently join the allowlist of
+    someone's memory. extra.tsv names itself before writing itself -- the
+    one self-reference that is safe, because the fact recorded is the PATH,
+    not the bytes."""
+    pkgs = os.path.join(records, "packages.tsv")
+    recorded = set()
+    with open(pkgs) as f:
+        for ln in f:
+            p = ln.rstrip("\n").split("\t")
+            if not p:
+                continue
+            if p[0] in ("F", "Fb") and len(p) >= 4:
+                recorded.add(p[3])
+            elif p[0] in ("L", "Lb") and len(p) >= 3:
+                recorded.add(p[2])
+    extra = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        for fn in sorted(filenames):
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, root)
+            if rel not in recorded:
+                extra.append(rel)
+    out = os.path.join(records, "extra.tsv")
+    rel_out = os.path.relpath(out, root)
+    if rel_out not in extra:
+        extra.append(rel_out)
+    with open(out, "w") as f:
+        f.write("\n".join(sorted(extra)) + ("\n" if extra else ""))
+    print("veron-trace-records: extras -- %d path(s) the build added beyond "
+          "the packages" % len(extra))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--strip-overlay", metavar="ROOT", default=None,
                     help="post-strip mode: re-hash every recorded path under "
                          "ROOT and write stripped.tsv into --records")
+    ap.add_argument("--extras", metavar="ROOT", default=None,
+                    help="walk ROOT and record every path no package "
+                         "installed into extra.tsv in --records")
     ap.add_argument("--records", default=None,
                     help="records dir (with --strip-overlay)")
     ap.add_argument("--repo", help="repository root")
@@ -230,10 +273,13 @@ def main():
     ap.set_defaults()
     a = ap.parse_args()
 
-    if a.strip_overlay:
+    if a.strip_overlay or a.extras:
         if not a.records:
-            ap.error("--strip-overlay requires --records")
-        strip_overlay(a.strip_overlay, a.records)
+            ap.error("--strip-overlay/--extras require --records")
+        if a.strip_overlay:
+            strip_overlay(a.strip_overlay, a.records)
+        if a.extras:
+            extras(a.extras, a.records)
         return 0
     if not (a.repo and a.ledger and a.out):
         ap.error("--repo, --ledger and --out are required (or use --strip-overlay)")
