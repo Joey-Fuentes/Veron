@@ -110,9 +110,24 @@ def flatten_ledger(ledger, out, build_only):
                     lines.append("\t".join(["D", name, d]))
         for fe in rec.get("files", []):
             path = fe.get("path", "-")
-            if fe.get("kind") == "l":
+            kind = fe.get("kind")
+            # THE KINDS ARE file_manifest's WORDS, READ FROM ITS SOURCE THIS
+            # TIME: "file", "symlink", "unreadable". The first version
+            # matched "l" -- a schema assumed rather than read -- so every
+            # symlink flattened as an F line whose hash field held the LINK
+            # TARGET STRING, and the first on-device deep verify failed 484
+            # paths that were never wrong (every conf.d and .so symlink on
+            # the machine). Same defect class as the F-field-order bug: a
+            # reader written from memory of a producer. Both spellings are
+            # accepted so a future short-form producer does not regress this.
+            if kind in ("symlink", "l"):
                 lines.append("\t".join([ltag, str(fe.get("value", "-")),
                                         path, name]))
+            elif kind == "unreadable":
+                # A path the ledger could not hash is a stated gap, not a
+                # checkable fact -- emitting it as F would fail verify on
+                # a record that never claimed a digest.
+                continue
             else:
                 lines.append("\t".join([ftag, str(fe.get("value", "-")),
                                         str(fe.get("size", "-")), path, name]))

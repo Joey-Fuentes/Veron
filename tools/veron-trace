@@ -170,6 +170,23 @@ if [ "$MODE" = verify ]; then
         done < "$PKG"
         echo "  files re-hashed under $ROOT: $n checked, $bad mismatched"
         edges=$((edges + n)); fails=$((fails + bad))
+        # SYMLINKS ARE VERIFIED AS SYMLINKS: the recorded fact about a link
+        # is its target string, so readlink is the check -- hashing through
+        # it would re-verify the target under the wrong name.
+        ln=0; lbad=0
+        while IFS="$(printf '\t')" read -r tag tgt path pkg; do
+            [ "$tag" = L ] || continue
+            f=$ROOT/$path
+            [ -L "$f" ] || continue
+            ln=$((ln + 1))
+            got=$(readlink "$f")
+            if [ "$got" != "$tgt" ]; then
+                echo "  LINK FAIL  $path (package $pkg) points at $got, recorded $tgt"
+                lbad=$((lbad + 1))
+            fi
+        done < "$PKG"
+        echo "  symlinks re-read under $ROOT: $ln checked, $lbad mismatched"
+        edges=$((edges + ln)); fails=$((fails + lbad))
     fi
 
     if [ "$fails" -eq 0 ]; then
