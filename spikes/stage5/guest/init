@@ -361,7 +361,9 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
             # veron, so the greeter (uid 999) could not even enter it to
             # reach a correctly-grouped subdir. o+x grants pass-through,
             # not listing -- the store's own 0750 still gates who reads.
-            chmod o+x "$PERSIST"
+            chmod o+x "$PERSIST" \
+                && echo "  VERON-PERSIST-TRAV  o+x set on $PERSIST" \
+                || echo "  VERON-PERSIST-TRAV-FAIL  chmod o+x $PERSIST failed"
             mkdir -p "$PERSIST/veron-auth"
             # NUMERIC gid VIA sh, because this initramfs busybox chown may
             # not resolve the name `auth` (its /etc/group is the image's,
@@ -372,7 +374,8 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
             chmod 2750 "$PERSIST/veron-auth"
             # PROVE IT, LOUDLY: a store the greeter cannot read is a
             # lockout, so the boot log states the resulting ownership.
-            echo "  VERON-AUTH-STORE    $(ls -ldn "$PERSIST/veron-auth" | awk '{print $1, $3, $4}')"
+            chmod o+x "$PERSIST"   # re-assert: nothing between here and use may reset it
+            echo "  VERON-AUTH-STORE    $(ls -ldn "$PERSIST" "$PERSIST/veron-auth" | awk '{print $1, $3, $4, $NF}' | tr '\n' ' ')"
         else
             echo "  VERON-PERSIST-NONE  no LABEL=veron-persist -- state is not kept"
         fi

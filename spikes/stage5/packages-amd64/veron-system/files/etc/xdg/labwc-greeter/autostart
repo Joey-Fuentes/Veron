@@ -3,13 +3,20 @@
 # NO HOME IS NAMED HERE ANYMORE: the auth store is system-side
 # (/persist/veron-auth, read by the auth group), so the greeter
 # verifies without knowing any user's home exists.
-while :; do
-    if /usr/bin/veron-lock; then
-        touch /run/greeter/passed
-        break
-    fi
-    /bin/busybox sleep 1
-done
+# ONE LOCK PER COMPOSITOR, NO SPIN. veron-lock exits 0 only when a
+# person unlocked; it exits 2 on a compositor REFUSAL ("session already
+# locked", session-lock.c:322) -- and retrying a refusal in a shell loop
+# just asks the same wedged compositor again forever (machine #1,
+# 2026-08-17: 90+ seconds of "session already locked" per boot). So a
+# clean unlock passes; ANYTHING ELSE exits the greeter compositor, and
+# the ROOT gate relaunches a whole fresh greeter (new labwc, new lock
+# session) rather than a fresh client against a stale lock. The exit
+# below drops us past pkill to end labwc; the gate's loop takes it from
+# there. A wrong PASSWORD does not reach here -- veron-lock stays in its
+# own event loop for re-entry and only returns on unlock or refusal.
+if /usr/bin/veron-lock; then
+    touch /run/greeter/passed
+fi
 # NOT $PPID: labwc reparents its autostart child, so $PPID was 1 and
 # the old teardown printed "can't kill pid 1: Operation not permitted"
 # (machine #1's log, 2026-08-16). pkill by name is safe here BECAUSE of
