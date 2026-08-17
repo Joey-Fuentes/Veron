@@ -361,9 +361,22 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
             # veron, so the greeter (uid 999) could not even enter it to
             # reach a correctly-grouped subdir. o+x grants pass-through,
             # not listing -- the store's own 0750 still gates who reads.
-            chmod o+x "$PERSIST" \
-                && echo "  VERON-PERSIST-TRAV  o+x set on $PERSIST" \
-                || echo "  VERON-PERSIST-TRAV-FAIL  chmod o+x $PERSIST failed"
+            # EXPLICIT NUMERIC MODE, NOT `+x`, AND VERIFIED BY READ-BACK.
+            # The whole 2026-08-17 lockout came down to this: the persist
+            # ext4 root inode is 0700 veron on disk, the greeter (uid 999,
+            # gid 110) is neither owner nor able to traverse, so it reached
+            # NONE of the correctly-grouped store inside -- every other
+            # layer (file group auth, greeter gid 110, reader membership)
+            # was right for hours and irrelevant behind this one closed
+            # directory. `chmod o+x` alone was printing success while the
+            # mode stayed 0700 (relative +x racing the mount's inode
+            # read-back). 0711 sets it whole: owner rwx, and world --x =
+            # TRAVERSE ONLY (enter to reach a named child, cannot list).
+            # The store's own 0750 still gates who READS; this only lets a
+            # non-owner walk THROUGH /persist to it.
+            chmod 0711 "$PERSIST"
+            _pmode=$(/bin/busybox stat -c '%a' "$PERSIST" 2>/dev/null)
+            echo "  VERON-PERSIST-TRAV  /persist mode now $_pmode (need 711)"
             mkdir -p "$PERSIST/veron-auth"
             # NUMERIC gid VIA sh, because this initramfs busybox chown may
             # not resolve the name `auth` (its /etc/group is the image's,
@@ -388,7 +401,7 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
             chmod 2750 "$PERSIST/veron-auth"
             # PROVE IT, LOUDLY: a store the greeter cannot read is a
             # lockout, so the boot log states the resulting ownership.
-            chmod o+x "$PERSIST"   # re-assert: nothing between here and use may reset it
+            chmod 0711 "$PERSIST"   # re-assert traversal right before use
             echo "  VERON-AUTH-STORE    $(ls -ldn "$PERSIST" "$PERSIST/veron-auth" | awk '{print $1, $3, $4, $NF}' | tr '\n' ' ')"
         else
             echo "  VERON-PERSIST-NONE  no LABEL=veron-persist -- state is not kept"
