@@ -929,6 +929,7 @@ jobs:
       # constant: turning the gate off lowers the claim automatically instead
       # of leaving a 2 behind that nothing checked.
       - name: 'VERON-LEDGER-OK -- records carry what this run proved'
+        id: ledger
         if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
         run: |
           set -eu
@@ -954,13 +955,24 @@ jobs:
       # image. The stage-4 INTERIOR remains one coarse edge until its
       # substage records exist, and the tool prints it as exactly that.
       - name: 'VERON-TRACE-OK -- every recorded edge back to stage 1 agrees'
+        id: trace
         if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
         run: |
           set -eu
           cd spikes/stage5
+          # THE BUILD-ONLY LIST COMES FROM THE DRIVER, NOT FROM A SECOND
+          # PARSER. build_only lives in recipe.toml under overlay resolution
+          # the driver already implements; re-reading recipes in the records
+          # tool would be a second implementation waiting to drift. A staged
+          # bootstrap (freetype-bootstrap under harfbuzz) records the same
+          # paths as the package that overwrites it, and run 86917062743
+          # failed the gate on exactly that -- a correct build read as a
+          # conflict. Tagged staged-not-shipped, the duplicate check judges
+          # only what the image actually carries.
           python3 ../../tools/veron-trace-records \
             --repo ../.. --ledger ledger \
             --stage4-dir ../../dl-sysroot \
+            --build-only "$(python3 tools/veron --overlay packages-amd64 build-only-names)" \
             --out out/trace-records
           sh ../../tools/veron-trace --records out/trace-records --verify
 
@@ -2467,8 +2479,20 @@ jobs:
         # reports 'skipped', and a build that deliberately did not run the
         # desktop test should still publish. Only a test that RAN AND FAILED
         # blocks it.
+        # steps.ledger AND steps.trace ARE IN THIS LIST NOW, AND THEIR
+        # ABSENCE WAS MEASURED, NOT HYPOTHETICAL: run 86917062743 failed the
+        # trace gate -- every recorded edge did NOT agree -- and published
+        # the image anyway, because this gate only blocks on the steps it
+        # names and the trace step was not among them. A verification step
+        # that cannot block the publish is advisory, which is the exact
+        # defect the always() paragraph above records this gate being built
+        # to close. Same `!= 'failure'` shape as the rest: a SKIPPED gate
+        # (stop_after partial, build failed earlier) does not block -- only
+        # a gate that RAN AND FAILED does.
         if: ${{ always()
                 && steps.build.outcome == 'success'
+                && steps.ledger.outcome != 'failure'
+                && steps.trace.outcome != 'failure'
                 && steps.boot.outcome != 'failure'
                 && steps.bootgeneric.outcome != 'failure'
                 && steps.desktop.outcome != 'failure'
