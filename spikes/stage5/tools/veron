@@ -1221,6 +1221,60 @@ def read_checkpoint(dest):
         return None
 
 
+def write_checkpoint(recipes, policy, roots, base):
+    """Write the per-package marker for whatever dest/ holds. Returns the
+    count, or 0 for nothing-to-record. Shared by the end-of-run publish
+    step AND the in-loop periodic bank (--bank-every), so there is exactly
+    one definition of what a checkpoint is."""
+    keys = package_keys(recipes, policy, base)
+    if not os.path.isdir(roots["dest"]):
+        return 0
+    have = {n for n in os.listdir(roots["dest"])
+            if os.path.isdir(os.path.join(roots["dest"], n)) and n in keys}
+    if not have:
+        return 0
+    marker = {"base": base, "keys": {n: keys[n] for n in sorted(have)}}
+    with open(os.path.join(roots["dest"], CHECKPOINT), "w") as f:
+        json.dump(marker, f, indent=2, sort_keys=True)
+    return len(have)
+
+
+def bank_now(recipes, policy, roots, base, release, built_n):
+    """THE BANK THAT CANNOT BE SKIPPED, because it happens inside the loop.
+
+    The relay's publish lived in a workflow step, and on 2026-08-16 a
+    340-minute timeout proved what that costs: 141 packages built, banked
+    zero, because the step's guard was one commit too young. The correction
+    is the one the operator specified at the time -- bank every N packages
+    with the mechanism that already works -- so this writes the same marker
+    the restore already reads and, when a release tag and GH_TOKEN are in
+    hand, uploads the same dest.tar.zst the publish step ships. Upload
+    failure is LOUD AND NON-FATAL: a bank that cannot reach the release
+    must not kill the build it exists to protect; the end-of-run publish
+    still runs and the local marker still advances --resume."""
+    n = write_checkpoint(recipes, policy, roots, base)
+    if not n:
+        return
+    print(f"  VERON-BANK  {n} package(s) marked at build #{built_n}")
+    if not release or not os.environ.get("GH_TOKEN"):
+        return
+    try:
+        tar = "dest.tar.zst"
+        subprocess.run(["tar", "--zstd", "-cf", tar, "-C",
+                        os.path.dirname(roots["dest"]) or ".",
+                        os.path.basename(roots["dest"])], check=True)
+        r = subprocess.run(["gh", "release", "upload", release, tar,
+                            "--clobber"], capture_output=True, text=True)
+        if r.returncode == 0:
+            print(f"  VERON-BANK-PUBLISHED  {n} package(s) -> {release}")
+        else:
+            print(f"  VERON-BANK-UNPUBLISHED  upload failed (build continues):"
+                  f" {r.stderr.strip().splitlines()[-1] if r.stderr else '?'}")
+        os.unlink(tar)
+    except Exception as e:
+        print(f"  VERON-BANK-UNPUBLISHED  {type(e).__name__} (build continues)")
+
+
 def cmd_checkpoint(a):
     """Record a key for every package dest/ currently holds.
 
@@ -1419,6 +1473,7 @@ def cmd_build(a):
     recipes = load_recipes()
     policy = load_policy()
     roots = roots_from_args(a)
+    built_count = 0
     plan = expand(recipes, policy, roots)
     # --upto: A PREFIX OF THE ORDER, NOT A SELECTION FROM IT.
     #
@@ -1767,6 +1822,10 @@ def cmd_build(a):
                         f"work and leaves the package out of the manifest, "
                         f"the ledger and every reproducibility comparison.")
         print(f"  VERON-PKG-BUILT  {name}")
+        built_count += 1
+        if getattr(a, "bank_every", 0) and built_count % a.bank_every == 0:
+            bank_now(recipes, policy, roots, a.base,
+                     getattr(a, "bank_release", None), built_count)
     print("\nVERON-BUILD-OK  every package built")
     return 0
 
@@ -6035,6 +6094,14 @@ def build_parser():
     p.set_defaults(fn=cmd_fetch)
 
     p = sub.add_parser("build", help="execute exactly the plan")
+    p.add_argument("--bank-every", type=int, default=0, metavar="N",
+                   help="checkpoint (and, with --bank-release + GH_TOKEN, "
+                        "publish) after every N newly built packages -- the "
+                        "bank a timeout cannot skip")
+    p.add_argument("--bank-release", default=None, metavar="TAG",
+                   help="release tag the periodic bank uploads to (each "
+                        "workflow names its own; the tags are separate on "
+                        "purpose)")
     p.add_argument("pkg", nargs="*")
     p.add_argument("--upto", default="",
                    help="build the plan up to and including this package, "
