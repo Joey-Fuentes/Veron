@@ -496,7 +496,7 @@ package libffi 3.5.2
 package libudev-zero 1.0.3
   group        input
   license      ISC
-  recipe-sha   cae94f5d11f49122f094c439584c7310eba1693fccdacbc1b674e4c1ab93d1b1
+  recipe-sha   6bfb0cb13a443cb97f7728c12c1927b599f864426f2131d06425180a53127570
 
   source
     url        https://github.com/illiliti/libudev-zero/archive/1.0.3/libudev-zero-1.0.3.tar.gz
@@ -524,6 +524,12 @@ package libudev-zero 1.0.3
          cwd  build/libudev-zero-1.0.3/libudev-zero-1.0.3
          env  DESTDIR=dest/libudev-zero
          argv ["make", "install", "PREFIX=/usr", "CC=gcc"]
+    [04] helper
+         cwd  build/libudev-zero-1.0.3/libudev-zero-1.0.3
+         argv ["mkdir", "-p", "dest/libudev-zero/usr/libexec"]
+    [05] helper
+         cwd  build/libudev-zero-1.0.3/libudev-zero-1.0.3
+         argv ["gcc", "-O2", "-o", "dest/libudev-zero/usr/libexec/udev-zero-helper", "helper.c"]
 
 ======================================================================
 package m4 1.4.21
@@ -840,7 +846,7 @@ package veron-fltk-style 1
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   2fc7cb828545d9307acc1a69d7a4aa0cab12a8c141c86bb46f449496c943dc01
+  recipe-sha   42decfadcae7f003f8f1ddc00cdf8259fee8ff157826be40cbb096d8dc4ea707
 
   source
     url        this repository

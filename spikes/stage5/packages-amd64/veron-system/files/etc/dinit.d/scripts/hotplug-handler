@@ -31,6 +31,18 @@ if [ "$ACTION" = add ] && [ -n "${MODALIAS:-}" ]; then
     /bin/busybox modprobe -q "$MODALIAS" 2>/dev/null
 fi
 
+# FEED THE SESSION'S EARS. libudev-zero's udev_monitor listens on netlink
+# group 0x4 -- a private rebroadcast channel -- and hears NOTHING until a
+# device manager repeats each kernel uevent into it (upstream README: run
+# helper.c per uevent; CONFIG_UEVENT_HELPER is a named method). Without
+# this, libinput and wlroots see only devices present when they started:
+# machine #1's replugged mouse stayed dead, 2026-08-16. EVERY event is
+# forwarded, add and remove alike -- removal is how the compositor learns
+# to drop a device, and DRM change events are how it learns a connector
+# lit up. Guarded so a system without the helper degrades to exactly the
+# pre-feed behavior instead of erroring on every event.
+[ -x /usr/libexec/udev-zero-helper ] && /usr/libexec/udev-zero-helper 2>/dev/null
+
 DEV="${MDEV:-${DEVNAME:-}}"
 DEV="${DEV##*/}"
 [ -n "$DEV" ] || exit 0

@@ -30,13 +30,14 @@ false`, no option to turn off. So SOMETHING must provide libudev.pc, and the \
 alternatives are systemd or eudev. systemd is the dependency tail this whole \
 project declines; libudev-zero is one Makefile and no daemon.
 
-WHAT IT COSTS, stated because it is not free: libudev-zero implements the \
-enumeration and device-property API and does NOT implement the netlink hotplug \
-monitor the real libudev has. Devices present at start are seen; devices \
-plugged in later are not, unless something else rescans. For a system whose \
-current test is booting to a console that is invisible, and it will stop being \
-invisible the first time somebody expects a hotplugged keyboard to work. \
-Written down here rather than discovered then.
+WHAT IT COSTS, restated after machine #1 collected the debt (2026-08-16):
+the monitor IS implemented upstream -- on netlink group 0x4, a private
+rebroadcast channel -- and stays deaf until a device manager FEEDS it. The
+"helper" step above builds upstream's own feeder; hotplug-handler execs it
+per uevent, so the running session finally hears devices that arrive after
+start. The original text below predicted the discovery exactly: "it will
+stop being invisible the first time somebody expects a hotplugged keyboard
+to work." It was a mouse.
 
 install DEPENDS ON install-static AS WELL AS install-shared, so libudev.a \
 ships whether or not anything links it. There is no --disable-static to pass; \
@@ -90,6 +91,21 @@ cwd  = "$S"
 # relink if anything is out of date.
 run  = [["make", "install", "PREFIX=/usr", "CC=gcc"]]
 env  = { DESTDIR = "$D" }
+
+[[steps]]
+name = "helper"
+cwd  = "$S"
+# THE FEED FOR THE MONITOR THE DEFERRAL SAID WAS MISSING. Upstream DOES
+# implement udev_monitor -- on netlink group 0x4, its OWN rebroadcast
+# channel, and the README requires a device manager to feed it: "simply
+# executing helper.c for each uevent", with CONFIG_UEVENT_HELPER named as
+# a supported method. Our hotplug-handler is exactly that hook. helper.c
+# ships in this pinned tarball; the Makefile builds only the library, so
+# it is compiled here and installed where the handler execs it. Proven
+# need on machine #1, 2026-08-16: mouse replug dead, session blind to
+# every device that arrives after start.
+run  = [["mkdir", "-p", "$D/usr/libexec"],
+        ["gcc", "-O2", "-o", "$D/usr/libexec/udev-zero-helper", "helper.c"]]
 
 [guest]
 # 251, NOT THE PACKAGE VERSION AND NOT A GUESS. libudev.pc reports the
