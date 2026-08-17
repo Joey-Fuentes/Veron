@@ -262,9 +262,28 @@ fi
 # state live. It is mounted by guest/init before dinit starts, root-owned; the
 # desktop user needs to write it or a network entered once is forgotten.
 if /bin/busybox mountpoint -q /persist 2>/dev/null || [ -d /persist ]; then
-    /bin/busybox chown -R veron:veron /persist 2>/dev/null || true
-    /bin/busybox chmod 0700 /persist 2>/dev/null || true
-    echo "  /persist -> veron"
+    # DO NOT `chown -R veron:veron /persist` AND DO NOT `chmod 0700`.
+    # That blanket reset was the reverter behind the entire 2026-08-17
+    # lockout: guest/init sets /persist 0711 (traversable) and the auth
+    # store to group auth, and this service -- running seconds later after
+    # switch_root -- clobbered BOTH every boot (recursive chown reset
+    # veron-auth's group to veron; chmod 0700 removed traversal), so the
+    # greeter could neither traverse /persist nor read a group-auth store.
+    # veron owns /persist and the things it must write already (guest/init
+    # created them); the ONE thing to guarantee here is that the desktop
+    # user can write its own state, WITHOUT touching the mode of /persist
+    # itself or the group of the auth store.
+    #
+    # /persist stays 0711 (owner veron rwx, world traverse-only) as
+    # guest/init set it. veron-auth keeps its own group auth + 2750. We
+    # only ensure the NON-auth state dirs veron writes are veron-owned,
+    # named explicitly so the auth store is never in the blast radius.
+    for _d in /persist/home /persist/alsa; do
+        [ -e "$_d" ] && /bin/busybox chown -R veron:veron "$_d" 2>/dev/null || true
+    done
+    [ -e /persist/wpa_supplicant.conf ] && \
+        /bin/busybox chown veron:veron /persist/wpa_supplicant.conf 2>/dev/null || true
+    echo "  /persist -> veron owns its state; auth store and 0711 left intact"
 fi
 
 exit 0

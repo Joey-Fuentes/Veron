@@ -28,6 +28,15 @@ export HOME=/var/lib/greeter
 # assert wl_list_empty(new_input), wlroots commit 8f56f7ca, >=0.19.0.)
 export WLR_RENDERER=pixman
 export WLR_RENDERER_ALLOW_SOFTWARE=1
+# BELT AND SUSPENDERS: if anything still reaches the GL path, force the
+# whole Mesa stack to software so it cannot abort on a missing GPU.
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
+export WLR_BACKENDS=drm
+# and make the greeter's home writable-cache location exist, or fontconfig
+# and the shader cache spam "Permission denied" every frame (harmless but
+# noisy, and a wedged cache dir can slow first paint).
+/bin/busybox mkdir -p "$HOME/.cache" 2>/dev/null || true
 cd /
 # THE CRASH NOTE LANDS WHERE veron CAN READ IT. The service's console
 # logfile is root-owned; signal 6 taught us a greeter's last words are
