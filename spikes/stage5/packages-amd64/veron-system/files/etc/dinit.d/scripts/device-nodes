@@ -111,12 +111,30 @@ fi
 # brightness is root-owned 0644 and the session is not root any more, so
 # without this the bar reports VERON-BACKLIGHT-DENIED on every click. Group
 # video already means "may drive the display" here, so it is the honest owner.
-for bl in /sys/class/backlight/*/brightness; do
-    [ -e "$bl" ] || continue
-    /bin/busybox chgrp video "$bl" 2>/dev/null
-    /bin/busybox chmod 0664 "$bl" 2>/dev/null
-    echo "  $bl -> video 0664"
-done
+# BACKLIGHT APPEARS LATER THAN EVERYTHING ELSE. Even `after hotplug` is
+# not late enough: the amdgpu backlight class device is registered after
+# coldplug replay finishes, so a single glob here finds nothing and the
+# node stays root:root 0644 -- unwritable by the desktop user, so the
+# bar's brightness buttons silently fail (machine #1, 2026-08-17: worked
+# on the built-in-amdgpu minimal kernel, failed on the generic one where
+# amdgpu is a module). A dedicated background waiter is overkill for one
+# node; a short bounded poll here catches it. 20 x 0.5s = 10s, which
+# comfortably covers amdgpu's module init, and it exits the instant the
+# node appears so a fast machine spends no time waiting.
+( _n=0
+  while [ "$_n" -lt 20 ]; do
+      _hit=
+      for bl in /sys/class/backlight/*/brightness; do
+          [ -e "$bl" ] || continue
+          /bin/busybox chgrp video "$bl" 2>/dev/null
+          /bin/busybox chmod 0664 "$bl" 2>/dev/null
+          echo "  $bl -> video 0664"
+          _hit=1
+      done
+      [ -n "$_hit" ] && break
+      /bin/busybox sleep 0.5
+      _n=$((_n + 1))
+  done ) &
 
 # dinit's CONTROL SOCKET, WHICH IS HOW Shut Down AND Restart WORK.
 #
