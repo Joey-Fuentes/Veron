@@ -18,4 +18,9 @@ while :; do
     fi
     /bin/busybox sleep 1
 done
-kill $PPID
+# NOT $PPID: labwc reparents its autostart child, so $PPID was 1 and
+# the old teardown printed "can't kill pid 1: Operation not permitted"
+# (machine #1's log, 2026-08-16). pkill by name is safe here BECAUSE of
+# the segregation: this shell is greeter, and greeter can only signal
+# its own processes -- the one labwc it owns.
+/bin/busybox pkill -x labwc

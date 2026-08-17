@@ -20,8 +20,11 @@ audio:x:29:veron
 # render FOR THE GPU RENDER NODE. /dev/dri/renderD128 is how the browser's
 # WebProcess gets hardware acceleration without a DRM master. The kernel
 # already creates it 0666, so this is belt and braces against a driver that
-# does not.
-render:x:105:veron
+# does not. greeter TOO, as of 2026-08-16: without it the greeter's
+# compositor logged "kmsro: driver missing" and "Failed to initialize EGL
+# context", then aborted in teardown -- the signal 6 that let an old lock
+# binary mint a false pass.
+render:x:105:veron,greeter
 # seat EXISTS FOR THE DAY seatd IS RUN WITH `-g seat` INSTEAD. Naming the
 # group now means that change is one word in one file rather than a new group
 # plus a migration.

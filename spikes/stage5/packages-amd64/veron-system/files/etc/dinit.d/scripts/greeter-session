@@ -7,6 +7,13 @@ set -u
 export PATH=/usr/bin:/usr/sbin:/bin:/sbin
 export XDG_RUNTIME_DIR=/run/greeter/run
 export HOME=/var/lib/greeter
+# A LOGIN SCREEN MUST EXIST MORE THAN IT MUST BE FAST. The greeter's
+# labwc refused software rendering and ABORTED (machine #1's log,
+# 2026-08-16: "Software rendering detected, please use the
+# WLR_RENDERER... to proceed", then the backend assertion, signal 6).
+# With the render group fixed GL should come up; this makes the
+# fallback a slower face instead of a corpse.
+export WLR_RENDERER_ALLOW_SOFTWARE=1
 cd /
 # THE CRASH NOTE LANDS WHERE veron CAN READ IT. The service's console
 # logfile is root-owned; signal 6 taught us a greeter's last words are
