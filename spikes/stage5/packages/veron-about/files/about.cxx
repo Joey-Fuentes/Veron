@@ -221,6 +221,11 @@ int main(int argc, char **argv)
     if (release_value("VERON_RUN_ID", v, sizeof v))     append("CI run", v);
     if (release_value("VERON_ARCH", v, sizeof v))       append("Arch", v);
     if (release_value("VERON_REPO", v, sizeof v))       append("Repo", v);
+    // THE RELEASE TAG, WHICH THE WORKFLOW KNOWS AND THE USER USED TO HUNT
+    // FOR. Guarded like every row here: an image built before the key
+    // existed simply does not show the row, rather than showing "(unknown)"
+    // for a fact the file never claimed to carry.
+    if (release_value("VERON_RELEASE_TAG", v, sizeof v)) append("Release", v);
 
     // NO IMAGE SHA HERE, AND IT IS NOT AN OVERSIGHT. The image's sha256 is
     // computed over the finished filesystem, so a copy of it stored INSIDE
@@ -237,7 +242,30 @@ int main(int argc, char **argv)
     // image. It ships as a release asset beside rootfs.img.tar.zst instead,
     // and this points at where to get it rather than pretending otherwise.
     append("Manifest", "files.tsv, published with the image");
-    append("Releases", REPO_URL "/releases");
+    // THE EXACT RELEASE, NOT THE RELEASES INDEX. The workflow writes its own
+    // tag's URL (slash encoded, because that is how a slash-in-tag release
+    // page is reached), so nobody has to know which of the tags is this
+    // image. The generic /releases row stays as the fallback for images
+    // whose veron-release predates the key.
+    if (release_value("VERON_RELEASE_URL", v, sizeof v))
+        append("This release", v);
+    else
+        append("Releases", REPO_URL "/releases");
+    // THE ATTESTATION INDEX, AND WHY IT IS THE INDEX RATHER THAN ONE
+    // ATTESTATION'S URL: the attestation is minted over the finished image,
+    // so its id cannot be known while this file -- inside that image -- is
+    // written. Same self-reference as the missing image sha above. The
+    // per-asset proof is one command, shown so it does not have to be
+    // remembered.
+    if (release_value("VERON_ATTESTATIONS", v, sizeof v)) {
+        append("Attestation", v);
+        char repo[256] = "Joey-Fuentes/Veron";
+        release_value("VERON_REPO", repo, sizeof repo);
+        char verify[400];
+        snprintf(verify, sizeof verify,
+                 "gh attestation verify <asset> --repo %s", repo);
+        append("Verify", verify);
+    }
 
     g_status = new Fl_Box(16, 330, 588, 24, "");
     g_status->labelsize(11);

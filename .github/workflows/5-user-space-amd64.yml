@@ -157,6 +157,13 @@ permissions:
   # both already account for.
   contents: write
   actions: write  # raised from read: the relay re-dispatches this workflow
+  # ATTESTATION, THE SAME TWO GRANTS STAGES 1-3 CARRY. id-token lets Fulcio
+  # bind the workflow identity; attestations lets the signed statement reach
+  # the GH attestations API. The build itself runs under bwrap with
+  # --unshare-all and no network, so neither grant is reachable from inside
+  # a package build -- the same containment argument contents: write makes.
+  id-token: write
+  attestations: write
 
 jobs:
   spike:
@@ -1005,6 +1012,19 @@ jobs:
             echo "VERON_RUN_ID=${GITHUB_RUN_ID}"
             echo "VERON_ARCH=x86_64"
             echo "VERON_REPO=${GITHUB_REPOSITORY}"
+            # THE RELEASE, NAMED RATHER THAN HUNTED FOR. About used to point
+            # at /releases and leave the person to guess which tag; the tag
+            # is a constant of this workflow, so it belongs here. %2F because
+            # a slash-in-tag release page is reached through the encoded form.
+            echo "VERON_RELEASE_TAG=5/latest-x86_64"
+            echo "VERON_RELEASE_URL=https://github.com/${GITHUB_REPOSITORY}/releases/tag/5%2Flatest-x86_64"
+            # THE ATTESTATION INDEX, NOT A SINGLE ATTESTATION'S URL, and the
+            # reason is the same self-reference IMAGE-SHA256 has: the
+            # attestation is minted over the finished image, so its id cannot
+            # exist yet while this file -- which is INSIDE that image -- is
+            # being written. The index lists them all; the per-asset check is
+            #   gh attestation verify <asset> --repo ${GITHUB_REPOSITORY}
+            echo "VERON_ATTESTATIONS=https://github.com/${GITHUB_REPOSITORY}/attestations"
           } > sysroot/etc/veron-release
           echo "  wrote /etc/veron-release:"
           sed 's/^/    /' sysroot/etc/veron-release
@@ -2483,7 +2503,7 @@ jobs:
                 echo "  packages in this image were compiled against sysroot"
                 echo "    $(cat .adopted-from)"
                 echo "  and re-keyed onto"
-                echo "    $(cat dl-sysroot/SYSROOT-SHA256 | awk '{print $1}')"
+                echo "    $(cat "$R/dl-sysroot/SYSROOT-SHA256" | awk '{print $1}')"
                 echo "  by operator request. Nothing verified they are valid"
                 echo "  against the second one."
               } > ADOPTED-CHECKPOINT
@@ -2503,6 +2523,48 @@ jobs:
               [ "$f" = "${f#$R/}" ] || cp "$f" .
               assets="$assets $(basename "$f")"
             done
+            # PROVENANCE, THE SAME RECORD STAGE 4 PUBLISHES, PLUS THE HALF
+            # ONLY THIS STAGE CAN WRITE: what it CONSUMED. The sysroot step
+            # verified the stage-4 sysroot digest and the kernel against
+            # stage 4's own PROVENANCE before anything was built on them;
+            # repeating those digests here is what chains the seam -- the
+            # DESIGN.md rule that a consumer restates its builder's hash, so
+            # two independently written numbers must agree and `trace
+            # --verify` has an edge to fail on. Without this file a trace
+            # from any file in the flashed image dead-ends one hop short of
+            # the sysroot record.
+            #
+            # WRITTEN AFTER THE COPY LOOP ABOVE, deliberately: Image is in
+            # the working directory by then, so every digest below is of the
+            # exact bytes the upload ships rather than of a path that could
+            # drift from them.
+            {
+              echo "arch     x86_64"
+              echo "commit   ${GITHUB_SHA}"
+              echo "run      ${GITHUB_RUN_ID}"
+              echo "built    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "image    $(cut -d' ' -f1 IMAGE-SHA256)"
+              echo "kernel   $(sha256sum Image | cut -d' ' -f1)"
+              echo "initrd   $(sha256sum initramfs.cpio.gz | cut -d' ' -f1)"
+              echo "files    $(sha256sum files.tsv | cut -d' ' -f1)"
+              echo
+              echo "consumed 4/latest-x86_64"
+              echo "  sysroot     $(awk '{print $1}' "$R/dl-sysroot/SYSROOT-SHA256" 2>/dev/null || echo unknown)"
+              echo "  provenance  $(sha256sum "$R/dl-sysroot/PROVENANCE" 2>/dev/null | cut -d' ' -f1 || echo unknown)"
+              kwant=$(awk '/^kernel/{print $2}' "$R/dl-sysroot/PROVENANCE" 2>/dev/null || true)
+              kgot=$(sha256sum Image | cut -d' ' -f1)
+              if [ -n "$kwant" ] && [ "$kwant" = "$kgot" ]; then
+                echo "  kernel      verified against stage-4 PROVENANCE"
+              else
+                echo "  kernel      NOT verified against stage-4 PROVENANCE"
+              fi
+              echo
+              echo "built by .github/workflows/5-user-space-amd64.yml on the"
+              echo "sysroot above; per-package records are ledger/*.json in"
+              echo "the repository at this commit."
+            } > PROVENANCE
+            sed 's/^/    /' PROVENANCE
+            assets="$assets PROVENANCE"
             echo "  uploading: $assets"
             if gh release upload 5/latest-x86_64 $assets --clobber; then
               echo "VERON-STAGE5-PUBLISHED-AMD64  $(cut -d' ' -f1 IMAGE-SHA256)"
@@ -2513,7 +2575,39 @@ jobs:
           else
             echo "  too large to publish: $((asset/1048576)) MB, cap is 2 GB"
           fi
-          rm -f rootfs.img.tar.zst rootfs-full.img.tar.zst
+          # THE TARBALLS ARE NOT DELETED HERE ANY MORE. The attest step below
+          # signs the exact bytes that were uploaded, so they must survive
+          # this step; the cleanup step after it owns the deletion now.
+
+      # ATTEST: THE SAME STEP STAGES 1-3 RUN, ON THE PUBLISHED IMAGE. A
+      # Sigstore keyless signature, logged in Rekor, binding these exact
+      # digests to this repo, this commit and THIS workflow -- the one whose
+      # gates just built, booted and tested them. A stranger runs
+      #
+      #   gh attestation verify rootfs.img.tar.zst --repo <owner>/Veron
+      #
+      # WHAT IT PROVES: provenance -- these bytes, this workflow, this
+      # commit, at a log-operator-attested time. WHAT IT DOES NOT PROVE:
+      # correctness or how the build happened -- that is the ledger's job
+      # and PROVENANCE's, both of which ride in the subject list so the
+      # signature covers the chain record itself. GATED ON THE PUBLISH: an
+      # image that was not released is not attested, so an attestation id
+      # always corresponds to bytes a person can fetch.
+      - name: 'ATTEST: bind the published image to this workflow identity'
+        if: ${{ always() && env.IMAGE_PUBLISHED == 'yes' }}
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            spikes/stage5/out/rootfs.img.tar.zst
+            spikes/stage5/out/Image
+            spikes/stage5/out/initramfs.cpio.gz
+            spikes/stage5/out/files.tsv
+            spikes/stage5/out/IMAGE-SHA256
+            spikes/stage5/out/PROVENANCE
+
+      - name: 'Free the image tarballs'
+        if: always()
+        run: rm -f spikes/stage5/out/rootfs.img.tar.zst spikes/stage5/out/rootfs-full.img.tar.zst
 
       - name: 'VERON-COLLECT -- preserve the evidence'
         if: always()
