@@ -19,4 +19,10 @@ restart = false
 depends-on = early-filesystems
 depends-on = hotplug
 depends-on = seatd
+# device-nodes BIND-MOUNTS /home/veron FROM PERSIST, and this gate reads
+# the enrolment there: before that mount the home is the image's empty
+# skeleton, the armed-check greps nothing, and an armed machine boots
+# OPEN. The selftest caught this edge statically (run 86722587545,
+# 2026-08-16) before any hardware could demonstrate it.
+depends-on = device-nodes
 logfile = /dev/console
