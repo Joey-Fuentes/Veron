@@ -1,0 +1,68 @@
+#!/bin/busybox sh
+# The HARD boot gate, now with a face: when armed, a SEGREGATED greeter
+# compositor -- its own uid, empty home, bindless config -- is the only
+# thing that exists, and the person's session is not born until a factor
+# verifies inside it. The greeter dying, crashing, or being refused
+# relaunches the greeter; nothing any failure can do reaches a state
+# where the user session runs unverified. Recovery for a lost factor is
+# the root shell (GRUB init=/bin/sh), by design.
+#
+# ROOT, BECAUSE THIS IS THE HAND THAT PREPARES WORLDS: the greeter's
+# runtime dir, the auth group on the enrolment records, the media kick,
+# and the start/stop of the greeter service are all root's work; the
+# CREDENTIAL SURFACE itself never is.
+set -u
+CONF=/home/veron/.config/veron/auth.conf
+
+if ! /bin/busybox grep -qx 'autologin=off' "$CONF" 2>/dev/null; then
+    echo "session-gate: not armed -- open"
+    exit 0
+fi
+
+echo "session-gate: armed -- the greeter holds the seat until a factor verifies"
+
+# the greeter reads, and owns nothing: re-applied every boot so whatever
+# modes enrolment wrote, verification works and writing still requires
+# being veron.
+/bin/busybox chgrp -R auth /home/veron/.config/veron 2>/dev/null
+/bin/busybox chmod g+rX /home/veron/.config/veron 2>/dev/null
+for f in /home/veron/.config/veron/*; do
+    [ -f "$f" ] && /bin/busybox chmod g+r "$f" 2>/dev/null
+done
+
+while :; do
+    /bin/busybox rm -rf /run/greeter
+    /bin/busybox mkdir -p /run/greeter/run
+    /bin/busybox chown -R greeter:greeter /run/greeter
+    /bin/busybox chmod 700 /run/greeter/run
+
+    DINIT_SOCKET_PATH=/run/dinitctl /usr/bin/dinitctl start media \
+        >/dev/null 2>&1 &
+
+    DINIT_SOCKET_PATH=/run/dinitctl /usr/bin/dinitctl start greeter \
+        >/dev/null 2>&1
+
+    # WAIT ON THE MARKER OR THE CORPSE. The marker is the only success;
+    # a greeter service that stops without it is a failure and loops.
+    while [ ! -f /run/greeter/passed ]; do
+        if DINIT_SOCKET_PATH=/run/dinitctl /usr/bin/dinitctl status greeter \
+             2>/dev/null | /bin/busybox grep -qE 'STOPPED|FAILED'; then
+            break
+        fi
+        /bin/busybox sleep 1
+    done
+
+    if [ -f /run/greeter/passed ]; then
+        DINIT_SOCKET_PATH=/run/dinitctl /usr/bin/dinitctl stop greeter \
+            >/dev/null 2>&1
+        /bin/busybox rm -rf /run/greeter/run
+        # THE HANDOFF MARKER: the user session's autostart skips its own
+        # boot lock when this boot was verified here.
+        touch /run/veron-boot-authed
+        echo "session-gate: verified -- the session may start"
+        exit 0
+    fi
+
+    echo "session-gate: greeter ended unverified -- relaunching"
+    /bin/busybox sleep 1
+done

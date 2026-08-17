@@ -1,0 +1,13 @@
+# The greeter compositor -- started BY THE GATE, never by boot.d.
+#
+# restart = false because the gate's loop owns retry: a greeter that
+# dies is relaunched by the orchestrator with its runtime re-prepped,
+# and a greeter that passes is stopped by the same hand. dinit merely
+# supervises the one instance.
+type = process
+command = /bin/busybox sh /etc/dinit.d/scripts/greeter-session
+run-as = greeter
+restart = false
+depends-on = seatd
+depends-on = early-filesystems
+logfile = /dev/console

@@ -1,0 +1,21 @@
+# The greeter compositor runs exactly one thing: the credential loop.
+#
+# HOME NAMES WHOSE ENROLMENT IS VERIFIED. veron-lock resolves its config
+# from $HOME; the greeter's own home is empty by design, so the person's
+# is named here -- readable via the auth group the gate re-applies each
+# boot, owned not at all.
+#
+# rc=0 IS THE ONLY WAY FORWARD (lock.c: 0 means a person demonstrated a
+# factor). The marker is the handoff the root gate waits for; then this
+# compositor is killed BY ITS OWN HAND -- $PPID is labwc, autostart's
+# parent -- so teardown needs no name matching and cannot kill anything
+# it does not own.
+export HOME=/home/veron
+while :; do
+    if /usr/bin/veron-lock; then
+        touch /run/greeter/passed
+        break
+    fi
+    /bin/busybox sleep 1
+done
+kill $PPID

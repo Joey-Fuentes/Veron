@@ -7,7 +7,7 @@ tty:x:5:veron
 # `seatd -g video` (etc/dinit.d/seatd), so membership here is what lets the
 # compositor open /run/seatd.sock at all. Without it labwc reports no session
 # and no DRM device.
-video:x:39:veron
+video:x:39:veron,greeter
 # input FOR COMPLETENESS RATHER THAN NECESSITY. seatd opens the evdev nodes
 # and passes the file descriptors, so libinput never opens /dev/input/event*
 # itself. Membership costs nothing and means a program that does try the
@@ -34,3 +34,9 @@ nogroup:x:65534:
 _dhcpcd:x:52:
 _chrony:x:53:
 veron:x:1000:
+greeter:x:999:
+# auth ADMITS READERS OF THE ENROLMENT RECORDS. The gate re-groups
+# ~veron/.config/veron to this each boot so the greeter can VERIFY --
+# read auth.conf and the wrapped master -- while owning nothing there.
+# The wraps are ciphertext; possession of the key file is the secret.
+auth:x:110:veron,greeter

@@ -1,0 +1,22 @@
+# The hard boot gate -- see scripts/session-gate for the whole argument.
+#
+# scripted AND BENEATH labwc: dinit will not consider this started until
+# the script exits, and the script exits only unarmed or verified. A
+# machine armed and missing its factor therefore never starts a session
+# at all -- there is no window in which a compositor exists to fail
+# open. start-timeout = 0 because the wait IS the service: dinit's
+# default would kill the gate and strand a factor inserted late; no
+# timeout means inserting the stick at any point boots the session.
+#
+# run-as = veron so the check reads the same config, as the same user,
+# that enrolment wrote and the lock screen verifies.
+type = scripted
+command = /bin/busybox sh /etc/dinit.d/scripts/session-gate
+start-timeout = 0
+restart = false
+# root: the gate prepares worlds (runtime dirs, group modes, service
+# starts); the credential surface it launches runs as `greeter`.
+depends-on = early-filesystems
+depends-on = hotplug
+depends-on = seatd
+logfile = /dev/console

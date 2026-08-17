@@ -37,8 +37,13 @@
 # better than a display manager that segfaults to a shell. Ctrl+Alt+F2
 # stays reachable as the escape hatch, and veron-login guards tty3.
 if [ -x /usr/bin/veron-lock ] \
-   && grep -qx 'autologin=off' "$HOME/.config/veron/auth.conf" 2>/dev/null
+   && grep -qx 'autologin=off' "$HOME/.config/veron/auth.conf" 2>/dev/null \
+   && [ ! -f /run/veron-boot-authed ]
 then
+    # ^ THE GREETER'S MARKER SKIPS THIS: a boot the gate verified does
+    # not ask twice. Super+L and the idle path are untouched, and the
+    # supervised block below still stands for any armed state the
+    # marker does not cover.
     # THE LOCK COMES FIRST, AND EVERYTHING ELSE HAPPENS BEHIND IT. The
     # first version of this gate started `media` and THEN the lock -- and
     # the media start BLOCKS, up to twelve seconds when no stick is
@@ -56,6 +61,18 @@ then
     # pressed before the mount lands is refused with the reason printed;
     # the next one succeeds. Locked-then-briefly-unopenable is the
     # correct failure order; briefly-open-then-locked was the wrong one.
-    /usr/bin/veron-lock &
+    # SUPERVISED, BECAUSE A GATE'S DEATH MUST NOT OPEN THE DOOR. The
+    # protocol property this file cites covers a client that dies while
+    # HOLDING the lock; a client that exits before or without it leaves
+    # the session standing open -- observed on machine #1 (2026-08-16):
+    # armed reboot, no stick, the lock face for a split second, then a
+    # live desktop and `pgrep veron-lock` empty. veron-lock now exits 0
+    # only when a person unlocked; anything else relaunches the gate.
+    # The one-second brake bounds a crash loop into a visibly flashing
+    # face -- a loudly broken gate rather than a silently open one.
+    ( while :; do
+          /usr/bin/veron-lock && break
+          /bin/busybox sleep 1
+      done ) &
     ( /usr/bin/dinitctl -p /run/dinitctl start media 2>/dev/null || true ) &
 fi

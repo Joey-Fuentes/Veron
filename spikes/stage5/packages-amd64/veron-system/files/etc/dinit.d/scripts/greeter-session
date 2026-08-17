@@ -1,0 +1,11 @@
+#!/bin/busybox sh
+# The greeter's world, built from nothing: its own runtime dir (prepped
+# root-side by the gate), the greeter config dir, and a PATH. No user
+# environment, no user cwd, no dinit socket exported -- lock.c's media
+# kick fails harmlessly here because the GATE kicks the mount itself.
+set -u
+export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+export XDG_RUNTIME_DIR=/run/greeter/run
+export HOME=/var/lib/greeter
+cd /
+exec /usr/bin/labwc -C /etc/xdg/labwc-greeter
