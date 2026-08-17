@@ -75,23 +75,33 @@ fi
 # having a group. ABSENT IS NOT AN ERROR -- a machine with no sound card has
 # no /dev/snd, and dinit treats a non-zero exit as a failed start on a service
 # the session depends on.
-if [ -d /dev/snd ]; then
-    /bin/busybox chgrp -R audio /dev/snd 2>/dev/null
-    # THE DIRECTORY NEEDS ITS EXECUTE BIT AND THE DEVICES DO NOT.
-    #
-    # `chmod -R 0660 /dev/snd` applied 0660 to /dev/snd ITSELF, and a directory
-    # without +x cannot be traversed. The names still listed -- the directory
-    # was readable -- but every stat inside failed:
-    #
-    #     ls: /dev/snd/controlC0: Permission denied
-    #     alsamixer: cannot open mixer: Permission denied
-    #
-    # which reads as a device permission problem and is not one. 0750 on the
-    # directory, 0660 on the character devices.
-    /bin/busybox chmod 0750 /dev/snd 2>/dev/null
-    /bin/busybox find /dev/snd -type c -exec /bin/busybox chmod 0660 {} + 2>/dev/null
-    echo "  /dev/snd -> audio (dir 0750, nodes 0660)"
-fi
+# POLLED, BECAUSE snd_hda_intel IS A LATE MODULE ON THE GENERIC KERNEL.
+# device-nodes depends-on hotplug, but the sound card's character devices
+# (/dev/snd/pcmC1D0p etc.) are created by an ASYNCHRONOUS probe that can
+# finish after coldplug replay -- so a single `if [ -d /dev/snd ]` here found
+# either no directory or no nodes, left them root:root, and the desktop user
+# (veron) could not open them. alsa-lib then reported "no soundcards found"
+# and "cannot get card index" even though /proc/asound/cards listed the card
+# and /etc/asound.conf named it -- because the kernel had it and userspace
+# could not OPEN it (machine #1, 2026-08-17: sound silent, alsamixer would
+# not open, aplay -l empty, all as veron). Same fix shape as the backlight
+# poll: bounded wait for the nodes to appear, then group + permission them.
+# 20 x 0.5s = 10s, backgrounded so the one-shot service is not held open,
+# exits the instant a control node exists.
+( _sn=0
+  while [ "$_sn" -lt 20 ]; do
+      if [ -e /dev/snd/controlC0 ] || [ -e /dev/snd/controlC1 ] || \
+         [ -e /dev/snd/controlC2 ]; then
+          /bin/busybox chgrp -R audio /dev/snd 2>/dev/null
+          # 0750 on the dir (needs +x to traverse), 0660 on the char devices.
+          /bin/busybox chmod 0750 /dev/snd 2>/dev/null
+          /bin/busybox find /dev/snd -type c -exec /bin/busybox chmod 0660 {} + 2>/dev/null
+          echo "  /dev/snd -> audio (dir 0750, nodes 0660)"
+          break
+      fi
+      /bin/busybox sleep 0.5
+      _sn=$((_sn + 1))
+  done ) &
 
 # THE GPU RENDER NODE, which the browser's WebProcess opens for accelerated
 # rendering. The kernel usually creates it 0666 already; this makes the
