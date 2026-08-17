@@ -36,8 +36,8 @@
   # short WHAT, before anything else runs.
   REL=https://github.com/Joey-Fuentes/Veron/releases/download
   for a in rootfs.img.tar.zst Image initramfs.cpio.gz; do
-    curl -fSL --retry 2 -o "$a" "$REL/stage5/latest-amd64/$a" \
-      || { echo "FAIL: stage5/latest-amd64 has no asset '$a'"; exit 1; }
+    curl -fSL --retry 2 -o "$a" "$REL/5/latest-x86_64/$a" \
+      || { echo "FAIL: 5/latest-x86_64 has no asset '$a'"; exit 1; }
     [ -s "$DL/$a" ] || { echo "FAIL: '$a' downloaded empty"; exit 1; }
   done
   for a in vmlinuz-generic modules-7.1.5-generic.tar.zst KERNEL-GENERIC-SHA256; do

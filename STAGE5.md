@@ -148,7 +148,9 @@ under qemu: `rootfs.img.tar.zst`, the kernel `Image`, `initramfs.cpio.gz`, and
 `IMAGE-SHA256`.
 
 **Two releases, one per architecture.** `stage5/latest` is aarch64;
-`stage5/latest-amd64` is x86_64, published by `stage5-spike-amd64`. The asset
+`5/latest-x86_64` is x86_64, published by `5-user-space-amd64` — the official
+stage-5 workflow, which replaced the spike's `stage5/latest-amd64` tag as the
+thing to consume. The asset
 names are identical in both, which is why they are separate tags rather than
 suffixed filenames on a shared one — see `spikes/stage5/AMD64.md`. Everything
 below is the aarch64 arm; the x86_64 commands are in *Running the x86_64 image*
@@ -292,7 +294,7 @@ to actually use.
 
 ```sh
 mkdir -p ~/veron-amd64 && cd ~/veron-amd64
-gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
+gh release download 5/latest-x86_64 -R Joey-Fuentes/Veron \
   --pattern 'rootfs.img.tar.zst' --pattern 'IMAGE-SHA256' \
   --pattern 'Image' --pattern 'initramfs.cpio.gz'
 tar --zstd -xf rootfs.img.tar.zst
@@ -465,7 +467,7 @@ Everything here runs from Xubuntu.
 
 ```sh
 DL="${DL:-$HOME/Downloads}"; mkdir -p "$DL"; cd "$DL"
-gh release download stage5/latest-amd64 -R Joey-Fuentes/Veron \
+gh release download 5/latest-x86_64 -R Joey-Fuentes/Veron \
   --pattern 'rootfs.img.tar.zst' --pattern 'Image' \
   --pattern 'initramfs.cpio.gz' --clobber
 tar --zstd -xf rootfs.img.tar.zst
@@ -633,8 +635,8 @@ the file, and the file is what you execute:
   # short WHAT, before anything else runs.
   REL=https://github.com/Joey-Fuentes/Veron/releases/download
   for a in rootfs.img.tar.zst Image initramfs.cpio.gz; do
-    curl -fSL --retry 2 -o "$a" "$REL/stage5/latest-amd64/$a" \
-      || { echo "FAIL: stage5/latest-amd64 has no asset '$a'"; exit 1; }
+    curl -fSL --retry 2 -o "$a" "$REL/5/latest-x86_64/$a" \
+      || { echo "FAIL: 5/latest-x86_64 has no asset '$a'"; exit 1; }
     [ -s "$DL/$a" ] || { echo "FAIL: '$a' downloaded empty"; exit 1; }
   done
   for a in vmlinuz-generic modules-7.1.5-generic.tar.zst KERNEL-GENERIC-SHA256; do
