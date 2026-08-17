@@ -48,6 +48,14 @@ export XDG_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
 # dinit-started bar, first click (2026-08-16): the uncurated menu and a
 # shell born in the service directory.
 export XDG_DATA_DIRS=${XDG_DATA_DIRS:-/usr/share/veron:/usr/local/share:/usr/share}
+# AND THE DINIT SOCKET, or the bar's children cannot manage services:
+# dinitctl defaults to a per-user socket this system does not run, so a
+# terminal spawned from the bar answered "perhaps no user instance is
+# running?" to `dinitctl stop media` during the enrollment test
+# (machine #1, 2026-08-16) -- while a keybind terminal, running under
+# labwc-session's env (which exports this at line 65), would have
+# worked. The two spawn paths must be one world.
+export DINIT_SOCKET_PATH=${DINIT_SOCKET_PATH:-/run/dinitctl}
 cd "$HOME" 2>/dev/null || cd / || true
 
 if [ $# -lt 1 ]; then

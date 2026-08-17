@@ -100,6 +100,16 @@ block)
         # mounts fresh instead of hitting the stale-mount self-heal path.
         if /bin/busybox grep -q "^/dev/$DEV /run/media/veron/stick " /proc/mounts; then
             /bin/busybox umount -f /run/media/veron/stick 2>/dev/null
+            # AND RELEASE THE SERVICE, or the next insertion is a no-op.
+            # media is scripted with restart=false: dinit holds it STARTED
+            # after the mount script exits, so the add-branch's `start`
+            # does nothing while that state stands. Proven during the
+            # enrollment test (machine #1, 2026-08-16): yank, re-insert,
+            # no remount -- the kick fired and dinit shrugged. The yank
+            # must release what the insertion claims; stop is that
+            # release, and the pair makes plug/unplug/plug idempotent.
+            [ -S /run/dinitctl ] && DINIT_SOCKET_PATH=/run/dinitctl \
+                /usr/bin/dinitctl stop media >/dev/null 2>&1 &
         fi
         ;;
     esac
