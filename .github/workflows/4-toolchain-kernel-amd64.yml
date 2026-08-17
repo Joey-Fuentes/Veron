@@ -112,6 +112,13 @@ permissions:
   # stage0-stage4-complete.yml carries the same for the same command; the
   # reference arm does not publish and stays read-only.
   contents: write
+  # ATTESTATION, THE SAME TWO GRANTS STAGES 1-3 AND 5 CARRY. id-token lets
+  # Fulcio bind the workflow identity; attestations lets the signed statement
+  # reach the GH attestations API. The build runs inside the box -- busybox
+  # and tcc, no network, no token -- so neither grant is reachable from the
+  # thing being built.
+  id-token: write
+  attestations: write
 
 env:
   TCC_SHA: 5ec0e6f84b47ebd8c269b581712666313f5edaef
@@ -1799,6 +1806,7 @@ jobs:
             2>/dev/null || true
           if gh release upload "$TAG" rel/* --clobber; then
             echo "VERON-STAGE4-PUBLISHED-AMD64  $(cut -d' ' -f1 rel/SYSROOT-SHA256)"
+            echo "STAGE4_PUBLISHED=yes" >> "$GITHUB_ENV"
           else
             # A FAILED PUBLISH MUST NOT FAIL THE CHAIN, for the reason the
             # aarch64 arm gives: the build is the result, the release is a
@@ -1807,3 +1815,25 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
+
+      # ATTEST: THE SAME STEP STAGES 1-3 AND 5 RUN, ON THE PUBLISHED STAGE-4
+      # SYSTEM. A Sigstore keyless signature, logged in Rekor, binding these
+      # exact digests to this repo, this commit and THIS workflow. This was
+      # the missing link: stages 1-3 attest, stage 5 attests, and the sysroot
+      # and kernel between them did not -- so stage 5 was attesting an image
+      # built from unattested inputs. A stranger runs
+      #
+      #   gh attestation verify sysroot.tar.zst --repo <owner>/Veron
+      #
+      # THE SUBJECTS ARE rel/*, WHICH IS EXACTLY WHAT WAS UPLOADED -- the
+      # publish step ships rel/* verbatim, so the attested set and the
+      # released set cannot drift apart. PROVENANCE is among them, so the
+      # signature covers the chain record itself: the consumed tcc-amd64
+      # digest and the built-by lineage back to the self-assembler ride
+      # inside the attested bytes. GATED ON THE PUBLISH, so an attestation
+      # id always corresponds to bytes a person can fetch.
+      - name: 'ATTEST: bind the published stage-4 system to this workflow identity'
+        if: ${{ always() && env.STAGE4_PUBLISHED == 'yes' }}
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: rel/*

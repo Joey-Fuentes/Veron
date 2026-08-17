@@ -13,6 +13,12 @@ on:
   workflow_dispatch: {}
 permissions:
   contents: write
+  # ATTESTATION, THE SAME TWO GRANTS THE OTHER PUBLISHING STAGES CARRY:
+  # id-token for Fulcio to bind the workflow identity, attestations for the
+  # GH attestations API. The kernel build runs from the pinned tarball under
+  # the stage-4 toolchain with no token in its environment.
+  id-token: write
+  attestations: write
 concurrency:
   group: generic-kernel-amd64
   cancel-in-progress: false
@@ -228,6 +234,7 @@ jobs:
             echo "  sysroot $(cut -d' ' -f1 in/4/SYSROOT-SHA256)"
             echo "Boot-gated: squashfs + loop + overlay on machine #0."
             echo "commit $GITHUB_SHA"
+            echo "run    $GITHUB_RUN_ID"
           } > rel/PROVENANCE
           cat rel/KERNEL-GENERIC-SHA256
           gh release create 4/kernel-x86_64 --title 'Veron generic kernel (x86_64)' \
@@ -235,3 +242,18 @@ jobs:
             2>/dev/null || true
           gh release upload 4/kernel-x86_64 rel/* --clobber
           echo "VERON-GENERIC-PUBLISHED  $(cut -d' ' -f1 rel/KERNEL-GENERIC-SHA256 | head -1)"
+
+      # ATTEST: THE SAME STEP EVERY OTHER PUBLISHING STAGE RUNS, ON THE
+      # GENERIC KERNEL. This release is what the bare-metal flash boots
+      # (tools/flash-amd64.sh pulls vmlinuz-generic and the modules from
+      # here), so it is the one whose absence from the attestation chain a
+      # person standing at a laptop would actually feel. Subjects are rel/*
+      # -- exactly the uploaded set, PROVENANCE included, whose sysroot line
+      # names the attested 4/latest-x86_64 digest this kernel was built by.
+      # The upload above runs under set -eu with no fallback, so reaching
+      # this step at all means the release is live; the default success
+      # condition is the gate.
+      - name: 'ATTEST: bind the published generic kernel to this workflow identity'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: rel/*
