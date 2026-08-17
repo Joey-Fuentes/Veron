@@ -123,18 +123,28 @@ CACHED=$(ssid_list)
 /usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" scan >/dev/null 2>&1 || \
     die "the supplicant would not scan -- is it running on $IFACE?"
 
-if [ -z "$CACHED" ]; then
-    # POLLED, NOT SLEPT, AND WITH A DEADLINE. A fixed sleep is simultaneously
-    # too long when the answer arrives in 400 ms and too short when the radio
-    # is cold, which is how one number managed to cause both complaints.
-    n=0
-    while [ "$n" -lt 16 ]; do
+# POLL UNTIL RESULTS APPEAR OR THE SCAN FINISHES, WITH A GENEROUS DEADLINE.
+# ALWAYS poll (not only when CACHED is empty): the pre-scan read can catch a
+# stale or mid-scan-partial cache, and skipping the poll then showed an empty
+# list with "Status: SCANNING" -- exactly what the generic kernel did, because
+# rtw89 (the RTL8852AE driver, a MODULE now, not built in) scans SLOWER than
+# the minimal kernel's did and did not finish inside the old 8-second window.
+# The deadline is 20s and the loop also breaks the moment wpa_state leaves
+# SCANNING, so a fast radio is still instant and a slow one is waited out.
+n=0
+while [ "$n" -lt 40 ]; do
+    CACHED=$(ssid_list)
+    [ -n "$CACHED" ] && break
+    _st=$(/usr/sbin/wpa_cli -p "$CTRL" -i "$IFACE" status 2>/dev/null \
+          | awk -F= '$1 == "wpa_state" { print $2 }')
+    # if the scan has finished and STILL no results, one more read then stop
+    if [ "$_st" != "SCANNING" ] && [ "$n" -gt 2 ]; then
         CACHED=$(ssid_list)
-        [ -n "$CACHED" ] && break
-        sleep 0.5
-        n=$((n + 1))
-    done
-fi
+        break
+    fi
+    sleep 0.5
+    n=$((n + 1))
+done
 
 # THE CURRENT CONNECTION IS THE FIRST THING THE MENU SAYS, because "am I on
 # wifi" is the question a bar click is usually asking, and the answer used to
