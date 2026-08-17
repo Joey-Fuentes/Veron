@@ -41,6 +41,9 @@ MODE=trace
 TARGET=
 HASH_FILES=no
 STRAYS=no
+INVENTORY=no
+SNAPSHOT=no
+BASELINE=/persist/veron-trace/baseline.tsv
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -48,12 +51,16 @@ while [ $# -gt 0 ]; do
         --root)    ROOT=$2; shift 2 ;;
         --verify)  MODE=verify; shift ;;
         --strays)  STRAYS=yes; shift ;;
+        --inventory) INVENTORY=yes; shift ;;
+        --snapshot)  SNAPSHOT=yes; INVENTORY=yes; STRAYS=yes; shift ;;
+        --baseline)  BASELINE=$2; shift 2 ;;
         --forward) MODE=forward; TARGET=$2; shift 2 ;;
         --hash-files) HASH_FILES=yes; shift ;;
         --help|-h)
             echo "usage: veron-trace [--records DIR] [--root DIR] <path>"
             echo "       veron-trace [--records DIR] --forward <package>"
             echo "       veron-trace [--records DIR] [--hash-files --root DIR] --verify"
+            echo "         --strays: census every path; --inventory: name mutable files"
             exit 0 ;;
         *) TARGET=$1; shift ;;
     esac
@@ -69,6 +76,31 @@ for f in "$SUB" "$PKG" "$CHAIN"; do
 done
 
 chain() { awk -v k="$1 $2" '$1" "$2 == k { print $NF; exit }' "$CHAIN"; }
+
+# ---- what a clean boot writes into a home, and who writes it ------------
+# THE HOME SKELETON IS EXPECTED AND ATTRIBUTABLE, and saying so is the
+# difference between an audit and a count. On a fresh flash, four things
+# appear in /home/veron before the person does anything: the shell history
+# (busybox ash, via HISTFILE), fontconfig's per-user cache with its
+# CACHEDIR.TAG, and the empty XDG share/state dirs the session exports
+# paths into. Everything ELSE under a home is the person's own doing --
+# downloads, configs, work -- and is labeled as exactly that, because
+# "here is what you have done" is a different sentence from "here are
+# twelve files". Patterns, not hashes: history and caches are content the
+# MACHINE generates per use, so their bytes cannot be pinned by anyone --
+# the honest record is who writes them, and the baseline (--snapshot) is
+# what answers "has it changed since".
+classify_observed() {
+    case "$1" in
+        *home/veron/.ash_history)          echo "expected on a clean boot: shell history (busybox ash)" ;;
+        *home/veron/.cache/fontconfig/*)   echo "expected on a clean boot: fontconfig per-user cache" ;;
+        *home/veron/.cache/*)              echo "runtime cache (regenerable)" ;;
+        *home/veron/.local/state/*)        echo "expected location: session state (XDG_STATE_HOME)" ;;
+        *home/veron/.local/share/*)        echo "expected location: session data (XDG data dir)" ;;
+        *home/veron/*)                     echo "USER ACTIVITY -- yours, listed so you can see it" ;;
+        *) echo "" ;;
+    esac
+}
 
 # ---- the downward substage walk, shared by trace and forward ------------
 # From an id, follow B lines down until a substage repeats its own hash as
@@ -216,6 +248,7 @@ if [ "$MODE" = verify ]; then
     # skipped by -xdev: a clean boot should be able to say "/tmp: 0 files"
     # out loud.
     if [ "$STRAYS" = yes ]; then
+        INVMODE=0; [ "$INVENTORY" = yes ] && INVMODE=1
         EXTRA=$RECORDS/extra.tsv
         [ -f "$EXTRA" ] || EXTRA=/dev/null
         # BOTH SPELLINGS OF THE MERGED /usr, because /lib IS A SYMLINK TO
@@ -232,26 +265,27 @@ vmlinuz-generic|flash payload: generic kernel
 Image|flash payload: minimal kernel
 initramfs.cpio.gz|flash payload: initramfs
 initramfs-fw.cpio.gz|flash payload: fallback initramfs
-home/|mutable state: user data
-root/|mutable state: root user data
-var/|mutable state: system logs and spool
+home/|mutable state: user data|inv
+root/|mutable state: root user data|inv
+var/|mutable state: system logs and spool|inv
 srv/|mutable state
 opt/|mutable state
 mnt/|mutable state: mountpoints
 media/|mutable state: mountpoints
-tmp/|runtime scratch (on the root fs; expected empty on a clean boot)
-etc/wpa_supplicant.conf|runtime state: written by wpa-start
-etc/resolv.conf|runtime state: written by dhcp
+tmp/|runtime scratch (on the root fs; expected empty on a clean boot)|inv
+etc/wpa_supplicant.conf|runtime state: written by wpa-start|inv
+etc/resolv.conf|runtime state: written by dhcp|inv
 lost+found|filesystem structure'
         out=$( { awk -F'\t' '($1=="F"||$1=="Fb"){print $4} ($1=="L"||$1=="Lb"){print $3}' "$PKG"
                  echo "===RECORDS-END==="
                  find "$ROOT" -xdev \( -type f -o -type l \) 2>/dev/null
-               } | awk -v root="$ROOT" -v extra="$EXTRA" -v cats="$CATS" '
+               } | awk -v root="$ROOT" -v extra="$EXTRA" -v cats="$CATS" -v invmode="$INVMODE" '
             BEGIN {
                 while ((getline ln < extra) > 0) xt[ln] = 1
                 nc = split(cats, C, "\n")
                 for (i = 1; i <= nc; i++) {
                     split(C[i], kv, "|"); pref[i] = kv[1]; lab[i] = kv[2]
+                    inv[i] = (kv[3] == "inv")
                 }
                 loading = 1
             }
@@ -265,7 +299,11 @@ lost+found|filesystem structure'
                 if (rel in rec)  { pkg++;    next }
                 if (rel in xt)   { extras++; next }
                 for (i = 1; i <= nc; i++)
-                    if (index(rel, pref[i]) == 1) { cnt[i]++; next }
+                    if (index(rel, pref[i]) == 1) {
+                        cnt[i]++
+                        if (invmode && inv[i]) print "INV\t" rel "\t" lab[i]
+                        next
+                    }
                 print "  STRAY  " rel " -- on the disk, in no record"
                 stray++
             }
@@ -279,7 +317,31 @@ lost+found|filesystem structure'
                 print "COUNT " stray + 0
             }')
         scount=$(printf '%s\n' "$out" | awk '$1=="COUNT"{print $2}')
-        printf '%s\n' "$out" | grep -v '^COUNT'
+        printf '%s\n' "$out" | grep -v '^COUNT' | grep -v '^INV'
+        # THE INVENTORY: mutable and runtime files NAMED with observed size
+        # and sha256, because "4 file(s)" should be four readable lines.
+        # OBSERVED, NOT EXPECTED, and labeled so: user and runtime state
+        # has no build record to compare against IN PRINCIPLE -- the build
+        # cannot hash files that did not exist until the machine was used.
+        # An expectation for these can only come from a baseline the
+        # machine itself records; until that exists, this is the honest
+        # maximum.
+        OBS=$(mktemp 2>/dev/null || echo /tmp/veron-trace-obs.$$)
+        : > "$OBS"
+        if [ "$INVENTORY" = yes ]; then
+            printf '%s\n' "$out" | awk -F'\t' '$1=="INV"' | \
+            while IFS="$(printf '\t')" read -r tag rel lab; do
+                f=$ROOT/$rel
+                cls=$(classify_observed "$rel"); [ -n "$cls" ] && lab=$cls
+                if [ -L "$f" ]; then
+                    echo "    observed  $rel -> $(readlink "$f")   [$lab]"
+                elif [ -f "$f" ]; then
+                    sha=$(sha256sum "$f" | cut -d' ' -f1)
+                    printf '%s\t%s\t%s\n' "$rel" "$sha" "$(wc -c < "$f" | tr -d ' ')" >> "$OBS"
+                    echo "    observed  $rel  $(wc -c < "$f" | tr -d ' ') bytes  sha256 $(printf %.16s "$sha")...   [$lab]"
+                fi
+            done
+        fi
         edges=$((edges + 1)); fails=$((fails + scount))
 
         # THE OTHER MOUNTS, EACH NAMED. -xdev keeps the walk above on the
@@ -302,12 +364,66 @@ lost+found|filesystem structure'
                         echo "    $mp  $fstype  kernel-virtual -- live kernel objects, not shipped files" ;;
                     *)
                         n=$(find "$mp" -xdev \( -type f -o -type l \) 2>/dev/null | wc -l)
-                        echo "    $mp  $fstype  $n file(s)" ;;
+                        echo "    $mp  $fstype  $n file(s)"
+                        # The same rule for real filesystems the root walk
+                        # cannot reach: every file named, sized, hashed as
+                        # observed. /home/veron is a bind of
+                        # /persist/home/veron and lands HERE, which is
+                        # where "what ARE those 4 files" gets its answer.
+                        if [ "$INVENTORY" = yes ] && [ "$n" -gt 0 ]; then
+                            find "$mp" -xdev \( -type f -o -type l \) 2>/dev/null | while read -r f; do
+                                rel=${f#/}
+                                cls=$(classify_observed "$rel")
+                                sfx=""; [ -n "$cls" ] && sfx="   [$cls]"
+                                if [ -L "$f" ]; then
+                                    echo "      observed  $rel -> $(readlink "$f")$sfx"
+                                else
+                                    sha=$(sha256sum "$f" | cut -d' ' -f1)
+                                    printf '%s\t%s\t%s\n' "$rel" "$sha" "$(wc -c < "$f" | tr -d ' ')" >> "$OBS"
+                                    echo "      observed  $rel  $(wc -c < "$f" | tr -d ' ') bytes  sha256 $(printf %.16s "$sha")...$sfx"
+                                fi
+                            done
+                        fi ;;
                 esac
             done < "$MTAB"
         else
             echo "  no mount table readable at $MTAB -- other filesystems not censused"
         fi
+
+        # THE BASELINE: expectations for mutable state can only come from a
+        # record the machine itself takes -- the build cannot hash a shell
+        # history that does not exist yet. --snapshot writes the observed
+        # set (path, sha, size) to /persist so it survives reboots; later
+        # runs diff against it and REPORT: new since the baseline, changed
+        # since it, gone since it. Reported, never failed: a download in a
+        # home directory is the owner using their machine, and the point is
+        # that they can SEE it -- an intrusion verdict about user data is
+        # not this tool's to make.
+        # THE TOOL'S OWN ARTIFACTS ARE NOT EVIDENCE: the baseline file and
+        # the in-flight observation list would otherwise diff against
+        # themselves forever (baseline NEW on the first audit after every
+        # snapshot). Filtered by path, stated here rather than discovered.
+        obs_filtered() { awk -F'\t' -v a="${BASELINE#/}" -v b="${OBS#/}" \
+                             '$1 != a && $1 != b' "$OBS" | sort; }
+        if [ "$SNAPSHOT" = yes ]; then
+            mkdir -p "$(dirname "$BASELINE")" 2>/dev/null || true
+            if obs_filtered > "$BASELINE" 2>/dev/null; then
+                echo "  baseline written: $BASELINE ($(wc -l < "$BASELINE" | tr -d ' ') mutable file(s) recorded)"
+            else
+                echo "  baseline NOT written: cannot write $BASELINE (--baseline overrides the path)"
+            fi
+        elif [ -s "$BASELINE" ] && [ "$INVENTORY" = yes ]; then
+            echo "  against the baseline $BASELINE:"
+            obs_filtered | awk -F'\t' -v bl="$BASELINE" '
+                BEGIN { while ((getline ln < bl) > 0) {
+                            split(ln, b, "\t"); base[b[1]] = b[2] } }
+                { now[$1] = 1
+                  if (!($1 in base))          { print "    NEW      " $1; d++ }
+                  else if (base[$1] != $2)    { print "    CHANGED  " $1; d++ } }
+                END { for (p in base) if (!(p in now)) { print "    GONE     " p; d++ }
+                      if (!d) print "    unchanged since the baseline" }'
+        fi
+        rm -f "$OBS"
     fi
 
     if [ "$fails" -eq 0 ]; then
