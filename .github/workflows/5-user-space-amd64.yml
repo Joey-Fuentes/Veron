@@ -2341,6 +2341,25 @@ jobs:
           # stripped, which is the point of running it again below.
           STRIP_LOG=out/strip.txt sh tools/stage5-strip.sh sysroot
 
+          # THE TRACE RECORDS LEARN WHAT THE STRIP JUST DID. packages.tsv
+          # was written from pre-strip DESTDIRs and installed into this
+          # sysroot; the strip above then rewrote the ELF bytes, so on the
+          # flashed machine every stripped binary read DOES NOT MATCH
+          # (measured: /usr/bin/foot, first flash with the tracer aboard).
+          # stripped.tsv records the post-strip hashes of every path the
+          # strip changed, BEFORE the stripped image is built from this
+          # tree -- so the image carries the record that describes its own
+          # bytes. No self-reference: stripped.tsv is in no package record,
+          # and writing it changes no other file. The full image was built
+          # before this line and matches packages.tsv directly.
+          if [ -s sysroot/usr/share/veron/trace/packages.tsv ]; then
+            python3 ../../tools/veron-trace-records \
+              --strip-overlay sysroot \
+              --records sysroot/usr/share/veron/trace
+          else
+            echo "  no trace records in the tree -- overlay skipped"
+          fi
+
           echo "  === merged system, after stripping ==="
           du -sh sysroot | sed 's/^/    total   /'
 

@@ -159,10 +159,49 @@ def committed_tcc(repo):
     return None
 
 
+def strip_overlay(root, records):
+    """POST-STRIP TRUTH, WRITTEN WHERE THE TRACER LOOKS. The image is
+    stripped AFTER the records are installed into it, so packages.tsv
+    describes pre-strip DESTDIR bytes and every stripped ELF on the flashed
+    machine reads DOES NOT MATCH (measured: /usr/bin/foot, first flash with
+    the tracer aboard). This re-hashes every recorded path against the
+    post-strip tree and records the ones that CHANGED into stripped.tsv --
+    same F shape, and the tracer consults it first. NO SELF-REFERENCE:
+    stripped.tsv is not itself in packages.tsv (the workflow installs it,
+    no recipe does), and writing it changes no other file's bytes. The
+    FULL image is built before the strip and so matches packages.tsv
+    directly -- each image agrees with the records it carries."""
+    pkgs = os.path.join(records, "packages.tsv")
+    changed = []
+    checked = 0
+    with open(pkgs) as f:
+        for ln in f:
+            parts = ln.rstrip("\n").split("\t")
+            if not parts or parts[0] != "F":
+                continue
+            _, sha, _size, path = parts[0], parts[1], parts[2], parts[3]
+            fp = os.path.join(root, path)
+            if not os.path.isfile(fp) or os.path.islink(fp):
+                continue
+            checked += 1
+            got = sha256_of(fp)
+            if got and got != sha:
+                changed.append("F\t%s\t%d\t%s" % (got, os.path.getsize(fp), path))
+    with open(os.path.join(records, "stripped.tsv"), "w") as f:
+        f.write("\n".join(changed) + ("\n" if changed else ""))
+    print("veron-trace-records: strip overlay -- %d path(s) checked, "
+          "%d changed by the strip" % (checked, len(changed)))
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", required=True, help="repository root")
-    ap.add_argument("--ledger", required=True, help="stage-5 ledger dir")
+    ap.add_argument("--strip-overlay", metavar="ROOT", default=None,
+                    help="post-strip mode: re-hash every recorded path under "
+                         "ROOT and write stripped.tsv into --records")
+    ap.add_argument("--records", default=None,
+                    help="records dir (with --strip-overlay)")
+    ap.add_argument("--repo", help="repository root")
+    ap.add_argument("--ledger", help="stage-5 ledger dir")
     ap.add_argument("--stage4-dir", default=None,
                     help="dir holding the consumed 4/latest-x86_64 download "
                          "(SYSROOT-SHA256, PROVENANCE); optional")
@@ -172,8 +211,17 @@ def main():
                     help="space-separated package names that are staged but "
                          "never installed (from `veron build-only-names`); "
                          "their file lines are tagged staged-not-shipped")
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out")
+    ap.set_defaults()
     a = ap.parse_args()
+
+    if a.strip_overlay:
+        if not a.records:
+            ap.error("--strip-overlay requires --records")
+        strip_overlay(a.strip_overlay, a.records)
+        return 0
+    if not (a.repo and a.ledger and a.out):
+        ap.error("--repo, --ledger and --out are required (or use --strip-overlay)")
 
     os.makedirs(a.out, exist_ok=True)
     ns = flatten_substages(a.repo, a.out)
