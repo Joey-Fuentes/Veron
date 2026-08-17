@@ -218,7 +218,14 @@ if [ "$MODE" = verify ]; then
     if [ "$STRAYS" = yes ]; then
         EXTRA=$RECORDS/extra.tsv
         [ -f "$EXTRA" ] || EXTRA=/dev/null
-        CATS='lib/modules/|flash payload: kernel modules (pinned tarball at flash)
+        # BOTH SPELLINGS OF THE MERGED /usr, because /lib IS A SYMLINK TO
+        # usr/lib on this image and find walks the REAL paths: the first
+        # on-device census filed all 7059 flash-time firmware and module
+        # files as STRAYs for want of the usr/ prefix -- the same usr-merge
+        # alias the single-file lookup already handles.
+        CATS='usr/lib/modules/|flash payload: kernel modules (pinned tarball at flash)
+lib/modules/|flash payload: kernel modules (pinned tarball at flash)
+usr/lib/firmware/|flash payload: firmware tree (pinned tarball at flash)
 lib/firmware/|flash payload: firmware tree (pinned tarball at flash)
 boot/|flash payload: boot files
 vmlinuz-generic|flash payload: generic kernel
