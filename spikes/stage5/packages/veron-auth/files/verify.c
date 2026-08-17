@@ -50,11 +50,9 @@ static const char *home_dir(void)
  * copies of a config reader is how a writer and a reader drift apart. */
 int conf_get_pub(const char *key, char *out, size_t outlen)
 {
-    const char *home = home_dir();
-    if (!home)
-        return 0;
+    /* The system store -- see veron_confdir in wrap.c for the argument. */
     char path[1024];
-    snprintf(path, sizeof path, "%s/.config/veron/auth.conf", home);
+    snprintf(path, sizeof path, "/persist/veron-auth/auth.conf");
     FILE *f = fopen(path, "r");
     if (!f)
         return 0;

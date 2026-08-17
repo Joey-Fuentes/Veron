@@ -22,7 +22,7 @@ HOME=$(awk -F: -v u="$(id -u)" '$3==u{print $6}' /etc/passwd)
 [ -n "$HOME" ] || HOME=/home/veron
 export HOME
 
-if grep -q '^keyfile[0-7]=' "$HOME/.config/veron/auth.conf" 2>/dev/null; then
+if grep -q '^keyfile[0-7]=' /persist/veron-auth/auth.conf 2>/dev/null; then
     exec /usr/bin/veron-login
 fi
 exec /bin/busybox sh /etc/dinit.d/scripts/console-shell

@@ -19,7 +19,7 @@ set -u
 # either -- every crash, everywhere, now lands on the closed side.
 # dinit restarts this service on exit; the rate-limited loop of refusals
 # is a machine saying no, which is the design.
-if /bin/busybox grep -qx 'autologin=off' /home/veron/.config/veron/auth.conf 2>/dev/null \
+if /bin/busybox grep -qx 'autologin=off' /persist/veron-auth/auth.conf 2>/dev/null \
    && [ ! -f /run/veron-boot-authed ]; then
     echo "labwc-session: armed and unverified -- the session refuses to start"
     exit 1

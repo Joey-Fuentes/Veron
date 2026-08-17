@@ -39,22 +39,14 @@ static int mkconfdir(char *out, size_t n)
      * uid 1000's real config sat untouched in /home/veron. A mismatch here
      * produces the worst kind of failure: a config file written successfully
      * and never found. */
-    struct passwd *pw = getpwuid(getuid());
-    const char *home = (pw && pw->pw_dir && *pw->pw_dir) ? pw->pw_dir : NULL;
-    if (!home) {
-        home = getenv("HOME");
-        if (home && !*home)
-            home = NULL;
-    }
-    if (!home) {
-        fprintf(stderr, "veron-enroll: cannot determine the home directory\n");
-        return 0;
-    }
-    snprintf(out, n, "%s/.config/veron", home);
-    char parent[1024];
-    snprintf(parent, sizeof parent, "%s/.config", home);
-    mkdir(parent, 0700);
-    if (mkdir(out, 0700) < 0 && errno != EEXIST) {
+    /* The system store -- see veron_confdir in wrap.c. guest/init
+     * pre-creates it veron:auth 0750 on any machine with a persist
+     * partition; the mkdirs below cover the harness, where / is a
+     * writable overlay and no such preparation ran. 0750 so the auth
+     * group (the greeter) can verify what only veron can write. */
+    mkdir("/persist", 0755);
+    snprintf(out, n, "/persist/veron-auth");
+    if (mkdir(out, 0750) < 0 && errno != EEXIST) {
         fprintf(stderr, "veron-enroll: cannot create %s: %s\n",
                 out, strerror(errno));
         return 0;

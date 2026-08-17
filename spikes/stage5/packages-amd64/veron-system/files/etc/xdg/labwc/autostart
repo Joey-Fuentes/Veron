@@ -37,7 +37,7 @@
 # better than a display manager that segfaults to a shell. Ctrl+Alt+F2
 # stays reachable as the escape hatch, and veron-login guards tty3.
 if [ -x /usr/bin/veron-lock ] \
-   && grep -qx 'autologin=off' "$HOME/.config/veron/auth.conf" 2>/dev/null \
+   && grep -qx 'autologin=off' /persist/veron-auth/auth.conf 2>/dev/null \
    && [ ! -f /run/veron-boot-authed ]
 then
     # ^ THE GREETER'S MARKER SKIPS THIS: a boot the gate verified does

@@ -61,10 +61,17 @@ const char *veron_home(void)
 
 int veron_confdir(char *out, size_t outlen)
 {
-    const char *home = veron_home();
-    if (!home)
-        return 0;
-    snprintf(out, outlen, "%s/.config/veron", home);
+    /* A SYSTEM STORE, NOT A HOME. The enrolment records are machine
+     * credentials: the greeter must read them to verify, and a greeter
+     * with reason to touch any user's home is a greeter with too much
+     * reach (the operator's exact objection, 2026-08-17, when a mode-700
+     * home made the lock face refuse a key tty2 accepted). /persist
+     * backs it, guest/init creates it veron:auth 0750, enrolment (veron)
+     * writes, the auth group reads, and HOME leaves the auth path
+     * entirely -- which also retires the whole /root-vs-/home class of
+     * bugs the old resolution fought. */
+    (void)veron_home;
+    snprintf(out, outlen, "/persist/veron-auth");
     return 1;
 }
 
