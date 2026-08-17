@@ -938,6 +938,32 @@ jobs:
           echo "  attestations:"
           grep -h '"attestations"' ledger/*.json | sed 's/^/    /'
 
+      # THE TRACE RECORDS, AND THE GATE THAT WALKS THEM. tools/veron-trace-
+      # records flattens what already exists -- stages/*/substages*.toml,
+      # this run's ledger/*.json, and the consumed 4/latest-x86_64 seam --
+      # into one-fact-per-line TSVs, and tools/veron-trace --verify then
+      # walks EVERY recorded edge: each builder hash against the record
+      # that published it, and the tcc digest stage 4 received against the
+      # committed stage-3 record. Two independently written numbers that
+      # must agree is the falsifiable claim (DESIGN.md section 6.2); this
+      # step makes their agreement a build gate today rather than stage-6
+      # work. THE SAME SCRIPT SHIPS IN THE IMAGE (installed beside
+      # /etc/veron-release below), so what CI just verified is what a
+      # person at the flashed machine re-runs offline: sh + awk +
+      # sha256sum, no Python -- python is build_only and is not in the
+      # image. The stage-4 INTERIOR remains one coarse edge until its
+      # substage records exist, and the tool prints it as exactly that.
+      - name: 'VERON-TRACE-OK -- every recorded edge back to stage 1 agrees'
+        if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 ../../tools/veron-trace-records \
+            --repo ../.. --ledger ledger \
+            --stage4-dir ../../dl-sysroot \
+            --out out/trace-records
+          sh ../../tools/veron-trace --records out/trace-records --verify
+
       - name: 'Merge the DESTDIRs into the system'
         if: ${{ always() && steps.build.outcome == 'success' && env.PARTIAL != 'yes' }}
         run: |
@@ -1028,6 +1054,24 @@ jobs:
           } > sysroot/etc/veron-release
           echo "  wrote /etc/veron-release:"
           sed 's/^/    /' sysroot/etc/veron-release
+
+          # THE TRACER AND ITS RECORDS SHIP IN THE IMAGE, SO THE FLASHED
+          # MACHINE TRACES ITSELF OFFLINE: veron-trace /usr/bin/gpg walks
+          # from the file's recorded hash down to the stage-1 self-assembler
+          # with no network and no Python. Installed HERE, the same seam as
+          # /etc/veron-release and for the same reason: the records name
+          # this run's ledger and the consumed stage-4 digests, which a
+          # sealed package build has no business knowing. WHAT IS ABSENT IS
+          # ABSENT ON PURPOSE: the stage-5 image digest cannot ride inside
+          # the image it digests (the IMAGE-SHA256 self-reference), so
+          # verifying the partition against the published digest stays an
+          # outside job -- the tracer says so rather than pretending.
+          # REPRODUCIBILITY HOLDS: both image builds in this run copy the
+          # same records written once by the trace step above.
+          mkdir -p sysroot/usr/share/veron/trace
+          cp out/trace-records/* sysroot/usr/share/veron/trace/
+          install -m 0755 ../../tools/veron-trace sysroot/usr/bin/veron-trace
+          echo "  installed veron-trace + $(ls out/trace-records | wc -l) record file(s)"
 
           # THE SELF-REBUILD PAYLOAD IS NOT PART OF THE OPERATING SYSTEM.
           #

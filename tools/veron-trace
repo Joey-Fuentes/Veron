@@ -1,0 +1,276 @@
+#!/bin/sh
+# veron-trace -- walk a file in this image back toward stage 1, over
+# recorded, hash-verified edges. DESIGN.md section 6, built at stage-5 scope.
+#
+#   veron-trace <path>              where did this file come from
+#   veron-trace --forward <name>    what depends on this package
+#   veron-trace --verify            every recorded edge must agree
+#
+# SHELL AND AWK, NOT PYTHON, BECAUSE THIS RUNS ON THE FLASHED MACHINE.
+# python is build_only and is not in the image; busybox sh, awk and
+# sha256sum are. The records are one fact per line (substages.tsv,
+# packages.tsv, CHAIN -- written by tools/veron-trace-records at build
+# time), so everything below is grep and awk, which is also the design's
+# own requirement: a provenance format that needs a program to read is one
+# nobody audits.
+#
+# WHAT --verify CHECKS, AND WHAT AN EDGE IS. A builder line (B) repeats,
+# in the consumer's own record, the output hash the builder's record (S)
+# published. Two independently written numbers that must agree is the
+# falsifiable claim; --verify walks every one and fails on any mismatch.
+# It also checks the seams: the tcc digest stage 4 says it received must
+# equal the committed stage-3 record. A digest recorded as 'unknown' is
+# ABSENCE, stated -- only two PRESENT records disagreeing is failure.
+#
+# THE STAGE-4 INTERIOR IS ONE COARSE EDGE AND IS PRINTED AS EXACTLY THAT.
+# Stage 4 has seam records in and out but no per-substage records yet, so
+# the walk crosses it in one step, labeled 'substage records pending'. A
+# trace that quietly smoothed that over would assert something untrue in a
+# format that looks authoritative.
+#
+# WHAT CANNOT BE CHECKED FROM IN HERE: the image-level digest. These
+# records ride inside the image, so the image's own sha256 cannot (the
+# IMAGE-SHA256 self-reference). Verifying the partition against the
+# published digest is done from outside, which is where a checksum of a
+# disk belongs.
+set -u
+
+RECORDS=${VERON_TRACE_RECORDS:-/usr/share/veron/trace}
+ROOT=/
+MODE=trace
+TARGET=
+HASH_FILES=no
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --records) RECORDS=$2; shift 2 ;;
+        --root)    ROOT=$2; shift 2 ;;
+        --verify)  MODE=verify; shift ;;
+        --forward) MODE=forward; TARGET=$2; shift 2 ;;
+        --hash-files) HASH_FILES=yes; shift ;;
+        --help|-h)
+            echo "usage: veron-trace [--records DIR] [--root DIR] <path>"
+            echo "       veron-trace [--records DIR] --forward <package>"
+            echo "       veron-trace [--records DIR] [--hash-files --root DIR] --verify"
+            exit 0 ;;
+        *) TARGET=$1; shift ;;
+    esac
+done
+
+SUB=$RECORDS/substages.tsv
+PKG=$RECORDS/packages.tsv
+CHAIN=$RECORDS/CHAIN
+for f in "$SUB" "$PKG" "$CHAIN"; do
+    [ -s "$f" ] || { echo "veron-trace: no records: $f missing or empty" >&2
+                     echo "  (records live in $RECORDS; --records overrides)" >&2
+                     exit 2; }
+done
+
+chain() { awk -v k="$1 $2" '$1" "$2 == k { print $NF; exit }' "$CHAIN"; }
+
+# ---- the downward substage walk, shared by trace and forward ------------
+# From an id, follow B lines down until a substage repeats its own hash as
+# its builder (the self-assembly root). Prints one line per substage and
+# notes each architecture change, because the cross is the fact worth the
+# most and the easiest to lose.
+walk_down() {
+    awk -F'\t' -v start="$1" '
+        $1 == "S" { root[$2] = $5; sha[$2] = $6; arch[$2] = $4 }
+        $1 == "B" { bref[$2] = $3; bsha[$2] = $4 }
+        END {
+            id = start; prev = ""
+            for (n = 0; n < 64; n++) {
+                if (!(id in sha)) { printf "  %-24s NOT IN RECORDS\n", id; exit 1 }
+                mark = ""
+                if (prev != "" && arch[prev] != arch[id])
+                    mark = sprintf("   <- crosses architectures (%s -> %s)", arch[id], arch[prev])
+                printf "  %-24s sha256 %.16s...  [%s]%s\n", id, sha[id], arch[id], mark
+                if (!(id in bref)) { print "  (no builder line -- record ends here)"; exit 1 }
+                if (bref[id] == id) {
+                    printf "  ROOT REACHED  %s assembles itself (root=%s)\n", id, root[id]
+                    exit 0
+                }
+                prev = id; id = bref[id]
+            }
+        }' "$SUB"
+}
+
+# =========================================================================
+if [ "$MODE" = verify ]; then
+    fails=0; edges=0
+
+    # (1) every B edge against the S record it names
+    out=$(awk -F'\t' '
+        $1 == "S" { sha[$2] = $6 }
+        $1 == "B" { ref[NR] = $3; got[NR] = $4; own[NR] = $2 }
+        END {
+            e = 0; f = 0
+            for (i in ref) {
+                e++
+                if (!(ref[i] in sha)) { printf "MISSING\t%s\t%s\n", own[i], ref[i]; f++ }
+                else if (sha[ref[i]] != got[i]) { printf "MISMATCH\t%s\t%s\n", own[i], ref[i]; f++ }
+            }
+            printf "COUNTS\t%d\t%d\n", e, f
+        }' "$SUB")
+    edges=$(printf '%s\n' "$out" | awk -F'\t' '$1=="COUNTS"{print $2}')
+    fails=$(printf '%s\n' "$out" | awk -F'\t' '$1=="COUNTS"{print $3}')
+    printf '%s\n' "$out" | awk -F'\t' '$1=="MISSING"  {printf "  EDGE FAIL  %s names builder %s which has no record\n", $2, $3}
+                                       $1=="MISMATCH" {printf "  EDGE FAIL  %s repeats a hash its builder %s did not publish\n", $2, $3}'
+
+    # (2) the 4->3 seam: what stage 4 says it received vs the committed record
+    reftcc=$(chain stage4 ref-tcc)
+    tcc3=$(awk '$1=="stage3" && $2=="tcc-amd64" { print $4; exit }' "$CHAIN")
+    if [ -n "$reftcc" ] && [ "$reftcc" != unknown ] && [ -n "$tcc3" ] && [ "$tcc3" != unknown ]; then
+        edges=$((edges + 1))
+        if [ "$reftcc" != "$tcc3" ]; then
+            echo "  SEAM FAIL  stage 4's received tcc != committed stage-3 record"
+            fails=$((fails + 1))
+        fi
+    else
+        echo "  seam 4<-3: one side unrecorded -- stated, not counted"
+    fi
+
+    # (3) the 5->4 seam is present (its agreement was enforced at build time,
+    # when the sysroot tarball was hashed against SYSROOT-SHA256 before use;
+    # here the recorded value existing at all is what can still be asserted)
+    s4=$(chain stage4 sysroot)
+    [ -n "$s4" ] && [ "$s4" != unknown ] \
+        && echo "  seam 5<-4: sysroot $s4" \
+        || echo "  seam 5<-4: unrecorded on this image -- stated"
+
+    # (4) conflicting file records: one path claimed twice with two hashes
+    dup=$(awk -F'\t' '$1=="F" { if ($4 in h && h[$4] != $2) { print $4; bad=1 } h[$4]=$2 }
+                      END { exit bad?1:0 }' "$PKG") || {
+        echo "  RECORD FAIL  path recorded twice with different hashes:"
+        printf '%s\n' "$dup" | sed 's/^/    /'
+        fails=$((fails + 1))
+    }
+    edges=$((edges + 1))
+
+    # (5) optionally, the live filesystem against the package records --
+    # the deep, slow check a person runs when they suspect the disk.
+    if [ "$HASH_FILES" = yes ]; then
+        n=0; bad=0
+        while IFS="$(printf '\t')" read -r tag sha size path pkg; do
+            [ "$tag" = F ] || continue
+            f=$ROOT/$path
+            [ -f "$f" ] || continue
+            n=$((n + 1))
+            got=$(sha256sum "$f" | cut -d' ' -f1)
+            if [ "$got" != "$sha" ]; then
+                echo "  FILE FAIL  $path (package $pkg) does not match its record"
+                bad=$((bad + 1))
+            fi
+        done < "$PKG"
+        echo "  files re-hashed under $ROOT: $n checked, $bad mismatched"
+        edges=$((edges + n)); fails=$((fails + bad))
+    fi
+
+    if [ "$fails" -eq 0 ]; then
+        echo "VERON-TRACE-OK  $edges edge(s), every one agreed"
+        exit 0
+    fi
+    echo "VERON-TRACE-FAIL  $fails of $edges edge(s) disagreed"
+    exit 1
+fi
+
+# =========================================================================
+if [ "$MODE" = forward ]; then
+    [ -n "$TARGET" ] || { echo "veron-trace: --forward needs a package name" >&2; exit 2; }
+    # The post-CVE question: what is downstream of this package. The reverse
+    # dependency closure over D lines, then the file count of the closure.
+    awk -F'\t' -v t="$TARGET" '
+        $1 == "D" { rdep[$3] = rdep[$3] " " $2 }
+        $1 == "P" { pkg[$2] = 1 }
+        $1 == "F" { nf[$5]++ }
+        END {
+            if (!(t in pkg)) { printf "%s: no package record\n", t; exit 1 }
+            queue[1] = t; head = 1; tail = 1; seen[t] = 1
+            while (head <= tail) {
+                cur = queue[head++]
+                split(rdep[cur], deps, " ")
+                for (i in deps) if (deps[i] != "" && !(deps[i] in seen)) {
+                    seen[deps[i]] = 1; queue[++tail] = deps[i]
+                }
+            }
+            files = 0
+            for (p in seen) files += nf[p]
+            printf "%d package(s) depend on %s (transitively), %d recorded file(s) descend from it:\n", tail - 1, t, files
+            for (i = 2; i <= tail; i++) printf "  %s\n", queue[i]
+        }' "$PKG"
+    exit $?
+fi
+
+# ========================================================================= 
+# trace <path>
+[ -n "$TARGET" ] || { echo "veron-trace: nothing to trace (try --help)" >&2; exit 2; }
+REL=${TARGET#/}
+
+# F lines carry the path in field 4 (F sha size path pkg); L lines in
+# field 3 (L target path pkg). One predicate per shape, or a file is
+# reported unrecorded because its SIZE failed to equal its PATH.
+lookup() { awk -F'\t' -v p="$1" \
+    '($1=="F" && $4==p) || ($1=="L" && $3==p) { print; exit }' "$PKG"; }
+line=$(lookup "$REL")
+if [ -z "$line" ]; then
+    # /usr-merge shapes: /bin is a symlink into usr/bin on this image, so a
+    # path typed the short way is retried the long way before giving up.
+    case "$REL" in usr/*) ;; *) REL=usr/$REL; line=$(lookup "$REL") ;;
+    esac
+fi
+[ -n "$line" ] || {
+    echo "$TARGET: not in any package record."
+    echo "  Files the workflow writes directly (/etc/veron-release) and"
+    echo "  files created at runtime have no package; everything a recipe"
+    echo "  installed does. The image-wide list is files.tsv, published"
+    echo "  beside the image."
+    exit 1
+}
+
+tag=$(printf '%s' "$line" | cut -f1)
+if [ "$tag" = L ]; then
+    tgt=$(printf '%s' "$line" | cut -f2)
+    pkgname=$(printf '%s' "$line" | cut -f4)
+    printf '%s   symlink -> %s   [package %s]\n' "$REL" "$tgt" "$pkgname"
+else
+    sha=$(printf '%s' "$line" | cut -f2)
+    size=$(printf '%s' "$line" | cut -f3)
+    pkgname=$(printf '%s' "$line" | cut -f5)
+    state="not checked (no such file under $ROOT)"
+    MISMATCH=0
+    if [ -f "$ROOT/$REL" ]; then
+        got=$(sha256sum "$ROOT/$REL" | cut -d' ' -f1)
+        if [ "$got" = "$sha" ]; then state="matches the bytes on disk"
+        else state="DOES NOT MATCH the bytes on disk"; MISMATCH=1; fi
+    fi
+    printf '%s   sha256 %.16s...  %s bytes   [%s]\n' "$REL" "$sha" "$size" "$state"
+fi
+
+awk -F'\t' -v p="$pkgname" '
+    $1 == "P" && $2 == p {
+        printf "\n  built by  %s %s   [stage 5]\n", $2, $3
+        printf "    source  sha256 %.16s...\n", $4
+        printf "    recipe  recipe-sha %.16s...\n", $5
+        printf "    license %s\n", $6
+    }
+    $1 == "D" && $2 == p { deps = deps " " $3 }
+    END { if (deps != "") printf "    deps   %s\n", deps }' "$PKG"
+
+echo ""
+echo "  built with  the stage-4 toolchain"
+s4=$(chain stage4 sysroot); k4=$(chain stage4 kernel)
+echo "    sysroot   ${s4:-unknown}   [4/latest-x86_64, digest-checked before use]"
+echo "    kernel    ${k4:-unknown}"
+echo "    interior  substage records pending -- one coarse edge"
+echo "              (gcc 15.2.0 <- gcc 10.2.0 <- gcc 4.7.4 <- tcc-amd64;"
+echo "               the received tcc digest is in stage4-PROVENANCE)"
+echo ""
+
+top=$(awk '$1=="stage3" && $2=="tcc-amd64" { print $3; exit }' "$CHAIN")
+walk_down "${top:-3/6/tcc-amd64}"
+rc=$?
+# THE EXIT CODE IS USABLE, NOT DECORATION: a traced file whose bytes do not
+# match its record is a finding, and a script calling this must be able to
+# see it without parsing prose.
+[ "${MISMATCH:-0}" -eq 0 ] || exit 1
+exit $rc

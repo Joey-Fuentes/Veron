@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""veron-trace-records -- assemble the flat record set veron-trace walks.
+
+BUILD-SIDE ONLY, AND THAT IS THE POINT OF ITS EXISTENCE AS A SEPARATE
+PROGRAM. The image ships no Python, so the on-device tracer is shell + awk
+reading one-fact-per-line TSVs (DESIGN.md section 6: "records must be
+readable without the tool"). The nested inputs -- substages*.toml,
+ledger/*.json, the seam PROVENANCE files -- are flattened HERE, once, by the
+build, so the device never needs a parser.
+
+WHAT IT WRITES into --out:
+
+  substages.tsv   stages 1-3, flattened. Tab-separated, first field a tag:
+                    S <id> <stage> <arch> <root> <output-sha256> <bytes>
+                    B <id> <builder-ref> <builder-sha256>
+                    I <id> <role> <sha256> <name>
+                  The B line is the falsifiable edge: its sha256 must equal
+                  the S line of the ref'd id, independently written by the
+                  stage that produced it. veron-trace --verify checks every
+                  one.
+
+  packages.tsv    stage 5, flattened from ledger/*.json:
+                    P <name> <version> <source-sha256> <recipe-sha256> <license>
+                    F <sha256> <size> <path> <package>
+                    L <target> <path> <package>
+                    D <package> <dep>
+
+  CHAIN           the seam facts, one per line: what stage 5 consumed from
+                  4/latest-x86_64 (sysroot, kernel, the digest of stage 4's
+                  own PROVENANCE), the tcc digest stage 4 received, and the
+                  committed stage-3 record it must agree with. The stage-5
+                  IMAGE digest is deliberately absent: these records ride
+                  inside that image, so the digest cannot (the IMAGE-SHA256
+                  self-reference, again).
+
+  stage4-PROVENANCE   the consumed stage-4 record, verbatim, because the
+                  coarse stage-4 interior edge is described there and hiding
+                  the primary text behind a summary would be backwards.
+
+Missing seam inputs (no dl-sysroot on a local run) write 'unknown' rather
+than failing: absence of a record is stated; only DISAGREEMENT between two
+present records is an error, and that judgement belongs to --verify.
+"""
+import argparse
+import glob
+import json
+import os
+import shutil
+import sys
+import tomllib
+
+
+def flatten_substages(repo, out):
+    tomls = sorted(glob.glob(os.path.join(repo, "stages", "*", "substages*.toml")))
+    lines = []
+    for t in tomls:
+        with open(t, "rb") as f:
+            doc = tomllib.load(f)
+        for s in doc.get("substage", []):
+            sid = s["id"]
+            outs = s.get("output", [])
+            osha = outs[0]["sha256"] if outs else "-"
+            obytes = str(outs[0].get("bytes", "-")) if outs else "-"
+            lines.append("\t".join(["S", sid, str(s.get("stage", "-")),
+                                    s.get("arch", "-"), s.get("root", "-"),
+                                    osha, obytes]))
+            for i in s.get("input", []):
+                role = i.get("role", "-")
+                if role == "builder":
+                    lines.append("\t".join(["B", sid, i.get("ref", "-"),
+                                            i.get("sha256", "-")]))
+                else:
+                    name = i.get("path") or i.get("name") or "-"
+                    lines.append("\t".join(["I", sid, role,
+                                            i.get("sha256", "-"), name]))
+    with open(os.path.join(out, "substages.tsv"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return len(lines)
+
+
+def flatten_ledger(ledger, out):
+    lines = []
+    for j in sorted(glob.glob(os.path.join(ledger, "*.json"))):
+        with open(j) as f:
+            rec = json.load(f)
+        name = rec["name"]
+        prov = rec.get("provenance", {})
+        inputs = rec.get("inputs", {})
+        lines.append("\t".join(["P", name, str(rec.get("version", "-")),
+                                str(prov.get("sha256", "-")),
+                                str(inputs.get("recipe_sha256", "-")),
+                                str(rec.get("license", "-"))]))
+        deps = inputs.get("deps", {})
+        seen = set()
+        for kind in ("runtime", "link", "build"):
+            for d in deps.get(kind, []):
+                if d not in seen:
+                    seen.add(d)
+                    lines.append("\t".join(["D", name, d]))
+        for fe in rec.get("files", []):
+            path = fe.get("path", "-")
+            if fe.get("kind") == "l":
+                lines.append("\t".join(["L", str(fe.get("value", "-")),
+                                        path, name]))
+            else:
+                lines.append("\t".join(["F", str(fe.get("value", "-")),
+                                        str(fe.get("size", "-")), path, name]))
+    with open(os.path.join(out, "packages.tsv"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    return len(lines)
+
+
+def seam_value(path, key):
+    """First 'key <value>' line of a PROVENANCE-shaped file, or None."""
+    try:
+        with open(path) as f:
+            for ln in f:
+                parts = ln.split()
+                if len(parts) >= 2 and parts[0] == key:
+                    return parts[1]
+    except OSError:
+        pass
+    return None
+
+
+def sha256_of(path):
+    import hashlib
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def committed_tcc(repo):
+    t = os.path.join(repo, "stages", "3-micro-c", "substages-amd64.toml")
+    try:
+        with open(t, "rb") as f:
+            doc = tomllib.load(f)
+        for s in doc.get("substage", []):
+            if s["id"] == "3/6/tcc-amd64":
+                return s["output"][0]["sha256"]
+    except (OSError, KeyError, IndexError):
+        pass
+    return None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--repo", required=True, help="repository root")
+    ap.add_argument("--ledger", required=True, help="stage-5 ledger dir")
+    ap.add_argument("--stage4-dir", default=None,
+                    help="dir holding the consumed 4/latest-x86_64 download "
+                         "(SYSROOT-SHA256, PROVENANCE); optional")
+    ap.add_argument("--commit", default=os.environ.get("GITHUB_SHA", "unknown"))
+    ap.add_argument("--run", default=os.environ.get("GITHUB_RUN_ID", "unknown"))
+    ap.add_argument("--out", required=True)
+    a = ap.parse_args()
+
+    os.makedirs(a.out, exist_ok=True)
+    ns = flatten_substages(a.repo, a.out)
+    np_ = flatten_ledger(a.ledger, a.out)
+
+    sysroot_sha = kernel_sha = prov_sha = reftcc = "unknown"
+    if a.stage4_dir:
+        s4p = os.path.join(a.stage4_dir, "PROVENANCE")
+        s4s = os.path.join(a.stage4_dir, "SYSROOT-SHA256")
+        try:
+            with open(s4s) as f:
+                sysroot_sha = f.read().split()[0]
+        except (OSError, IndexError):
+            pass
+        kernel_sha = seam_value(s4p, "kernel") or "unknown"
+        # ref-tcc rides inside stage 4's PROVENANCE (the embedded in/4
+        # record). Older releases predate the line; 'unknown' is the honest
+        # value and --verify treats it as absent rather than as wrong.
+        reftcc = seam_value(s4p, "ref-tcc") or "unknown"
+        prov_sha = sha256_of(s4p) or "unknown"
+        if os.path.exists(s4p):
+            shutil.copy(s4p, os.path.join(a.out, "stage4-PROVENANCE"))
+
+    tcc3 = committed_tcc(a.repo) or "unknown"
+    with open(os.path.join(a.out, "CHAIN"), "w") as f:
+        f.write("stage5 commit %s\n" % a.commit)
+        f.write("stage5 run %s\n" % a.run)
+        f.write("stage4 sysroot %s\n" % sysroot_sha)
+        f.write("stage4 kernel %s\n" % kernel_sha)
+        f.write("stage4 provenance %s\n" % prov_sha)
+        f.write("stage4 ref-tcc %s\n" % reftcc)
+        f.write("stage3 tcc-amd64 3/6/tcc-amd64 %s\n" % tcc3)
+
+    print("veron-trace-records: %d substage lines, %d package lines -> %s"
+          % (ns, np_, a.out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
