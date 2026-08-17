@@ -5,6 +5,7 @@
 #include <gcrypt.h>
 
 #include <stdio.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -54,8 +55,20 @@ int conf_get_pub(const char *key, char *out, size_t outlen)
     char path[1024];
     snprintf(path, sizeof path, "/persist/veron-auth/auth.conf");
     FILE *f = fopen(path, "r");
-    if (!f)
+    if (!f) {
+        /* THE FAILURE THAT HID FOR HOURS. fopen failing on EACCES and on
+         * ENOENT both returned 0 here, and the caller reports 0 as "no
+         * keyfile slots -- nothing enrolled" -- so a store the greeter
+         * COULD NOT READ looked identical to an EMPTY one. On machine #1
+         * (2026-08-17) the file was -rw------- veron:veron and the greeter
+         * (gid auth) got EACCES; every "nothing enrolled" message was a
+         * lie. errno distinguishes them; say which, once, so a permission
+         * problem never again masquerades as an enrolment problem. */
+        if (errno == EACCES)
+            fprintf(stderr, "veron-verify: %s: permission denied "
+                    "(the reader is not in the store's group)\n", path);
         return 0;
+    }
     char line[1024];
     size_t klen = strlen(key);
     int found = 0;

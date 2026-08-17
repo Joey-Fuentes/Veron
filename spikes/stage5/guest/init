@@ -370,7 +370,15 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
             # loaded later) and silently left the group `veron` -- the
             # exact symptom on machine #1. `.` separator + numeric both
             # sides is the form busybox chown always honors.
-            chown 1000.110 "$PERSIST/veron-auth"
+            # NUMERIC uid:gid. The initramfs /etc/group has no `auth`
+            # entry (that lives in the booted image's group file), so a
+            # NAME would not resolve here -- both sides must be raw
+            # numbers. If busybox chown still leaves the wrong group in
+            # this early context, veron-enroll re-asserts it in the booted
+            # system where getgrnam works; this is the best-effort first
+            # pass so a never-enrolled boot is still greeter-readable.
+            chown 1000:110 "$PERSIST/veron-auth" 2>/dev/null \
+                || chown 1000.110 "$PERSIST/veron-auth" 2>/dev/null
             chmod 2750 "$PERSIST/veron-auth"
             # PROVE IT, LOUDLY: a store the greeter cannot read is a
             # lockout, so the boot log states the resulting ownership.

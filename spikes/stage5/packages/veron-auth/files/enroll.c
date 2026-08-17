@@ -29,6 +29,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <pwd.h>
+#include <grp.h>
 #include <errno.h>
 
 static int mkconfdir(char *out, size_t n)
@@ -58,6 +59,20 @@ static int mkconfdir(char *out, size_t n)
                 out, strerror(errno));
         return 0;
     }
+    /* SET THE GROUP TO auth HERE, where it actually resolves. guest/init
+     * runs in the initramfs whose /etc/group has no `auth` entry, so its
+     * `chown 1000.110` left the store group `veron` and the greeter (gid
+     * 110) could not read it -- machine #1's lockout, fixed by hand with
+     * `chgrp -R auth` and now done at the authoritative place: enrol runs
+     * as veron in the booted system where getgrnam("auth") works. Every
+     * enrol re-asserts it, so a store that drifted is repaired by use.
+     * setgid 2750 then carries the group to every file written inside. */
+    struct group *ag = getgrnam("auth");
+    gid_t agid = ag ? ag->gr_gid : 110;
+    if (chown(out, (uid_t)-1, agid) < 0)
+        fprintf(stderr, "veron-enroll: warning: cannot set %s group to auth: %s\n",
+                out, strerror(errno));
+    chmod(out, 02750);
     return 1;
 }
 
