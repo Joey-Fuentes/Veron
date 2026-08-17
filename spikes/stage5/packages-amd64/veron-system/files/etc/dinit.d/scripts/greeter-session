@@ -8,4 +8,8 @@ export PATH=/usr/bin:/usr/sbin:/bin:/sbin
 export XDG_RUNTIME_DIR=/run/greeter/run
 export HOME=/var/lib/greeter
 cd /
-exec /usr/bin/labwc -C /etc/xdg/labwc-greeter
+# THE CRASH NOTE LANDS WHERE veron CAN READ IT. The service's console
+# logfile is root-owned; signal 6 taught us a greeter's last words are
+# diagnosis (machine #1, 2026-08-16). The gate makes /run/greeter
+# world-listable; this file is the greeter's own.
+exec /usr/bin/labwc -C /etc/xdg/labwc-greeter 2>/run/greeter/labwc.log

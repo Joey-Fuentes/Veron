@@ -34,6 +34,7 @@ while :; do
     /bin/busybox rm -rf /run/greeter
     /bin/busybox mkdir -p /run/greeter/run
     /bin/busybox chown -R greeter:greeter /run/greeter
+    /bin/busybox chmod 755 /run/greeter
     /bin/busybox chmod 700 /run/greeter/run
 
     DINIT_SOCKET_PATH=/run/dinitctl /usr/bin/dinitctl start media \
