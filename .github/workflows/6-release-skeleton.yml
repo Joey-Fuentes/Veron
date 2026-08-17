@@ -1,0 +1,113 @@
+# 6-release -- SKELETON. The shape is real; the unbuilt steps say so and
+# exit loudly rather than pretending. Nothing publishes until dry_run is
+# turned off ON PURPOSE, which will not happen until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
+
+name: 6-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The arch list is data, not structure: adding an arch is one word
+      # here once its stage-5 exists. Today x86_64 is the only populated
+      # input; the loop below simply finds nothing for the others and says
+      # so, which is the designed behavior, not a failure.
+      ARCHES: "x86_64 aarch64"
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p in
+          found=0
+          for arch in $ARCHES; do
+            if ! gh release download "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
+                 -D "in/5-$arch" --clobber 2>/dev/null; then
+              echo "  $arch: no 5/latest-$arch release -- arch skipped (stated, not silent)"
+              continue
+            fi
+            # THE IMAGE DIGEST IS CHECKED BEFORE ANYTHING CONSUMES IT --
+            # the same refusal discipline every stage seam already has.
+            ( cd "in/5-$arch" && sha256sum -c IMAGE-SHA256 )
+            # THE ATTESTATION IS CHECKED HERE TOO: stage 6 is the first
+            # consumer that exists to serve strangers, so it verifies what
+            # a stranger would verify, and refuses what they would refuse.
+            gh attestation verify "in/5-$arch/rootfs.img.tar.zst" \
+              -R "$GITHUB_REPOSITORY"
+            gh release download "4/kernel-$arch" -R "$GITHUB_REPOSITORY" \
+              -D "in/k-$arch" --clobber 2>/dev/null \
+              && ( cd "in/k-$arch" \
+                   && grep vmlinuz-generic KERNEL-GENERIC-SHA256 | sha256sum -c - ) \
+              || echo "  $arch: no 4/kernel-$arch -- generic kernel absent for this arch"
+            found=$((found + 1))
+          done
+          [ "$found" -gt 0 ] || { echo "no arch has a stage-5 release; nothing to do"; exit 1; }
+
+      - name: 'IMG -- the A/B GPT disk image (PLACEHOLDER)'
+        run: |
+          set -eu
+          echo "UNBUILT: assemble veron-<arch>-<sha7>.img per STAGE6-RELEASE.md §6:"
+          echo "  fixed GPT (ESP, root-A, root-B, persist; spec PARTUUIDs),"
+          echo "  slot A from rootfs + kernels/modules/firmware AT BUILD TIME"
+          echo "  (this absorbs the flash script's job and closes the census's"
+          echo "  'pinned at flash' caveat), EFI stub entries for both slots."
+          echo "This step exits 1 so a dry run cannot be mistaken for progress."
+          exit 1
+
+      - name: 'ISO -- hybrid live image, persistence optional (PLACEHOLDER)'
+        if: ${{ always() && false }}  # enabled when IMG exists
+        run: |
+          echo "UNBUILT: squashfs + overlay; fscrypt-on-ext4 .dat persistence"
+          exit 1
+
+      - name: 'BOOT GATE -- every image boots under qemu before it may publish (PLACEHOLDER)'
+        if: ${{ always() && false }}
+        run: |
+          echo "UNBUILT: boot each built image; a consumer artifact that was"
+          echo "never booted is not consumer-grade."
+          exit 1
+
+      - name: 'SITE -- regenerate the whole storefront (PLACEHOLDER)'
+        if: ${{ always() && false }}
+        run: |
+          echo "UNBUILT: index.json (the update endpoint), download cards,"
+          echo "SHA256SUMS, verification instructions, licenses incl. per-"
+          echo "firmware-blob, the Secure Boot statement, the update model."
+          exit 1
+
+      - name: 'PUBLISH -- immutable release/<commit7> + moving latest + Pages'
+        if: ${{ always() && false }}  # AND dry_run must be off; both gates real
+        run: |
+          echo "UNBUILT: tag release/$(git rev-parse --short=7 HEAD); assets"
+          echo "named veron-<arch>-<sha7>.*; attest everything published;"
+          echo "deploy Pages. Guarded by DRY_RUN until the whole ladder above"
+          echo "is real."
+          exit 1
