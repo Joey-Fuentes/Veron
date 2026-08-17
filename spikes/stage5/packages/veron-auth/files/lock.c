@@ -51,6 +51,7 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -545,6 +546,58 @@ static const struct wl_registry_listener reg_listener = {
     reg_global, reg_remove,
 };
 
+/* ---- the armed check --------------------------------------------------- */
+
+/* SUPER+L ON A MACHINE THAT NEVER ENROLLED USED TO BE A BRICK. rc.xml binds
+ * W-l straight to this binary, and veron_verify with no store returns 0 for
+ * every input BY DESIGN -- "an unconfigured store is a closed door, not an
+ * open one" is exactly right for the boot gate and exactly wrong here: the
+ * keybind took a lock that no factor in the world could open, and the only
+ * way back was the VT escape hatch. So before asking the compositor for a
+ * lock, ask whether anything could ever satisfy it.
+ *
+ * REFUSING CANNOT BE A BYPASS, AND THE REASON IS WORTH RECORDING: whoever
+ * presses Super+L is standing at an ALREADY-UNLOCKED session. Declining to
+ * lock grants nothing they do not have. The risk runs the other way -- an
+ * ARMED machine whose Super+L silently no-ops while the owner walks away
+ * believing it locked -- so every uncertain state must answer "armed":
+ *
+ *   /persist NOT MOUNTED. The store lives at /persist/veron-auth, so with
+ *   the mount absent, ENOENT belongs to the empty mountpoint and says
+ *   nothing about enrolment. st_dev against "/" is how a mount is detected
+ *   -- the same question, asked the same way, that veron_is_removable asks
+ *   of block devices: the kernel, not the mount table. Locks.
+ *
+ *   auth.conf UNREADABLE (EACCES and every other non-ENOENT errno). The
+ *   f117b448 lesson, applied in advance this time: a store this process
+ *   CANNOT READ must never be reported as a store that is EMPTY. Locks.
+ *
+ *   auth.conf PRESENT, whatever it contains. Only an enrolment that proved
+ *   a factor unwraps ever writes this file, so its existence is the armed
+ *   signal; parsing it here would just duplicate veron_verify badly. Locks.
+ *
+ * ONLY A STORE THAT PROVABLY NEVER EXISTED -- /persist mounted, auth.conf
+ * ENOENT -- refuses. That strictness is also what keeps the autostart gate
+ * safe: the gate only runs after grepping autologin=off OUT OF THIS SAME
+ * FILE, so on that path the file exists, this returns armed, and the
+ * refusal can never feed the gate's relaunch loop an open desktop. */
+static int lock_is_armed(void)
+{
+    struct stat root_st, persist_st;
+    if (stat("/", &root_st) != 0 || stat("/persist", &persist_st) != 0)
+        return 1;   /* cannot even ask -- fail toward locking */
+    if (root_st.st_dev == persist_st.st_dev)
+        return 1;   /* /persist is not a mount: ENOENT would be a lie */
+
+    errno = 0;
+    FILE *f = fopen("/persist/veron-auth/auth.conf", "r");
+    if (f) {
+        fclose(f);
+        return 1;
+    }
+    return errno != ENOENT;
+}
+
 /* ---- main ------------------------------------------------------------- */
 
 int main(int argc, char **argv)
@@ -554,6 +607,20 @@ int main(int argc, char **argv)
             printf("veron-lock 1.0\n");
             return 0;
         }
+
+    /* BEFORE THE DISPLAY, BEFORE GCRYPT, BEFORE ANYTHING: a refusal must
+     * leave no trace of a lock attempt, and the compositor must never see
+     * the request. Living inside the binary rather than inside rc.xml also
+     * covers veron-idle's path for free -- every road to a lock passes
+     * through here. Exit 3, distinct from 2 ("locked, never satisfied") and
+     * 0 ("a person unlocked"), so a supervisor can tell refusal from
+     * failure; the stderr line lands in the compositor's logfile, which is
+     * where a person wondering why W-l "did nothing" will look. */
+    if (!lock_is_armed()) {
+        fprintf(stderr, "veron-lock: nothing enrolled -- refusing to take a "
+                "lock no factor could open. Run veron-enroll first.\n");
+        return 3;
+    }
 
     /* INITIALIZE libgcrypt, WHICH THIS PROGRAM ALONE FORGOT. veron-login and
      * veron-enroll both do this before their first verify; veron-lock never
@@ -636,7 +703,10 @@ int main(int argc, char **argv)
      * crashed reported success and nothing supervising it could tell.
      * Observed on machine #1 (2026-08-16): armed reboot, no stick, the
      * face for a split second, then an open desktop and no process.
-     * The autostart's relock loop keys on exactly this distinction. */
+     * The autostart's relock loop keys on exactly this distinction.
+     * (3 is the third value and never reaches this line: an un-enrolled
+     * refusal returns before the display is opened, having locked
+     * nothing.) */
     return unlocking ? 0 : 2;
 }
 
@@ -646,7 +716,16 @@ int main(int argc, char **argv)
  * the compositor holds the session locked whether or not this process lives,
  * so a locker that cannot be satisfied is a desktop that cannot be reached.
  *
- * Three things follow, and all three are decisions rather than oversights:
+ * Four things follow, and all four are decisions rather than oversights:
+ *
+ *   AN UN-ENROLLED MACHINE IS NEVER LOCKED AT ALL. The one lock this program
+ *   can NEVER satisfy is one taken with nothing enrolled -- veron_verify
+ *   refuses every input against an absent store, correctly -- so that lock
+ *   is refused up front (lock_is_armed, exit 3) instead of taken and then
+ *   held forever. The refusal is deliberately narrow: only a mounted
+ *   /persist with no auth.conf at all. Everything uncertain -- the mount
+ *   missing, the store unreadable -- still locks, because a machine someone
+ *   ARMED must never silently decline to lock.
  *
  *   NO ATTEMPT LIMIT. A counter that eventually refuses every input turns a
  *   forgotten factor into a lost session with no way back short of a reboot.

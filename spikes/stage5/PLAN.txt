@@ -493,7 +493,7 @@ package libffi 3.5.2
 package libudev-zero 1.0.3
   group        input
   license      ISC
-  recipe-sha   cae94f5d11f49122f094c439584c7310eba1693fccdacbc1b674e4c1ab93d1b1
+  recipe-sha   c855abe212085e3f2057f6a273c6f96a038bf0b1feb17eeed2c7937c88df3f38
 
   source
     url        https://github.com/illiliti/libudev-zero/archive/1.0.3/libudev-zero-1.0.3.tar.gz
@@ -521,6 +521,12 @@ package libudev-zero 1.0.3
          cwd  build/libudev-zero-1.0.3/libudev-zero-1.0.3
          env  DESTDIR=dest/libudev-zero
          argv ["make", "install", "PREFIX=/usr", "CC=gcc"]
+    [04] helper
+         cwd  build/libudev-zero-1.0.3/libudev-zero-1.0.3
+         argv ["mkdir", "-p", "dest/libudev-zero/usr/libexec"]
+    [05] helper
+         cwd  build/libudev-zero-1.0.3/libudev-zero-1.0.3
+         argv ["gcc", "-O2", "-o", "dest/libudev-zero/usr/libexec/udev-zero-helper", "contrib/helper.c"]
 
 ======================================================================
 package m4 1.4.21
@@ -4638,7 +4644,7 @@ package swaybg 1.2.2
 package veron-auth 1.0
   group        desktop
   license      BSD-2-Clause
-  recipe-sha   f3a545afa07bb78bc7a726920ed11ba4338e78dc7d24c620195641e5339665e5
+  recipe-sha   03e51d9b51361aee69e1cf66d33edd2c3f1730b6bdcd730db8ce9162b994e7c4
 
   source
     url        this repository
