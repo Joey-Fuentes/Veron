@@ -21,9 +21,13 @@ crosschecked_against = []
 [deps]
 build        = ["fltk"]
 link         = ["fltk"]
-# curl, zstd, busybox sha256sum are invoked at RUNTIME by path; recorded
-# here so `veron why` answers, without inventing a build-order edge.
-runtime      = ["curl", "zstd", "busybox", "veron-system"]
+# curl and zstd are invoked at RUNTIME by path; recorded so `veron why`
+# answers, without inventing a build-order edge. busybox is NOT here:
+# the selftest refused it -- "depends on 'busybox', which has no
+# recipe" -- because busybox comes from the stage-4 sysroot, not this
+# graph. Its use lives in [undeclarable] below, the section that exists
+# for exactly this shape of fact.
+runtime      = ["curl", "zstd", "veron-system"]
 optional_off = []
 
 [declared]
@@ -42,6 +46,7 @@ only when that is true."""
 
 [undeclarable]
 "program:fltk-config" = "Emits the compile and link flags for the fltk in this set; from the fltk package's own install."
+"program:sha256sum" = "The app's digest checks at runtime. busybox, from the stage-4 sysroot -- not a stage-5 recipe, which is why it cannot be a runtime edge (the selftest enforces this)."
 
 [[steps]]
 name = "build"

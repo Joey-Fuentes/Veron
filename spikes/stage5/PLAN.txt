@@ -160,10 +160,11 @@ between this file and the recipes fails the run.
   138. veron-about
   139. veron-edit
   140. veron-filechooser
-  141. veron-pinentry
-  142. wpewebkit
-  143. wpe-platform-veron
-  144. veron-browser
+  141. veron-flasher
+  142. veron-pinentry
+  143. wpewebkit
+  144. wpe-platform-veron
+  145. veron-browser
 
 ======================================================================
 package bzip2 1.0.8
@@ -843,7 +844,7 @@ package veron-fltk-style 1
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   65846e4de0d3a2e31ac681f6b1baae47dd228c7100062be16de0bf2bb12b7942
+  recipe-sha   282ed9bc2b6eafc79886ce8d21e639335207be26421b9e2f62ae3f006c0b15d5
 
   source
     url        this repository
@@ -4989,6 +4990,36 @@ package veron-filechooser 1
     [02] install
          cwd  build/veron-filechooser-1
          argv ["sh", "-c", "mkdir -p dest/veron-filechooser/usr/bin && cp veron-filechooser dest/veron-filechooser/usr/bin/veron-filechooser && chmod 0755 dest/veron-filechooser/usr/bin/veron-filechooser"]
+
+======================================================================
+package veron-flasher 0.1.0
+  group        system
+  license      MIT
+  recipe-sha   c8a949b132be0b25be1719982a845fa40c9be572faab1b2849e60b5183e73d44
+
+  source
+    url        this repository
+    sha256     n/a -- see [installs].digest, which pins every file
+    signature  n/a -- the provenance is the commit that carries these files
+    correspond none
+
+  deps
+    build        fltk
+    link         fltk
+    runtime      curl, veron-system, zstd
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] build
+         cwd  build/veron-flasher-0.1.0
+         SHELL (declared) why=ONE FILE, ONE BINARY. fltk-config is the toolkit's own statement of its
+flags -- hand-written -I/-l lists drift; the tool's answer cannot. The
+--version run at the end is the cheapest possible proof the binary
+executes at all before the guest test repeats it inside the image.
+         | set -eu
+         | mkdir -p "dest/veron-flasher/usr/bin"
+         | g++ -O2 -std=c++17 /packages/veron-flasher/files/main.cxx $(fltk-config --cxxflags) $(fltk-config --ldflags) -o "dest/veron-flasher/usr/bin/veron-flasher"
+         | "dest/veron-flasher/usr/bin/veron-flasher" --version
 
 ======================================================================
 package veron-pinentry 1.0
