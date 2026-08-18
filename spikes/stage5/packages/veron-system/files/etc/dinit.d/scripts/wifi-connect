@@ -158,7 +158,14 @@ case "$BLOCK" in *psk=*) : ;; *) die "Bad passphrase" ;; esac
 # THE PLAINTEXT LINE IS STRIPPED. wpa_passphrase emits the passphrase as a
 # comment beside the hash, which would put it in the file this exists to avoid
 # putting it in.
-printf 'ctrl_interface=DIR=/run/wpa_supplicant GROUP=veron\nupdate_config=1\n\n' > /etc/wpa_supplicant.conf
+# THE WRITE IS CHECKED, BECAUSE ITS SILENT FAILURE WAS THE WHOLE BUG.
+# On the first consumer flash this script could not write root's /etc
+# file, said nothing, and reconfigure reloaded an empty config -- which
+# surfaced as "wrong password?" against a correct password (2026-08-18).
+# A failure here now names the actual culprit.
+if ! printf 'ctrl_interface=DIR=/run/wpa_supplicant GROUP=veron\nupdate_config=1\n\n' > /etc/wpa_supplicant.conf 2>/dev/null; then
+    die "cannot write the network config -- is /persist mounted and group-writable?"
+fi
 echo "$BLOCK" | grep -v '^[[:space:]]*#psk=' >> /etc/wpa_supplicant.conf
 
 # reconfigure IS THE STEP THAT ACTUALLY JOINS THE NETWORK, and its failure was

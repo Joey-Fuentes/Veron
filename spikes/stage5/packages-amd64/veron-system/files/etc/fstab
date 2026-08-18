@@ -78,3 +78,12 @@ tmpfs           /tmp      tmpfs     nosuid,nodev          0 0
 # properties and only some hardware has the first. Which parts, exactly, is
 # research nobody has done here yet.
 LABEL=veron-firmware  /lib/firmware  ext4  ro,nosuid,nodev,nofail  0 0
+
+# THE PERSIST PARTITION, BY FILESYSTEM UUID. Fixed at image build time
+# (veron-mkimage: mke2fs -U ...00c1), which makes it the one stable name
+# that is true on every consumer disk ever written. It is the partition
+# no update touches -- user state lives here, starting with the wifi
+# config below in early-filesystems. nofail IS LOAD-BEARING twice over:
+# the qemu test layouts and the stage-5 laptop flash have no such
+# filesystem, and they must keep booting exactly as before this line.
+UUID=00000000-0000-4000-8000-0000000000c1  /persist  ext4  rw,noatime,nofail  0 0

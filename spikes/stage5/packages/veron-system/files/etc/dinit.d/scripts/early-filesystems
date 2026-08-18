@@ -114,6 +114,39 @@ while read -r src dst type opts rest; do
     fi
 done < /etc/fstab
 
+
+# NETWORK STATE LIVES ON /persist, WHEN THERE IS ONE. The wpa service's
+# own comment has promised "/etc/wpa_supplicant.conf is a symlink into
+# /persist" since the laptop era -- but the thing that made that symlink
+# was guest/init, which is the qemu harness and runs on no real boot.
+# The first consumer flash (2026-08-18) proved the gap: wifi-connect,
+# running unprivileged, could not write root's /etc file, failed
+# silently, and reloaded an empty config -- "scans, takes the password,
+# never connects". This block is the missing organ, and it lives here
+# because early-filesystems is already the service that runs as root
+# after the fstab mounts and before wpa.
+#
+# THE GROUP IS THE WHOLE MECHANISM. /persist/network is setgid-veron and
+# group-writable, so the unprivileged menu can create and rewrite the
+# config; the supplicant (root) reads it through the symlink. A config
+# left in /etc by an earlier rw-root boot is adopted, not orphaned.
+if /bin/busybox grep -q " /persist " /proc/mounts; then
+    /bin/busybox mkdir -p /persist/network
+    /bin/busybox chgrp veron /persist/network 2>/dev/null || true
+    /bin/busybox chmod 2775 /persist/network
+    if [ -f /etc/wpa_supplicant.conf ] && [ ! -L /etc/wpa_supplicant.conf ] \
+       && [ ! -e /persist/network/wpa_supplicant.conf ]; then
+        /bin/busybox cp /etc/wpa_supplicant.conf /persist/network/wpa_supplicant.conf
+        echo "early-filesystems: adopted the pre-persist wifi config"
+    fi
+    /bin/busybox ln -sfn /persist/network/wpa_supplicant.conf /etc/wpa_supplicant.conf
+    if [ -e /persist/network/wpa_supplicant.conf ]; then
+        /bin/busybox chgrp veron /persist/network/wpa_supplicant.conf 2>/dev/null || true
+        /bin/busybox chmod 0660 /persist/network/wpa_supplicant.conf 2>/dev/null || true
+    fi
+    echo "early-filesystems: /persist/network ready; the wifi config lives there"
+fi
+
 # THE HOSTNAME, BECAUSE /etc/hostname HAD NO READER EITHER.
 #
 # Measured on the booted system: /etc/hostname contains `veron` and

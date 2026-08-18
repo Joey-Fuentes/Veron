@@ -33,6 +33,14 @@ if [ ! -s "$CONF" ]; then
         echo "VERON-WIFI-NO-CONFIG  cannot write $CONF"
         exit 0
     }
+
+# THE BOOTSTRAP CONFIG MUST BE GROUP-WRITABLE OR THE MENU IS DECORATIVE.
+# root creates this file; wifi-connect runs as veron and REWRITES it when
+# a person picks a network. Without these two lines the first consumer
+# flash failed exactly there: root:root 0644, the menu's write bounced
+# silently, and reconfigure reloaded emptiness (2026-08-18).
+/bin/busybox chgrp veron "$CONF" 2>/dev/null || true
+/bin/busybox chmod 0660 "$CONF" 2>/dev/null || true
 fi
 
 # GROUP=veron ON THE CONTROL INTERFACE, added to configs that predate it.
