@@ -427,6 +427,47 @@ jobs:
           done
           ls -la out/*.img*
 
+      - name: 'PUBLISH -- compress, size-gate, immutable tag, moving latest'
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # TWO STRUCTURAL REFUSALS BEFORE ANY BYTE UPLOADS: publishing
+          # requires the boot gate to have run, and no .NOBOOT artifact
+          # may ever reach a release -- the name exists so this line can
+          # read it.
+          [ "${{ inputs.boot_gate }}" = "true" ] \
+            || { echo "publish without boot_gate is not a thing"; exit 1; }
+          ! ls out/*.NOBOOT.img >/dev/null 2>&1 \
+            || { echo "a .NOBOOT artifact cannot be published"; exit 1; }
+          C7=${GITHUB_SHA::7}
+          : > out/SHA256SUMS
+          for img in out/*.img; do
+            [ -e "$img.zst" ] || zstd -19 -T0 -q "$img" -o "$img.zst"
+            size=$(stat -c %s "$img.zst")
+            # GITHUB'S CEILING IS 2 GiB PER ASSET; the gate fails BEFORE an
+            # upload half-succeeds, and says which escape hatch to take.
+            [ "$size" -lt 2147483648 ] || {
+              echo "$img.zst is $size bytes -- over the 2 GiB asset ceiling."
+              echo "Shrink slots or move to the chunked layout (spec 12)."
+              exit 1; }
+            ( cd out && sha256sum "$(basename "$img")" "$(basename "$img").zst" ) >> out/SHA256SUMS
+          done
+          cat out/SHA256SUMS
+          # IMMUTABLE FIRST: creating the tag a second time must FAIL --
+          # that failure is the append-only ruling enforcing itself.
+          gh release create "release/$C7" \
+            --title "Veron release/$C7" \
+            --notes "Consumer release at commit $GITHUB_SHA. Digests in SHA256SUMS; provenance on the repository's attestation page." \
+            out/*.img.zst out/SHA256SUMS
+          gh release delete "6/latest" --yes 2>/dev/null || true
+          git push --delete origin "6/latest" 2>/dev/null || true
+          gh release create "6/latest" \
+            --title "Veron -- latest consumer release" \
+            --notes "Moving pointer; the immutable record is release/$C7." \
+            out/*.img.zst out/SHA256SUMS
+
       - name: 'SITE -- regenerate the whole storefront'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -611,6 +652,23 @@ jobs:
           PY
           echo "VERON-CONSUMER-GATE-OK  every advertised click answers"
 
+      - name: 'INDEX -- the machine-readable manifest joins the release it describes'
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # SITE generates the manifest, so it cannot ride in PUBLISH's
+          # own upload any more (publish now runs first, so the consumer
+          # gate walks LIVE urls -- run 87030806805 walked this run's
+          # card before this run's release existed). It joins both tags
+          # here, after the gate has proven every advertised click.
+          C7=${GITHUB_SHA::7}
+          cp out/site/index.json out/index.json
+          gh release upload "release/$C7" out/index.json --clobber
+          gh release upload "6/latest" out/index.json --clobber
+          echo "index.json attached to release/$C7 and 6/latest"
+
       - name: 'PAGES -- deploy the storefront'
         if: ${{ inputs.publish_site }}
         uses: actions/configure-pages@v5
@@ -625,47 +683,6 @@ jobs:
         if: ${{ inputs.publish_site }}
         id: deployment
         uses: actions/deploy-pages@v4
-
-      - name: 'PUBLISH -- compress, size-gate, immutable tag, moving latest'
-        if: ${{ !inputs.dry_run }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -eu
-          # TWO STRUCTURAL REFUSALS BEFORE ANY BYTE UPLOADS: publishing
-          # requires the boot gate to have run, and no .NOBOOT artifact
-          # may ever reach a release -- the name exists so this line can
-          # read it.
-          [ "${{ inputs.boot_gate }}" = "true" ] \
-            || { echo "publish without boot_gate is not a thing"; exit 1; }
-          ! ls out/*.NOBOOT.img >/dev/null 2>&1 \
-            || { echo "a .NOBOOT artifact cannot be published"; exit 1; }
-          C7=${GITHUB_SHA::7}
-          : > out/SHA256SUMS
-          for img in out/*.img; do
-            [ -e "$img.zst" ] || zstd -19 -T0 -q "$img" -o "$img.zst"
-            size=$(stat -c %s "$img.zst")
-            # GITHUB'S CEILING IS 2 GiB PER ASSET; the gate fails BEFORE an
-            # upload half-succeeds, and says which escape hatch to take.
-            [ "$size" -lt 2147483648 ] || {
-              echo "$img.zst is $size bytes -- over the 2 GiB asset ceiling."
-              echo "Shrink slots or move to the chunked layout (spec 12)."
-              exit 1; }
-            ( cd out && sha256sum "$(basename "$img")" "$(basename "$img").zst" ) >> out/SHA256SUMS
-          done
-          cat out/SHA256SUMS
-          # IMMUTABLE FIRST: creating the tag a second time must FAIL --
-          # that failure is the append-only ruling enforcing itself.
-          gh release create "release/$C7" \
-            --title "Veron release/$C7" \
-            --notes "Consumer release at commit $GITHUB_SHA. Digests in SHA256SUMS; provenance on the repository's attestation page." \
-            out/*.img.zst out/SHA256SUMS out/site/index.json
-          gh release delete "6/latest" --yes 2>/dev/null || true
-          git push --delete origin "6/latest" 2>/dev/null || true
-          gh release create "6/latest" \
-            --title "Veron -- latest consumer release" \
-            --notes "Moving pointer; the immutable record is release/$C7." \
-            out/*.img.zst out/SHA256SUMS out/site/index.json
 
       - name: 'ATTEST -- provenance for everything published'
         if: ${{ !inputs.dry_run }}
