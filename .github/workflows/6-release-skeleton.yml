@@ -413,11 +413,19 @@ jobs:
             SHA7=$(sha256sum "$raw" | cut -c1-7)
             if [ "${{ inputs.boot_gate }}" = "true" ]; then
               mv "$raw" "out/veron-$arch-$SHA7.img"
+              # COMPRESS HERE, NOT AT PUBLISH: the manifest gathers after
+              # this step, and the card must advertise the asset that will
+              # actually exist. The first card advertised the raw .img --
+              # an asset never uploaded -- and the external user's first
+              # click after the URL fix would have 404'd on it (caught in
+              # audit, 2026-08-18, minutes before that click).
+              zstd -19 -T0 -q "out/veron-$arch-$SHA7.img" \
+                -o "out/veron-$arch-$SHA7.img.zst"
             else
               mv "$raw" "out/veron-$arch-$SHA7.NOBOOT.img"
             fi
           done
-          ls -la out/*.img
+          ls -la out/*.img*
 
       - name: 'SITE -- regenerate the whole storefront'
         env:
@@ -449,9 +457,20 @@ jobs:
                   "release_tag": f"release/{commit[:7]}", "assets": [],
                   "kernels": {},
                   "attestation_url": "https://github.com/Joey-Fuentes/Veron/attestations"})
-              m["arches"][arch]["assets"].append({
-                  "name": os.path.basename(img), "sha256": sha(img),
-                  "size": os.path.getsize(img), "kind": "img"})
+              z = img + ".zst"
+              if os.path.exists(z):
+                  # the PUBLISHED asset is the .zst; the raw image's digest
+                  # rides along as inner_* -- it is what sha256sum proves
+                  # after decompression, and what the filename's 7 chars are
+                  m["arches"][arch]["assets"].append({
+                      "name": os.path.basename(z), "sha256": sha(z),
+                      "size": os.path.getsize(z), "kind": "img",
+                      "inner_name": os.path.basename(img),
+                      "inner_sha256": sha(img)})
+              else:
+                  m["arches"][arch]["assets"].append({
+                      "name": os.path.basename(img), "sha256": sha(img),
+                      "size": os.path.getsize(img), "kind": "img"})
 
           # developer section: exactly the inputs this run verified
           for arch in os.environ.get("ARCHES", "").split():
@@ -537,6 +556,61 @@ jobs:
           python3 spikes/stage6/tools/veron-site             --manifest out/manifest.json --out out/site
           ls -la out/site
 
+      - name: 'CONSUMER GATE -- the storefront click-path, walked by machine'
+        run: |
+          set -eu
+          # THE GATE THIS PROJECT WAS MISSING, added after release one
+          # shipped three consumer-path defects a first user found by
+          # hand (2026-08-18): placeholder URLs in the doc, %2F-encoded
+          # download paths GitHub 404s, and a card advertising an asset
+          # that was never uploaded. Every other gate tests what the
+          # build produced; this one tests what a stranger clicks. It
+          # walks the generated page exactly as a user would: every
+          # download href must answer HTTP 200 with a plausible size
+          # (nine bytes is a 404 page, and we have the receipt), and the
+          # flash block's own filename-resolution must derive the very
+          # asset the card advertises.
+          python3 - <<'PY'
+          import re, subprocess, sys
+          html = open("out/site/index.html").read()
+          hrefs = sorted(set(re.findall(
+              r'href="(https://github\.com/[^"]+/releases/download/[^"]+)"', html)))
+          if not hrefs:
+              print("  no download hrefs on the page -- empty-state site, nothing to walk")
+              sys.exit(0)
+          fail = 0
+          for u in hrefs:
+              if "%2F" in u.split("/releases/download/", 1)[1]:
+                  print(f"  FAIL  encoded slash in a download path: {u}")
+                  fail += 1; continue
+              r = subprocess.run(["curl", "-fsSIL", "-o", "/dev/null",
+                                  "-w", "%{http_code} %{size_download} %{url_effective}\n",
+                                  "--max-time", "30", u],
+                                 capture_output=True, text=True)
+              head = subprocess.run(["curl", "-fsSL", "--max-time", "60",
+                                     "-r", "0-0", "-o", "/dev/null",
+                                     "-w", "%{http_code}", u],
+                                    capture_output=True, text=True)
+              ok = head.returncode == 0 and head.stdout.strip() in ("200", "206")
+              print(("  ok    " if ok else "  FAIL  ") + u)
+              fail += 0 if ok else 1
+          # the flash block must resolve to the advertised asset
+          m = re.search(r"grep -o '([^']+)' SHA256SUMS", html)
+          card = re.search(r'>(veron-x86_64-[0-9a-f]{7}\.img\.zst)<', html)
+          if m and card:
+              sums_url = next((u for u in hrefs if u.endswith("SHA256SUMS")), None)
+              if sums_url:
+                  sums = subprocess.run(["curl", "-fsSL", "--max-time", "30", sums_url],
+                                        capture_output=True, text=True).stdout
+                  hit = re.findall(m.group(1).replace("[.]", "\\."), sums)
+                  ok = card.group(1) in hit
+                  print(("  ok    " if ok else "  FAIL  ")
+                        + f"flash block resolves to the card's asset ({card.group(1)})")
+                  fail += 0 if ok else 1
+          sys.exit(1 if fail else 0)
+          PY
+          echo "VERON-CONSUMER-GATE-OK  every advertised click answers"
+
       - name: 'PAGES -- deploy the storefront'
         if: ${{ inputs.publish_site }}
         uses: actions/configure-pages@v5
@@ -569,7 +643,7 @@ jobs:
           C7=${GITHUB_SHA::7}
           : > out/SHA256SUMS
           for img in out/*.img; do
-            zstd -19 -T0 -q "$img" -o "$img.zst"
+            [ -e "$img.zst" ] || zstd -19 -T0 -q "$img" -o "$img.zst"
             size=$(stat -c %s "$img.zst")
             # GITHUB'S CEILING IS 2 GiB PER ASSET; the gate fails BEFORE an
             # upload half-succeeds, and says which escape hatch to take.
