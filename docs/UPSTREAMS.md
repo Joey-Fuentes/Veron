@@ -25,7 +25,7 @@ truth).
 |---|---|---|---|---|
 | gcc (bootstrap) | 4.7.4, 4.8.5, 10.2.0 | chain-frozen | n/a | n/a by policy |
 | tcc | 0.9.28rc (git) | chain-frozen | n/a | n/a by policy |
-| linux kernel | 7.1.5 | track-stable | kernel.org releases.json (machine-readable; pick the branch deliberately) | |
+| linux kernel | 7.1.5 | track-stable | kernel.org releases.json -- VERIFIED 2026-08-18: publishes it for parsers by design, and guarantees a "stable"-marked entry always exists so parsers never break. The strongest convention in the set. | pin is on the CURRENT stable branch (7.1 left rc in ~June 2026). OPEN POLICY QUESTION, not a staleness: stable branch (7.1.x, fast) vs longterm (6.18/6.12/6.6, maintained into 2027-28) -- which channel a consumer OS tracks is a ruling to make, recorded here until made. |
 | musl | 1.2.5 | track-stable | musl.libc.org/releases.html (GitHub copies are stale mirrors) | **VERIFIED 2026-08-18: OUTDATED -- 1.2.6 released 2026-03-20** |
 | busybox | 1.36.1 | track-stable | busybox.net/downloads listing | |
 | gmp / mpfr / mpc | 6.3.0 / 4.2.2 / 1.3.1 | track-stable | GNU ftp listings | |
@@ -403,6 +403,17 @@ convention NOT YET characterised -- first verification of any member must record
    shapes, mirrors posing as homes). Date every entry.
 3. Only then may the watcher consume the source, using the recorded
    channel -- never a guessed one.
-First pass found: 1 current (zlib), 1 outdated (musl, stage-4 lane),
-2 lookalike traps, 1 signed version database covering seven pins
-(GnuPG's swdb.lst). 144 of 153 rows remain unwalked.
+Investigation log (nothing acted on -- this phase records only):
+- 2026-08-18: zlib CURRENT (1.3.2 is latest, released 2026-02-17).
+- 2026-08-18: musl OUTDATED (1.2.6 since 2026-03-20; stage-4 lane).
+  Recorded, not queued.
+- 2026-08-18: kernel convention VERIFIED (releases.json, parser-stable
+  by upstream design); pin on current stable branch; branch-choice
+  policy question opened above.
+- Traps caught so far: zlib-ng (lookalike project), runtimejs/musl-libc
+  (stale mirror posing as home). Every future row check must ask
+  "is this the project's own channel or a copy".
+- GnuPG's swdb.lst: a SIGNED version database covering seven pins at
+  once -- to be verified as that family's channel in a future pass.
+~140 of 153 rows remain unwalked. The watcher does not exist and will
+not be built until this file says the methods are solid.
