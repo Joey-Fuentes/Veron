@@ -374,7 +374,13 @@ jobs:
             grep -Eq "efi: EFI v|EFI stub" boot-serial.log \
               && echo "  ok    EFI handover from the fallback path confirmed" \
               || { echo "  FAIL  no EFI evidence"; fail=1; }
-            grep -q "Command line:.*root=PARTUUID=aaaa0002" boot-serial.log \
+            # -i, because the kernel has TWO cmdline echoes with different
+            # capitalisation -- core's "Kernel command line:" and x86
+            # setup's older capital-C "Command line:" -- and which appears
+            # varies by version. Run 87014621708 printed the baked line
+            # verbatim while the capital-C grep failed it: the witness was
+            # hunting the wrong duplicate.
+            grep -iq "command line:.*root=PARTUUID=aaaa0002" boot-serial.log \
               && echo "  ok    the BAKED cmdline named slot A" \
               || { echo "  FAIL  baked cmdline absent (kernel predates fragment v8?)"; fail=1; }
             grep -Eq "EXT4-fs \(.*\): mounted|VFS: Mounted root" boot-serial.log \
