@@ -1,0 +1,74 @@
+name    = "veron-flasher"
+version = "0.1.0"
+group   = "system"
+license = "MIT"
+srcdir  = "."
+
+# THE SECOND PACKAGE WHOSE UPSTREAM IS US, and the first that compiles.
+# A GUI for the one consumer act the website cannot do for you: putting
+# the release onto a stick and PROVING it landed. Grown from the day a
+# dd reported complete success while a stick held a chimera of two
+# releases (2026-08-18) -- the read-back is the point, the GUI is manners.
+
+[source]
+kind      = "local"
+path      = "packages/veron-flasher/files"
+url       = "this repository"
+sha256    = "n/a -- see [installs].digest, which pins every file"
+signature = "n/a -- the provenance is the commit that carries these files"
+crosschecked_against = []
+
+[deps]
+build        = ["fltk"]
+link         = ["fltk"]
+# curl, zstd, busybox sha256sum are invoked at RUNTIME by path; recorded
+# here so `veron why` answers, without inventing a build-order edge.
+runtime      = ["curl", "zstd", "busybox", "veron-system"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "compiles against fltk; --version exercised in the guest"
+packaged_as     = []
+deferral        = """
+THE PRIVILEGED HALF LIVES IN veron-system (veron-flashd): this binary
+holds no root and never will -- it writes requests to a group-writable
+FIFO and renders the service's status file. ATTESTATION CHECKING IS v1
+AND SAYS SO IN ITS OWN UI TEXT: presence of an attestation for the
+exact digest at this repository, via GitHub's public API -- subject and
+identity, not the certificate chain. v2 is real Sigstore verification
+against a trust root pinned into the image; the checkbox label changes
+only when that is true."""
+
+[undeclarable]
+"program:fltk-config" = "Emits the compile and link flags for the fltk in this set; from the fltk package's own install."
+
+[[steps]]
+name = "build"
+cwd  = "$B"
+shell = """
+set -eu
+mkdir -p "$D/usr/bin"
+g++ -O2 -std=c++17 /packages/veron-flasher/files/main.cxx \
+    $(fltk-config --cxxflags) $(fltk-config --ldflags) \
+    -o "$D/usr/bin/veron-flasher"
+"$D/usr/bin/veron-flasher" --version
+"""
+why = """
+ONE FILE, ONE BINARY. fltk-config is the toolkit's own statement of its
+flags -- hand-written -I/-l lists drift; the tool's answer cannot. The
+--version run at the end is the cheapest possible proof the binary
+executes at all before the guest test repeats it inside the image."""
+
+[installs]
+prefixes = ["usr/bin"]
+files    = 1
+digest   = ""
+# DIGEST INTENTIONALLY EMPTY UNTIL THE FIRST BUILD: step 13's listing
+# gate states the real one; paste it here from that run. Guessing a
+# digest would be writing fiction into the one field that exists to
+# refuse fiction.
+
+[guest]
+test   = [["/usr/bin/veron-flasher", "--version"]]
+expect = ["veron-flasher 0.1.0"]
