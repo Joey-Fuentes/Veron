@@ -328,6 +328,32 @@ GitHub Pages, regenerated in full on every stage-6 run:
 - **v1 (stage 6 launch):** `veron-update` does whole-image A/B as in §6 --
   automated, verified, one action from the About window, rollback by
   firmware. Complete consumer story, no asterisk.
+- **Reboots and kexec (recorded 2026-08-18):** every update reboots BY
+  CONSTRUCTION -- the slot is the atomic unit, the running slot is
+  immutable-in-use, and no half-updated system ever executes; that is
+  the property bought. kexec (skip firmware, jump straight into the
+  next kernel) is a legal OPTIMIZATION for reboots of an
+  already-blessed slot and for plain restarts -- but NEVER the trial
+  boot of an update: the trial's fallback is firmware consuming
+  BootNext, and the failure path running no code is the one
+  non-negotiable. Fast where it is free; slow where slow IS the
+  safety. (CONFIG_KEXEC + a small syscall wrapper when wanted;
+  unscheduled.)
+  ASKED AND ANSWERED (2026-08-18): "can't we prove an update doesn't
+  touch the trial path and skip the firmware boot?" The proof is
+  computable here -- diff files.tsv between releases against the
+  boot-critical closure derived from the records -- and it still may
+  not authorize skipping, because a classifier that decides whether
+  fallback is needed IS code on the failure path, and its closure
+  under-approximates by exactly the undeclared edges (dlopen, early
+  config reads) that cause real bricks. The firmware trial costs POST
+  time, seconds; the misclassification costs a machine with no
+  fallback armed. The trade never closes. The analysis serves as
+  INFORMATION instead: veron-update computes the intersection and
+  states it -- "boot-critical files touched: ..." or "closure
+  untouched, userspace only" -- release-note honesty derived from
+  records, authorizing nothing.
+
 - **v2:** differential updates. files.tsv (path, kind, sha256, size, mode)
   was designed as the update contract -- two manifests diff into exactly
   the files to fetch, replace, re-mode, or delete; per-file blobs are
