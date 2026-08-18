@@ -211,13 +211,22 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: 'Airlock deps (tier 2 -- drives the build, touches no artifact byte)'
+        # FIVE MINUTES, RULED (Joe, 2026-08-18): this step measured 88
+        # seconds when healthy and then hung past 20 minutes twice in one
+        # day on stalled Ubuntu mirrors -- silently, because -qq truncated
+        # the very logs that would have named the mirror. -qq is gone from
+        # both apt lines for the same reason: logs are evidence and are
+        # never truncated here. A stall now names its mirror and the step
+        # kills itself with a clean retry signal instead of squatting on a
+        # six-hour runner slot.
+        timeout-minutes: 5
         run: |
           set -eu
-          sudo apt-get update -qq
+          sudo apt-get update
           # qemu-system-x86, NOT qemu-system-arm. Same package set otherwise:
           # bubblewrap is the sandbox and e2fsprogs supplies mke2fs and
           # debugfs, neither of which is architecture-specific.
-          sudo apt-get install -y -qq bubblewrap qemu-system-x86 e2fsprogs
+          sudo apt-get install -y bubblewrap qemu-system-x86 e2fsprogs
           # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor and
           # bwrap then fails on loopback setup. hermetic-gcc10/15/16 and
           # float-probe already carry this; stage5-entry lost a run to its
