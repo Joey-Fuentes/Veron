@@ -92,6 +92,72 @@ usr/bin/foot   sha256 36acaaef…   <span class="ok">[matches the bytes on disk]
   <b>1/1/self-assembler</b>       e97e2969…   [aarch64]
   <span class="ok">ROOT REACHED</span>  1/1/self-assembler assembles itself"""
 
+def render_releases(m):
+    """upstream.html -- every GitHub release, one table, linked. The point
+    is that a stranger can survey the ENTIRE ladder -- 150+ releases of
+    stages, checkpoints and kernels -- without learning the GitHub UI:
+    tag, what it is, its assets, one click to the release itself where
+    the attestations and digests live."""
+    rows = []
+    for r in m.get("upstream_releases", []):
+        assets = ", ".join(html.escape(a) for a in r.get("assets", [])[:8])
+        more = len(r.get("assets", [])) - 8
+        if more > 0:
+            assets += f" … +{more}"
+        rows.append(f"""<tr><td class="mono"><a href="{html.escape(r['url'])}">{html.escape(r['tag'])}</a></td>
+<td>{html.escape(r.get('title',''))}</td><td class="mono dim">{assets}</td></tr>""")
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Veron — every release</title><style>{CSS}
+table{{width:100%;border-collapse:collapse;font-size:.86rem}}
+td,th{{padding:8px 10px;border-bottom:1px solid var(--rule);text-align:left;
+vertical-align:top}}th{{color:var(--amber);font-family:var(--mono)}}</style>
+</head><body><main>
+<h1>every release</h1>
+<p class="tag"><a href="index.html">← downloads</a> · the whole ladder as
+published: every stage, checkpoint and kernel, each with its digests and
+attestation on its release page.</p>
+<table><tr><th>tag</th><th>what it is</th><th>assets</th></tr>
+{"".join(rows)}</table>
+<footer>generated from commit {html.escape(m["commit"])}</footer>
+</main></body></html>"""
+
+def render_licenses(m):
+    lic = m.get("licenses", {})
+    pkgs = lic.get("packages", [])
+    by = {}
+    for p in pkgs:
+        by.setdefault(p["license"], []).append(f'{p["name"]} {p["version"]}')
+    groups = []
+    for name in sorted(by):
+        items = ", ".join(html.escape(x) for x in sorted(by[name]))
+        groups.append(f'<div class="card"><h3>{html.escape(name)}</h3>'
+                      f'<div class="meta">{items}</div></div>')
+    fw = lic.get("firmware")
+    fw_html = ("<p>Firmware blobs are pinned by digest in "
+               "<span class='mono'>sources/firmware.toml</span> and ship "
+               "INSIDE the image at <span class='mono'>usr/lib/firmware</span> "
+               "with their license files beside them. The per-blob listing "
+               "renders here once the image build absorbs them "
+               "(in progress; stated, not hidden).</p>"
+               if not fw else
+               "".join(f'<div class="card"><h3>{html.escape(f["name"])}</h3>'
+                       f'<div class="meta">{html.escape(f["license"])}</div></div>'
+                       for f in fw))
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Veron — licenses</title><style>{CSS}</style></head><body><main>
+<h1>licenses</h1>
+<p class="tag"><a href="index.html">← downloads</a> · every package's
+license, from the build records themselves; sources for everything are
+pinned in the repository and mirrored forever.</p>
+<h2>packages ({len(pkgs)})</h2>
+{"".join(groups)}
+<h2>firmware</h2>
+{fw_html}
+<footer>generated from commit {html.escape(m["commit"])}</footer>
+</main></body></html>"""
+
 def render(m):
     commit = m["commit"]
     parts = [f"""<!doctype html>
@@ -109,7 +175,18 @@ verifier is a shell script you can read on the machine it verifies.</p>
     parts.append('<h2>download</h2>')
     parts.append('<p class="req">x86_64 &nbsp;·&nbsp; UEFI only &nbsp;·&nbsp; '
                  'disable Secure Boot</p>')
-    for arch, rel in sorted(m["arches"].items()):
+    consumer = {a: r for a, r in m.get("arches", {}).items()
+                if any(x["kind"] in ("img", "iso") and not
+                       x["name"].endswith(".NOBOOT.img") for x in r["assets"])}
+    if not consumer:
+        # AN EMPTY DOWNLOAD SECTION IS A STATEMENT, NOT A GAP: consumer
+        # images publish only after they boot under the gate. Meanwhile
+        # the developer artifacts below are real, verified and attested.
+        parts.append('<div class="card"><h3>consumer images: not yet</h3>'
+            '<div class="meta">The bootable disk image and live ISO publish '
+            'here once they pass the boot gate. Everything the project has '
+            'shipped so far is below, verified and attested.</div></div>')
+    for arch, rel in sorted(consumer.items()):
         for a in rel["assets"]:
             if a["kind"] not in ("img", "iso"):
                 continue
@@ -128,6 +205,29 @@ verifier is a shell script you can read on the machine it verifies.</p>
                      f'· commit {html.escape(commit[:7])} · '
                      f'<a href="SHA256SUMS">SHA256SUMS</a> · '
                      f'<a href="index.json">index.json</a></p>')
+
+    # ---- developer downloads: the stage releases, fully linked --------
+    dev = m.get("developer", [])
+    if dev:
+        parts.append('<h2>developer downloads</h2>')
+        parts.append('<p>The stage artifacts the project itself builds '
+            'from: each release page carries every asset, its digests and '
+            'its Sigstore attestation. These are consumed with the '
+            'repository\'s own tooling, not written to a stick.</p>')
+        for d in dev:
+            assets = "".join(
+                f'<div class="sha">{html.escape(a["name"])}  ·  '
+                f'{human(a["size"])}  ·  sha256 {html.escape(a["sha256"])}</div>'
+                for a in d.get("assets", []) if a.get("sha256"))
+            parts.append(f"""<div class="card">
+<h3>{html.escape(d["tag"])}</h3>
+<div class="meta">{html.escape(d["desc"])}</div>
+{assets}
+<a class="btn quiet" href="{html.escape(d["url"])}">Release page</a>
+<a class="btn quiet" href="https://github.com/Joey-Fuentes/Veron/attestations">Attestations</a>
+</div>""")
+        parts.append('<p class="tag"><a href="upstream.html">every release '
+            'ever published →</a> · <a href="licenses.html">licenses →</a></p>')
 
     parts.append(f"""<h2>verify</h2>
 <p>Three checks, strongest last. The digest proves the bytes; the
@@ -183,6 +283,8 @@ def main():
     m = json.load(open(a.manifest))
     os.makedirs(a.out, exist_ok=True)
     open(os.path.join(a.out, "index.html"), "w").write(render(m))
+    open(os.path.join(a.out, "upstream.html"), "w").write(render_releases(m))
+    open(os.path.join(a.out, "licenses.html"), "w").write(render_licenses(m))
     json.dump(m, open(os.path.join(a.out, "index.json"), "w"), indent=1, sort_keys=True)
     with open(os.path.join(a.out, "SHA256SUMS"), "w") as f:
         for arch, rel in sorted(m["arches"].items()):

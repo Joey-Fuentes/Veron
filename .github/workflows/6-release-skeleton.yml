@@ -19,6 +19,10 @@ on:
         description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
         type: boolean
         default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -121,28 +125,110 @@ jobs:
           exit 1
 
       - name: 'SITE -- regenerate the whole storefront'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          # the manifest is assembled from what THIS run verified and
-          # built; the generator regenerates everything from it
+          # THE MANIFEST IS GATHERED, NOT GUESSED: consumer entries from
+          # what this run built; developer entries from the files IN
+          # digest- and attestation-verified; the upstream table from the
+          # release API; licenses from every recipe.toml in the tree.
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate             > out/releases-api.json
           python3 - <<'PY'
-          import glob, hashlib, json, os, subprocess
+          import glob, hashlib, json, os, re, tomllib
           commit = os.environ.get("GITHUB_SHA", "unknown")
-          m = {"commit": commit, "generated": os.environ.get("GITHUB_RUN_ID",""), "arches": {}}
-          for img in glob.glob("out/veron-*-*.img") + glob.glob("out/veron-*.NOBOOT.img"):
+          m = {"commit": commit, "generated": os.environ.get("GITHUB_RUN_ID", ""),
+               "arches": {}, "developer": [], "upstream_releases": [],
+               "licenses": {"packages": [], "firmware": None}}
+
+          def sha(p):
+              h = hashlib.sha256()
+              with open(p, "rb") as f:
+                  for c in iter(lambda: f.read(1 << 20), b""):
+                      h.update(c)
+              return h.hexdigest()
+
+          for img in glob.glob("out/veron-*.img"):
               arch = os.path.basename(img).split("-")[1]
-              h = hashlib.sha256(open(img, "rb").read()).hexdigest()
               m["arches"].setdefault(arch, {
-                  "release_tag": f"release/{commit[:7]}",
-                  "assets": [], "kernels": {},
+                  "release_tag": f"release/{commit[:7]}", "assets": [],
+                  "kernels": {},
                   "attestation_url": "https://github.com/Joey-Fuentes/Veron/attestations"})
               m["arches"][arch]["assets"].append({
-                  "name": os.path.basename(img), "sha256": h,
+                  "name": os.path.basename(img), "sha256": sha(img),
                   "size": os.path.getsize(img), "kind": "img"})
+
+          # developer section: exactly the inputs this run verified
+          for arch in os.environ.get("ARCHES", "").split():
+              five, kern = f"in/5-{arch}", f"in/k-{arch}"
+              if os.path.isdir(five):
+                  a = [{"name": n, "sha256": sha(os.path.join(five, n)),
+                        "size": os.path.getsize(os.path.join(five, n))}
+                       for n in ("rootfs.img.tar.zst", "PROVENANCE")
+                       if os.path.exists(os.path.join(five, n))]
+                  m["developer"].append({
+                      "tag": f"5/latest-{arch}",
+                      "url": f"https://github.com/Joey-Fuentes/Veron/releases/tag/5%2Flatest-{arch}",
+                      "desc": "stage 5: the user-space system image, its records and provenance -- digest- and attestation-verified by this very run",
+                      "assets": a})
+              if os.path.isdir(kern) and os.path.exists(f"{kern}/vmlinuz-generic"):
+                  m["developer"].append({
+                      "tag": f"4/kernel-{arch}",
+                      "url": f"https://github.com/Joey-Fuentes/Veron/releases/tag/4%2Fkernel-{arch}",
+                      "desc": "the generic kernel: broad drivers, pinned firmware, digest-verified by this run",
+                      "assets": [{"name": "vmlinuz-generic",
+                                  "sha256": sha(f"{kern}/vmlinuz-generic"),
+                                  "size": os.path.getsize(f"{kern}/vmlinuz-generic")}]})
+
+          # upstream: every release, via the API dump (paginated JSON arrays
+          # concatenated by gh -- normalize by regex split on ][)
+          raw = open("out/releases-api.json").read()
+          rels = []
+          for chunk in re.split(r"\]\s*\[", raw):
+              chunk = chunk.strip()
+              if not chunk.startswith("["):
+                  chunk = "[" + chunk
+              if not chunk.endswith("]"):
+                  chunk = chunk + "]"
+              rels.extend(json.loads(chunk))
+          for r in rels:
+              m["upstream_releases"].append({
+                  "tag": r["tag_name"], "title": r.get("name") or "",
+                  "url": r["html_url"],
+                  "assets": [a["name"] for a in r.get("assets", [])]})
+
+          # licenses: every recipe in the tree; the amd64 overlay wins
+          pkgs = {}
+          for base in ("spikes/stage5/packages", "spikes/stage5/packages-amd64"):
+              for rp in sorted(glob.glob(f"{base}/*/recipe.toml")):
+                  t = tomllib.load(open(rp, "rb"))
+                  name = os.path.basename(os.path.dirname(rp))
+                  pkgs[name] = {"name": name,
+                                "version": str(t.get("version", "")),
+                                "license": t.get("license", "unstated")}
+          m["licenses"]["packages"] = sorted(pkgs.values(), key=lambda p: p["name"])
           json.dump(m, open("out/manifest.json", "w"), indent=1)
+          print(f"manifest: {len(m['developer'])} developer release(s), "
+                f"{len(m['upstream_releases'])} upstream, "
+                f"{len(m['licenses']['packages'])} package licenses")
           PY
           python3 spikes/stage6/tools/veron-site             --manifest out/manifest.json --out out/site
           ls -la out/site
+
+      - name: 'PAGES -- deploy the storefront'
+        if: ${{ inputs.publish_site }}
+        uses: actions/configure-pages@v5
+
+      - name: 'PAGES -- upload the site'
+        if: ${{ inputs.publish_site }}
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: out/site
+
+      - name: 'PAGES -- go live'
+        if: ${{ inputs.publish_site }}
+        id: deployment
+        uses: actions/deploy-pages@v4
 
       - name: 'PUBLISH -- immutable release/<commit7> + moving latest + Pages'
         if: ${{ always() && false }}  # AND dry_run must be off; both gates real
