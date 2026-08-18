@@ -354,11 +354,23 @@ jobs:
             qemu-system-x86 ovmf >/dev/null
           for img in out/veron-x86_64.raw; do
             [ -e "$img" ] || continue
-            timeout 300 qemu-system-x86_64 \
-              -machine q35 -m 2048 -nographic -no-reboot -nic none \
-              -bios /usr/share/ovmf/OVMF.fd \
-              -drive format=raw,file="$img" \
-              -serial file:boot-serial.log >/dev/null 2>&1 || true
+            # TWO ATTACHMENTS, BECAUSE METAL TAUGHT US THEY DIFFER: the
+            # default drive is AHCI (a built-in driver), but a consumer's
+            # stick is USB mass storage -- a different driver spine that
+            # the first metal flash proved missing while this gate stayed
+            # green (2026-08-18). The image must boot BOTH ways.
+            for attach in ahci usb; do
+              if [ "$attach" = usb ]; then
+                DRIVE="-device qemu-xhci -device usb-storage,drive=d0 -drive if=none,id=d0,format=raw,file=$img"
+              else
+                DRIVE="-drive format=raw,file=$img"
+              fi
+              echo "=== boot attempt: $attach attachment ==="
+              timeout 300 qemu-system-x86_64 \
+                -machine q35 -m 2048 -nographic -no-reboot -nic none \
+                -bios /usr/share/ovmf/OVMF.fd \
+                $DRIVE \
+                -serial file:boot-serial.log >/dev/null 2>&1 || true
             echo "--- serial (tail) ---"; tail -60 boot-serial.log || true
             # THE ONE LINE THAT ADJUDICATES: the kernel's verbatim cmdline
             # echo. Run 87012288217 booted to a login prompt while the
@@ -390,8 +402,9 @@ jobs:
               && echo "  ok    the kernel handed the machine to dinit" \
               || { echo "  FAIL  init never ran"; fail=1; }
             [ "$fail" -eq 0 ] || exit 1
+            done
           done
-          echo "VERON-BOOT-GATE-OK  the consumer path boots to init"
+          echo "VERON-BOOT-GATE-OK  the consumer path boots to init, on both attachments"
 
       - name: 'EVIDENCE -- the boot serial, whole, always'
         if: ${{ always() && inputs.boot_gate }}

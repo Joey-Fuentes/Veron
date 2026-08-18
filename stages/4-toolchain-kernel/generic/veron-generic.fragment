@@ -237,5 +237,20 @@ CONFIG_DEVTMPFS_MOUNT=y
 # would discard what entries pass and is exactly the wrong tool; it stays
 # off, and REQUIRED-CONFIGS pins its absence.
 CONFIG_CMDLINE_BOOL=y
-CONFIG_CMDLINE="root=PARTUUID=aaaa0002-0000-4000-8000-564552304e02 rw init=/usr/bin/dinit console=tty0 console=ttyS0,115200 panic=30"
+CONFIG_CMDLINE="root=PARTUUID=aaaa0002-0000-4000-8000-564552304e02 rootwait rw init=/usr/bin/dinit console=tty0 console=ttyS0,115200 panic=30"
+
+# v9: THE USB-BOOT SPINE, BUILT IN -- learned on metal (first flash of
+# release/1f043fa, 2026-08-18 03:23): the HP took the fallback path, the
+# baked cmdline appeared verbatim in the VFS error, and the stick never
+# became a block device -- usb-storage and the SCSI disk layer were =m
+# with no initramfs to load them, so the kernel could SEE the stick
+# enumerate but could not BE a disk with it. The OVMF gate missed it
+# because qemu's default attachment is AHCI, a built-in: a different
+# spine than the one a consumer's stick walks. rootwait joins the baked
+# cmdline above because USB enumeration is asynchronous -- without it,
+# root-mount at ~0.9s races the probe even with everything built in.
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_USB_STORAGE=y
+CONFIG_USB_UAS=y
 # CONFIG_CMDLINE_OVERRIDE is not set
