@@ -23,6 +23,10 @@ on:
         description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
         type: boolean
         default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -325,8 +329,6 @@ jobs:
             VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw"
             sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw2" 2>/dev/null || true
             cmp "out/veron-$arch.raw" "out/veron-$arch.raw2"               && echo "  $arch image REPRODUCED (built twice, same bytes)"               || { echo "  $arch image NOT reproducible"; exit 1; }
-            SHA7=$(sha256sum "out/veron-$arch.raw" | cut -c1-7)
-            mv "out/veron-$arch.raw" "out/veron-$arch-$SHA7.NOBOOT.img"
             rm -f "out/veron-$arch.raw2"
           done
 
@@ -336,12 +338,62 @@ jobs:
           echo "UNBUILT: squashfs + overlay; fscrypt-on-ext4 .dat persistence"
           exit 1
 
-      - name: 'BOOT GATE -- every image boots under qemu before it may publish (PLACEHOLDER)'
-        if: ${{ always() && false }}
+      - name: 'BOOT GATE -- the image boots the way a consumer boots it'
+        id: bootgate
+        if: ${{ inputs.boot_gate }}
         run: |
-          echo "UNBUILT: boot each built image; a consumer artifact that was"
-          echo "never booted is not consumer-grade."
-          exit 1
+          set -eu
+          # THE SCENARIO UNDER TEST IS dd-AND-BOOT: firmware finds
+          # \EFI\BOOT\BOOTX64.EFI on the ESP with EMPTY LoadOptions --
+          # no NVRAM entries, no installer, nothing. Everything after that
+          # is the image's own doing: the stub runs, fragment v8's BAKED
+          # cmdline names slot A by PARTUUID, EFI_PARTITION parses the
+          # GPT, built-in ext4 mounts the slot, and the kernel execs
+          # /usr/bin/dinit. The serial log must show each link BY NAME.
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 ovmf >/dev/null
+          for img in out/veron-x86_64.raw; do
+            [ -e "$img" ] || continue
+            timeout 300 qemu-system-x86_64 \
+              -machine q35 -m 2048 -nographic -no-reboot -nic none \
+              -bios /usr/share/ovmf/OVMF.fd \
+              -drive format=raw,file="$img" \
+              -serial file:boot-serial.log >/dev/null 2>&1 || true
+            echo "--- serial (tail) ---"; tail -30 boot-serial.log || true
+            fail=0
+            grep -q "EFI stub" boot-serial.log \
+              && echo "  ok    stub ran from the fallback path" \
+              || { echo "  FAIL  no stub banner"; fail=1; }
+            grep -q "Command line:.*root=PARTUUID=aaaa0002" boot-serial.log \
+              && echo "  ok    the BAKED cmdline named slot A" \
+              || { echo "  FAIL  baked cmdline absent (kernel predates fragment v8?)"; fail=1; }
+            grep -Eq "EXT4-fs \(.*\): mounted|VFS: Mounted root" boot-serial.log \
+              && echo "  ok    slot A mounted by PARTUUID" \
+              || { echo "  FAIL  root never mounted"; fail=1; }
+            grep -q "as init process" boot-serial.log \
+              && echo "  ok    the kernel handed the machine to dinit" \
+              || { echo "  FAIL  init never ran"; fail=1; }
+            [ "$fail" -eq 0 ] || exit 1
+          done
+          echo "VERON-BOOT-GATE-OK  the consumer path boots to init"
+
+      - name: 'NAME -- the artifact says what was proven'
+        run: |
+          set -eu
+          # NOT AN EDITORIAL DECISION: the gate input decides the suffix,
+          # and a failed gate never reaches this step. .NOBOOT survives
+          # exactly as long as the boot proof is missing.
+          for raw in out/veron-*.raw; do
+            [ -e "$raw" ] || continue
+            arch=$(basename "$raw" .raw); arch=${arch#veron-}
+            SHA7=$(sha256sum "$raw" | cut -c1-7)
+            if [ "${{ inputs.boot_gate }}" = "true" ]; then
+              mv "$raw" "out/veron-$arch-$SHA7.img"
+            else
+              mv "$raw" "out/veron-$arch-$SHA7.NOBOOT.img"
+            fi
+          done
+          ls -la out/*.img
 
       - name: 'SITE -- regenerate the whole storefront'
         env:
@@ -455,6 +507,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
+          # TWO STRUCTURAL REFUSALS BEFORE ANY BYTE UPLOADS: publishing
+          # requires the boot gate to have run, and no .NOBOOT artifact
+          # may ever reach a release -- the name exists so this line can
+          # read it.
+          [ "${{ inputs.boot_gate }}" = "true" ] \
+            || { echo "publish without boot_gate is not a thing"; exit 1; }
+          ! ls out/*.NOBOOT.img >/dev/null 2>&1 \
+            || { echo "a .NOBOOT artifact cannot be published"; exit 1; }
           C7=${GITHUB_SHA::7}
           : > out/SHA256SUMS
           for img in out/*.img; do
