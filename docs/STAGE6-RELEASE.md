@@ -370,7 +370,41 @@ persist service is in development: wifi hardware is driven (firmware
 aboard) but no networks are remembered; changes made on the running
 system land in slot A on the stick.
 
-## 14. Order of work (progress noted in place)
+## 14. Upstream lifecycle (RULED 2026-08-18)
+
+THE MIRROR IS A CACHE FOR HEAD, NOT AN ARCHIVE. Every dependency's
+permanent record is its recipe's `url` + `sha256`: the pin makes
+location fungible -- an old commit rebuilds by fetching from the
+original upstream (or any copy anywhere; the digest proves the bytes
+no matter who served them). The src/* releases on this repository
+exist only so that CURRENT main builds fast and survives upstream
+outages. Therefore:
+
+- **Upload the new version when a pin is updated; delete the old
+  one only after proof.** Updating a recipe to a new upstream version
+  fetches the new tarball, records its sha256, and uploads it beside
+  the old copy. The old copy is deleted only after a release has been
+  BUILT, TESTED AND PUBLISHED on the new version -- never at update
+  time -- so the version actually being shipped always has its source
+  on the mirror.
+- **Retirement is derived, not remembered:** a cleanup tool walks the
+  union of pins on main HEAD -- every packages*/recipe.toml, firmware.toml,
+  and the stage-4 source set (gcc, binutils, musl, the kernel) --
+  and deletes src/* releases nothing references, pruning their
+  MIRRORS.tsv rows in the same commit. Dry-run first, always.
+- **Stated dependency:** historical rebuilds are as available as
+  upstreams are. That risk lives with the upstream and is softened
+  by content-addressing, not by hoarding copies here.
+
+The three tools, in build order: `upstream-watch` (weekly report:
+pinned vs latest across ALL pins including stage 4 -- pure read),
+`upstream-update <name> <version>` (edit the recipe, fetch, record
+the sha256, upload, regenerate plans; the plan diff is the review), `mirror-cleanup`
+(the derived retirement above: delete every src/* release that no
+recipe on main references, after a release has proven the new pins;
+--dry-run prints the deletion list without touching anything).
+
+## 15. Order of work (progress noted in place)
 
 1. This spec's constants: PARTUUIDs, ESP paths, entry names, index schema.
    [DONE -- constants live in tools/veron-mkimage and veron-efiboot]
