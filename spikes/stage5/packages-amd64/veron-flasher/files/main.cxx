@@ -153,7 +153,11 @@ static void cb_latest(Fl_Widget*, void*) {
                       + "/Downloads";
     mkdir(dir.c_str(), 0755);
     std::string sums = dir + "/SHA256SUMS";
-    if (run_logged("curl -fsS -o '" + sums + "' "
+    // -L IS LOAD-BEARING: GitHub release downloads 302-redirect to the
+    // CDN, and a curl without -L exits 0 having written the redirect
+    // stub -- which read as "SHA256SUMS names no image" on metal
+    // (2026-08-18). The refusal was correct; the fetch was not.
+    if (run_logged("curl -fsSL -o '" + sums + "' "
         "https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/SHA256SUMS")) {
         logln("FAILED to fetch SHA256SUMS -- is the network up?"); return;
     }

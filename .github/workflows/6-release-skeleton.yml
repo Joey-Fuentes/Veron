@@ -440,6 +440,87 @@ jobs:
           done
           ls -la out/*.img*
 
+      - name: 'EVIDENCE-CHAIN -- the attestations and build logs of everything this release is made from'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # RULED (Joe, 2026-08-18): a release that says "verify me" must
+          # CARRY its verification chain, not point at a page. The chain
+          # is already enumerated -- the records in the rootfs name every
+          # stage artifact's digest; each digest's attestation bundle is
+          # public API; each attestation names the run that made it; each
+          # run's logs are one more call. Digest -> attestation -> run ->
+          # logs, mechanically, back to self-assembly. This step bundles
+          # all of it beside the image it vouches for, because artifact
+          # retention expires and releases do not.
+          mkdir -p evidence/attestations evidence/logs
+          R=work/x86_64/rootfs
+          {
+            # certain digests: the verified inputs of this very run
+            for f in in/5-x86_64/*SHA256* in/k-x86_64/*SHA256*; do
+              [ -e "$f" ] && grep -hoE '[0-9a-f]{64}' "$f" || true
+            done
+            # the whole recorded chain: every 64-hex string in the records
+            if [ -d "$R" ]; then
+              find "$R/usr/share/veron" "$R/etc/veron" -maxdepth 3 -type f 2>/dev/null \
+                | while read -r rf; do grep -hoE '[0-9a-f]{64}' "$rf" 2>/dev/null || true; done
+            fi
+          } | sort -u > evidence/digests.txt
+          total=$(wc -l < evidence/digests.txt)
+          att=0
+          : > evidence/runs.txt
+          while read -r d; do
+            if gh api "repos/Joey-Fuentes/Veron/attestations/sha256:$d" \
+                 > "evidence/attestations/sha256-$d.json" 2>/dev/null \
+               && [ -s "evidence/attestations/sha256-$d.json" ] \
+               && grep -q '"attestations"' "evidence/attestations/sha256-$d.json"; then
+              att=$((att+1))
+              grep -oE 'actions/runs/[0-9]+' "evidence/attestations/sha256-$d.json" \
+                | grep -oE '[0-9]+' >> evidence/runs.txt || true
+            else
+              rm -f "evidence/attestations/sha256-$d.json"
+            fi
+          done < evidence/digests.txt
+          # the stage-5 run named by the system itself, even if its digest
+          # sweep missed it
+          [ -f "$R/etc/veron-release" ] && \
+            sed -n 's/^VERON_RUN_ID=//p' "$R/etc/veron-release" >> evidence/runs.txt
+          sort -u evidence/runs.txt > evidence/runs.uniq && mv evidence/runs.uniq evidence/runs.txt
+          logs=0
+          while read -r rid; do
+            [ -n "$rid" ] || continue
+            if gh api "repos/Joey-Fuentes/Veron/actions/runs/$rid/logs" \
+                 > "evidence/logs/run-$rid.zip" 2>/dev/null \
+               && [ -s "evidence/logs/run-$rid.zip" ]; then
+              logs=$((logs+1))
+            else
+              rm -f "evidence/logs/run-$rid.zip"
+              echo "run $rid: logs no longer retained by Actions" >> evidence/GAPS.txt
+            fi
+          done < evidence/runs.txt
+          {
+            echo "VERON EVIDENCE BUNDLE -- $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "digests swept: $total   attested: $att   run logs captured: $logs"
+            echo
+            echo "attestations/  Sigstore bundles from GitHub's attestation API,"
+            echo "               one per attested chain digest. Verifiable against"
+            echo "               the public Rekor log independently of this bundle."
+            echo "logs/          the complete Actions logs of every run named by"
+            echo "               those attestations -- the builds, gate output and"
+            echo "               all, preserved past artifact retention."
+            echo
+            echo "HONEST GAPS: this run's OWN logs cannot be captured from inside"
+            echo "itself; they attach to the NEXT release's bundle, and this run's"
+            echo "attestation (created after this step) links them meanwhile."
+            echo "Digests with no attestation are upstream source pins and other"
+            echo "non-artifact hashes -- expected, not missing."
+            [ -f evidence/GAPS.txt ] && { echo; cat evidence/GAPS.txt; }
+          } > evidence/MANIFEST.txt
+          tar -czf out/evidence.tar.gz -C evidence .
+          ls -la out/evidence.tar.gz
+          echo "VERON-EVIDENCE-CHAIN  $att attestation(s), $logs run log(s), bundled beside the release"
+
       - name: 'PUBLISH -- compress, size-gate, immutable tag, moving latest'
         if: ${{ !inputs.dry_run }}
         env:
@@ -473,13 +554,13 @@ jobs:
           gh release create "release/$C7" \
             --title "Veron release/$C7" \
             --notes "Consumer release at commit $GITHUB_SHA. Digests in SHA256SUMS; provenance on the repository's attestation page." \
-            out/*.img.zst out/SHA256SUMS
+            out/*.img.zst out/SHA256SUMS out/evidence.tar.gz
           gh release delete "6/latest" --yes 2>/dev/null || true
           git push --delete origin "6/latest" 2>/dev/null || true
           gh release create "6/latest" \
             --title "Veron -- latest consumer release" \
             --notes "Moving pointer; the immutable record is release/$C7." \
-            out/*.img.zst out/SHA256SUMS
+            out/*.img.zst out/SHA256SUMS out/evidence.tar.gz
 
       - name: 'SITE -- regenerate the whole storefront'
         env:

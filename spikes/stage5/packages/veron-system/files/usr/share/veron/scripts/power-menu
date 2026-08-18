@@ -53,8 +53,22 @@ choice=$(printf 'Cancel\nShut Down\nRestart\n' \
 # `/usr/sbin/shutdown -p` both work from foot. Either spelling would do now
 # that the path is absolute; this one names the action rather than relying on
 # argv[0].
+# THE REQUEST GOES TO powerd, BECAUSE THIS MENU IS NOT ROOT ANY MORE.
+# The comment above ("both flags were tested on the machine") was true
+# in the root-session era and stopped being true the day the session
+# dropped privilege: dinit's control socket is root's, and calling
+# shutdown from here died with `connect: No such file or directory`
+# (metal, 2026-08-18). The desktop asks; veron-powerd performs; the
+# splash repaints on the way down because the stop is CLEAN.
+req() {
+    if [ -p /run/veron-power/cmd ] && echo "$1" > /run/veron-power/cmd 2>/dev/null; then
+        exit 0
+    fi
+    fuzzel --dmenu --prompt "power service not running (dinitctl status veron-powerd)  " </dev/null >/dev/null 2>&1
+    exit 1
+}
 case "$choice" in
-    "Shut Down") exec /usr/sbin/shutdown -p ;;
-    "Restart")   exec /usr/sbin/shutdown -r ;;
+    "Shut Down") req poweroff ;;
+    "Restart")   req reboot ;;
     *)           exit 0 ;;
 esac

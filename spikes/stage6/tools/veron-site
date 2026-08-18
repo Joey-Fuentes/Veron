@@ -64,7 +64,7 @@ background:var(--amber);color:#141a1f;border:none;border-radius:4px;
 padding:8px 14px;margin:12px 8px 0 0;font-weight:600}
 .btn.quiet{background:transparent;color:var(--amber);
 border:1px solid var(--amber)}
-pre{font-family:var(--mono);font-size:.84rem;background:var(--panel);
+.prewrap{position:relative}.copybtn{position:absolute;top:8px;right:8px;background:#1d262c;color:#ffb000;border:1px solid #3a464e;border-radius:4px;padding:2px 10px;font:inherit;font-size:12px;cursor:pointer}.copybtn:hover{background:#2a353d}pre{font-family:var(--mono);font-size:.84rem;background:var(--panel);
 border:1px solid var(--rule);border-radius:6px;padding:16px 18px;
 overflow-x:auto;margin:12px 0}
 .req{font-family:var(--mono);font-size:.9rem;border-left:3px solid var(--amber);
@@ -120,7 +120,17 @@ attestation on its release page.</p>
 <table><tr><th>tag</th><th>what it is</th><th>assets</th></tr>
 {"".join(rows)}</table>
 <footer>generated from commit {html.escape(m["commit"])}</footer>
-</main></body></html>"""
+</main><script>
+document.querySelectorAll('pre').forEach(p=>{{
+  const w=document.createElement('div');w.className='prewrap';
+  p.parentNode.insertBefore(w,p);w.appendChild(p);
+  const b=document.createElement('button');b.className='copybtn';b.textContent='copy';
+  b.onclick=async()=>{{try{{await navigator.clipboard.writeText(p.innerText);
+    b.textContent='copied';setTimeout(()=>b.textContent='copy',1200);}}
+    catch(e){{b.textContent='select+ctrl-C';}}}};
+  w.appendChild(b);
+}});
+</script></body></html>"""
 
 def render_licenses(m):
     lic = m.get("licenses", {})
@@ -156,7 +166,17 @@ pinned in the repository and mirrored forever.</p>
 <h2>firmware</h2>
 {fw_html}
 <footer>generated from commit {html.escape(m["commit"])}</footer>
-</main></body></html>"""
+</main><script>
+document.querySelectorAll('pre').forEach(p=>{{
+  const w=document.createElement('div');w.className='prewrap';
+  p.parentNode.insertBefore(w,p);w.appendChild(p);
+  const b=document.createElement('button');b.className='copybtn';b.textContent='copy';
+  b.onclick=async()=>{{try{{await navigator.clipboard.writeText(p.innerText);
+    b.textContent='copied';setTimeout(()=>b.textContent='copy',1200);}}
+    catch(e){{b.textContent='select+ctrl-C';}}}};
+  w.appendChild(b);
+}});
+</script></body></html>"""
 
 def render(m):
     commit = m["commit"]
@@ -168,6 +188,11 @@ def render(m):
 <p class="tag">a Linux distribution built from source, from a seed —
 every byte traceable to 3,720 bytes of hand-written assembly.</p>
 <div class="ladder">{LADDER}</div>
+<p>Every release also carries its <span class="mono">evidence.tar.gz</span>:
+the Sigstore attestation of every stage artifact in its chain and the
+complete build logs of the runs those attestations name -- back to the
+self-assembler, preserved past any retention window, verifiable against
+the public Rekor log without trusting this site.</p>
 <p>That trace runs <em>on the installed system</em>, offline. Every file,
 every symlink, every build command, back to the root of trust — and the
 verifier is a shell script you can read on the machine it verifies.</p>
@@ -190,6 +215,8 @@ verifier is a shell script you can read on the machine it verifies.</p>
         for a in rel["assets"]:
             if a["kind"] not in ("img", "iso"):
                 continue
+            inner = (f'<br>sha256 {html.escape(a["inner_sha256"])} after zstd -d'
+                     if a.get("inner_sha256") else "")
             what = ("Disk image — write to a USB stick or drive; boots to a "
                     "complete system on the A/B layout. The automatic updater "
                     "and persistent-home service are in development — today, "
@@ -199,14 +226,14 @@ verifier is a shell script you can read on the machine it verifies.</p>
             parts.append(f"""<div class="card">
 <h3>{html.escape(a["name"])}</h3>
 <div class="meta">{html.escape(what)} · {human(a["size"])} · {html.escape(arch)}</div>
-<div class="sha">sha256 {html.escape(a["sha256"])}</div>
+<div class="sha">sha256 {html.escape(a["sha256"])}{inner}</div>
 <a class="btn" href="https://github.com/Joey-Fuentes/Veron/releases/download/{html.escape(rel["release_tag"])}/{html.escape(a["name"])}">Download</a>
 <a class="btn quiet" href="{html.escape(rel["attestation_url"])}">Attestation</a>
 </div>""")
         parts.append(f'<p class="tag">release {html.escape(rel["release_tag"])} '
                      f'· commit {html.escape(commit[:7])} · '
                      f'<a href="SHA256SUMS">SHA256SUMS</a> · '
-                     f'<a href="index.json">index.json</a></p>')
+                     f'<a href="index.json">index.json</a> &middot; <a href="https://github.com/Joey-Fuentes/Veron/releases/download/{html.escape(rel["release_tag"])}/evidence.tar.gz">evidence bundle</a></p>')
 
     # ---- developer downloads: the stage releases, fully linked --------
     dev = m.get("developer", [])
@@ -249,10 +276,24 @@ curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/SHA25
 IMG=$(grep -o 'veron-x86_64-[0-9a-f]*[.]img[.]zst' SHA256SUMS | head -1)
 curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/$IMG"
 sha256sum -c SHA256SUMS --ignore-missing   # must print: OK
-zstd -d "$IMG"
+zstd -d "$IMG" -o veron-latest.img
 
-lsblk    # plug the stick in; the device that APPEARS is the stick
-sudo dd if="${{IMG%.zst}}" of=/dev/sdX bs=4M conv=fsync status=progress</pre>
+# your stick's NAME is in this list (RM=1 means removable):
+lsblk -d -o NAME,MODEL,SIZE,RM | awk 'NR==1 || $NF==1'
+
+STICK=      # &lt;-- type the name from that list, e.g.  STICK=sda
+
+# every line below REFUSES unless STICK names a real removable disk --
+# pasted verbatim, this block writes nothing anywhere:
+: "${{STICK:?set STICK= to your device name first (see the list above)}}"
+[ -b "/dev/$STICK" ] || {{ echo "/dev/$STICK is not a block device"; false; }}
+[ "$(cat /sys/block/$STICK/removable 2>/dev/null)" = 1 ] \
+  || {{ echo "$STICK is not removable -- never an internal disk"; false; }}
+sudo umount /dev/${{STICK}}* 2>/dev/null
+sudo dd if=veron-latest.img of=/dev/$STICK bs=4M conv=fsync status=progress
+sudo umount /dev/${{STICK}}* 2>/dev/null   # desktops auto-mount; unmount before verifying
+sudo cmp -n $(stat -c %s veron-latest.img) veron-latest.img /dev/$STICK \
+  &amp;&amp; echo STICK-VERIFIED</pre>
 <p>The image is a whole-disk image: <span class="mono">of=</span> must be
 the stick — writing an internal drive erases that machine's OS. Then
 reboot, open the firmware boot menu (F9 on HP), pick the stick's UEFI
@@ -285,7 +326,17 @@ updating means writing the new image.</p>
 · <a href="https://github.com/Joey-Fuentes/Veron">source</a>
 · every artifact on this page is attested in the
 <a href="https://github.com/Joey-Fuentes/Veron/attestations">public log</a></footer>
-</main></body></html>""")
+</main><script>
+document.querySelectorAll('pre').forEach(p=>{{
+  const w=document.createElement('div');w.className='prewrap';
+  p.parentNode.insertBefore(w,p);w.appendChild(p);
+  const b=document.createElement('button');b.className='copybtn';b.textContent='copy';
+  b.onclick=async()=>{{try{{await navigator.clipboard.writeText(p.innerText);
+    b.textContent='copied';setTimeout(()=>b.textContent='copy',1200);}}
+    catch(e){{b.textContent='select+ctrl-C';}}}};
+  w.appendChild(b);
+}});
+</script></body></html>""")
     return "".join(parts)
 
 def main():

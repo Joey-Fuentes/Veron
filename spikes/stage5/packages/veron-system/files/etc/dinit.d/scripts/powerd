@@ -1,0 +1,30 @@
+#!/bin/busybox sh
+# veron-powerd -- the power boundary, second tenant of the pattern
+# flashd built (request -> validate -> apply). RULED (Joe, 2026-08-18):
+# shutdown and reboot MUST work from the session, completely and
+# properly. The session is unprivileged by the older ruling, and
+# dinit's control socket is root's -- so the desktop asks here, and
+# root does the one correct thing: dinit's OWN shutdown, which stops
+# services in reverse order (the splash repaints the wallpaper on the
+# way down -- the graceful exit the silent-boot ruling wants), unmounts,
+# syncs persist, and only then drops power.
+#
+# TWO VERBS, NOTHING ELSE. There is no argument parsing to get wrong
+# and no path for a request to become anything but these two acts.
+set -u
+DIR=/run/veron-power
+/bin/busybox mkdir -p "$DIR"
+[ -p "$DIR/cmd" ] || /bin/busybox mkfifo "$DIR/cmd"
+/bin/busybox chgrp veron "$DIR/cmd" 2>/dev/null || true
+/bin/busybox chmod 620 "$DIR/cmd"
+: > "$DIR/status"; /bin/busybox chmod 644 "$DIR/status"
+say() { echo "$@" >> "$DIR/status"; }
+say "veron-powerd: ready"
+while :; do
+  read -r verb < "$DIR/cmd" || { /bin/busybox sleep 1; continue; }
+  case "$verb" in
+    poweroff) say "poweroff requested -- stopping services cleanly"; exec /usr/sbin/shutdown -p ;;
+    reboot)   say "reboot requested -- stopping services cleanly";   exec /usr/sbin/shutdown -r ;;
+    *)        say "REFUSED: unknown verb '$verb'" ;;
+  esac
+done

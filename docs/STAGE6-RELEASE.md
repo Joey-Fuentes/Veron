@@ -418,31 +418,32 @@ encoded and died on first click, 2026-08-18. Tag PAGE links are the
 opposite; only there does %2F belong.)
 
 ```
-# 1. fetch the digest file, learn the image's name from it, fetch the image
 cd ~/Downloads
 curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/SHA256SUMS"
-IMG=$(grep -o 'veron-x86_64-[0-9a-f]*\.img\.zst' SHA256SUMS | head -1)
+IMG=$(grep -o 'veron-x86_64-[0-9a-f]*[.]img[.]zst' SHA256SUMS | head -1)
 curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/$IMG"
+sha256sum -c SHA256SUMS --ignore-missing   # must print: OK
+zstd -d "$IMG" -o veron-latest.img
 
-# 2. verify, then unpack. The filename's 7 hex chars are the first 7 of
-#    the image's own sha256 -- the name is a claim SHA256SUMS proves.
-#    The image download is ~1.5 GB: a transfer that finishes instantly
-#    fetched an error page, not an image.
-sha256sum -c SHA256SUMS --ignore-missing        # must print: OK
-zstd -d "$IMG"
+# your stick's NAME is in this list (RM=1 means removable):
+lsblk -d -o NAME,MODEL,SIZE,RM | awk 'NR==1 || $NF==1'
 
-# 3. find the stick: run lsblk BEFORE plugging it in, plug it in, run
-#    lsblk again -- the device that appeared is the stick (e.g. sda).
-#    THE IMAGE IS A WHOLE-DISK IMAGE. dd to an internal drive erases
-#    that machine's OS. Triple-check the device name.
-lsblk
+STICK=      # <-- type the name from that list, e.g.  STICK=sda
 
-# 4. flash -- whole device, no partition number, 8 GB stick or larger
-sudo umount /dev/sdX* 2>/dev/null
-sudo dd if="${IMG%.zst}" of=/dev/sdX bs=4M conv=fsync status=progress
-
-# 5. boot: leave the stick in, reboot, open the firmware's boot menu
-#    (F9 on HP), pick the stick's UEFI entry. Secure Boot must be off.
+# every line below REFUSES unless STICK names a real removable disk --
+# pasted verbatim, this block writes nothing anywhere. A literal
+# placeholder device once ate 3.8 GB of a reader's RAM as a devtmpfs
+# file named /dev/sdX (2026-08-18); a paste-block may never contain a
+# landmine, so the guard IS the block.
+: "${STICK:?set STICK= to your device name first (see the list above)}"
+[ -b "/dev/$STICK" ] || { echo "/dev/$STICK is not a block device"; false; }
+[ "$(cat /sys/block/$STICK/removable 2>/dev/null)" = 1 ] \
+  || { echo "$STICK is not removable -- never an internal disk"; false; }
+sudo umount /dev/${STICK}* 2>/dev/null
+sudo dd if=veron-latest.img of=/dev/$STICK bs=4M conv=fsync status=progress
+sudo umount /dev/${STICK}* 2>/dev/null   # desktops auto-mount; unmount before verifying
+sudo cmp -n $(stat -c %s veron-latest.img) veron-latest.img /dev/$STICK \
+  && echo STICK-VERIFIED
 ```
 
 Provenance check, optional, for anyone with the gh CLI:
