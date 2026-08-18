@@ -89,13 +89,20 @@ There is no version scheme and no timestamp anywhere in a name.
 ## 6. Images: true A/B, kernel included
 
 The consumer disk image and every installed system use one fixed GPT
-layout, sized from MEASUREMENT (run 86917062743: 1229 MB stripped
-system): ESP 512 MiB, slots 3 GiB each (>2x the measured rootfs, and the
-image build fails loudly if 1.5x the rootfs ever exceeds a slot), persist
-shipped at 256 MiB and GROWN TO FILL THE DISK by a first-boot service --
-it is deliberately the last partition so growth is an in-place GPT-extend
-plus resize2fs. Whole image under 7 GiB raw: the full A/B layout fits a
-cheap 8 GB stick.
+layout. SLOT SIZE, RULED (2026-08-18): exactly the staged world's need
+plus 100 MB, derived at build time -- no speculative growth budget.
+Recorded consequence: installed disks freeze their windows, so a release
+that outgrows an installed window is a reinstall event for those
+machines UNTIL the queued design item lands: a strategy for safely
+growing or shrinking the fixed container on installed disks (open;
+nothing in v1 depends on it). The updater refuses-before-writing
+anything larger than the installed window and zero-pads anything
+smaller, keeping partition bytes release-determined. ESP 512 MiB;
+persist ships at 256 MiB and grows to fill the disk at first boot
+(deliberately the last partition). At today's measured 2878388 KB the
+whole image is ~6.6 GiB raw -- back inside a cheap 8 GB stick -- and
+the publish gate enforces GitHub's 2 GiB asset ceiling on the
+compressed download.
 
 ```
 p1  ESP        FAT32     kernels for both slots, at fixed paths

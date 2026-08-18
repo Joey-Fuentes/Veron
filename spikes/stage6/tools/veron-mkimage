@@ -52,14 +52,18 @@ MB=1048576
 # so the grow-to-fill-the-disk service can extend it in place at first
 # boot; the shipped number is a floor, not a home.
 ESP_MB=${VERON_ESP_MB:-512}
-# ROOT_MB RAISED 3072 -> 4096 WHEN FIRMWARE MOVED INTO THE IMAGE. The
-# complete linux-firmware tree is the point of a generic kernel and the
-# redistribution-honest posture (WHENCE + every LICENCE.* ship beside the
-# blobs) -- zstd'd per file it adds ~300-400 MB to the ~1.9 GB tree, and
-# 1.5x that no longer fit a 3 GiB slot. Whole image lands ~9 GiB raw:
-# "fits any 16 GB stick" is the consumer line now; measurement beat the
-# 8 GB marketing, again.
-ROOT_MB=${VERON_ROOT_MB:-4096}
+# SLOT SIZE, RULED (Joe, 2026-08-18): exactly what the staged world
+# needs plus 100 MB, computed per build -- no speculative growth budget.
+# ROOT_MB is therefore DERIVED below once the staged tree is measured;
+# the env override exists for tests. THE RECORDED CONSEQUENCE: installed
+# disks freeze their slot windows, so a future release whose need
+# outgrows an installed window is a REINSTALL EVENT for those machines
+# until the queued design item lands -- a strategy for safely growing or
+# shrinking the fixed container on installed disks. Until then the
+# updater must refuse-before-writing anything larger than the installed
+# window, and zero-pad anything smaller so partition bytes stay fully
+# release-determined.
+ROOT_MB=${VERON_ROOT_MB:-}
 PERSIST_MB=${VERON_PERSIST_MB:-256}
 
 usage() { echo "usage: veron-mkimage --rootfs DIR --kernel FILE --out IMG [--modules-tar T] [--firmware-dir D]" >&2; exit 2; }
@@ -117,24 +121,16 @@ if [ -n "$FWDIR" ]; then
 fi
 ROOTFS="$STAGE"
 
-# THE SLOT MUST FIT THE STAGED WORLD -- measured AFTER modules and
-# firmware are absorbed, because the absorbed tree is what the slot
-# holds; the first placement of this guard measured the bare rootfs and
-# would have waved through an overweight image.
-# The slot size is the one constant that tracks a MEASURED quantity
-# release over release; when the system outgrows it, this line fails the
-# build loudly instead of someone re-guessing from memory -- which is
-# exactly how the first sizes in this file went wrong.
+# SIZE THE SLOT FROM THE STAGED WORLD: need + 100 MB, aligned up to
+# 4 MiB so the ext4 geometry stays tidy. Deterministic: same inputs,
+# same measurement, same size, same image bytes.
 rootfs_kb=$(du -sk "$ROOTFS" | cut -f1)
-need_kb=$((rootfs_kb * 3 / 2))
-slot_kb=$((ROOT_MB * 1024))
-if [ "$need_kb" -ge "$slot_kb" ]; then
-    echo "veron-mkimage: rootfs is ${rootfs_kb} KB; 1.5x = ${need_kb} KB" >&2
-    echo "  does not fit the ${slot_kb} KB slot. Raise VERON_ROOT_MB --" >&2
-    echo "  as a MEASURED decision, recorded next to the old one." >&2
-    exit 1
+if [ -z "$ROOT_MB" ]; then
+    ROOT_MB=$(( (rootfs_kb / 1024 + 100 + 3) / 4 * 4 ))
 fi
-echo "  rootfs ${rootfs_kb} KB; slot ${slot_kb} KB; headroom $(( (slot_kb - rootfs_kb) / 1024 )) MB"
+slot_kb=$((ROOT_MB * 1024))
+[ "$rootfs_kb" -lt "$slot_kb" ] || { echo "veron-mkimage: staged ${rootfs_kb} KB does not fit ${slot_kb} KB slot" >&2; exit 1; }
+echo "  staged ${rootfs_kb} KB; slot ${ROOT_MB} MiB (need + 100 MB, ruled 2026-08-18)"
 
 # ---- root-A: the system; root-B and persist: empty ext4, fixed identity.
 # SOURCE_DATE_EPOCH pins every timestamp mke2fs invents.
