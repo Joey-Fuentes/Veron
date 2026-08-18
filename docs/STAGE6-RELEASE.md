@@ -348,11 +348,34 @@ GitHub Pages, regenerated in full on every stage-6 run:
   under-approximates by exactly the undeclared edges (dlopen, early
   config reads) that cause real bricks. The firmware trial costs POST
   time, seconds; the misclassification costs a machine with no
-  fallback armed. The trade never closes. The analysis serves as
-  INFORMATION instead: veron-update computes the intersection and
-  states it -- "boot-critical files touched: ..." or "closure
-  untouched, userspace only" -- release-note honesty derived from
-  records, authorizing nothing.
+  fallback armed. The trade never closes. RULED OTHERWISE (Joe, 2026-08-18): the classifier ROUTES.
+  Closure-untouched updates take the FAST PATH -- kexec straight into
+  the new slot, no POST; closure-touched updates take the firmware
+  trial with BootNext and automatic fallback, a few more seconds,
+  stated as such. REFINED SAME DAY (Joe: "the failure mode definitely needs
+  to be recovers by itself"): manual power-cycle is NOT an acceptable
+  failure path, so the fast path carries a dead-man's switch. The
+  HARDWARE WATCHDOG is armed before the kexec and disarmed only by
+  the new slot's health service; the old slot is never un-defaulted
+  (bless has not run). Failure classes, all automatic, all landing on
+  firmware-default with no code after the reset: panic-class
+  (including init dying) -- the baked panic=30 already reboots into
+  firmware and the old slot; hard hang -- the watchdog counts to zero
+  in silicon and resets into the same; boots-but-unhealthy -- the
+  live health service reboots deliberately. A watchdog timeout is a
+  countdown in the chipset, not software: the no-code invariant
+  survives in full. THE GATE THIS FORCES: a machine with no working
+  watchdog has NO fast path -- it routes to the firmware trial
+  regardless of the closure, because self-recovery is a PRECONDITION,
+  not a hope. (Fragment v10: sp5100_tco for the AMD test hardware,
+  iTCO for Intel, loaded before arming.) The classifier is REQUIRED to be
+  conservative: kernel, ESP contents, dinit, libc, busybox, every
+  package reached from boot.d through recorded link edges, any NEW
+  package, any file-mode change in that set -- touched means firmware,
+  and doubt means firmware. The updater states which path it took and
+  why, from the records, every time. Needs: CONFIG_KEXEC(_FILE) in the
+  next kernel fragment revision, a small kexec-load wrapper, clean
+  session stop -- scheduled with veron-update v1.
 
 - **v2:** differential updates. files.tsv (path, kind, sha256, size, mode)
   was designed as the update contract -- two manifests diff into exactly
