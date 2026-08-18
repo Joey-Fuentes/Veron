@@ -360,6 +360,14 @@ jobs:
               -drive format=raw,file="$img" \
               -serial file:boot-serial.log >/dev/null 2>&1 || true
             echo "--- serial (tail) ---"; tail -60 boot-serial.log || true
+            # THE ONE LINE THAT ADJUDICATES: the kernel's verbatim cmdline
+            # echo. Run 87012288217 booted to a login prompt while the
+            # baked-cmdline grep failed -- witnesses contradicting each
+            # other, unreadable because only a 60-line tail of churning
+            # services survived. Never again: the line is printed by name,
+            # and the whole serial uploads below.
+            echo "--- the cmdline the kernel says it booted with ---"
+            grep -m1 "Kernel command line" boot-serial.log || echo "  (no cmdline echo found in serial at all)"
             fail=0
             # the x86 stub is silent on the happy path (run 87005224870);
             # the witness is the kernel's EFI runtime banner
@@ -378,6 +386,14 @@ jobs:
             [ "$fail" -eq 0 ] || exit 1
           done
           echo "VERON-BOOT-GATE-OK  the consumer path boots to init"
+
+      - name: 'EVIDENCE -- the boot serial, whole, always'
+        if: ${{ always() && inputs.boot_gate }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-serial
+          path: boot-serial.log
+          if-no-files-found: ignore
 
       - name: 'NAME -- the artifact says what was proven'
         run: |
