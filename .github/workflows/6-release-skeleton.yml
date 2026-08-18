@@ -102,8 +102,21 @@ jobs:
               if not src.get("sha256"):
                   print("SKIP\t%s\tunpinned -- stated, not silent" % src["name"])
                   continue
-              fname = src["url"].rsplit("/", 1)[-1]
-              print("FETCH\t%s\t%s\t%s\t%s" % (src["name"], src["sha256"], fname, src["url"]))
+              # Tarball pins carry a url and are named by it. GIT pins have
+              # url = "" -- their artifact is the tarball fetch-git.sh
+              # generated, named <name>-<version>.tar.gz, and the mirror
+              # row recorded at mint time is the route to it. The first
+              # version derived the name from the empty url and asked
+              # mirror.py to fetch a file called nothing (run of
+              # 2026-08-18 02:13Z).
+              if src.get("url"):
+                  fname, url = src["url"].rsplit("/", 1)[-1], src["url"]
+              elif src.get("git") and src.get("commit"):
+                  fname = "%s-%s.tar.gz" % (src["name"], src["version"])
+                  url = src["git"]
+              else:
+                  raise SystemExit("source %r has neither url nor git+commit" % src["name"])
+              print("FETCH\t%s\t%s\t%s\t%s" % (src["name"], src["sha256"], fname, url))
           PY
           cat fw-list.tsv
           mkdir -p fw-dl fwtree
