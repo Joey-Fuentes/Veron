@@ -29,9 +29,28 @@ role     = "regulatory.db -- without it Wi-Fi falls back to the world domain; th
 
 [[source]]
 name     = "intel-ucode"
-version  = "VERIFY-FIRST"      # check https://github.com/intel/Intel-Linux-Processor-Microcode-Data-Files/releases
-url      = ""                  # fill after checking: .../archive/refs/tags/microcode-YYYYMMDD.tar.gz
+version  = "20260812"
+# THE PIN IS THE COMMIT, NOT A FORGE TARBALL. Intel publishes only git
+# tags; GitHub's archive endpoint synthesises tarballs whose bytes are
+# not stable (their gzip change broke the whole ecosystem once), so
+# pinning that URL pins an artifact nobody controls. tools/fetch-git.sh
+# turns the commit into a tarball WE generate deterministically -- the
+# same doctrine dinit and libsfdo already follow. Commit read from the
+# tag page of microcode-20260812 (which also REMOVED MTL/06-aa-04/c0 for
+# functional issues -- the release after the release is the safe one).
+git      = "https://github.com/intel/Intel-Linux-Processor-Microcode-Data-Files"
+commit   = "927e65c8d5a6e4ec05cc74b1778283ab2284d0c1"
+url      = ""                  # no upstream tarball exists; see git+commit
 mirrors  = []
-sha256   = ""                  # MINT on first verified fetch
-license  = "Intel microcode license (redistributable)"
-role     = "early-cpio microcode for Intel machines; AMD microcode ships inside linux-firmware (amd-ucode/). NOT YET PINNED: the version was never verified against Intel's releases page -- do that before filling this in."
+# MINT ON FIRST GENERATION: run
+#   sh tools/fetch-git.sh 927e65c8d5a6e4ec05cc74b1778283ab2284d0c1 \
+#      intel-ucode-20260812 \
+#      https://github.com/intel/Intel-Linux-Processor-Microcode-Data-Files dl
+#   python3 tools/mirror.py add github dl/intel-ucode-20260812.tar.gz \
+#      --upstream https://github.com/intel/Intel-Linux-Processor-Microcode-Data-Files/releases/tag/microcode-20260812
+# then record the printed sha256 here; the FW step fetches by it.
+sha256   = "5939e539b710db2c538951caed63f93ca68179bf3bdd69c82307cc7383dbb553"
+# tar (uncompressed, compressor-independent): bef3dec3217137a16673159bbe3fc29cb70aa5c0ab27142a2347773af01615cc
+# -- if gzip settings ever drift, regenerate from the commit: the tar digest above must not move.
+license  = "Intel microcode license (redistributable; the `license` file ships in the tree)"
+role     = "OS-loadable microcode for Intel CPUs. EARLY loading (Intel's supported path) happens via a microcode-only cpio baked into the kernel at stage-4 build -- scheduled with the next kernel work; shipping the tree at usr/lib/firmware/intel-ucode is the prerequisite and harmless meanwhile. AMD microcode ships inside linux-firmware (amd-ucode/) and is already absorbed."

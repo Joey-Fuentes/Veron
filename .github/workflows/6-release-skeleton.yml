@@ -125,7 +125,7 @@ jobs:
                      date -u +"  done  %H:%M:%SZ"
                      echo "::endgroup::"
                      case "$name" in
-                       linux-firmware|wireless-regdb) : ;;
+                       linux-firmware|wireless-regdb|intel-ucode) : ;;
                        *) echo "  $name is pinned but has no handler here -- add one deliberately"; exit 1 ;;
                      esac ;;
             esac
@@ -154,9 +154,17 @@ jobs:
           [ "$(find fwstage -maxdepth 2 \( -name 'LICEN*' -o -name 'GPL*' \) | wc -l)" -gt 10 ] \
             || { echo "suspiciously few license files in the tree"; exit 1; }
           date -u +"  compress %H:%M:%SZ"
-          find fwstage -type f ! -name 'WHENCE*' ! -name 'LICEN*' ! -name 'GPL*' ! -name '*.txt' ! -path '*/LICENSES/*' -print0 \
+          find fwstage -type f ! -name 'WHENCE*' ! -name 'LICEN*' ! -name 'GPL*' ! -name '*.txt' ! -path '*/LICENSES/*' ! -path '*/intel-ucode/*' -print0 \
             | xargs -0 -n64 -P"$(nproc)" zstd -q -19 -T1 --rm
           cp -a fwstage/. fwtree/
+          if ls fw-dl/intel-ucode-*.tar.gz >/dev/null 2>&1; then
+            tar -xf fw-dl/intel-ucode-*.tar.gz -C fw-dl
+            # the plain family files and the license; NOT with-caveats --
+            # Intel gates those behind per-platform conditions this
+            # project has no way to honour, so they do not ship
+            cp -a fw-dl/intel-ucode-20*/intel-ucode fwtree/
+            cp fw-dl/intel-ucode-20*/license fwtree/LICENSE.intel-ucode
+          fi
           if ls fw-dl/wireless-regdb-*.tar.xz >/dev/null 2>&1; then
             tar -xf fw-dl/wireless-regdb-*.tar.xz -C fw-dl
             cp fw-dl/wireless-regdb-*/regulatory.db fw-dl/wireless-regdb-*/regulatory.db.p7s fwtree/
