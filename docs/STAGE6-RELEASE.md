@@ -95,7 +95,44 @@ Recorded consequence: installed disks freeze their windows, so a release
 that outgrows an installed window is a reinstall event for those
 machines UNTIL the queued design item lands: a strategy for safely
 growing or shrinking the fixed container on installed disks (open;
-nothing in v1 depends on it). The updater refuses-before-writing
+nothing in v1 depends on it). LEADING CANDIDATE (Joe, 2026-08-18,
+asked as "why can't the live USB go completely to RAM and back up
+persist too, to reflash itself"): a RAM-pivot maintenance mode -- a
+baked-cmdline boot variant whose wrapper init copies the system to
+tmpfs, pivots root, and execs dinit; the storage device is then idle,
+the never-write-the-boot-disk law stops applying BY SITUATION rather
+than by exception, and the whole disk can be rewritten with new
+geometry, persist restored from RAM into the new layout (grown to
+fill the disk while at it). Honest bounds: persist must FIT in RAM
+beside the system and workspace -- the tool measures and refuses when
+it does not, which makes it the migration path for the small-state
+era and honestly limited forever. Ordinary updates never need it:
+A/B writes the inactive slot and preserves persist by not touching
+it; RAM-pivot is for the rare geometry-changing release only. The
+wrapper init is THE SAME MECHANISM the ISO's live mode needs -- two
+roadmap items, one machine.
+THE FLAG CONTRACT (ruled 2026-08-18): there is no bootloader to put
+options in -- the vehicle is firmware LoadOptions, written as a
+one-shot BootNext entry by veron-efiboot (override-per-key precedence
+over the baked cmdline was proven under OVMF). Flags:
+  veron.maintenance=1                     enter the RAM-pivot mode
+  veron.persist=preserve                  DEFAULT: back persist up to
+                                          RAM and restore it into the
+                                          new layout; measured first,
+                                          REFUSED if it does not fit
+                                          beside the system and
+                                          workspace
+  veron.persist=discard                   explicit opt-out for a user
+                                          who backed up elsewhere or
+                                          wants factory-fresh: no
+                                          backup, new empty persist --
+                                          and therefore NO RAM bound
+                                          from persist at all, which is
+                                          what keeps migration possible
+                                          at every persist size
+discard destroys user data and joins the typed-consent club in the
+flasher UI; the wrapper init announces its mode loudly before acting
+either way. The updater refuses-before-writing
 anything larger than the installed window and zero-pads anything
 smaller, keeping partition bytes release-determined. ESP 128 MiB at 1 KiB FAT clusters, RULED 2026-08-18 (FAT32's 65,525-
 cluster floor scales with cluster size; 4 KiB clusters forced ~257 MiB
