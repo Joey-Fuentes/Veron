@@ -56,7 +56,13 @@ jobs:
             fi
             # THE IMAGE DIGEST IS CHECKED BEFORE ANYTHING CONSUMES IT --
             # the same refusal discipline every stage seam already has.
-            ( cd "in/5-$arch" && sha256sum -c IMAGE-SHA256 )
+            # IMAGE-SHA256 names the UNCOMPRESSED rootfs.img; the release
+            # ships rootfs.img.tar.zst -- so unpack, THEN check. The first
+            # dispatch failed here on exactly that (run 86974795496):
+            # "rootfs.img: No such file" -- the gate refusing an
+            # unverified input, which is correct, aimed at the wrong file,
+            # which is fixed.
+            ( cd "in/5-$arch"               && tar --zstd -xf rootfs.img.tar.zst               && sha256sum -c IMAGE-SHA256 )
             # THE ATTESTATION IS CHECKED HERE TOO: stage 6 is the first
             # consumer that exists to serve strangers, so it verifies what
             # a stranger would verify, and refuses what they would refuse.
@@ -85,12 +91,11 @@ jobs:
           for arch in $ARCHES; do
             [ -d "in/5-$arch" ] || continue
             mkdir -p "work/$arch/rootfs"
-            tar --zstd -xf "in/5-$arch/rootfs.img.tar.zst" -C "work/$arch" 2>/dev/null || true
-            # the release ships an ext4 image, not a tar of the tree: the
-            # tree is extracted from it without privileges via debugfs
-            if [ ! -e "work/$arch/rootfs/etc/veron-release" ] && [ -e "work/$arch/rootfs.img" ]; then
-              /sbin/debugfs -R "rdump / work/$arch/rootfs" "work/$arch/rootfs.img" >/dev/null 2>&1
-            fi
+            # IN already unpacked rootfs.img beside the tarball and
+            # digest-verified it; the tree is extracted from the ext4
+            # image without privileges via debugfs rdump
+            /sbin/debugfs -R "rdump / work/$arch/rootfs" "in/5-$arch/rootfs.img" >/dev/null 2>&1
+            [ -e "work/$arch/rootfs/etc/veron-release" ]               || { echo "  $arch: rdump produced no tree"; exit 1; }
             KERNEL="in/k-$arch/vmlinuz-generic"
             [ -s "$KERNEL" ] || KERNEL="in/5-$arch/Image"
             VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL"                 --out "out/veron-$arch.raw"
