@@ -18,7 +18,14 @@
 import argparse, os, struct, sys
 
 SECTOR = 512
-CLUSTER_SECTORS = 8           # 4 KiB clusters
+# CLUSTER SIZE, RULED (Joe, 2026-08-18): 1 KiB clusters, because FAT32's
+# hard floor is 65,525 clusters and the floor therefore scales with
+# cluster size -- 4 KiB clusters force a ~257 MiB minimum filesystem for
+# an ESP whose real content is ~60-100 MB of kernels. At 1 KiB the floor
+# is ~66 MiB and a 128 MiB ESP carries 4x headroom over the projected
+# four-kernel update peak. Overridable per filesystem for tests and any
+# future large-FAT need.
+CLUSTER_SECTORS = int(__import__("os").environ.get("VERON_FAT_CLUSTER_SECTORS", "2"))
 RESERVED = 32
 NFATS = 2
 VOLID = 0x5EB0A501            # fixed: reproducibility over entropy

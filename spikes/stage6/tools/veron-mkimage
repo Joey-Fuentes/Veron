@@ -51,7 +51,11 @@ MB=1048576
 # that matters. Persist ships SMALL on purpose: it is the last partition
 # so the grow-to-fill-the-disk service can extend it in place at first
 # boot; the shipped number is a floor, not a home.
-ESP_MB=${VERON_ESP_MB:-512}
+# ESP 128 MiB, RULED (Joe, 2026-08-18): FAT32 at the ruled 1 KiB
+# clusters floors at ~66 MiB; content is three ~15 MB kernels with a
+# four-copy update peak; 128 carries 4x headroom over that peak. Frozen
+# on installed disks like every window here.
+ESP_MB=${VERON_ESP_MB:-128}
 # SLOT SIZE, RULED (Joe, 2026-08-18): exactly what the staged world
 # needs plus 100 MB, computed per build -- no speculative growth budget.
 # ROOT_MB is therefore DERIVED below once the staged tree is measured;

@@ -90,7 +90,7 @@ with tempfile.TemporaryDirectory() as d:
     kern = os.urandom(3 * 1048576)
     open(f"{d}/esp/EFI/BOOT/BOOTX64.EFI", "wb").write(kern)
     open(f"{d}/esp/EFI/veron/A/linux.efi", "wb").write(kern)
-    subprocess.run([sys.executable, f"{HERE}/veron-mkfat", "--size", str(280*1048576),
+    subprocess.run([sys.executable, f"{HERE}/veron-mkfat", "--size", str(128*1048576),
                     "--root", f"{d}/esp", "--out", f"{d}/esp.img"],
                    check=True, capture_output=True)
     img = open(f"{d}/esp.img", "rb").read()
@@ -100,12 +100,12 @@ with tempfile.TemporaryDirectory() as d:
           hashlib.sha256(kern).hexdigest())
     check("mixed-case LFN path survives",
           tree["EFI"]["veron"]["A"]["linux.efi"] == kern, True)
-    img2 = subprocess.run([sys.executable, f"{HERE}/veron-mkfat", "--size", str(280*1048576),
+    img2 = subprocess.run([sys.executable, f"{HERE}/veron-mkfat", "--size", str(128*1048576),
                            "--root", f"{d}/esp", "--out", "/dev/stdout"],
                           check=True, capture_output=True).stdout
     # (writer prints its status line to stdout too when --out is stdout;
     # compare via a second file instead)
-    subprocess.run([sys.executable, f"{HERE}/veron-mkfat", "--size", str(280*1048576),
+    subprocess.run([sys.executable, f"{HERE}/veron-mkfat", "--size", str(128*1048576),
                     "--root", f"{d}/esp", "--out", f"{d}/esp2.img"],
                    check=True, capture_output=True)
     check("FAT image reproducible",
@@ -127,7 +127,7 @@ with tempfile.TemporaryDirectory() as d:
     open(f"{d}/fw/WHENCE.zst", "wb").write(b"WHENCE")
     open(f"{d}/fw/LICENCE.rtw89", "w").write("license text")
     open(f"{d}/fw/rtw89/rtw8852a_fw.bin.zst", "wb").write(b"FW" * 200)
-    env = dict(os.environ, VERON_NORMALIZE="/home/claude/veron/Veron/spikes/stage5/tools/normalize-ext4.py", VERON_ESP_MB="280", VERON_ROOT_MB="64", VERON_PERSIST_MB="16",
+    env = dict(os.environ, VERON_NORMALIZE="/home/claude/veron/Veron/spikes/stage5/tools/normalize-ext4.py", VERON_ESP_MB="128", VERON_ROOT_MB="64", VERON_PERSIST_MB="16",
                SOURCE_DATE_EPOCH="0")
     for out in ("img1", "img2"):
         r = subprocess.run(["sh", f"{HERE}/veron-mkimage", "--rootfs", f"{d}/rootfs",

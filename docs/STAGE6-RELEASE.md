@@ -97,8 +97,11 @@ machines UNTIL the queued design item lands: a strategy for safely
 growing or shrinking the fixed container on installed disks (open;
 nothing in v1 depends on it). The updater refuses-before-writing
 anything larger than the installed window and zero-pads anything
-smaller, keeping partition bytes release-determined. ESP 512 MiB;
-persist ships at 256 MiB and grows to fill the disk at first boot
+smaller, keeping partition bytes release-determined. ESP 128 MiB at 1 KiB FAT clusters, RULED 2026-08-18 (FAT32's 65,525-
+cluster floor scales with cluster size; 4 KiB clusters forced ~257 MiB
+minimum for ~100 MB of kernels; 128 carries 4x headroom over the four-
+kernel update peak); persist ships at 256 MiB and grows to fill the disk
+at first boot
 (deliberately the last partition). At today's measured 2878388 KB the
 whole image is ~6.6 GiB raw -- back inside a cheap 8 GB stick -- and
 the publish gate enforces GitHub's 2 GiB asset ceiling on the
@@ -290,6 +293,24 @@ GitHub Pages, regenerated in full on every stage-6 run:
   published content-addressed (GHCR blobs are sha256-addressed natively).
   v2 rides the same A/B slots and commit machinery as v1; only the transfer
   gets smaller.
+  **THE DIFF BASE IS THE RUNNING SLOT, NEVER THE TARGET SLOT'S RESIDUE**
+  (clarified 2026-08-18, prompted by the question "why not ship B
+  pre-populated so the first update can be differential"). The updater
+  assembles the target INTO the inactive slot from a three-tier source
+  ladder, cheapest first (refined 2026-08-18): (1) the file already
+  sitting in the inactive slot, KEPT IN PLACE if its hash equals the
+  target's -- residue is never trusted, but hash-verification promotes it
+  to proven content per file, so a regularly-updated machine moves almost
+  no bytes; (2) the verified running slot, copied locally; (3) the
+  network, for genuinely new blobs only -- so differential works on the very first update of a fresh
+  install, empty B and all. The inactive slot's prior contents are never
+  an input: residue would have to be proven before patching, while the
+  running slot is proven by construction. And shipping B pre-populated
+  would double the compressed download for zero gain -- the duplicate
+  sits ~2.9 GiB away in the stream, past zstd's 2 GiB long-range window,
+  so the compressor cannot fold it and the 2 GiB asset ceiling breaks.
+  Zeros in B are load-bearing: they are what keeps the download at
+  rootfs-price.
 
 ## 13. Order of work (progress noted in place)
 
