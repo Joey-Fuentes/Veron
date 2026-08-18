@@ -101,9 +101,25 @@ static void scan_devices() {
             if (fscanf(sz, "%lld", &sectors) != 1) sectors = 0;
             fclose(sz);
         }
-        char label[128];
-        snprintf(label, sizeof label, "%s  (%.1f GB)", e->d_name,
-                 sectors * 512.0 / 1e9);
+        // THE HARDWARE'S OWN NAME, so two same-size sticks are tellable
+        // apart: /sys exposes what the device says it is.
+        auto sysread = [&](const char *leaf) -> std::string {
+            char b[96] = {0};
+            FILE *f2 = fopen((base + "/device/" + leaf).c_str(), "r");
+            if (f2) { if (!fgets(b, sizeof b, f2)) b[0] = 0; fclose(f2); }
+            std::string v = b;
+            while (!v.empty() && (v.back() == '\n' || v.back() == ' '))
+                v.pop_back();
+            size_t i = v.find_first_not_of(' ');
+            return i == std::string::npos ? "" : v.substr(i);
+        };
+        std::string who = sysread("vendor");
+        std::string mdl = sysread("model");
+        if (!mdl.empty()) who += (who.empty() ? "" : " ") + mdl;
+        if (who.empty()) who = "unnamed device";
+        char label[192];
+        snprintf(label, sizeof label, "%s  \xe2\x80\x94  %s  (%.1f GB)",
+                 e->d_name, who.c_str(), sectors * 512.0 / 1e9);
         devchoice->add(label);
         devnames.push_back(e->d_name);
         devcaps.push_back(sectors * 512LL);
