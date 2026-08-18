@@ -502,6 +502,33 @@ jobs:
                                 "version": str(t.get("version", "")),
                                 "license": t.get("license", "unstated")}
           m["licenses"]["packages"] = sorted(pkgs.values(), key=lambda p: p["name"])
+
+          # THE STOREFRONT DESCRIBES THE LATEST PUBLISHED RELEASE, not
+          # merely this run. A docs-only site refresh must not require
+          # minting a release, and must not hide a release that exists
+          # (the first version did both: the consumer card was built only
+          # from this run's artifacts, so publish_site alone showed
+          # "not yet" above flash instructions that worked -- incoherent).
+          # The published release carries index.json for exactly this:
+          # any arch this run did not itself gate-and-name adopts the
+          # published manifest's entry, so the card, the link and the
+          # release always agree.
+          import subprocess as sp
+          have_proven = {a for a, r in m["arches"].items()
+                         if any(not x["name"].endswith(".NOBOOT.img")
+                                for x in r["assets"])}
+          try:
+              sp.run(["gh", "release", "download", "6/latest",
+                      "-p", "index.json", "-O", "out/published-index.json",
+                      "--clobber"], check=True, capture_output=True)
+              prev = json.load(open("out/published-index.json"))
+              for arch, entry in prev.get("arches", {}).items():
+                  if arch not in have_proven:
+                      m["arches"][arch] = entry
+                      print(f"  {arch}: consumer card adopted from published {entry['release_tag']}")
+          except Exception as e:
+              print(f"  no published index adopted ({e}); first release or none yet")
+
           json.dump(m, open("out/manifest.json", "w"), indent=1)
           print(f"manifest: {len(m['developer'])} developer release(s), "
                 f"{len(m['upstream_releases'])} upstream, "
