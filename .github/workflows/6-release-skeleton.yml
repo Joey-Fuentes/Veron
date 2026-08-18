@@ -88,6 +88,7 @@ jobs:
           # OTHER property (layout, determinism, decode) is proven per run,
           # and the boot gate below stays off. The stand-in is stated in
           # the artifact name: veron-<arch>-<sha7>.NOBOOT.img.
+          mkdir -p out
           for arch in $ARCHES; do
             [ -d "in/5-$arch" ] || continue
             mkdir -p "work/$arch/rootfs"
