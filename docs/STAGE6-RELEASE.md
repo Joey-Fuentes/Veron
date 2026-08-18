@@ -88,7 +88,14 @@ There is no version scheme and no timestamp anywhere in a name.
 
 ## 6. Images: true A/B, kernel included
 
-The consumer disk image and every installed system use one fixed GPT layout:
+The consumer disk image and every installed system use one fixed GPT
+layout, sized from MEASUREMENT (run 86917062743: 1229 MB stripped
+system): ESP 512 MiB, slots 3 GiB each (>2x the measured rootfs, and the
+image build fails loudly if 1.5x the rootfs ever exceeds a slot), persist
+shipped at 256 MiB and GROWN TO FILL THE DISK by a first-boot service --
+it is deliberately the last partition so growth is an in-place GPT-extend
+plus resize2fs. Whole image under 7 GiB raw: the full A/B layout fits a
+cheap 8 GB stick.
 
 ```
 p1  ESP        FAT32     kernels for both slots, at fixed paths

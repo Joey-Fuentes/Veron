@@ -42,9 +42,18 @@ PART_PERSIST=aaaa0004-0000-4000-8000-564552304e04
 ATTR_ROOT=10376293541461622784   # 0x9000000000000000
 
 MB=1048576
+# SIZES ARE MEASURED, NOT GUESSED. Run 86917062743's strip step: the
+# merged system is 2.1G before stripping, 1229 MB after -- the shipped
+# rootfs is ~1.3 GiB. A slot holds the rootfs plus one future update's
+# growth: 3 GiB is > 2x measured. Whole image: 512 + 3072 + 3072 + 256
+# (+ alignment/GPT) = under 7 GiB raw -- the entire A/B layout fits a
+# cheap 8 GB stick (~7.4 GiB usable), which is the consumer threshold
+# that matters. Persist ships SMALL on purpose: it is the last partition
+# so the grow-to-fill-the-disk service can extend it in place at first
+# boot; the shipped number is a floor, not a home.
 ESP_MB=${VERON_ESP_MB:-512}
-ROOT_MB=${VERON_ROOT_MB:-8192}
-PERSIST_MB=${VERON_PERSIST_MB:-1024}
+ROOT_MB=${VERON_ROOT_MB:-3072}
+PERSIST_MB=${VERON_PERSIST_MB:-256}
 
 usage() { echo "usage: veron-mkimage --rootfs DIR --kernel FILE --out IMG" >&2; exit 2; }
 ROOTFS=""; KERNEL=""; OUT=""
@@ -57,6 +66,22 @@ esac; done
 [ -n "$ROOTFS" ] && [ -n "$KERNEL" ] && [ -n "$OUT" ] || usage
 [ -d "$ROOTFS" ] || { echo "no rootfs dir: $ROOTFS" >&2; exit 1; }
 [ -s "$KERNEL" ] || { echo "no kernel: $KERNEL" >&2; exit 1; }
+
+# THE SLOT MUST FIT THE SYSTEM, WITH HEADROOM, CHECKED EVERY BUILD.
+# The slot size is the one constant that tracks a MEASURED quantity
+# release over release; when the system outgrows it, this line fails the
+# build loudly instead of someone re-guessing from memory -- which is
+# exactly how the first sizes in this file went wrong.
+rootfs_kb=$(du -sk "$ROOTFS" | cut -f1)
+need_kb=$((rootfs_kb * 3 / 2))
+slot_kb=$((ROOT_MB * 1024))
+if [ "$need_kb" -ge "$slot_kb" ]; then
+    echo "veron-mkimage: rootfs is ${rootfs_kb} KB; 1.5x = ${need_kb} KB" >&2
+    echo "  does not fit the ${slot_kb} KB slot. Raise VERON_ROOT_MB --" >&2
+    echo "  as a MEASURED decision, recorded next to the old one." >&2
+    exit 1
+fi
+echo "  rootfs ${rootfs_kb} KB; slot ${slot_kb} KB; headroom $(( (slot_kb - rootfs_kb) / 1024 )) MB"
 
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
