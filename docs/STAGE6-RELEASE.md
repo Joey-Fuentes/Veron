@@ -318,35 +318,46 @@ GitHub Pages, regenerated in full on every stage-6 run:
 
 ## 13. Flashing a release to a USB stick
 
-The consumer path, exactly as a stranger walks it. Written the night of
-release/4ebc457 -- the first release -- and kept current because this
-section IS the product's front door. On any Linux machine:
+The consumer path, exactly as a stranger walks it -- and copy-pasteable
+verbatim: no placeholders, no per-release editing. The first version of
+this section used <TAG7>/<SHA7> placeholders and a reader pasted them
+literally, downloading two 9-byte "Not Found" pages (2026-08-18, the
+first consumer, minutes after the first release). Documentation that
+needs editing before it works is documentation with a bug. The commands
+below resolve the current release's filename FROM its own digest file,
+via the moving 6/latest tag, so they are correct for every release ever:
 
 ```
-# 1. download -- the site's Download button serves the same two files
+# 1. fetch the digest file, learn the image's name from it, fetch the image
 cd ~/Downloads
-curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/release%2F<TAG7>/veron-x86_64-<SHA7>.img.zst"
-curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/release%2F<TAG7>/SHA256SUMS"
+curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6%2Flatest/SHA256SUMS"
+IMG=$(grep -o 'veron-x86_64-[0-9a-f]*\.img\.zst' SHA256SUMS | head -1)
+curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6%2Flatest/$IMG"
 
 # 2. verify, then unpack. The filename's 7 hex chars are the first 7 of
 #    the image's own sha256 -- the name is a claim SHA256SUMS proves.
-sha256sum -c SHA256SUMS --ignore-missing     # must print: OK
-gh attestation verify veron-x86_64-<SHA7>.img.zst -R Joey-Fuentes/Veron   # optional, proves the builder
-zstd -d veron-x86_64-<SHA7>.img.zst
+#    The image download is ~1.5 GB: a transfer that finishes instantly
+#    fetched an error page, not an image.
+sha256sum -c SHA256SUMS --ignore-missing        # must print: OK
+zstd -d "$IMG"
 
 # 3. find the stick: run lsblk BEFORE plugging it in, plug it in, run
 #    lsblk again -- the device that appeared is the stick (e.g. sda).
-#    THE IMAGE IS A WHOLE-DISK IMAGE. dd to an internal drive (nvme0n1,
-#    sda-that-was-already-there) erases that machine's OS. Triple-check.
+#    THE IMAGE IS A WHOLE-DISK IMAGE. dd to an internal drive erases
+#    that machine's OS. Triple-check the device name.
 lsblk
 
 # 4. flash -- whole device, no partition number, 8 GB stick or larger
 sudo umount /dev/sdX* 2>/dev/null
-sudo dd if=veron-x86_64-<SHA7>.img of=/dev/sdX bs=4M conv=fsync status=progress
+sudo dd if="${IMG%.zst}" of=/dev/sdX bs=4M conv=fsync status=progress
 
 # 5. boot: leave the stick in, reboot, open the firmware's boot menu
 #    (F9 on HP), pick the stick's UEFI entry. Secure Boot must be off.
 ```
+
+Provenance check, optional, for anyone with the gh CLI:
+`gh attestation verify "$IMG" -R Joey-Fuentes/Veron` -- proves the exact
+builder against the public Sigstore log before a byte is trusted.
 
 No bootloader menu appears -- the firmware loads the kernel from the
 stick's fallback path, the baked command line names slot A, and the

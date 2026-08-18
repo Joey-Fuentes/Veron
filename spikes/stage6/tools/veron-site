@@ -241,14 +241,23 @@ gh attestation verify veron-*.img -R Joey-Fuentes/Veron
 # on the running system, offline:
 veron-trace --verify --hash-files --strays --root /</pre>
 
-<h2>boot</h2>
-<ul>
-<li>Write the image any way you like — <span class="mono">dd</span>, a USB
-imager, or put the ISO on a Ventoy stick unchanged.</li>
-<li>In firmware settings: disable Secure Boot, boot from USB.</li>
-<li>That's all. There is no bootloader to configure — the kernel is the
-boot program, at the path every UEFI firmware tries first.</li>
-</ul>
+<h2>flash</h2>
+<p>Copy-paste on any Linux machine — the commands resolve the current
+release's filename themselves:</p>
+<pre>cd ~/Downloads
+curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6%2Flatest/SHA256SUMS"
+IMG=$(grep -o 'veron-x86_64-[0-9a-f]*[.]img[.]zst' SHA256SUMS | head -1)
+curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6%2Flatest/$IMG"
+sha256sum -c SHA256SUMS --ignore-missing   # must print: OK
+zstd -d "$IMG"
+
+lsblk    # plug the stick in; the device that APPEARS is the stick
+sudo dd if="${{IMG%.zst}}" of=/dev/sdX bs=4M conv=fsync status=progress</pre>
+<p>The image is a whole-disk image: <span class="mono">of=</span> must be
+the stick — writing an internal drive erases that machine's OS. Then
+reboot, open the firmware boot menu (F9 on HP), pick the stick's UEFI
+entry. Secure Boot off. No bootloader appears — the kernel is the boot
+program, loaded from the path every UEFI firmware tries first.</p>
 <p>Veron is x86_64 UEFI only. Signing, Secure Boot and TPM support are on
 the roadmap; legacy BIOS is not.</p>
 
