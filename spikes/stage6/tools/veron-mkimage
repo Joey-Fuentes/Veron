@@ -52,22 +52,75 @@ MB=1048576
 # so the grow-to-fill-the-disk service can extend it in place at first
 # boot; the shipped number is a floor, not a home.
 ESP_MB=${VERON_ESP_MB:-512}
-ROOT_MB=${VERON_ROOT_MB:-3072}
+# ROOT_MB RAISED 3072 -> 4096 WHEN FIRMWARE MOVED INTO THE IMAGE. The
+# complete linux-firmware tree is the point of a generic kernel and the
+# redistribution-honest posture (WHENCE + every LICENCE.* ship beside the
+# blobs) -- zstd'd per file it adds ~300-400 MB to the ~1.9 GB tree, and
+# 1.5x that no longer fit a 3 GiB slot. Whole image lands ~9 GiB raw:
+# "fits any 16 GB stick" is the consumer line now; measurement beat the
+# 8 GB marketing, again.
+ROOT_MB=${VERON_ROOT_MB:-4096}
 PERSIST_MB=${VERON_PERSIST_MB:-256}
 
-usage() { echo "usage: veron-mkimage --rootfs DIR --kernel FILE --out IMG" >&2; exit 2; }
-ROOTFS=""; KERNEL=""; OUT=""
+usage() { echo "usage: veron-mkimage --rootfs DIR --kernel FILE --out IMG [--modules-tar T] [--firmware-dir D]" >&2; exit 2; }
+ROOTFS=""; KERNEL=""; OUT=""; MODTAR=""; FWDIR=""
 while [ $# -gt 0 ]; do case "$1" in
-    --rootfs) ROOTFS=$2; shift 2 ;;
-    --kernel) KERNEL=$2; shift 2 ;;
-    --out)    OUT=$2; shift 2 ;;
+    --rootfs)       ROOTFS=$2; shift 2 ;;
+    --kernel)       KERNEL=$2; shift 2 ;;
+    --out)          OUT=$2; shift 2 ;;
+    --modules-tar)  MODTAR=$2; shift 2 ;;
+    --firmware-dir) FWDIR=$2; shift 2 ;;
     *) usage ;;
 esac; done
 [ -n "$ROOTFS" ] && [ -n "$KERNEL" ] && [ -n "$OUT" ] || usage
 [ -d "$ROOTFS" ] || { echo "no rootfs dir: $ROOTFS" >&2; exit 1; }
 [ -s "$KERNEL" ] || { echo "no kernel: $KERNEL" >&2; exit 1; }
 
-# THE SLOT MUST FIT THE SYSTEM, WITH HEADROOM, CHECKED EVERY BUILD.
+W=$(mktemp -d)
+trap 'rm -rf "$W"' EXIT
+
+# ---- ESP: both slot paths carry the SAME kernel at image build; the
+# fallback is slot A because A is the populated, committed slot ----------
+mkdir -p "$W/esp/EFI/BOOT" "$W/esp/EFI/veron/A" "$W/esp/EFI/veron/B"
+cp "$KERNEL" "$W/esp/EFI/veron/A/linux.efi"
+cp "$KERNEL" "$W/esp/EFI/veron/B/linux.efi"
+cp "$KERNEL" "$W/esp/EFI/BOOT/BOOTX64.EFI"
+python3 "$HERE/veron-mkfat" --size $((ESP_MB * MB)) --root "$W/esp" \
+    --out "$W/p1.esp" >&2
+
+# ---- SLOT A IS A COMPLETE WORLD: rootfs + its kernel's modules + the
+# firmware tree, absorbed AT BUILD TIME. This is where the flash script's
+# job moves into the artifact: what a consumer downloads is what a
+# machine needs, with the LICENCE files sitting beside the blobs they
+# govern. The staging copy is hardlinks (cp -al): fast, and the input
+# tree is never mutated.
+STAGE="$W/stage"
+cp -al "$ROOTFS" "$STAGE"
+if [ -n "$MODTAR" ]; then
+    [ -s "$MODTAR" ] || { echo "no modules tar: $MODTAR" >&2; exit 1; }
+    mkdir -p "$W/mods"
+    # -xf without a compression flag: GNU tar auto-detects zstd/gzip/xz
+    # from the stream, so the same line serves CI (.tar.zst) and tests
+    tar -xf "$MODTAR" -C "$W/mods"
+    src=$(find "$W/mods" -maxdepth 3 -type d -name modules | head -1)
+    [ -n "$src" ] || { echo "modules tar holds no lib/modules" >&2; exit 1; }
+    mkdir -p "$STAGE/usr/lib/modules"
+    cp -a "$src"/. "$STAGE/usr/lib/modules/"
+    echo "  modules: $(find "$STAGE/usr/lib/modules" -name '*.ko*' | wc -l) file(s) into usr/lib/modules"
+fi
+if [ -n "$FWDIR" ]; then
+    [ -d "$FWDIR" ] || { echo "no firmware dir: $FWDIR" >&2; exit 1; }
+    [ -e "$FWDIR/WHENCE" ] || [ -e "$FWDIR/WHENCE.zst" ]         || { echo "firmware dir has no WHENCE -- refusing a tree without its provenance file" >&2; exit 1; }
+    mkdir -p "$STAGE/usr/lib/firmware"
+    cp -a "$FWDIR"/. "$STAGE/usr/lib/firmware/"
+    echo "  firmware: $(find "$STAGE/usr/lib/firmware" -type f | wc -l) file(s), licenses: $(find "$STAGE/usr/lib/firmware" -maxdepth 1 -name 'LICEN*' | wc -l)"
+fi
+ROOTFS="$STAGE"
+
+# THE SLOT MUST FIT THE STAGED WORLD -- measured AFTER modules and
+# firmware are absorbed, because the absorbed tree is what the slot
+# holds; the first placement of this guard measured the bare rootfs and
+# would have waved through an overweight image.
 # The slot size is the one constant that tracks a MEASURED quantity
 # release over release; when the system outgrows it, this line fails the
 # build loudly instead of someone re-guessing from memory -- which is
@@ -82,18 +135,6 @@ if [ "$need_kb" -ge "$slot_kb" ]; then
     exit 1
 fi
 echo "  rootfs ${rootfs_kb} KB; slot ${slot_kb} KB; headroom $(( (slot_kb - rootfs_kb) / 1024 )) MB"
-
-W=$(mktemp -d)
-trap 'rm -rf "$W"' EXIT
-
-# ---- ESP: both slot paths carry the SAME kernel at image build; the
-# fallback is slot A because A is the populated, committed slot ----------
-mkdir -p "$W/esp/EFI/BOOT" "$W/esp/EFI/veron/A" "$W/esp/EFI/veron/B"
-cp "$KERNEL" "$W/esp/EFI/veron/A/linux.efi"
-cp "$KERNEL" "$W/esp/EFI/veron/B/linux.efi"
-cp "$KERNEL" "$W/esp/EFI/BOOT/BOOTX64.EFI"
-python3 "$HERE/veron-mkfat" --size $((ESP_MB * MB)) --root "$W/esp" \
-    --out "$W/p1.esp" >&2
 
 # ---- root-A: the system; root-B and persist: empty ext4, fixed identity.
 # SOURCE_DATE_EPOCH pins every timestamp mke2fs invents.

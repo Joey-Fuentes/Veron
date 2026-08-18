@@ -205,3 +205,37 @@ CONFIG_MEDIA_CAMERA_SUPPORT=y
 CONFIG_USB_VIDEO_CLASS=m
 CONFIG_BT=m
 CONFIG_BT_HCIBTUSB=m
+
+# --- the EFI boot spine, PINNED (fragment v7) ------------------------------
+# The consumer image boots with NO bootloader and NO initramfs: the kernel
+# is the PE the firmware loads (\EFI\BOOT\BOOTX64.EFI and the per-slot
+# paths), LoadOptions is the command line, the built-in storage above
+# mounts root=PARTUUID= natively, and init=/usr/bin/dinit takes over.
+# Every link in that sentence is a config option, and defconfig currently
+# provides most of them BY ACCIDENT of upstream defaults -- which is
+# exactly the kind of unpinned load-bearing fact this fragment exists to
+# pin. EFI_PARTITION is the GPT parser: without it root=PARTUUID matches
+# nothing and the failure would read as a storage bug.
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+CONFIG_EFI_PARTITION=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+
+# --- the built-in default command line (fragment v8) -----------------------
+# THE dd-AND-BOOT CASE: a consumer writes the image to a stick and boots.
+# No installer has run, so no NVRAM entries exist; the firmware takes the
+# fallback path \EFI\BOOT\BOOTX64.EFI with EMPTY LoadOptions. This
+# built-in line is what boots then: slot A, read-write, dinit, console on
+# the screen and the serial port (the serial copy is what the OVMF gates
+# read). APPEND SEMANTICS, DELIBERATELY: on x86 the built-in string comes
+# FIRST and bootloader/LoadOptions arguments are appended AFTER it, so a
+# later root= or init= from a real boot entry, an installer, or GRUB
+# simply wins -- slot-B entries override the default; today's laptop GRUB
+# boots (initramfs + rdinit=/init) are untouched because rdinit
+# supersedes init= and the initramfs ignores root=. CMDLINE_OVERRIDE
+# would discard what entries pass and is exactly the wrong tool; it stays
+# off, and REQUIRED-CONFIGS pins its absence.
+CONFIG_CMDLINE_BOOL=y
+CONFIG_CMDLINE="root=PARTUUID=aaaa0002-0000-4000-8000-564552304e02 rw init=/usr/bin/dinit console=tty0 console=ttyS0,115200 panic=30"
+# CONFIG_CMDLINE_OVERRIDE is not set

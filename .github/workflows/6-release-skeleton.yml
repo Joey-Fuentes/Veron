@@ -81,6 +81,53 @@ jobs:
           done
           [ "$found" -gt 0 ] || { echo "no arch has a stage-5 release; nothing to do"; exit 1; }
 
+      - name: 'FW -- the pinned firmware tree, prepared for absorption'
+        run: |
+          set -eu
+          # THE FLASH SCRIPT'S JOB MOVES INTO THE ARTIFACT. Firmware is
+          # fetched exactly the way every other pinned source is -- through
+          # the mirror, hash-verified -- then prepared the way upstream
+          # ships it: linux-firmware's own install machinery does the dedup
+          # and per-file zstd (the kernel decompresses at load,
+          # CONFIG_FW_LOADER_COMPRESS_ZSTD), WHENCE and every LICENCE.*
+          # kept beside the blobs they govern. Unpinned entries are skipped
+          # OUT LOUD; unknown pinned entries fail the build so a new
+          # firmware source gets a deliberate handler, not a guess.
+          python3 - > fw-list.tsv <<'PY'
+          import tomllib
+          for src in tomllib.load(open("sources/firmware.toml", "rb"))["source"]:
+              if not src.get("sha256"):
+                  print("SKIP\t%s\tunpinned -- stated, not silent" % src["name"])
+                  continue
+              fname = src["url"].rsplit("/", 1)[-1]
+              print("FETCH\t%s\t%s\t%s\t%s" % (src["name"], src["sha256"], fname, src["url"]))
+          PY
+          mkdir -p fw-dl fwtree
+          while IFS="$(printf '\t')" read -r verb name a b c; do
+            case "$verb" in
+              SKIP)  echo "  $name: $a" ;;
+              FETCH) python3 tools/mirror.py fetch "$a" "$b" --url "$c" --dest fw-dl
+                     case "$name" in
+                       linux-firmware|wireless-regdb) : ;;
+                       *) echo "  $name is pinned but has no handler here -- add one deliberately"; exit 1 ;;
+                     esac ;;
+            esac
+          done < fw-list.tsv
+          if ls fw-dl/linux-firmware-*.tar.xz >/dev/null 2>&1; then
+            tar -xf fw-dl/linux-firmware-*.tar.xz -C fw-dl
+            make -C fw-dl/linux-firmware-*/ install-zst DESTDIR="$PWD/fwstage" FIRMWAREDIR=/ >/dev/null
+            cp -a fwstage/. fwtree/
+          else
+            echo "no linux-firmware fetched"; exit 1
+          fi
+          if ls fw-dl/wireless-regdb-*.tar.xz >/dev/null 2>&1; then
+            tar -xf fw-dl/wireless-regdb-*.tar.xz -C fw-dl
+            cp fw-dl/wireless-regdb-*/regulatory.db fw-dl/wireless-regdb-*/regulatory.db.p7s fwtree/
+          fi
+          [ -e fwtree/WHENCE ] || [ -e fwtree/WHENCE.zst ] \
+            || { echo "prepared tree lost WHENCE"; exit 1; }
+          echo "firmware tree: $(find fwtree -type f | wc -l) file(s), $(du -sh fwtree | cut -f1)"
+
       - name: 'IMG -- the A/B GPT disk image'
         run: |
           set -eu
@@ -103,8 +150,12 @@ jobs:
             [ -e "work/$arch/rootfs/etc/veron-release" ]               || { echo "  $arch: rdump produced no tree"; exit 1; }
             KERNEL="in/k-$arch/vmlinuz-generic"
             [ -s "$KERNEL" ] || KERNEL="in/5-$arch/Image"
-            VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL"                 --out "out/veron-$arch.raw"
-            sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL"                 --out "out/veron-$arch.raw2" 2>/dev/null || true
+            MODTAR=$(ls in/k-$arch/modules-*.tar.zst 2>/dev/null | head -1 || true)
+            ABSORB=""
+            [ -n "$MODTAR" ] && ABSORB="--modules-tar $MODTAR"
+            [ -d fwtree ] && ABSORB="$ABSORB --firmware-dir fwtree"
+            VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw"
+            sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw2" 2>/dev/null || true
             cmp "out/veron-$arch.raw" "out/veron-$arch.raw2"               && echo "  $arch image REPRODUCED (built twice, same bytes)"               || { echo "  $arch image NOT reproducible"; exit 1; }
             SHA7=$(sha256sum "out/veron-$arch.raw" | cut -c1-7)
             mv "out/veron-$arch.raw" "out/veron-$arch-$SHA7.NOBOOT.img"
@@ -230,11 +281,41 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
-      - name: 'PUBLISH -- immutable release/<commit7> + moving latest + Pages'
-        if: ${{ always() && false }}  # AND dry_run must be off; both gates real
+      - name: 'PUBLISH -- compress, size-gate, immutable tag, moving latest'
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "UNBUILT: tag release/$(git rev-parse --short=7 HEAD); assets"
-          echo "named veron-<arch>-<sha7>.*; attest everything published;"
-          echo "deploy Pages. Guarded by DRY_RUN until the whole ladder above"
-          echo "is real."
-          exit 1
+          set -eu
+          C7=${GITHUB_SHA::7}
+          : > out/SHA256SUMS
+          for img in out/*.img; do
+            zstd -19 -T0 -q "$img" -o "$img.zst"
+            size=$(stat -c %s "$img.zst")
+            # GITHUB'S CEILING IS 2 GiB PER ASSET; the gate fails BEFORE an
+            # upload half-succeeds, and says which escape hatch to take.
+            [ "$size" -lt 2147483648 ] || {
+              echo "$img.zst is $size bytes -- over the 2 GiB asset ceiling."
+              echo "Shrink slots or move to the chunked layout (spec 12)."
+              exit 1; }
+            ( cd out && sha256sum "$(basename "$img")" "$(basename "$img").zst" ) >> out/SHA256SUMS
+          done
+          cat out/SHA256SUMS
+          # IMMUTABLE FIRST: creating the tag a second time must FAIL --
+          # that failure is the append-only ruling enforcing itself.
+          gh release create "release/$C7" \
+            --title "Veron release/$C7" \
+            --notes "Consumer release at commit $GITHUB_SHA. Digests in SHA256SUMS; provenance on the repository's attestation page." \
+            out/*.img.zst out/SHA256SUMS out/site/index.json
+          gh release delete "6/latest" --yes 2>/dev/null || true
+          git push --delete origin "6/latest" 2>/dev/null || true
+          gh release create "6/latest" \
+            --title "Veron -- latest consumer release" \
+            --notes "Moving pointer; the immutable record is release/$C7." \
+            out/*.img.zst out/SHA256SUMS out/site/index.json
+
+      - name: 'ATTEST -- provenance for everything published'
+        if: ${{ !inputs.dry_run }}
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: 'out/*.img.zst'

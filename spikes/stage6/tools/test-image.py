@@ -118,11 +118,22 @@ with tempfile.TemporaryDirectory() as d:
     open(f"{d}/rootfs/usr/bin/hello", "wb").write(b"#!/bin/sh\necho veron\n")
     open(f"{d}/rootfs/etc/veron-release", "w").write("VERON_COMMIT=test\n")
     open(f"{d}/kernel.efi", "wb").write(os.urandom(2 * 1048576))
+    # a modules tarball and a firmware tree, absorbed into slot A
+    os.makedirs(f"{d}/m/lib/modules/7.1.5-generic/kernel")
+    open(f"{d}/m/lib/modules/7.1.5-generic/kernel/e1000e.ko.zst", "wb").write(b"MOD" * 100)
+    open(f"{d}/m/lib/modules/7.1.5-generic/modules.dep", "w").write("")
+    subprocess.run(["tar", "-czf", f"{d}/modules.tar.zst", "-C", f"{d}/m", "lib"], check=True)
+    os.makedirs(f"{d}/fw/rtw89")
+    open(f"{d}/fw/WHENCE.zst", "wb").write(b"WHENCE")
+    open(f"{d}/fw/LICENCE.rtw89", "w").write("license text")
+    open(f"{d}/fw/rtw89/rtw8852a_fw.bin.zst", "wb").write(b"FW" * 200)
     env = dict(os.environ, VERON_NORMALIZE="/home/claude/veron/Veron/spikes/stage5/tools/normalize-ext4.py", VERON_ESP_MB="280", VERON_ROOT_MB="64", VERON_PERSIST_MB="16",
                SOURCE_DATE_EPOCH="0")
     for out in ("img1", "img2"):
         r = subprocess.run(["sh", f"{HERE}/veron-mkimage", "--rootfs", f"{d}/rootfs",
-                            "--kernel", f"{d}/kernel.efi", "--out", f"{d}/{out}"],
+                            "--kernel", f"{d}/kernel.efi", "--out", f"{d}/{out}",
+                            "--modules-tar", f"{d}/modules.tar.zst",
+                            "--firmware-dir", f"{d}/fw"],
                            env=env, capture_output=True, text=True)
         if r.returncode:
             print(r.stdout, r.stderr); sys.exit(1)
@@ -155,6 +166,17 @@ with tempfile.TemporaryDirectory() as d:
     de = subprocess.run(["dumpe2fs", "-h", ra], capture_output=True, text=True).stdout
     check("root-A ext4, fixed UUID",
           "00000000-0000-4000-8000-0000000000a1" in de, True)
+    # the absorbed world is IN the slot: rdump and look
+    rd = f"{d}/rd"; os.makedirs(rd)
+    subprocess.run(["/sbin/debugfs", "-R", f"rdump /usr/lib {rd}", ra],
+                   capture_output=True)
+    check("modules absorbed into slot A",
+          os.path.exists(f"{rd}/lib/modules/7.1.5-generic/kernel/e1000e.ko.zst"), True)
+    check("firmware + its LICENCE absorbed",
+          os.path.exists(f"{rd}/lib/firmware/rtw89/rtw8852a_fw.bin.zst")
+          and os.path.exists(f"{rd}/lib/firmware/LICENCE.rtw89"), True)
+    check("input rootfs never mutated",
+          os.path.exists(f"{d}/rootfs/usr/lib/firmware"), False)
 
 print("VERON-IMAGE-OK" if fail == 0 else f"VERON-IMAGE-FAIL {fail}")
 sys.exit(1 if fail else 0)
