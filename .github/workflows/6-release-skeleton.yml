@@ -359,11 +359,13 @@ jobs:
               -bios /usr/share/ovmf/OVMF.fd \
               -drive format=raw,file="$img" \
               -serial file:boot-serial.log >/dev/null 2>&1 || true
-            echo "--- serial (tail) ---"; tail -30 boot-serial.log || true
+            echo "--- serial (tail) ---"; tail -60 boot-serial.log || true
             fail=0
-            grep -q "EFI stub" boot-serial.log \
-              && echo "  ok    stub ran from the fallback path" \
-              || { echo "  FAIL  no stub banner"; fail=1; }
+            # the x86 stub is silent on the happy path (run 87005224870);
+            # the witness is the kernel's EFI runtime banner
+            grep -Eq "efi: EFI v|EFI stub" boot-serial.log \
+              && echo "  ok    EFI handover from the fallback path confirmed" \
+              || { echo "  FAIL  no EFI evidence"; fail=1; }
             grep -q "Command line:.*root=PARTUUID=aaaa0002" boot-serial.log \
               && echo "  ok    the BAKED cmdline named slot A" \
               || { echo "  FAIL  baked cmdline absent (kernel predates fragment v8?)"; fail=1; }
