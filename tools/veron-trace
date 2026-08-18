@@ -76,15 +76,21 @@ SUB=$RECORDS/substages.tsv
 PKG=$RECORDS/packages.tsv
 
 # --packages: WHAT IS THIS SYSTEM MADE OF, as a first-class question
-# (asked 2026-08-18: "can I check in Veron with a command?"). One line
-# per shipped package, name and version, from the same records every
-# other mode trusts; staged-not-shipped bootstraps are counted apart
-# because they are build scaffolding, not contents.
+# (asked 2026-08-18). packages.tsv is one TYPED FACT per line -- the
+# writer emits "P<TAB>name<TAB>version<TAB>..." for each package, with
+# staged-only bootstraps carrying Fb/Lb file facts instead of F/L. The
+# first version of this mode deduped on the TYPE column and reported
+# "6 package(s)" on a 145-package system (metal, 2026-08-18): the
+# schema was assumed, not read. It is read now -- and the writer even
+# states the verdict itself: the P row's seventh column says "ships"
+# or "build-only" (veron-trace-records line 99). The writer's own word
+# is used, with a lenient branch for short rows from older records.
 if [ "$MODE" = packages ]; then
     [ -r "$PKG" ] || { echo "no packages.tsv at $RECORDS -- not a traced image?"; exit 1; }
     awk -F'\t' '
-        $0 ~ /staged-not-shipped/ { staged++; next }
-        !seen[$1]++              { print $1 "\t" $2; n++ }
+        $1 == "P" && $7 == "ships"      { print $2 "\t" $3; n++ }
+        $1 == "P" && $7 == "build-only" { staged++ }
+        $1 == "P" && NF < 7             { print $2 "\t" $3; n++ }
         END {
             printf "  %d package(s) shipped", n
             if (staged) printf "  (+%d staged bootstrap(s), build-only)", staged
