@@ -316,7 +316,46 @@ GitHub Pages, regenerated in full on every stage-6 run:
   Zeros in B are load-bearing: they are what keeps the download at
   rootfs-price.
 
-## 13. Order of work (progress noted in place)
+## 13. Flashing a release to a USB stick
+
+The consumer path, exactly as a stranger walks it. Written the night of
+release/4ebc457 -- the first release -- and kept current because this
+section IS the product's front door. On any Linux machine:
+
+```
+# 1. download -- the site's Download button serves the same two files
+cd ~/Downloads
+curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/release%2F<TAG7>/veron-x86_64-<SHA7>.img.zst"
+curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/release%2F<TAG7>/SHA256SUMS"
+
+# 2. verify, then unpack. The filename's 7 hex chars are the first 7 of
+#    the image's own sha256 -- the name is a claim SHA256SUMS proves.
+sha256sum -c SHA256SUMS --ignore-missing     # must print: OK
+gh attestation verify veron-x86_64-<SHA7>.img.zst -R Joey-Fuentes/Veron   # optional, proves the builder
+zstd -d veron-x86_64-<SHA7>.img.zst
+
+# 3. find the stick: run lsblk BEFORE plugging it in, plug it in, run
+#    lsblk again -- the device that appeared is the stick (e.g. sda).
+#    THE IMAGE IS A WHOLE-DISK IMAGE. dd to an internal drive (nvme0n1,
+#    sda-that-was-already-there) erases that machine's OS. Triple-check.
+lsblk
+
+# 4. flash -- whole device, no partition number, 8 GB stick or larger
+sudo umount /dev/sdX* 2>/dev/null
+sudo dd if=veron-x86_64-<SHA7>.img of=/dev/sdX bs=4M conv=fsync status=progress
+
+# 5. boot: leave the stick in, reboot, open the firmware's boot menu
+#    (F9 on HP), pick the stick's UEFI entry. Secure Boot must be off.
+```
+
+No bootloader menu appears -- the firmware loads the kernel from the
+stick's fallback path, the baked command line names slot A, and the
+system comes up to a login prompt. Known first-boot state while the
+persist service is in development: wifi hardware is driven (firmware
+aboard) but no networks are remembered; changes made on the running
+system land in slot A on the stick.
+
+## 14. Order of work (progress noted in place)
 
 1. This spec's constants: PARTUUIDs, ESP paths, entry names, index schema.
    [DONE -- constants live in tools/veron-mkimage and veron-efiboot]
