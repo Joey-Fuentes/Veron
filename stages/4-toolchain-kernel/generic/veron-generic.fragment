@@ -237,7 +237,25 @@ CONFIG_DEVTMPFS_MOUNT=y
 # would discard what entries pass and is exactly the wrong tool; it stays
 # off, and REQUIRED-CONFIGS pins its absence.
 CONFIG_CMDLINE_BOOL=y
-CONFIG_CMDLINE="root=PARTUUID=aaaa0002-0000-4000-8000-564552304e02 rootwait rw init=/usr/bin/dinit console=tty0 console=ttyS0,115200 panic=30"
+CONFIG_CMDLINE="root=PARTUUID=aaaa0002-0000-4000-8000-564552304e02 rootwait rw init=/usr/bin/dinit console=ttyS0,115200 panic=30 vt.global_cursor_default=0"
+
+# v10: THE SILENT PANEL AND THE FAST-PATH HARDWARE, one cycle.
+# console=tty0 IS GONE, and that is the whole mechanism: the panel is
+# simply not a kernel console, so it shows no printk at any level,
+# panic included -- silent BY CONSTRUCTION, not by filter. An earlier
+# draft used loglevel=3 and was wrong by our own doctrine: loglevel is
+# global and would have muzzled ttyS0, where the gates read their
+# evidence. Serial keeps every byte; the panel keeps none; the
+# wallpaper (splash service, veron-system) is what a person sees from
+# fb0's first breath. The cursor flag stops even a blinking block.
+# RULED (Joe, 2026-08-18): hidden and quiet at all moments, black at
+# worst, the desktop wallpaper as the boot image so every transition
+# seam is visible to the eye that tests it.
+CONFIG_KEXEC=y
+CONFIG_KEXEC_FILE=y
+CONFIG_SP5100_TCO=m
+CONFIG_ITCO_WDT=m
+CONFIG_WATCHDOG=y
 
 # v9: THE USB-BOOT SPINE, BUILT IN -- learned on metal (first flash of
 # release/1f043fa, 2026-08-18 03:23): the HP took the fallback path, the

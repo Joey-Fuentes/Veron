@@ -1,0 +1,10 @@
+# The panel wears the wallpaper from the first breath. scripted + a
+# stop-command that repaints: this service depends only on
+# early-filesystems, so dinit stops it LAST on the way down -- the
+# repaint covers the [STOPPD] parade, and the panel goes from desktop
+# to wallpaper to power-off with no console in between.
+type = scripted
+command = /etc/dinit.d/scripts/splash
+stop-command = /etc/dinit.d/scripts/splash down
+restart = false
+depends-on = early-filesystems
