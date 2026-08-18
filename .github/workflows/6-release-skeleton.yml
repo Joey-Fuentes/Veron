@@ -82,17 +82,20 @@ jobs:
           [ "$found" -gt 0 ] || { echo "no arch has a stage-5 release; nothing to do"; exit 1; }
 
       - name: 'FW -- the pinned firmware tree, prepared for absorption'
+        env:
+          # python block-buffers stdout under Actions (no tty): without
+          # this, mirror.py's route lines sit invisible in the buffer while
+          # a 619 MB download grinds -- ten silent minutes, measured, run
+          # of 2026-08-18. Loud beats fast, and this step is now both.
+          PYTHONUNBUFFERED: "1"
         run: |
           set -eu
-          # THE FLASH SCRIPT'S JOB MOVES INTO THE ARTIFACT. Firmware is
-          # fetched exactly the way every other pinned source is -- through
-          # the mirror, hash-verified -- then prepared the way upstream
-          # ships it: linux-firmware's own install machinery does the dedup
-          # and per-file zstd (the kernel decompresses at load,
-          # CONFIG_FW_LOADER_COMPRESS_ZSTD), WHENCE and every LICENCE.*
-          # kept beside the blobs they govern. Unpinned entries are skipped
-          # OUT LOUD; unknown pinned entries fail the build so a new
-          # firmware source gets a deliberate handler, not a guess.
+          # THE FLASH SCRIPT'S JOB MOVES INTO THE ARTIFACT: firmware
+          # fetched through the mirror like every pinned source, prepared
+          # the way upstream ships it (dedup by its own install; per-file
+          # zstd the kernel decompresses at load), WHENCE and LICENCE.*
+          # beside the blobs. Unpinned entries skip OUT LOUD; unknown
+          # pinned names fail so new sources get deliberate handlers.
           python3 - > fw-list.tsv <<'PY'
           import tomllib
           for src in tomllib.load(open("sources/firmware.toml", "rb"))["source"]:
@@ -102,30 +105,49 @@ jobs:
               fname = src["url"].rsplit("/", 1)[-1]
               print("FETCH\t%s\t%s\t%s\t%s" % (src["name"], src["sha256"], fname, src["url"]))
           PY
+          cat fw-list.tsv
           mkdir -p fw-dl fwtree
           while IFS="$(printf '\t')" read -r verb name a b c; do
             case "$verb" in
               SKIP)  echo "  $name: $a" ;;
-              FETCH) python3 tools/mirror.py fetch "$a" "$b" --url "$c" --dest fw-dl
+              FETCH) echo "::group::fetch $name ($b)"
+                     date -u +"  start %H:%M:%SZ"
+                     # HARD CEILING: a route that trickles must fail loudly,
+                     # not eat the job. 8 minutes moves 619 MB at ~1.3 MB/s;
+                     # anything slower is a bad route, and mirror.py's next
+                     # route deserves the chance the ceiling creates.
+                     timeout 480 python3 tools/mirror.py fetch "$a" "$b" --url "$c" --dest fw-dl \
+                       || { echo "  fetch of $name timed out or failed"; exit 1; }
+                     date -u +"  done  %H:%M:%SZ"
+                     echo "::endgroup::"
                      case "$name" in
                        linux-firmware|wireless-regdb) : ;;
                        *) echo "  $name is pinned but has no handler here -- add one deliberately"; exit 1 ;;
                      esac ;;
             esac
           done < fw-list.tsv
-          if ls fw-dl/linux-firmware-*.tar.xz >/dev/null 2>&1; then
-            tar -xf fw-dl/linux-firmware-*.tar.xz -C fw-dl
-            make -C fw-dl/linux-firmware-*/ install-zst DESTDIR="$PWD/fwstage" FIRMWAREDIR=/ >/dev/null
-            cp -a fwstage/. fwtree/
-          else
-            echo "no linux-firmware fetched"; exit 1
-          fi
+          echo "::group::prepare the tree"
+          date -u +"  extract %H:%M:%SZ"
+          tar -xf fw-dl/linux-firmware-*.tar.xz -C fw-dl
+          # PLAIN install (dedup + layout, no compression), then compress
+          # IN PARALLEL ourselves: install-zst runs zstd one file at a
+          # time -- thousands of files, one core, many silent minutes.
+          # xargs -P fans out; -T1 per file keeps every output byte
+          # deterministic regardless of core count, which the built-twice
+          # cmp downstream depends on.
+          make -C fw-dl/linux-firmware-*/ install DESTDIR="$PWD/fwstage" FIRMWAREDIR=/ >/dev/null
+          date -u +"  compress %H:%M:%SZ"
+          find fwstage -type f ! -name 'WHENCE*' ! -name 'LICEN*' ! -name '*.txt' -print0 \
+            | xargs -0 -n64 -P"$(nproc)" zstd -q -19 -T1 --rm
+          cp -a fwstage/. fwtree/
           if ls fw-dl/wireless-regdb-*.tar.xz >/dev/null 2>&1; then
             tar -xf fw-dl/wireless-regdb-*.tar.xz -C fw-dl
             cp fw-dl/wireless-regdb-*/regulatory.db fw-dl/wireless-regdb-*/regulatory.db.p7s fwtree/
           fi
           [ -e fwtree/WHENCE ] || [ -e fwtree/WHENCE.zst ] \
             || { echo "prepared tree lost WHENCE"; exit 1; }
+          date -u +"  done %H:%M:%SZ"
+          echo "::endgroup::"
           echo "firmware tree: $(find fwtree -type f | wc -l) file(s), $(du -sh fwtree | cut -f1)"
 
       - name: 'IMG -- the A/B GPT disk image'
