@@ -190,8 +190,10 @@ verifier is a shell script you can read on the machine it verifies.</p>
         for a in rel["assets"]:
             if a["kind"] not in ("img", "iso"):
                 continue
-            what = ("Disk image — write to a USB stick or drive; A/B updates, "
-                    "persistent home" if a["kind"] == "img" else
+            what = ("Disk image — write to a USB stick or drive; boots to a "
+                    "complete system on the A/B layout. The automatic updater "
+                    "and persistent-home service are in development — today, "
+                    "what you write is what runs" if a["kind"] == "img" else
                     "Live ISO — try Veron without installing; works burned, "
                     "dd'd, or dropped onto a Ventoy stick")
             parts.append(f"""<div class="card">
@@ -262,11 +264,13 @@ written, and the tracer says so instead of pretending.</li>
 </ul>
 
 <h2>updates</h2>
-<p>True A/B: an update writes the inactive slot, verifies it by hash,
-and boots it exactly once. If the new system doesn't prove itself, the
-firmware falls back to the untouched old one — the failure path runs no
-code at all. Your data lives on its own partition no update ever
-touches.</p>
+<p>The design, shipping in stages: true A/B — an update writes the
+inactive slot, verifies it by hash, and boots it exactly once; if the
+new system doesn't prove itself, the firmware falls back to the
+untouched old one, and your data lives on its own partition no update
+ever touches. The disk layout for all of this is already in every
+image. The automatic updater itself is in development; until it ships,
+updating means writing the new image.</p>
 
 <footer>generated from commit {html.escape(commit)} · run {html.escape(str(m.get("generated","")))}
 · <a href="https://github.com/Joey-Fuentes/Veron">source</a>
