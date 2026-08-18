@@ -238,7 +238,14 @@ jobs:
           # is the kernel's own EFI runtime banner, printed on every EFI boot.
           grep -Eq "efi: EFI v|EFI stub" efiboot/serial.log             && echo "  ok    EFI handover confirmed (runtime banner or stub chatter)"             || { echo "  FAIL  no EFI evidence: kernel did not boot via EFI"; fail=1; }
           grep -q "Command line:.*root=PARTUUID=00000000-dead" efiboot/serial.log             && echo "  ok    LoadOptions became the kernel command line"             || { echo "  FAIL  LoadOptions did not reach the cmdline"; fail=1; }
-          grep -Eq "Cannot open root device|unknown-block|VFS: Unable to mount root" efiboot/serial.log             && echo "  ok    root=PARTUUID= parsed and searched (the deliberately bogus GUID found nothing, as designed)"             || { echo "  FAIL  the kernel never reached root mounting"; fail=1; }
+          # ROOTWAIT CHANGED THE WITNESS (fragment v9): the kernel no longer
+          # panics on an absent root -- it WAITS, as designed for slow USB
+          # enumeration, and prints "Waiting for root device ..." when it
+          # engages. That line is the stronger proof: cmdline parsed, PARTUUID
+          # resolution active, rootwait armed. The old panic greps stay as
+          # alternates for any kernel predating v9 (run 87044356715 failed a
+          # correct kernel against the old expectation).
+          grep -Eq "Waiting for root device|Cannot open root device|unknown-block|VFS: Unable to mount root" efiboot/serial.log             && echo "  ok    root=PARTUUID= parsed; the kernel is waiting or reported it, as designed"             || { echo "  FAIL  the kernel never reached root mounting"; fail=1; }
           [ "$fail" -eq 0 ] || exit 1
           echo "VERON-EFISTUB-OK  no bootloader, no initramfs: the kernel IS the boot program"
 
