@@ -117,7 +117,11 @@ jobs:
                      # anything slower is a bad route, and mirror.py's next
                      # route deserves the chance the ceiling creates.
                      timeout 480 python3 tools/mirror.py fetch "$a" "$b" --url "$c" --dest fw-dl \
-                       || { echo "  fetch of $name timed out or failed"; exit 1; }
+                       || { echo "  fetch of $name timed out or failed."
+                            echo "  If the github route 404'd: the mirror lacks firmware --"
+                            echo "  run  sh tools/mirror-sources.sh  once (authed) and re-dispatch;"
+                            echo "  kernel.org at runner bandwidth cannot beat this ceiling."
+                            exit 1; }
                      date -u +"  done  %H:%M:%SZ"
                      echo "::endgroup::"
                      case "$name" in
@@ -136,8 +140,18 @@ jobs:
           # deterministic regardless of core count, which the built-twice
           # cmp downstream depends on.
           make -C fw-dl/linux-firmware-*/ install DESTDIR="$PWD/fwstage" FIRMWAREDIR=/ >/dev/null
+          # copy-firmware.sh INSTALLS ONLY THE BLOBS -- WHENCE and the
+          # LICENCE/GPL texts live in the source root and never reach
+          # DESTDIR ("prepared tree lost WHENCE", run of 2026-08-18). They
+          # are the redistribution terms, so they ship beside what they
+          # govern, uncompressed and readable on the installed system.
+          cp fw-dl/linux-firmware-*/WHENCE* fwstage/
+          cp fw-dl/linux-firmware-*/LICEN* fwstage/
+          cp fw-dl/linux-firmware-*/GPL* fwstage/ 2>/dev/null || true
+          [ "$(ls fwstage/LICEN* | wc -l)" -gt 10 ] \
+            || { echo "suspiciously few LICENCE files copied"; exit 1; }
           date -u +"  compress %H:%M:%SZ"
-          find fwstage -type f ! -name 'WHENCE*' ! -name 'LICEN*' ! -name '*.txt' -print0 \
+          find fwstage -type f ! -name 'WHENCE*' ! -name 'LICEN*' ! -name 'GPL*' ! -name '*.txt' -print0 \
             | xargs -0 -n64 -P"$(nproc)" zstd -q -19 -T1 --rm
           cp -a fwstage/. fwtree/
           if ls fw-dl/wireless-regdb-*.tar.xz >/dev/null 2>&1; then
