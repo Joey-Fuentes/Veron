@@ -43,7 +43,8 @@ static Fl_Input *confirm_name;
 static std::vector<long long> devcaps;
 static Fl_Check_Button *want_sha, *want_att;
 static Fl_Button *btn_latest, *btn_own, *btn_flash;
-static std::string image_path;
+static std::string image_path;                 // "use my own image" mode
+static std::string latest_url, latest_zsha, latest_isha;   // stream mode
 static std::vector<std::string> devnames;
 
 static void logln(const std::string &s) {
@@ -68,20 +69,28 @@ static int run_logged(const std::string &cmd) {
 // The disk under / -- shown greyed to the user, refused by the service
 // regardless of what any UI displays.
 static std::string boot_disk() {
-    char dev[128] = {0};
-    FILE *p = popen("awk '$2==\"/\"{print $1}' /proc/mounts | head -1", "r");
-    if (p) { if (fscanf(p, "%127s", dev) != 1) dev[0] = 0; pclose(p); }
-    std::string s = dev;
-    if (s.rfind("/dev/", 0) == 0) s = s.substr(5);
-    while (!s.empty() && isdigit(s.back())) s.pop_back();
-    if (!s.empty() && s.back() == 'p') s.pop_back();
-    return s;
+    // /dev/root taught us names lie (the boot stick appeared as a
+    // target, 2026-08-18): resolve major:minor through /sys instead.
+    char mm[64] = {0};
+    FILE *p = popen("awk '$5==\"/\"{print $3; exit}' /proc/self/mountinfo", "r");
+    if (p) { if (fscanf(p, "%63s", mm) != 1) mm[0] = 0; pclose(p); }
+    if (!mm[0]) return "";
+    char link[512] = {0};
+    std::string sys = std::string("/sys/dev/block/") + mm;
+    ssize_t n = readlink(sys.c_str(), link, sizeof link - 1);
+    std::string t = n > 0 ? std::string(link, n) : "";
+    size_t b = t.find("/block/");
+    if (b == std::string::npos) return "";
+    t = t.substr(b + 7);
+    size_t sl = t.find('/');
+    return sl == std::string::npos ? t : t.substr(0, sl);
 }
 
 static void scan_devices() {
     devchoice->clear(); devnames.clear(); devcaps.clear();
     bool internal = mode_install && mode_install->value();
     std::string sacred = boot_disk();
+    if (sacred.empty()) { devchoice->add("boot disk unknown -- refusing to list targets"); devchoice->value(0); return; }
     DIR *d = opendir("/sys/block");
     if (!d) return;
     while (dirent *e = readdir(d)) {
@@ -132,12 +141,19 @@ static void scan_devices() {
 }
 
 static void cb_latest(Fl_Widget*, void*) {
+    // NOTHING IS DOWNLOADED HERE ANY MORE. The first on-device attempt
+    // filled slot A's ruled ~100 MB of headroom at the 242 MB mark of an
+    // 870 MB archive (2026-08-18): this appliance has no scratch for a
+    // stored image, BY DESIGN. So this only learns the release's name
+    // and digests from SHA256SUMS (186 bytes), and the write itself is
+    // the flashd STREAM verb -- network to device, hashed in flight,
+    // read back after, nothing stored anywhere.
     logln("== fetching the latest release's own inventory ==");
     std::string dir = std::string(getenv("HOME") ? getenv("HOME") : "/tmp")
                       + "/Downloads";
     mkdir(dir.c_str(), 0755);
     std::string sums = dir + "/SHA256SUMS";
-    if (run_logged("curl -fsSL -o '" + sums + "' "
+    if (run_logged("curl -fsS -o '" + sums + "' "
         "https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/SHA256SUMS")) {
         logln("FAILED to fetch SHA256SUMS -- is the network up?"); return;
     }
@@ -148,42 +164,29 @@ static void cb_latest(Fl_Widget*, void*) {
     if (p) { if (fscanf(p, "%255s", name) != 1) name[0] = 0; pclose(p); }
     if (!name[0]) { logln("SHA256SUMS names no image -- refusing to guess"); return; }
     logln(std::string("latest is ") + name);
-    std::string zst = dir + "/" + name;
-    logln("downloading (~900 MB; the log will sit quiet while curl works)...");
-    if (run_logged("curl -fSL --progress-bar -o '" + zst + "' "
-        "'https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/" 
-        + std::string(name) + "'")) { logln("download FAILED"); return; }
-    if (want_sha->value()) {
-        logln("== sha256 against the release's own SHA256SUMS ==");
-        if (run_logged("cd '" + dir + "' && sha256sum -c SHA256SUMS 2>/dev/null"
-                       " | grep '" + std::string(name) + "'")) {
-            logln("DIGEST MISMATCH -- this download is not the release. Stopping.");
-            return;
-        }
-        logln("digest OK -- the bytes are the release's");
-    }
+    // both digests from the same 186-byte file: the archive's and the
+    // decompressed image's ("after zstd -d") -- the stream's yardsticks
+    char zs[80] = {0}, is[80] = {0};
+    FILE *pz = popen(("awk '/" + std::string(name) + "$/{print $1}' '" + sums + "'").c_str(), "r");
+    if (pz) { if (fscanf(pz, "%79s", zs) != 1) zs[0] = 0; pclose(pz); }
+    std::string inner = name; inner.resize(inner.size() - 4);
+    FILE *pi = popen(("awk '/" + inner + "$/{print $1}' '" + sums + "'").c_str(), "r");
+    if (pi) { if (fscanf(pi, "%79s", is) != 1) is[0] = 0; pclose(pi); }
+    if (!zs[0] || !is[0]) { logln("SHA256SUMS lacks a digest -- refusing to stream unverifiable bytes"); return; }
+    latest_url = "https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/" + std::string(name);
+    latest_zsha = zs; latest_isha = is;
+    image_path.clear();
     if (want_att->value()) {
         logln("== attestation (v1: presence + subject; NOT the crypto chain) ==");
-        std::string dig;
-        FILE *q = popen(("sha256sum '" + zst + "' | cut -d' ' -f1").c_str(), "r");
-        char db[80] = {0};
-        if (q) { if (fscanf(q, "%79s", db) != 1) db[0] = 0; pclose(q); }
-        dig = db;
         int rc = run_logged(
-            "curl -fsSL 'https://api.github.com/repos/Joey-Fuentes/Veron/"
-            "attestations/sha256:" + dig + "' | grep -c 'dsse'");
-        if (rc == 0)
-            logln("attestation EXISTS for this exact digest at "
-                  "Joey-Fuentes/Veron.\n  (v1 checks presence and subject; "
-                  "cryptographic Sigstore verification is future work and "
-                  "this label will change when it is real.)");
-        else
-            logln("NO attestation found for this digest -- treat with suspicion.");
+            "curl -sSL 'https://api.github.com/repos/Joey-Fuentes/Veron/"
+            "attestations/sha256:" + latest_zsha + "' | grep -c 'dsse'");
+        logln(rc == 0 ? "attestation EXISTS for this exact digest."
+                      : "NO attestation found for this digest -- treat with suspicion.");
     }
-    logln("decompressing...");
-    if (run_logged("zstd -f -d '" + zst + "'")) { logln("zstd FAILED"); return; }
-    image_path = zst.substr(0, zst.size() - 4);
-    logln("image ready: " + image_path);
+    logln("ready to STREAM " + std::string(name) + " (nothing will be stored)");
+    logln("  archive sha256 " + latest_zsha);
+    logln("  image   sha256 " + latest_isha + "  (verified again by read-back)");
     btn_flash->activate();
 }
 
@@ -211,7 +214,7 @@ static void poll_status(void*) {
 }
 
 static void cb_flash(Fl_Widget*, void*) {
-    if (image_path.empty() || devnames.empty()) return;
+    if ((image_path.empty() && latest_url.empty()) || devnames.empty()) return;
     int idx = devchoice->value() < (int)devnames.size() ? devchoice->value() : 0;
     std::string dev = devnames[idx];
     bool install = mode_install->value();
@@ -233,7 +236,11 @@ static void cb_flash(Fl_Widget*, void*) {
               "(dinitctl status veron-flashd)");
         return;
     }
-    if (install)
+    if (!latest_url.empty() && image_path.empty()) {
+        if (install) { logln("INSTALL streaming lands with the qemu rehearsal; use a local image for now"); fclose(f); return; }
+        fprintf(f, "STREAM %s %s %s %s\n", latest_url.c_str(),
+                latest_zsha.c_str(), latest_isha.c_str(), dev.c_str());
+    } else if (install)
         fprintf(f, "INSTALL %s %s %lld\n", image_path.c_str(), dev.c_str(),
                 devcaps[idx]);
     else

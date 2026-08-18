@@ -7,6 +7,14 @@
 #
 # PROTOCOL, DELIBERATELY DUMB: one FIFO, one verb.
 #   FLASH   <image> <dev>                  -- removable targets ONLY
+#   STREAM  <url> <zst-sha> <img-sha> <dev> -- download-and-write with
+#     NOTHING STORED: slot A keeps ~100 MB free by ruling and persist is
+#     256 MB, so an 870 MB archive plus a 4.2 GB image fits nowhere on
+#     this appliance BY DESIGN (first on-device flash attempt proved it,
+#     2026-08-18). The stream is hashed in flight against the archive
+#     digest, the decompressed bytes are hashed on their way to the
+#     device, and the device is READ BACK and hashed again -- three
+#     digests, zero scratch, same byte-exact verdict.
 #   INSTALL <image> <dev> <capacity-bytes> -- INTERNAL targets only, and
 #     the request must state the target's exact capacity: the GUI reads
 #     /sys, the service re-reads it, and a mismatch is a refusal. A
@@ -27,8 +35,13 @@ say "veron-flashd: ready"
 
 while :; do
   # a FIFO read blocks until a writer arrives; one request at a time
-  read -r verb img dev want_cap < "$DIR/cmd" || { /bin/busybox sleep 1; continue; }
-  case "$verb" in FLASH|INSTALL) : ;; *) say "REFUSED: unknown verb '$verb'"; continue ;; esac
+  read -r verb a1 a2 a3 a4 < "$DIR/cmd" || { /bin/busybox sleep 1; continue; }
+  case "$verb" in
+    FLASH)   img=$a1; dev=$a2; want_cap= ;;
+    INSTALL) img=$a1; dev=$a2; want_cap=$a3 ;;
+    STREAM)  url=$a1; zsha=$a2; isha=$a3; dev=$a4; img=; want_cap= ;;
+    *) say "REFUSED: unknown verb '$verb'"; continue ;;
+  esac
 
   # ---- VALIDATION IS THE PRODUCT ----------------------------------
   case "$dev" in *[!a-z0-9]*|"") say "REFUSED: '$dev' is not a device name"; continue ;; esac
@@ -37,8 +50,20 @@ while :; do
   read -r rem < "/sys/block/$dev/removable" 2>/dev/null || rem=0
   # THE BOOT DISK IS SACRED UNDER EVERY VERB -- derived fresh, refused
   # by name, no exception exists or ever will.
-  rootsrc=$(/bin/busybox awk '$2=="/"{print $1}' /proc/mounts | head -1)
-  rootdisk=$(echo "$rootsrc" | /bin/busybox sed 's|/dev/||; s|p\{0,1\}[0-9]*$||')
+  # THE NAME LIES, THE NUMBERS DO NOT. With no initramfs the kernel's
+  # root mount reads "/dev/root" in /proc/mounts -- a name that strips
+  # to nothing and matched nothing, and the first on-device run showed
+  # the boot stick LISTED AS A TARGET (2026-08-18). So the sacred disk
+  # is derived from major:minor via /sys, which cannot be aliased:
+  # mountinfo field 3 -> /sys/dev/block/MAJ:MIN -> .../block/DISK/PART.
+  rootmm=$(/bin/busybox awk '$5=="/"{print $3; exit}' /proc/self/mountinfo)
+  rootlink=$(/bin/busybox readlink -f "/sys/dev/block/$rootmm" 2>/dev/null || echo "")
+  case "$rootlink" in
+    */block/*/*) rootdisk=$(echo "$rootlink" | /bin/busybox sed 's|.*/block/\([^/]*\)/.*|\1|') ;;
+    */block/*)   rootdisk=$(/bin/busybox basename "$rootlink") ;;
+    *)           rootdisk="" ;;
+  esac
+  [ -n "$rootdisk" ] || { say "REFUSED: cannot determine the boot disk -- refusing everything rather than guessing"; continue; }
   [ "$dev" != "$rootdisk" ]     || { say "REFUSED: $dev is the disk this system is running from"; continue; }
   cap=$(( $(cat "/sys/block/$dev/size") * 512 ))
   if [ "$verb" = "FLASH" ]; then
@@ -49,6 +74,36 @@ while :; do
     case "${want_cap:-}" in ''|*[!0-9]*) say "REFUSED: INSTALL requires the target's capacity in bytes"; continue ;; esac
     [ "$want_cap" = "$cap" ]    || { say "REFUSED: capacity mismatch -- request says $want_cap, $dev is $cap. The requester has not looked at this disk."; continue; }
     say "INSTALL consented: $dev, $cap bytes -- THIS ERASES EVERY OPERATING SYSTEM ON IT"
+  fi
+  if [ "$verb" = "STREAM" ]; then
+    case "$zsha$isha" in *[!0-9a-f]*|"") say "REFUSED: STREAM needs both digests"; continue ;; esac
+    say "streaming $url onto /dev/$dev -- nothing stored, three digests checked"
+    for p in /dev/$dev?*; do /bin/busybox umount "$p" 2>/dev/null; done
+    W=/run/veron-flash/work; /bin/busybox rm -rf "$W"; /bin/busybox mkdir -p "$W"
+    /bin/busybox mkfifo "$W/zst" "$W/raw"
+    # transport hash reads the archive tee; content hash reads the raw tee
+    /bin/busybox sha256sum < "$W/zst" > "$W/zsha" &
+    /bin/busybox sha256sum < "$W/raw" > "$W/isha" &
+    if ! /usr/bin/curl -fsSL "$url" \
+         | /bin/busybox tee "$W/zst" \
+         | /usr/bin/zstd -dc \
+         | /bin/busybox tee "$W/raw" \
+         | /bin/busybox dd of="/dev/$dev" bs=4M conv=fsync 2>"$W/dd"; then
+      say "STREAM FAILED during transfer -- $(tail -1 "$W/dd" 2>/dev/null)"; wait; continue
+    fi
+    wait
+    got_z=$(/bin/busybox cut -d' ' -f1 "$W/zsha"); got_i=$(/bin/busybox cut -d' ' -f1 "$W/isha")
+    nbytes=$(/bin/busybox awk '/bytes/{print $1; exit}' "$W/dd")
+    [ "$got_z" = "$zsha" ] || { say "VERIFY FAILED: archive digest mismatch (got $got_z) -- the download was not the release"; continue; }
+    [ "$got_i" = "$isha" ] || { say "VERIFY FAILED: image digest mismatch after decompress -- do not boot this stick"; continue; }
+    say "stream digests OK ($nbytes bytes written); reading the device back ..."
+    back=$(/bin/busybox dd if="/dev/$dev" bs=4M iflag=count_bytes count="$nbytes" 2>/dev/null | /bin/busybox sha256sum | /bin/busybox cut -d' ' -f1)
+    if [ "$back" = "$isha" ]; then
+      say "VERIFIED: /dev/$dev holds the release byte-for-byte ($nbytes bytes, read back and hashed)"
+    else
+      say "VERIFY FAILED on read-back: the device does not hold what was written -- do not boot it"
+    fi
+    continue
   fi
   [ -f "$img" ]                 || { say "REFUSED: no such image: $img"; continue; }
   size=$(/bin/busybox stat -c %s "$img" 2>/dev/null || echo 0)
