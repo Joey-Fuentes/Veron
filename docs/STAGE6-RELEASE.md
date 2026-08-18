@@ -102,8 +102,12 @@ cluster floor scales with cluster size; 4 KiB clusters forced ~257 MiB
 minimum for ~100 MB of kernels; 128 carries 4x headroom over the four-
 kernel update peak); persist ships at 256 MiB and grows to fill the disk
 at first boot
-(deliberately the last partition). At today's measured 2878388 KB the
-whole image is ~6.6 GiB raw -- back inside a cheap 8 GB stick -- and
+(deliberately the last partition). RULED 2026-08-18: the raw image fits a standard DVD-5 (4482 MiB) --
+enforced as a named build guard -- which in turn ruled the firmware
+question: the image ships the firmware its kernel's modules actually
+reference (modinfo-keyed prune, per arch; WHENCE and every license kept
+whole; regdb and intel-ucode always), because the complete tree cannot
+fit two slots under the DVD. Projected ~4.0 GiB raw, and
 the publish gate enforces GitHub's 2 GiB asset ceiling on the
 compressed download.
 

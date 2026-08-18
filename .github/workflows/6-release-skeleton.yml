@@ -208,12 +208,120 @@ jobs:
             # image without privileges via debugfs rdump
             /sbin/debugfs -R "rdump / work/$arch/rootfs" "in/5-$arch/rootfs.img" >/dev/null 2>&1
             [ -e "work/$arch/rootfs/etc/veron-release" ]               || { echo "  $arch: rdump produced no tree"; exit 1; }
+            # RDUMP MATERIALIZES HARDLINKS AS COPIES -- the extracted tree
+            # measured ~1893 MiB where the strip step measured 1229 MB of
+            # the same system (~660 MiB of phantom duplication; git's
+            # hardlinked builtins are the bulk). Content-dedupe restores
+            # them: byte-identical regular files become hardlinks again,
+            # mke2fs -d stores each once, and every path keeps exactly the
+            # bytes the records claim. Deterministic: sorted walk, first
+            # path is the canon.
+            python3 - "work/$arch/rootfs" <<'PY'
+          import hashlib, os, sys
+          root = sys.argv[1]
+          seen = {}
+          relinked = saved = 0
+          for dirpath, dirs, files in sorted(os.walk(root)):
+              dirs.sort()
+              for f in sorted(files):
+                  p = os.path.join(dirpath, f)
+                  if os.path.islink(p) or not os.path.isfile(p):
+                      continue
+                  st = os.stat(p)
+                  if st.st_size < 4096:
+                      continue
+                  h = hashlib.sha256()
+                  with open(p, "rb") as fh:
+                      for c in iter(lambda: fh.read(1 << 20), b""):
+                          h.update(c)
+                  k = (h.hexdigest(), st.st_mode & 0o7777)
+                  if k in seen:
+                      os.unlink(p)
+                      os.link(seen[k], p)
+                      relinked += 1
+                      saved += st.st_size
+                  else:
+                      seen[k] = p
+          print(f"  dedupe: {relinked} file(s) re-hardlinked, {saved // 1048576} MiB reclaimed")
+          PY
             KERNEL="in/k-$arch/vmlinuz-generic"
             [ -s "$KERNEL" ] || KERNEL="in/5-$arch/Image"
             MODTAR=$(ls in/k-$arch/modules-*.tar.zst 2>/dev/null | head -1 || true)
             ABSORB=""
             [ -n "$MODTAR" ] && ABSORB="--modules-tar $MODTAR"
-            [ -d fwtree ] && ABSORB="$ABSORB --firmware-dir fwtree"
+            # FIRMWARE PRUNE, RULED BY THE DVD (Joe, 2026-08-18: the image
+            # must fit a standard DVD-5, and the complete 847 MB tree puts
+            # two slots past that budget). What ships is the firmware THIS
+            # ARCH'S KERNEL CAN ASK FOR: every name in the modules' own
+            # modinfo firmware fields, symlink targets chased, .zst
+            # spelling matched -- plus regdb, intel-ucode, WHENCE and every
+            # license, whole. Firmware for hardware this kernel cannot
+            # drive is dead bytes by definition. Stated limitation: the
+            # prune is keyed to MODULES; this fragment's built-in drivers
+            # (storage, xhci) request no blobs, and if one ever does, the
+            # boot gate is what catches it.
+            if [ -n "$MODTAR" ] && [ -d fwtree ]; then
+              mkdir -p "work/$arch/mods-scan"
+              tar -xf "$MODTAR" -C "work/$arch/mods-scan"
+              python3 - "work/$arch/mods-scan" fwtree "work/$arch/fw" <<'PY'
+          import os, shutil, subprocess, sys
+          mods, tree, out = sys.argv[1:4]
+          want = set()
+          for dp, _, fs in os.walk(mods):
+              for f in fs:
+                  if ".ko" not in f:
+                      continue
+                  r = subprocess.run(["/usr/sbin/modinfo", "-F", "firmware",
+                                      os.path.join(dp, f)],
+                                     capture_output=True, text=True)
+                  want.update(x.strip() for x in r.stdout.splitlines() if x.strip())
+          def place(rel):
+              src = os.path.join(tree, rel)
+              for cand in (src, src + ".zst"):
+                  if os.path.lexists(cand):
+                      dst = os.path.join(out, os.path.relpath(cand, tree))
+                      os.makedirs(os.path.dirname(dst), exist_ok=True)
+                      if os.path.islink(cand):
+                          t = os.readlink(cand)
+                          if not os.path.lexists(dst):
+                              os.symlink(t, dst)
+                          # chase the target so the link resolves
+                          tgt = os.path.normpath(os.path.join(os.path.dirname(rel), t))
+                          place(tgt)
+                      elif not os.path.exists(dst):
+                          shutil.copy2(cand, dst)
+                      return True
+              return False
+          os.makedirs(out, exist_ok=True)
+          hit = sum(1 for rel in sorted(want) if place(rel))
+          # the redistribution terms and the always-wanted pieces, whole
+          for keep in ("WHENCE", "WHENCE.zst", "regulatory.db", "regulatory.db.p7s",
+                       "LICENSE.intel-ucode"):
+              p = os.path.join(tree, keep)
+              if os.path.exists(p):
+                  shutil.copy2(p, os.path.join(out, keep))
+          for e in sorted(os.listdir(tree)):
+              if e.startswith(("LICEN", "GPL")) or e == "LICENSES":
+                  srcp = os.path.join(tree, e)
+                  dstp = os.path.join(out, e)
+                  (shutil.copytree(srcp, dstp, dirs_exist_ok=True)
+                   if os.path.isdir(srcp) else shutil.copy2(srcp, dstp))
+          if os.path.isdir(os.path.join(tree, "intel-ucode")):
+              shutil.copytree(os.path.join(tree, "intel-ucode"),
+                              os.path.join(out, "intel-ucode"), dirs_exist_ok=True)
+          missing = len(want) - hit
+          total = sum(os.path.getsize(os.path.join(dp, f))
+                      for dp, _, fs in os.walk(out) for f in fs
+                      if not os.path.islink(os.path.join(dp, f)))
+          print(f"  firmware pruned to what the modules name: {hit} of {len(want)} "
+                f"referenced names present ({missing} not in the tree -- the kernel "
+                f"would miss them identically), {total // 1048576} MiB kept")
+          PY
+              rm -rf "work/$arch/mods-scan"
+              ABSORB="$ABSORB --firmware-dir work/$arch/fw"
+            elif [ -d fwtree ]; then
+              ABSORB="$ABSORB --firmware-dir fwtree"
+            fi
             VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw"
             sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw2" 2>/dev/null || true
             cmp "out/veron-$arch.raw" "out/veron-$arch.raw2"               && echo "  $arch image REPRODUCED (built twice, same bytes)"               || { echo "  $arch image NOT reproducible"; exit 1; }

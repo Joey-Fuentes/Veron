@@ -174,6 +174,16 @@ pe_lba=$((rb_lba + root_lbas)); per_lbas=$((PERSIST_MB * 2048))
 end_lba=$((pe_lba + per_lbas))
 total_lba=$((end_lba + 2048))          # tail room for the backup GPT
 
+# THE DVD CEILING, RULED (Joe, 2026-08-18): the raw image must fit a
+# standard single-layer DVD-5 -- 4,700,000,000 bytes, 4482 MiB. This is
+# a product requirement, so it fails the build by name rather than being
+# discovered at a burner.
+total_mb=$((total_lba / 2048))
+[ "$total_mb" -le 4482 ] || {
+    echo "veron-mkimage: ${total_mb} MiB exceeds the ruled DVD-5 ceiling (4482 MiB)" >&2
+    echo "  shrink the staged world; the slot follows it by construction." >&2
+    exit 1; }
+
 # sparse-safe assembly: seek in 512-byte sectors
 : > "$OUT"
 dd if=/dev/zero of="$OUT" bs=512 seek=$((total_lba - 1)) count=1 status=none
