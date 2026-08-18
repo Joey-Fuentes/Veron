@@ -200,7 +200,7 @@ verifier is a shell script you can read on the machine it verifies.</p>
 <h3>{html.escape(a["name"])}</h3>
 <div class="meta">{html.escape(what)} · {human(a["size"])} · {html.escape(arch)}</div>
 <div class="sha">sha256 {html.escape(a["sha256"])}</div>
-<a class="btn" href="https://github.com/Joey-Fuentes/Veron/releases/download/{html.escape(rel["release_tag"]).replace("/", "%2F")}/{html.escape(a["name"])}">Download</a>
+<a class="btn" href="https://github.com/Joey-Fuentes/Veron/releases/download/{html.escape(rel["release_tag"])}/{html.escape(a["name"])}">Download</a>
 <a class="btn quiet" href="{html.escape(rel["attestation_url"])}">Attestation</a>
 </div>""")
         parts.append(f'<p class="tag">release {html.escape(rel["release_tag"])} '
@@ -245,9 +245,9 @@ veron-trace --verify --hash-files --strays --root /</pre>
 <p>Copy-paste on any Linux machine — the commands resolve the current
 release's filename themselves:</p>
 <pre>cd ~/Downloads
-curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6%2Flatest/SHA256SUMS"
+curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/SHA256SUMS"
 IMG=$(grep -o 'veron-x86_64-[0-9a-f]*[.]img[.]zst' SHA256SUMS | head -1)
-curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6%2Flatest/$IMG"
+curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/$IMG"
 sha256sum -c SHA256SUMS --ignore-missing   # must print: OK
 zstd -d "$IMG"
 

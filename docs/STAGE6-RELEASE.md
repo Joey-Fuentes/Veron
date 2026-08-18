@@ -325,14 +325,18 @@ literally, downloading two 9-byte "Not Found" pages (2026-08-18, the
 first consumer, minutes after the first release). Documentation that
 needs editing before it works is documentation with a bug. The commands
 below resolve the current release's filename FROM its own digest file,
-via the moving 6/latest tag, so they are correct for every release ever:
+via the moving 6/latest tag, so they are correct for every release ever.
+(And the tag's slash stays LITERAL in download paths: GitHub 404s the
+percent-encoded form there -- the release's own Download button shipped
+encoded and died on first click, 2026-08-18. Tag PAGE links are the
+opposite; only there does %2F belong.)
 
 ```
 # 1. fetch the digest file, learn the image's name from it, fetch the image
 cd ~/Downloads
-curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6%2Flatest/SHA256SUMS"
+curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/SHA256SUMS"
 IMG=$(grep -o 'veron-x86_64-[0-9a-f]*\.img\.zst' SHA256SUMS | head -1)
-curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6%2Flatest/$IMG"
+curl -LO "https://github.com/Joey-Fuentes/Veron/releases/download/6/latest/$IMG"
 
 # 2. verify, then unpack. The filename's 7 hex chars are the first 7 of
 #    the image's own sha256 -- the name is a claim SHA256SUMS proves.
