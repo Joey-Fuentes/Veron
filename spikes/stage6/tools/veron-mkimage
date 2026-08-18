@@ -1,0 +1,130 @@
+#!/bin/sh
+# veron-mkimage -- assemble the consumer A/B disk image, reproducibly,
+# with no loop devices and no privileges.
+#
+# INPUTS: a rootfs directory (stage 5's merged system), the per-slot
+# kernel PE, and the spec constants below. OUTPUT: one .img whose bytes
+# are a pure function of the inputs -- built twice and compared by the
+# caller, the same G2 discipline the stage-5 image already passes.
+#
+# THE LAYOUT IS docs/STAGE6-RELEASE.md §6, AS CONSTANTS:
+#   p1 ESP      FAT32   veron-mkfat (from source; fixed volume id/times)
+#   p2 root-A   ext4    mke2fs -d (fixed UUID + hash_seed; no mount)
+#   p3 root-B   ext4    empty, same geometry (the update writes it)
+#   p4 persist  ext4    empty, user state, never touched by updates
+# GPT by veron-mkgpt (from source). All GUIDs fixed: the PARTUUIDs are
+# spec constants because the kernel cmdline, the HD() device paths in the
+# boot entries, and the updater all name partitions by them.
+#
+# PRIVATE TYPE GUID FOR THE ROOTS, BY RULING: two DPS-root-typed
+# partitions make auto-discovery ambiguous on any rescue system; Veron
+# selects by PARTUUID and marks both roots no-auto (bit 63) + read-only
+# (bit 60). Veron's own tries/successful A/B bits live in the GPT
+# attributes too, in the 48-55 vendor range the way ChromeOS does it --
+# written later by the updater, zero at image build.
+set -eu
+
+HERE=$(dirname "$0")
+
+# ---- spec constants (docs/STAGE6-RELEASE.md §6) --------------------------
+DISK_GUID=1e5b95cf-3a70-4f0a-9d5e-564552304e00
+ESP_GUID=c12a7328-f81f-11d2-ba4b-00a0c93ec93b      # standard ESP type
+VERON_ROOT_TYPE=7e5b95cf-3a70-4f0a-9d5e-56455230aa01  # private: Veron root slot
+VERON_PERSIST_TYPE=7e5b95cf-3a70-4f0a-9d5e-56455230aa02
+PART_ESP=aaaa0001-0000-4000-8000-564552304e01
+PART_ROOT_A=aaaa0002-0000-4000-8000-564552304e02
+PART_ROOT_B=aaaa0003-0000-4000-8000-564552304e03
+PART_PERSIST=aaaa0004-0000-4000-8000-564552304e04
+# no-auto (bit 63) | read-only (bit 60). WRITTEN AS THE UNSIGNED
+# DECIMAL CONSTANT, not shell arithmetic: POSIX sh arithmetic is signed
+# 64-bit, so (1<<63) is negative in dash/busybox and a negative attrs
+# field failed the GPT writer -- measured, first test run.
+ATTR_ROOT=10376293541461622784   # 0x9000000000000000
+
+MB=1048576
+ESP_MB=${VERON_ESP_MB:-512}
+ROOT_MB=${VERON_ROOT_MB:-8192}
+PERSIST_MB=${VERON_PERSIST_MB:-1024}
+
+usage() { echo "usage: veron-mkimage --rootfs DIR --kernel FILE --out IMG" >&2; exit 2; }
+ROOTFS=""; KERNEL=""; OUT=""
+while [ $# -gt 0 ]; do case "$1" in
+    --rootfs) ROOTFS=$2; shift 2 ;;
+    --kernel) KERNEL=$2; shift 2 ;;
+    --out)    OUT=$2; shift 2 ;;
+    *) usage ;;
+esac; done
+[ -n "$ROOTFS" ] && [ -n "$KERNEL" ] && [ -n "$OUT" ] || usage
+[ -d "$ROOTFS" ] || { echo "no rootfs dir: $ROOTFS" >&2; exit 1; }
+[ -s "$KERNEL" ] || { echo "no kernel: $KERNEL" >&2; exit 1; }
+
+W=$(mktemp -d)
+trap 'rm -rf "$W"' EXIT
+
+# ---- ESP: both slot paths carry the SAME kernel at image build; the
+# fallback is slot A because A is the populated, committed slot ----------
+mkdir -p "$W/esp/EFI/BOOT" "$W/esp/EFI/veron/A" "$W/esp/EFI/veron/B"
+cp "$KERNEL" "$W/esp/EFI/veron/A/linux.efi"
+cp "$KERNEL" "$W/esp/EFI/veron/B/linux.efi"
+cp "$KERNEL" "$W/esp/EFI/BOOT/BOOTX64.EFI"
+python3 "$HERE/veron-mkfat" --size $((ESP_MB * MB)) --root "$W/esp" \
+    --out "$W/p1.esp" >&2
+
+# ---- root-A: the system; root-B and persist: empty ext4, fixed identity.
+# SOURCE_DATE_EPOCH pins every timestamp mke2fs invents.
+export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
+mkfs_args="-q -t ext4 -b 4096 -O ^has_journal,^resize_inode,^dir_index,^metadata_csum -m 0"
+/sbin/mke2fs $mkfs_args -d "$ROOTFS" \
+    -U 00000000-0000-4000-8000-0000000000a1 \
+    -E hash_seed=00000000-0000-4000-8000-0000000000a2 \
+    "$W/p2.rootA" $((ROOT_MB * MB / 1024))k
+/sbin/mke2fs $mkfs_args \
+    -U 00000000-0000-4000-8000-0000000000b1 \
+    -E hash_seed=00000000-0000-4000-8000-0000000000b2 \
+    "$W/p3.rootB" $((ROOT_MB * MB / 1024))k
+/sbin/mke2fs $mkfs_args \
+    -U 00000000-0000-4000-8000-0000000000c1 \
+    -E hash_seed=00000000-0000-4000-8000-0000000000c2 \
+    "$W/p4.persist" $((PERSIST_MB * MB / 1024))k
+
+# EXT4 IS NOT REPRODUCIBLE FROM mkfs ALONE -- stage 5 learned this the
+# slow way (s_wtime, s_lastcheck, s_mkfs_time, inode ctimes; and
+# SOURCE_DATE_EPOCH does NOT cover them, measured against mke2fs 1.47).
+# The SAME normalizer runs here, on each slot image before it is spliced
+# into the disk: one normalizer, two stages, zero drift.
+NORM=${VERON_NORMALIZE:-"$HERE/../../stage5/tools/normalize-ext4.py"}
+[ -f "$NORM" ] || { echo "veron-mkimage: normalize-ext4.py not found at $NORM (set VERON_NORMALIZE)" >&2; exit 1; }
+for slot in "$W/p2.rootA" "$W/p3.rootB" "$W/p4.persist"; do
+    python3 "$NORM" "$slot" >/dev/null
+done
+
+# ---- assemble at 1 MiB-aligned offsets, GPT around it -------------------
+ALIGN_LBA=2048
+esp_lba=$ALIGN_LBA
+esp_lbas=$((ESP_MB * 2048))
+ra_lba=$((esp_lba + esp_lbas)); root_lbas=$((ROOT_MB * 2048))
+rb_lba=$((ra_lba + root_lbas))
+pe_lba=$((rb_lba + root_lbas)); per_lbas=$((PERSIST_MB * 2048))
+end_lba=$((pe_lba + per_lbas))
+total_lba=$((end_lba + 2048))          # tail room for the backup GPT
+
+# sparse-safe assembly: seek in 512-byte sectors
+: > "$OUT"
+dd if=/dev/zero of="$OUT" bs=512 seek=$((total_lba - 1)) count=1 status=none
+dd if="$W/p1.esp"    of="$OUT" bs=512 seek=$esp_lba conv=notrunc status=none
+dd if="$W/p2.rootA"  of="$OUT" bs=512 seek=$ra_lba  conv=notrunc status=none
+dd if="$W/p3.rootB"  of="$OUT" bs=512 seek=$rb_lba  conv=notrunc status=none
+dd if="$W/p4.persist" of="$OUT" bs=512 seek=$pe_lba conv=notrunc status=none
+
+cat > "$W/layout.json" <<EOF
+{ "disk_guid": "$DISK_GUID",
+  "parts": [
+    {"name":"veron-esp",     "type":"$ESP_GUID",          "guid":"$PART_ESP",     "first":$esp_lba, "last":$((ra_lba-1)), "attrs":0},
+    {"name":"veron-root-a",  "type":"$VERON_ROOT_TYPE",   "guid":"$PART_ROOT_A",  "first":$ra_lba,  "last":$((rb_lba-1)), "attrs":$ATTR_ROOT},
+    {"name":"veron-root-b",  "type":"$VERON_ROOT_TYPE",   "guid":"$PART_ROOT_B",  "first":$rb_lba,  "last":$((pe_lba-1)), "attrs":$ATTR_ROOT},
+    {"name":"veron-persist", "type":"$VERON_PERSIST_TYPE","guid":"$PART_PERSIST", "first":$pe_lba,  "last":$((end_lba-1)),"attrs":0}
+  ] }
+EOF
+python3 "$HERE/veron-mkgpt" --image "$OUT" --layout "$W/layout.json" >&2
+
+echo "veron-mkimage: $OUT ($(( total_lba / 2048 )) MiB, 4 partitions, A/B)"

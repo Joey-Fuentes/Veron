@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+# veron-site -- generate the whole storefront from a release manifest.
+#
+# THE SITE IS A FUNCTION OF ALL CURRENT RELEASES (ruled): stage 6 hands
+# this tool one manifest describing every architecture's current release,
+# and the ENTIRE site is regenerated -- no partial updates exist. Output:
+#   site/index.html     the page: downloads, verify, the honest asterisks
+#   site/index.json     the machine endpoint veron-update and About consume
+#   site/SHA256SUMS     full digests, the file sha256sum -c reads
+#
+# ZERO EXTERNAL ASSETS, ON PURPOSE. No font CDN, no framework, no
+# analytics, no second request: a project whose claim is "nothing
+# borrowed" does not load its homepage from other people's servers. One
+# HTML file, styles inlined, system fonts -- the page itself is auditable
+# the same way the OS is.
+#
+# manifest.json shape (input):
+# { "commit": "<full sha>", "generated": "<runid>",
+#   "arches": { "x86_64": {
+#       "release_tag": "release/<commit7>",
+#       "assets": [ {"name","sha256","size","kind":"img|iso|sums|prov"} ],
+#       "attestation_url": "...", "kernels": {"minimal":"sha","generic":"sha"} } } }
+import argparse, html, json, os, sys
+
+def human(n):
+    for u in ("bytes", "KiB", "MiB", "GiB"):
+        if n < 1024 or u == "GiB":
+            return f"{n:.1f} {u}" if u != "bytes" else f"{n} bytes"
+        n /= 1024.0
+
+CSS = """
+:root{--bg:#141a1f;--panel:#1b232a;--ink:#e8e4d8;--dim:#8a938f;
+--amber:#ffb000;--ok:#7dc383;--rule:#2a343c;--mono:ui-monospace,'Cascadia Mono',
+'JetBrains Mono','Fira Mono',Menlo,Consolas,monospace;
+--sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);
+line-height:1.55;font-size:16px}
+main{max-width:880px;margin:0 auto;padding:48px 20px 96px}
+h1,h2,.mono{font-family:var(--mono)}
+h1{font-size:clamp(1.6rem,4.5vw,2.4rem);font-weight:600;letter-spacing:-.02em}
+h2{font-size:1.05rem;color:var(--amber);margin:56px 0 16px;font-weight:600;
+text-transform:lowercase}
+h2::before{content:"$ ";color:var(--dim)}
+p{max-width:64ch}
+a{color:var(--amber);text-decoration:none;border-bottom:1px solid var(--rule)}
+a:hover{border-bottom-color:var(--amber)}
+a:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.ladder{font-family:var(--mono);font-size:.86rem;background:var(--panel);
+border:1px solid var(--rule);border-radius:6px;padding:20px 22px;margin:28px 0;
+overflow-x:auto;white-space:pre}
+.ladder b{color:var(--amber);font-weight:600}
+.ladder .ok{color:var(--ok)}
+.ladder .dim{color:var(--dim)}
+.tag{color:var(--dim);font-family:var(--mono);font-size:.82rem}
+.card{background:var(--panel);border:1px solid var(--rule);border-radius:6px;
+padding:20px 22px;margin:14px 0}
+.card h3{font-family:var(--mono);font-size:1rem;font-weight:600}
+.card .sha{font-family:var(--mono);font-size:.78rem;color:var(--dim);
+word-break:break-all;margin-top:6px}
+.card .meta{color:var(--dim);font-size:.86rem;margin-top:4px}
+.btn{display:inline-block;font-family:var(--mono);font-size:.9rem;
+background:var(--amber);color:#141a1f;border:none;border-radius:4px;
+padding:8px 14px;margin:12px 8px 0 0;font-weight:600}
+.btn.quiet{background:transparent;color:var(--amber);
+border:1px solid var(--amber)}
+pre{font-family:var(--mono);font-size:.84rem;background:var(--panel);
+border:1px solid var(--rule);border-radius:6px;padding:16px 18px;
+overflow-x:auto;margin:12px 0}
+.req{font-family:var(--mono);font-size:.9rem;border-left:3px solid var(--amber);
+padding:4px 0 4px 14px;margin:20px 0;color:var(--ink)}
+footer{margin-top:72px;color:var(--dim);font-size:.82rem;
+font-family:var(--mono);border-top:1px solid var(--rule);padding-top:16px}
+ul{padding-left:1.2em}
+li{margin:.35em 0;max-width:64ch}
+@media(prefers-reduced-motion:no-preference){
+.card{transition:border-color .15s}.card:hover{border-color:var(--amber)}}
+"""
+
+LADDER = """<span class="dim">$</span> veron-trace /usr/bin/foot
+usr/bin/foot   sha256 36acaaef…   <span class="ok">[matches the bytes on disk]</span>
+
+  built by   foot 1.27.0          [stage 5]
+  built with the stage-4 toolchain
+             gcc 15.2.0 &lt;- gcc 10.2.0 &lt;- gcc 4.7.4 &lt;- tcc
+
+  <b>3/6/tcc-amd64</b>            090429cf…   [x86_64]
+  <b>3/5/tcc-arm64-to-amd64</b>   f1f58aee…   [x86_64]
+  <b>3/4/tcc-arm64</b>            4cc4343a…   [aarch64]  &lt;- crosses architectures
+  <b>3/3/hex2</b>                 0b85f9ce…   [aarch64]
+  <b>2/2/pico-c</b>               1305e1c9…   [aarch64]
+  <b>1/1/self-assembler</b>       e97e2969…   [aarch64]
+  <span class="ok">ROOT REACHED</span>  1/1/self-assembler assembles itself"""
+
+def render(m):
+    commit = m["commit"]
+    parts = [f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Veron</title><style>{CSS}</style></head><body><main>
+<h1>Veron</h1>
+<p class="tag">a Linux distribution built from source, from a seed —
+every byte traceable to 3,720 bytes of hand-written assembly.</p>
+<div class="ladder">{LADDER}</div>
+<p>That trace runs <em>on the installed system</em>, offline. Every file,
+every symlink, every build command, back to the root of trust — and the
+verifier is a shell script you can read on the machine it verifies.</p>
+"""]
+    parts.append('<h2>download</h2>')
+    parts.append('<p class="req">x86_64 &nbsp;·&nbsp; UEFI only &nbsp;·&nbsp; '
+                 'disable Secure Boot</p>')
+    for arch, rel in sorted(m["arches"].items()):
+        for a in rel["assets"]:
+            if a["kind"] not in ("img", "iso"):
+                continue
+            what = ("Disk image — write to a USB stick or drive; A/B updates, "
+                    "persistent home" if a["kind"] == "img" else
+                    "Live ISO — try Veron without installing; works burned, "
+                    "dd'd, or dropped onto a Ventoy stick")
+            parts.append(f"""<div class="card">
+<h3>{html.escape(a["name"])}</h3>
+<div class="meta">{html.escape(what)} · {human(a["size"])} · {html.escape(arch)}</div>
+<div class="sha">sha256 {html.escape(a["sha256"])}</div>
+<a class="btn" href="https://github.com/Joey-Fuentes/Veron/releases/download/{html.escape(rel["release_tag"]).replace("/", "%2F")}/{html.escape(a["name"])}">Download</a>
+<a class="btn quiet" href="{html.escape(rel["attestation_url"])}">Attestation</a>
+</div>""")
+        parts.append(f'<p class="tag">release {html.escape(rel["release_tag"])} '
+                     f'· commit {html.escape(commit[:7])} · '
+                     f'<a href="SHA256SUMS">SHA256SUMS</a> · '
+                     f'<a href="index.json">index.json</a></p>')
+
+    parts.append(f"""<h2>verify</h2>
+<p>Three checks, strongest last. The digest proves the bytes; the
+attestation proves the builder; the trace proves the ancestry.</p>
+<pre>sha256sum -c SHA256SUMS --ignore-missing
+
+gh attestation verify veron-*.img -R Joey-Fuentes/Veron
+
+# on the running system, offline:
+veron-trace --verify --hash-files --strays --root /</pre>
+
+<h2>boot</h2>
+<ul>
+<li>Write the image any way you like — <span class="mono">dd</span>, a USB
+imager, or put the ISO on a Ventoy stick unchanged.</li>
+<li>In firmware settings: disable Secure Boot, boot from USB.</li>
+<li>That's all. There is no bootloader to configure — the kernel is the
+boot program, at the path every UEFI firmware tries first.</li>
+</ul>
+<p>Veron is x86_64 UEFI only. Signing, Secure Boot and TPM support are on
+the roadmap; legacy BIOS is not.</p>
+
+<h2>what is not from source</h2>
+<p>Two things, stated rather than buried:</p>
+<ul>
+<li><b>Firmware blobs</b> in the generic kernel's tree — binary files no
+one can build; each pinned by digest and listed with its license.</li>
+<li><b>The stage-4 interior</b> of the trace is one coarse edge today
+("substage records pending") — the compilers' ladder is attested and its
+inputs pinned, but per-step records inside stage 4 are still being
+written, and the tracer says so instead of pretending.</li>
+</ul>
+
+<h2>updates</h2>
+<p>True A/B: an update writes the inactive slot, verifies it by hash,
+and boots it exactly once. If the new system doesn't prove itself, the
+firmware falls back to the untouched old one — the failure path runs no
+code at all. Your data lives on its own partition no update ever
+touches.</p>
+
+<footer>generated from commit {html.escape(commit)} · run {html.escape(str(m.get("generated","")))}
+· <a href="https://github.com/Joey-Fuentes/Veron">source</a>
+· every artifact on this page is attested in the
+<a href="https://github.com/Joey-Fuentes/Veron/attestations">public log</a></footer>
+</main></body></html>""")
+    return "".join(parts)
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--manifest", required=True)
+    ap.add_argument("--out", required=True)
+    a = ap.parse_args()
+    m = json.load(open(a.manifest))
+    os.makedirs(a.out, exist_ok=True)
+    open(os.path.join(a.out, "index.html"), "w").write(render(m))
+    json.dump(m, open(os.path.join(a.out, "index.json"), "w"), indent=1, sort_keys=True)
+    with open(os.path.join(a.out, "SHA256SUMS"), "w") as f:
+        for arch, rel in sorted(m["arches"].items()):
+            for asset in rel["assets"]:
+                f.write(f"{asset['sha256']}  {asset['name']}\n")
+    print(f"veron-site: {a.out}/ regenerated for {len(m['arches'])} arch(es)")
+
+if __name__ == "__main__":
+    sys.exit(main())

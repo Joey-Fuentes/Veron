@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+# veron-mkfat -- write a FAT32 filesystem image with files in it, from
+# source, deterministically.
+#
+# WHY NOT mkfs.fat + mcopy. Two more host tools, and the default output of
+# both is unreproducible (random volume ID, wall-clock timestamps -- the
+# archiso project hit exactly this). The ESP this project needs is narrow:
+# FAT32, 512-byte sectors, a handful of directories and PE binaries. That
+# is a page of well-specified bytes (Microsoft FAT spec), so it is emitted
+# directly: fixed volume ID, fixed timestamps, stable ordering -- the same
+# inputs give the same image, byte for byte, with nothing borrowed.
+#
+# SCOPE, STATED. Writer only, FAT32 only (the UEFI-preferred ESP format;
+# some firmware rejects FAT16 ESPs), 8.3 names with LFN entries for the
+# mixed-case components ("veron", "linux.efi"). No reader beyond the
+# independent decoder in test-image.py -- the device never mounts this rw
+# except during updates, and updates rewrite whole files.
+import argparse, os, struct, sys
+
+SECTOR = 512
+CLUSTER_SECTORS = 8           # 4 KiB clusters
+RESERVED = 32
+NFATS = 2
+VOLID = 0x5EB0A501            # fixed: reproducibility over entropy
+# One fixed timestamp for every entry: 2020-01-01 00:00:00. Zero is not
+# used because a zero DOS date decodes to 1980-00-00 -- an invalid month
+# some tools choke on. Determinism needs A constant, not zero.
+DOSDATE = ((2020 - 1980) << 9) | (1 << 5) | 1
+DOSTIME = 0
+
+def dos83(name):
+    """8.3 form for the directory entry; returns (bytes11, needs_lfn)."""
+    up = name.upper()
+    base, dot, ext = up.partition(".")
+    ok = (name == up and len(base) <= 8 and len(ext) <= 3 and dot in (".", "")
+          and all(c.isalnum() or c in "_-" for c in base + ext))
+    b = (base[:8].ljust(8) + ext[:3].ljust(3)).encode("ascii")
+    return b, not ok
+
+def lfn_entries(name, short11):
+    """Long File Name entries, last-to-first, with the standard checksum."""
+    s = 0
+    for c in short11:
+        s = ((s >> 1) | ((s & 1) << 7)) + c & 0xFF
+    u = name.encode("utf-16-le") + b"\x00\x00"
+    u += b"\xff" * ((26 - len(u) % 26) % 26)
+    chunks = [u[i:i+26] for i in range(0, len(u), 26)]
+    out = []
+    for i, ch in reversed(list(enumerate(chunks, 1))):
+        seq = i | (0x40 if i == len(chunks) else 0)
+        out.append(bytes([seq]) + ch[0:10] + b"\x0f\x00" +
+                   bytes([s]) + ch[10:22] + b"\x00\x00" + ch[22:26])
+    return b"".join(out)
+
+def direntry(name, cluster, size, is_dir):
+    short, needs_lfn = dos83(name)
+    attr = 0x10 if is_dir else 0x20
+    e = struct.pack("<11sBBBHHHHHHHI", short, attr, 0, 0,
+                    DOSTIME, DOSDATE, DOSDATE, cluster >> 16,
+                    DOSTIME, DOSDATE, cluster & 0xFFFF, size)
+    return (lfn_entries(name, short) if needs_lfn else b"") + e
+
+class Fat:
+    def __init__(self, size):
+        if size % (CLUSTER_SECTORS * SECTOR):
+            raise SystemExit("size must be a multiple of the cluster size")
+        self.total_sectors = size // SECTOR
+        # FAT sizing: solve once, conservatively (a slightly generous FAT
+        # wastes a few KiB and never corrupts).
+        data_sectors_guess = self.total_sectors - RESERVED
+        clusters_guess = data_sectors_guess // CLUSTER_SECTORS
+        self.fat_sectors = (clusters_guess * 4 + 2 * 4 + SECTOR - 1) // SECTOR
+        self.data_start = RESERVED + NFATS * self.fat_sectors
+        self.nclusters = (self.total_sectors - self.data_start) // CLUSTER_SECTORS
+        if self.nclusters < 65525:
+            raise SystemExit(f"FAT32 requires >= 65525 clusters; this image has {self.nclusters}. Grow the ESP.")
+        self.fat = [0] * (self.nclusters + 2)
+        self.fat[0] = 0x0FFFFFF8
+        self.fat[1] = 0x0FFFFFFF
+        self.clusters = {}          # cluster index -> bytes
+        self.next_free = 2
+
+    def alloc_chain(self, data):
+        cl = max(1, (len(data) + CLUSTER_SECTORS*SECTOR - 1) // (CLUSTER_SECTORS*SECTOR))
+        first = self.next_free
+        for i in range(cl):
+            c = self.next_free; self.next_free += 1
+            if c >= len(self.fat):
+                raise SystemExit("ESP full")
+            self.fat[c] = (c + 1) if i < cl - 1 else 0x0FFFFFFF
+            self.clusters[c] = data[i*CLUSTER_SECTORS*SECTOR:(i+1)*CLUSTER_SECTORS*SECTOR]
+        return first
+
+def build(size, tree):
+    """tree: {"EFI": {"BOOT": {"BOOTX64.EFI": b"..."}, ...}} dirs are dicts,
+    files are bytes. Directories are emitted in sorted order -- ordering is
+    part of determinism."""
+    fs = Fat(size)
+
+    def emit_dir(d):
+        """A subdirectory: '.'/'..' then sorted entries. Children are
+        allocated first so their first-clusters are known. Returns the
+        directory's first cluster."""
+        placed = {}
+        for name in sorted(d):
+            v = d[name]
+            placed[name] = (("dir", emit_dir(v)) if isinstance(v, dict)
+                            else ("file", fs.alloc_chain(v) if v else 0, len(v)))
+        dot = struct.pack("<11sBBBHHHHHHHI", b".          ", 0x10, 0, 0,
+                          DOSTIME, DOSDATE, DOSDATE, 0, DOSTIME, DOSDATE, 0, 0)
+        dotdot = struct.pack("<11sBBBHHHHHHHI", b"..         ", 0x10, 0, 0,
+                             DOSTIME, DOSDATE, DOSDATE, 0, DOSTIME, DOSDATE, 0, 0)
+        entries = dot + dotdot
+        for name in sorted(d):
+            t = placed[name]
+            entries += (direntry(name, t[1], 0, True) if t[0] == "dir"
+                        else direntry(name, t[1], t[2], False))
+        first = fs.alloc_chain(entries)
+        blob = bytearray(fs.clusters[first])
+        struct.pack_into("<H", blob, 20, first >> 16)   # '.' -> self
+        struct.pack_into("<H", blob, 26, first & 0xFFFF)
+        fs.clusters[first] = bytes(blob)
+        return first
+
+    # THE ROOT IS CLUSTER 2, ALLOCATED FIRST. Children land after it; the
+    # root's entries are patched in once every child's first-cluster is
+    # known. One cluster of root entries (4 KiB, ~60 LFN'd names) is far
+    # beyond what an ESP root holds; the writer refuses rather than grows.
+    root_first = fs.alloc_chain(b"\x00" * (CLUSTER_SECTORS * SECTOR))
+    assert root_first == 2
+    top = {}
+    for name in sorted(tree):
+        v = tree[name]
+        top[name] = (("dir", emit_dir(v)) if isinstance(v, dict)
+                     else ("file", fs.alloc_chain(v) if v else 0, len(v)))
+    entries = b""
+    for name in sorted(tree):
+        t = top[name]
+        entries += (direntry(name, t[1], 0, True) if t[0] == "dir"
+                    else direntry(name, t[1], t[2], False))
+    if len(entries) > CLUSTER_SECTORS * SECTOR:
+        raise SystemExit("root directory exceeds one cluster; widen this writer")
+    fs.clusters[2] = entries + b"\x00" * (CLUSTER_SECTORS * SECTOR - len(entries))
+
+    # boot sector
+    bs = bytearray(SECTOR)
+    struct.pack_into("<3s8sHBHBHHBHHHII", bs, 0,
+                     b"\xeb\x58\x90", b"VERONESP", SECTOR, CLUSTER_SECTORS,
+                     RESERVED, NFATS, 0, 0, 0xF8, 0, 63, 255, 0, fs.total_sectors)
+    struct.pack_into("<IHHIHH", bs, 36, fs.fat_sectors, 0, 0, 2, 1, 6)
+    struct.pack_into("<BBBI11s8s", bs, 64, 0x80, 0, 0x29, VOLID,
+                     b"VERON-ESP  ", b"FAT32   ")
+    bs[510:512] = b"\x55\xaa"
+    # FSInfo
+    fsinfo = bytearray(SECTOR)
+    struct.pack_into("<I", fsinfo, 0, 0x41615252)
+    struct.pack_into("<I", fsinfo, 484, 0x61417272)
+    struct.pack_into("<II", fsinfo, 488, len(fs.fat) - fs.next_free, fs.next_free)
+    fsinfo[510:512] = b"\x55\xaa"
+
+    img = bytearray(size)
+    img[0:SECTOR] = bs
+    img[SECTOR:2*SECTOR] = fsinfo
+    img[6*SECTOR:7*SECTOR] = bs        # backup boot sector
+    img[7*SECTOR:8*SECTOR] = fsinfo
+    fatblob = b"".join(struct.pack("<I", v) for v in fs.fat)
+    fatblob += b"\x00" * (fs.fat_sectors * SECTOR - len(fatblob))
+    for n in range(NFATS):
+        off = (RESERVED + n * fs.fat_sectors) * SECTOR
+        img[off:off+len(fatblob)] = fatblob
+    for c, data in fs.clusters.items():
+        off = (fs.data_start + (c - 2) * CLUSTER_SECTORS) * SECTOR
+        img[off:off+len(data)] = data
+    return bytes(img)
+
+def load_tree(root):
+    out = {}
+    for name in sorted(os.listdir(root)):
+        p = os.path.join(root, name)
+        out[name] = load_tree(p) if os.path.isdir(p) else open(p, "rb").read()
+    return out
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--size", type=int, required=True, help="bytes; multiple of 4096")
+    ap.add_argument("--root", required=True, help="directory to become the filesystem")
+    ap.add_argument("--out", required=True)
+    a = ap.parse_args()
+    img = build(a.size, load_tree(a.root))
+    with open(a.out, "wb") as f:
+        f.write(img)
+    print(f"veron-mkfat: {a.out} ({a.size} bytes, deterministic)")
+
+if __name__ == "__main__":
+    sys.exit(main())

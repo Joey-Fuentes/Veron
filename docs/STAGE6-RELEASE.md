@@ -206,6 +206,20 @@ so the Go fscrypt userspace never ships. Stated plainly beside it: fscrypt
 does not hide filesystem metadata; a user needing full-disk secrecy
 installs to disk rather than carrying an encrypted live stick.
 
+**Compatibility contract, ruled: UEFI x86_64 only -- a posture, not a
+roadmap item.** No legacy BIOS path, ever: no syslinux, no El Torito BIOS
+image, no MBR boot code -- machines without UEFI predate this project's
+interest and the site says the requirement in one line. What "boots on
+many machines" actually means here: the generic kernel's broad driver set
+with pinned firmware; the removable-media fallback path
+\EFI\BOOT\BOOTX64.EFI, which every UEFI firmware must try with no NVRAM
+setup; and one hybrid artifact serving optical, dd'd-USB and Ventoy
+identically. The one UEFI-diversity risk stays tested rather than
+assumed: some firmware balks at hybrid GPT and wants the MBR-table
+variant (documented by Syslinux), so the ISO boot gate runs the OVMF
+matrix -- optical shape, dd'd-disk shape, Ventoy shape -- before anything
+publishes.
+
 ## 9. Secure Boot: disabled for v1, said plainly; signing is the roadmap
 
 The site states it in plain text: **disable Secure Boot to boot Veron.**
@@ -263,18 +277,28 @@ GitHub Pages, regenerated in full on every stage-6 run:
   v2 rides the same A/B slots and commit machinery as v1; only the transfer
   gets smaller.
 
-## 13. Order of work
+## 13. Order of work (progress noted in place)
 
 1. This spec's constants: PARTUUIDs, ESP paths, entry names, index schema.
+   [DONE -- constants live in tools/veron-mkimage and veron-efiboot]
 2. efivars research write-up; ruling; then the writer.
+   [DONE -- veron-efiboot: immutable-flag-safe, idempotent, read-back
+   verified, independently decoded]
 3. Image build: the A/B GPT .img assembled from 5/latest-* (this absorbs
    the flash script's job -- kernels, modules, firmware move INTO the
    image at build time, becoming recordable and hash-verifiable, which
    removes the census's "pinned at flash" caveat and gives initramfs-fw a
    pre-existing record at last).
+   [TOOLING DONE -- veron-mkgpt + veron-mkfat + veron-mkimage: pure
+   python/sh, no sfdisk/dosfstools/mtools, whole image byte-reproducible,
+   independently decoded. REMAINING: EFI-stub kernel with baked initramfs
+   from stage 4, then the OVMF boot gate proves it boots.]
 4. Hybrid ISO with the two persistence modes.
 5. veron-install (adds e2fsprogs to stage 5 -- the one reach-back).
 6. Health-check + commit service; veron-update v1; About wiring.
 7. The site, the index, the licenses page; 6-release.yml end to end,
+   [SITE GENERATOR DONE -- veron-site: whole-storefront regeneration,
+   index.json update endpoint, SHA256SUMS, zero external assets.
+   REMAINING: licenses page from the ledger + firmware list.]
    boot-gating every image in qemu before publish; attest everything.
 8. First official release: `release/<commit7>`.

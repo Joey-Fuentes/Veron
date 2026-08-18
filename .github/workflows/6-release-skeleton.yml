@@ -71,16 +71,35 @@ jobs:
           done
           [ "$found" -gt 0 ] || { echo "no arch has a stage-5 release; nothing to do"; exit 1; }
 
-      - name: 'IMG -- the A/B GPT disk image (PLACEHOLDER)'
+      - name: 'IMG -- the A/B GPT disk image'
         run: |
           set -eu
-          echo "UNBUILT: assemble veron-<arch>-<sha7>.img per STAGE6-RELEASE.md §6:"
-          echo "  fixed GPT (ESP, root-A, root-B, persist; spec PARTUUIDs),"
-          echo "  slot A from rootfs + kernels/modules/firmware AT BUILD TIME"
-          echo "  (this absorbs the flash script's job and closes the census's"
-          echo "  'pinned at flash' caveat), EFI stub entries for both slots."
-          echo "This step exits 1 so a dry run cannot be mistaken for progress."
-          exit 1
+          # THE TOOLS ARE REAL; ONE INPUT IS NOT YET. veron-mkimage builds
+          # the full A/B GPT image reproducibly (built twice and compared
+          # below). What stage 4 does not yet publish is an EFI-STUB kernel
+          # with the initramfs baked in -- until it does, the image is
+          # assembled with the published kernel as a stand-in so every
+          # OTHER property (layout, determinism, decode) is proven per run,
+          # and the boot gate below stays off. The stand-in is stated in
+          # the artifact name: veron-<arch>-<sha7>.NOBOOT.img.
+          for arch in $ARCHES; do
+            [ -d "in/5-$arch" ] || continue
+            mkdir -p "work/$arch/rootfs"
+            tar --zstd -xf "in/5-$arch/rootfs.img.tar.zst" -C "work/$arch" 2>/dev/null || true
+            # the release ships an ext4 image, not a tar of the tree: the
+            # tree is extracted from it without privileges via debugfs
+            if [ ! -e "work/$arch/rootfs/etc/veron-release" ] && [ -e "work/$arch/rootfs.img" ]; then
+              /sbin/debugfs -R "rdump / work/$arch/rootfs" "work/$arch/rootfs.img" >/dev/null 2>&1
+            fi
+            KERNEL="in/k-$arch/vmlinuz-generic"
+            [ -s "$KERNEL" ] || KERNEL="in/5-$arch/Image"
+            VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL"                 --out "out/veron-$arch.raw"
+            sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL"                 --out "out/veron-$arch.raw2" 2>/dev/null || true
+            cmp "out/veron-$arch.raw" "out/veron-$arch.raw2"               && echo "  $arch image REPRODUCED (built twice, same bytes)"               || { echo "  $arch image NOT reproducible"; exit 1; }
+            SHA7=$(sha256sum "out/veron-$arch.raw" | cut -c1-7)
+            mv "out/veron-$arch.raw" "out/veron-$arch-$SHA7.NOBOOT.img"
+            rm -f "out/veron-$arch.raw2"
+          done
 
       - name: 'ISO -- hybrid live image, persistence optional (PLACEHOLDER)'
         if: ${{ always() && false }}  # enabled when IMG exists
@@ -95,13 +114,29 @@ jobs:
           echo "never booted is not consumer-grade."
           exit 1
 
-      - name: 'SITE -- regenerate the whole storefront (PLACEHOLDER)'
-        if: ${{ always() && false }}
+      - name: 'SITE -- regenerate the whole storefront'
         run: |
-          echo "UNBUILT: index.json (the update endpoint), download cards,"
-          echo "SHA256SUMS, verification instructions, licenses incl. per-"
-          echo "firmware-blob, the Secure Boot statement, the update model."
-          exit 1
+          set -eu
+          # the manifest is assembled from what THIS run verified and
+          # built; the generator regenerates everything from it
+          python3 - <<'PY'
+          import glob, hashlib, json, os, subprocess
+          commit = os.environ.get("GITHUB_SHA", "unknown")
+          m = {"commit": commit, "generated": os.environ.get("GITHUB_RUN_ID",""), "arches": {}}
+          for img in glob.glob("out/veron-*-*.img") + glob.glob("out/veron-*.NOBOOT.img"):
+              arch = os.path.basename(img).split("-")[1]
+              h = hashlib.sha256(open(img, "rb").read()).hexdigest()
+              m["arches"].setdefault(arch, {
+                  "release_tag": f"release/{commit[:7]}",
+                  "assets": [], "kernels": {},
+                  "attestation_url": "https://github.com/Joey-Fuentes/Veron/attestations"})
+              m["arches"][arch]["assets"].append({
+                  "name": os.path.basename(img), "sha256": h,
+                  "size": os.path.getsize(img), "kind": "img"})
+          json.dump(m, open("out/manifest.json", "w"), indent=1)
+          PY
+          python3 spikes/stage6/tools/veron-site             --manifest out/manifest.json --out out/site
+          ls -la out/site
 
       - name: 'PUBLISH -- immutable release/<commit7> + moving latest + Pages'
         if: ${{ always() && false }}  # AND dry_run must be off; both gates real

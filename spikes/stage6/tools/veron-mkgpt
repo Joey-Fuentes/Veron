@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+# veron-mkgpt -- write a GPT partition table into a disk image, from source.
+#
+# WHY NOT sfdisk. The image must be reproducible and the build must not
+# grow dependencies: a GPT is ~100 lines of well-specified bytes (UEFI
+# 2.11 §5), and emitting them directly means the partition table is
+# deterministic BY CONSTRUCTION -- every GUID, every attribute bit, every
+# CRC a pure function of the spec constants -- and one more host tool
+# leaves the budget. The independent check is test-image.py, which decodes
+# the table from the spec text without sharing this code.
+#
+# Layout written: protective MBR (LBA 0), primary header (LBA 1), entries
+# (LBA 2..33), then at the end of the disk the backup entries and backup
+# header (last LBA), exactly as the spec requires. 512-byte sectors: the
+# consumer image targets USB sticks and SATA/NVMe disks presenting 512e.
+import argparse, json, struct, sys, zlib
+
+SECTOR = 512
+ENTRIES = 128
+ENTRY_SIZE = 128
+
+def guid_bytes(text):
+    """GPT GUIDs are mixed-endian: first three fields little-endian, the
+    rest as written. Same bytes an HD() device-path node carries."""
+    h = text.replace("-", "")
+    if len(h) != 32:
+        raise SystemExit(f"bad GUID: {text}")
+    raw = bytes.fromhex(h)
+    return raw[3::-1] + raw[5:3:-1] + raw[7:5:-1] + raw[8:]
+
+def crc32(b):
+    return zlib.crc32(b) & 0xFFFFFFFF
+
+def build(disk_size, disk_guid, parts):
+    total_lba = disk_size // SECTOR
+    entries_lba = 32 * SECTOR // SECTOR  # 16 KiB of entries
+    first_usable = 2 + entries_lba
+    last_usable = total_lba - 1 - entries_lba - 1
+
+    entry_blob = bytearray(ENTRIES * ENTRY_SIZE)
+    for i, p in enumerate(parts):
+        e = struct.pack("<16s16sQQQ",
+                        guid_bytes(p["type"]), guid_bytes(p["guid"]),
+                        p["first"], p["last"], p["attrs"])
+        name = p["name"].encode("utf-16-le")
+        if len(name) > 72:
+            raise SystemExit(f"partition name too long: {p['name']}")
+        entry_blob[i*ENTRY_SIZE:i*ENTRY_SIZE+56] = e
+        entry_blob[i*ENTRY_SIZE+56:i*ENTRY_SIZE+56+len(name)] = name
+    entries_crc = crc32(bytes(entry_blob))
+
+    def header(my_lba, alt_lba, entries_start):
+        # Field offsets are the spec's (UEFI 2.11 §5.3.2): the CRC at 16 is
+        # followed by a 4-byte RESERVED at 20 before MyLBA at 24. The first
+        # version omitted the reserved field and every later field sat 4
+        # bytes early -- the header CRC still "verified" because writer and
+        # checksum both covered the same wrong bytes, and only the
+        # independent decoder reading entries_crc at the SPEC offset caught
+        # it. That is the whole reason the decoder shares no code.
+        h = bytearray(92)
+        struct.pack_into("<8s4sII", h, 0, b"EFI PART", bytes([0,0,1,0]), 92, 0)
+        struct.pack_into("<IIQQQQ16sQIII", h, 16,
+                         0, 0, my_lba, alt_lba, first_usable, last_usable,
+                         guid_bytes(disk_guid), entries_start,
+                         ENTRIES, ENTRY_SIZE, entries_crc)
+        struct.pack_into("<I", h, 16, crc32(bytes(h)))
+        return bytes(h) + b"\x00" * (SECTOR - 92)
+
+    # protective MBR: one 0xEE partition spanning the disk, boot code zero
+    mbr = bytearray(SECTOR)
+    struct.pack_into("<BBBBBBBBII", mbr, 446,
+                     0x00, 0x00, 0x02, 0x00, 0xEE, 0xFF, 0xFF, 0xFF,
+                     1, min(total_lba - 1, 0xFFFFFFFF))
+    mbr[510:512] = b"\x55\xaa"
+
+    primary = header(1, total_lba - 1, 2)
+    backup = header(total_lba - 1, 1, total_lba - 1 - entries_lba)
+    return bytes(mbr), primary, bytes(entry_blob), backup
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--image", required=True, help="existing image file; the table is written in place")
+    ap.add_argument("--layout", required=True, help="JSON: {disk_guid, parts:[{name,type,guid,first,last,attrs}]}")
+    a = ap.parse_args()
+    layout = json.load(open(a.layout))
+    import os
+    size = os.path.getsize(a.image)
+    if size % SECTOR:
+        raise SystemExit("image size is not sector-aligned")
+    mbr, primary, entries, backup = build(size, layout["disk_guid"], layout["parts"])
+    with open(a.image, "r+b") as f:
+        f.write(mbr)
+        f.write(primary)
+        f.write(entries)
+        f.seek(size - (1 + len(entries)//SECTOR) * SECTOR)
+        f.write(entries)
+        f.write(backup)
+    print(f"veron-mkgpt: {len(layout['parts'])} partition(s), disk {layout['disk_guid']}")
+
+if __name__ == "__main__":
+    sys.exit(main())
