@@ -145,13 +145,16 @@ jobs:
           # DESTDIR ("prepared tree lost WHENCE", run of 2026-08-18). They
           # are the redistribution terms, so they ship beside what they
           # govern, uncompressed and readable on the installed system.
-          cp fw-dl/linux-firmware-*/WHENCE* fwstage/
-          cp fw-dl/linux-firmware-*/LICEN* fwstage/
-          cp fw-dl/linux-firmware-*/GPL* fwstage/ 2>/dev/null || true
-          [ "$(ls fwstage/LICEN* | wc -l)" -gt 10 ] \
-            || { echo "suspiciously few LICENCE files copied"; exit 1; }
+          # -a, because upstream ships BOTH loose LICENCE.* files AND a
+          # LICENSES/ directory (cp without -r refused it, run of
+          # 2026-08-18 02:00Z). Everything license-shaped comes along.
+          cp -a fw-dl/linux-firmware-*/WHENCE* fwstage/
+          cp -a fw-dl/linux-firmware-*/LICEN* fwstage/
+          cp -a fw-dl/linux-firmware-*/GPL* fwstage/ 2>/dev/null || true
+          [ "$(find fwstage -maxdepth 2 \( -name 'LICEN*' -o -name 'GPL*' \) | wc -l)" -gt 10 ] \
+            || { echo "suspiciously few license files in the tree"; exit 1; }
           date -u +"  compress %H:%M:%SZ"
-          find fwstage -type f ! -name 'WHENCE*' ! -name 'LICEN*' ! -name 'GPL*' ! -name '*.txt' -print0 \
+          find fwstage -type f ! -name 'WHENCE*' ! -name 'LICEN*' ! -name 'GPL*' ! -name '*.txt' ! -path '*/LICENSES/*' -print0 \
             | xargs -0 -n64 -P"$(nproc)" zstd -q -19 -T1 --rm
           cp -a fwstage/. fwtree/
           if ls fw-dl/wireless-regdb-*.tar.xz >/dev/null 2>&1; then
