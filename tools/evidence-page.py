@@ -101,6 +101,66 @@ def esc(s):
     return html.escape(str(s)) if s is not None else ""
 
 
+def embed_image(bundle, *relpaths):
+    """Base64-embed the first existing image so the page is self-contained."""
+    import base64 as _b64
+    for rel in relpaths:
+        p = os.path.join(bundle, rel)
+        if os.path.exists(p) and os.path.getsize(p) > 0:
+            data = _b64.b64encode(open(p, "rb").read()).decode()
+            return "data:image/png;base64," + data
+    return None
+
+
+def read_text(bundle, *relpaths):
+    """Read the first existing plain-text log (console/serial), timestamp-stripped."""
+    for rel in relpaths:
+        p = os.path.join(bundle, rel)
+        if os.path.exists(p) and os.path.getsize(p) > 0:
+            raw = open(p, "r", errors="replace").read()
+            return "\n".join(re.sub(r"^\S+Z\s", "", ln) for ln in raw.splitlines())
+    return None
+
+
+def desktop_block(bundle):
+    """Render the stage-5 desktop evidence: one screenshot + boot console log.
+    The two captured PNGs (desktop.png, desktop-minibrowser.png) are frames a
+    few seconds apart of the same browser-open desktop, so we show just one."""
+    shot = embed_image(bundle, "desktop/desktop.png",
+                       "desktop/desktop-minibrowser.png")
+    console = read_text(bundle, "desktop/desktop-console.log")
+    if not (shot or console):
+        return ""
+    parts = ['<div class="desktop"><h3>The system, running</h3>'
+             '<p class="desc">Booted in a virtual machine during the build and '
+             'photographed: the Veron desktop, with a browser open on the very '
+             'system that built it.</p>']
+    if shot:
+        parts.append('<figure><img src="%s" alt="Veron desktop with a browser open">'
+                     '<figcaption>the desktop, browser rendering a local page'
+                     '</figcaption></figure>' % shot)
+    if console:
+        parts.append('<details class="log"><summary>desktop boot console '
+                     '(%d lines)</summary><pre>%s</pre></details>'
+                     % (console.count("\n") + 1, esc(console)))
+    parts.append('</div>')
+    return "".join(parts)
+
+
+def boot_serial_block(bundle):
+    """Render the stage-6 boot serial: the published image booting in qemu."""
+    serial = read_text(bundle, "boot-serial.log")
+    if not serial:
+        return ""
+    return ('<div class="desktop"><h3>The release, booting</h3>'
+            '<p class="desc">The published image booted in a virtual machine '
+            'exactly the way a device boots it -- here is the serial console, '
+            'every service coming up by name.</p>'
+            '<details class="log" open><summary>boot serial (%d lines)</summary>'
+            '<pre>%s</pre></details></div>'
+            % (serial.count("\n") + 1, esc(serial)))
+
+
 def render(bundle, out_path):
     stages = read_stages(bundle)
     sections = []
@@ -138,14 +198,22 @@ def render(bundle, out_path):
                          'this release\'s own run whose log attaches on '
                          'completion).</p>')
 
+        # stage-5 carries the desktop screenshots + console; stage-6 the boot serial.
+        extra = ""
+        if label.startswith("5-"):
+            extra = desktop_block(bundle)
+        elif label.startswith("6-"):
+            extra = boot_serial_block(bundle)
+
         sections.append(
             '<section class="stage">'
             '<h2>%s</h2>'
             '<p class="desc">%s</p>'
             '<div class="ident">%s</div>'
             '%s'
+            '%s'
             '</section>'
-            % (esc(title), esc(desc), "".join(ident), log_block)
+            % (esc(title), esc(desc), "".join(ident), log_block, extra)
         )
 
     page = """<!DOCTYPE html>
@@ -182,6 +250,11 @@ def render(bundle, out_path):
                     font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
                     color:#c9d1d9; margin-top:.6rem; max-height:640px; }
   .nolog { color:var(--dim); font-size:.9rem; font-style:italic; }
+  .desktop { margin-top:1rem; border-top:1px solid var(--line); padding-top:.9rem; }
+  .desktop h3 { margin:.2rem 0 .3rem; font-size:1rem; color:var(--accent); }
+  .desktop figure { margin:.8rem 0; }
+  .desktop img { max-width:100%; border:1px solid var(--line); border-radius:8px; display:block; }
+  .desktop figcaption { color:var(--dim); font-size:.82rem; margin-top:.35rem; text-align:center; }
   .chain-line { text-align:center; color:var(--dim); margin:.2rem 0; font-size:1.3rem; }
   footer { max-width:900px; margin:0 auto; padding:2rem 1.25rem;
            color:var(--dim); border-top:1px solid var(--line); font-size:.85rem; }

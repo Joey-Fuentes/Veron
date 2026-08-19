@@ -523,6 +523,11 @@ jobs:
             echo "stages.tsv     stage <tab> digest <tab> run -- what the site renders."
           } > evidence/MANIFEST.txt
           echo "VERON-EVIDENCE-CHAIN  $att stages, $logs logs, bundled beside the release"
+          # THE BOOT SERIAL joins the bundle: the stage-6 boot gate booted the
+          # published image in qemu and captured boot-serial.log -- the machine
+          # coming up, every service by name. The page renders it so a visitor
+          # sees the release actually boot, not just a claim that it does.
+          [ -f boot-serial.log ] && cp boot-serial.log evidence/boot-serial.log || true
           # PACKAGE THE BUNDLE for PUBLISH to upload and the pages job to render.
           mkdir -p out
           tar -czf out/evidence.tar.gz -C evidence .
@@ -814,6 +819,33 @@ jobs:
               [ -s "$B/logs/6-release.zip" ] \
                 && echo "  captured the release run's own log (run $rel_run)" \
                 || { rm -f "$B/logs/6-release.zip"; echo "  release log not yet available (run $rel_run)"; }
+            fi
+            # THE DESKTOP EVIDENCE: the stage-5 run booted the built system in
+            # qemu and captured what it looks like running -- desktop.png,
+            # desktop-minibrowser.png (a browser open on the machine it built),
+            # and desktop-console.log (that session's boot log). It is a run
+            # ARTIFACT, not a release asset, so fetch it by the stage-5 run id
+            # (the 5-provenance row) and drop its files in the bundle for the
+            # page to show the screenshots and the boot log.
+            s5_run=$(awk -F"\t" '/^5-/{print $3}' "$B/stages.tsv" | head -1)
+            if [ -n "$s5_run" ]; then
+              mkdir -p "$B/desktop"
+              aurl=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$s5_run/artifacts" \
+                       --jq '.artifacts[] | select(.name|startswith("veron-stage5-desktop")) | .archive_download_url' \
+                       2>/dev/null | head -1)
+              if [ -n "$aurl" ]; then
+                # the archive_download_url needs auth; gh api streams it as a zip
+                gh api "$aurl" > "$B/desktop/desktop.zip" 2>/dev/null || true
+                if [ -s "$B/desktop/desktop.zip" ]; then
+                  ( cd "$B/desktop" && unzip -o desktop.zip >/dev/null 2>&1 && rm -f desktop.zip )
+                  echo "  captured the desktop screenshots + console log (stage-5 run $s5_run)"
+                else
+                  rm -f "$B/desktop/desktop.zip"
+                  echo "  desktop artifact present but download failed (run $s5_run)"
+                fi
+              else
+                echo "  no desktop artifact on stage-5 run $s5_run (aged out past retention?)"
+              fi
             fi
             python3 tools/evidence-page.py "$B" out/site/evidence.html
             echo "  evidence page rendered from this release's bundle"
