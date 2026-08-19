@@ -60,26 +60,64 @@ def read_stages(bundle):
 
 
 def read_log(bundle, label):
-    """Return the decoded text of a stage's build log, or None."""
+    """Return the decoded text of a run's build log, or None.
+
+    A single-stage verify run has one .txt member. The release run is a full
+    multi-step job whose archive holds one .txt per step; showing only the
+    largest would drop the rest. Concatenate the real build steps in order,
+    skipping runner boilerplate (Set up job, Post Run, Complete job) and, for
+    the release run, the pages-job internals -- the build is the release
+    job's own steps (IN, BOOT GATE, EVIDENCE-CHAIN, PUBLISH, ATTEST, ...)."""
     zp = os.path.join(bundle, "logs", label + ".zip")
     if not os.path.exists(zp):
         return None
+    SKIP = ("Set up job", "Post Run", "Complete job", "Set up runner",
+            "Checkout", "actions_checkout", "system")
+
+    def wanted(member):
+        base = member.rsplit("/", 1)[-1]
+        # drop the pages-job tree when reading the release log
+        if member.startswith("pages/"):
+            return False
+        # drop the root-level whole-job summaries (0_pages.txt, 0_release.txt) --
+        # they are the entire job concatenated, redundant with the per-step files.
+        if "/" not in member and re.match(r"^\d+_(pages|release)\.txt$", member):
+            return False
+        stem = re.sub(r"\.txt$", "", re.sub(r"^\d+_", "", base))
+        return not any(s.lower() in stem.lower() for s in SKIP)
+
+    def step_order(n):
+        # sort by the numeric step prefix (0_, 1_, 2_, 10_) numerically, not
+        # as strings, so 2_ comes before 10_ and the build reads in order.
+        base = n.rsplit("/", 1)[-1]
+        m = re.match(r"^(\d+)_", base)
+        return (int(m.group(1)) if m else 9999, n)
+
     try:
         with zipfile.ZipFile(zp) as z:
-            # pick the largest .txt member -- the actual job log
-            members = [(n, z.getinfo(n).file_size) for n in z.namelist()
-                       if n.endswith(".txt")]
-            if not members:
+            names = sorted((n for n in z.namelist()
+                            if n.endswith(".txt") and wanted(n)), key=step_order)
+            if not names:
+                # fall back to any .txt (single-stage archives)
+                names = sorted((n for n in z.namelist() if n.endswith(".txt")),
+                               key=step_order)
+            if not names:
                 return None
-            name = max(members, key=lambda m: m[1])[0]
-            raw = z.read(name).decode("utf-8", "replace")
+            chunks = []
+            for n in names:
+                body = z.read(n).decode("utf-8", "replace")
+                stripped = "\n".join(
+                    re.sub(r"^\S+Z\s", "", ln) for ln in body.splitlines()
+                )
+                title = re.sub(r"\.txt$", "", re.sub(r"^.*?/", "", n))
+                title = re.sub(r"^\d+_", "", title)
+                if len(names) > 1:
+                    chunks.append("===== %s =====\n%s" % (title, stripped))
+                else:
+                    chunks.append(stripped)
+            return "\n\n".join(chunks)
     except Exception:
         return None
-    # strip the leading ISO timestamp GitHub prefixes on every line
-    out = []
-    for ln in raw.splitlines():
-        out.append(re.sub(r"^\S+Z\s", "", ln))
-    return "\n".join(out)
 
 
 def rekor_index(bundle, label):
