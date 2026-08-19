@@ -77,11 +77,9 @@ jobs:
             # matched ITS OWN downloaded IMAGE-SHA256; if 5/latest was
             # republished between runs, both say OK while consuming different
             # bytes. The sha here makes that visible instead of hidden.
-            echo "::group::stage-5 inputs manifest ($arch)"
             python3 tools/manifest.py "rootfs.img ($arch)" "in/5-$arch/rootfs.img"
             python3 tools/manifest.py "rootfs.img.tar.zst ($arch)" "in/5-$arch/rootfs.img.tar.zst"
             python3 tools/manifest.py "IMAGE-SHA256 ($arch)" "in/5-$arch/IMAGE-SHA256"
-            echo "::endgroup::"
             # THE ATTESTATION IS CHECKED HERE TOO: stage 6 is the first
             # consumer that exists to serve strangers, so it verifies what
             # a stranger would verify, and refuses what they would refuse.
@@ -202,6 +200,12 @@ jobs:
           date -u +"  done %H:%M:%SZ"
           echo "::endgroup::"
           echo "firmware tree: $(find fwtree -type f | wc -l) file(s), $(du -sh fwtree | cut -f1)"
+          # REPRODUCIBILITY INSTRUMENTATION: the firmware tree's whole-tree
+          # identity, so two runs are diffable here. "4846 files, 847M" hides a
+          # per-file byte difference; the TREE-SHA does not. If this line's
+          # TREE-SHA differs across runs, firmware prep is the fork; if it
+          # matches but the image differs, the drift is downstream.
+          python3 tools/manifest.py "firmware-tree (fwtree)" fwtree
 
       - name: 'IMG -- the A/B GPT disk image'
         run: |
@@ -344,19 +348,15 @@ jobs:
             # differs, mkimage is the culprit; if an input TREE-SHA differs,
             # that input is. FWIN is the firmware dir actually passed.
             FWIN=$(printf '%s' "$ABSORB" | sed -n 's/.*--firmware-dir \([^ ]*\).*/\1/p')
-            echo "::group::mkimage inputs manifest ($arch)"
             python3 tools/manifest.py "rootfs-tree ($arch)" "work/$arch/rootfs"
             python3 tools/manifest.py "kernel ($arch)" "$KERNEL"
             [ -n "$MODTAR" ] && python3 tools/manifest.py "modules-tar ($arch)" "$MODTAR" || echo "  (no modules tar)"
             [ -n "$FWIN" ] && python3 tools/manifest.py "firmware-dir ($arch)" "$FWIN" || echo "  (no firmware dir)"
-            echo "::endgroup::"
             VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw"
             sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw2" 2>/dev/null || true
             cmp "out/veron-$arch.raw" "out/veron-$arch.raw2"               && echo "  $arch image REPRODUCED (built twice, same bytes)"               || { echo "  $arch image NOT reproducible"; exit 1; }
             rm -f "out/veron-$arch.raw2"
-            echo "::group::mkimage output manifest ($arch)"
             python3 tools/manifest.py "image-raw ($arch)" "out/veron-$arch.raw"
-            echo "::endgroup::"
           done
 
       - name: 'ISO -- hybrid live image, persistence optional (PLACEHOLDER)'

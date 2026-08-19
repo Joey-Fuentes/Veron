@@ -41,9 +41,14 @@ def line(root, path):
 def main(argv):
     label = argv[0] if argv else "(manifest)"
     targets = argv[1:]
-    print("===== MANIFEST: %s =====" % label)
-    manifest_lines = []
+    print("MANIFEST: %s" % label)
+    if not targets:
+        print("  (no targets given)")
+        return 0
     for t in targets:
+        if not os.path.exists(t) and not os.path.islink(t):
+            print("  %s\tDOES NOT EXIST" % t)
+            continue
         if os.path.isdir(t):
             entries = []
             for dp, dns, fns in os.walk(t):
@@ -55,15 +60,12 @@ def main(argv):
             entries.sort()
             for e in entries:
                 print("  " + e)
-            manifest_lines.extend(entries)
-            tree_sha = hashlib.sha256(
-                "\n".join(entries).encode()).hexdigest()
+            tree_sha = hashlib.sha256("\n".join(entries).encode()).hexdigest()
             print("  TREE-SHA %s  %s  (%d files)" % (tree_sha, t, len(entries)))
         else:
             ln = line(os.path.dirname(t) or ".", t)
             if ln:
                 print("  " + ln)
-                manifest_lines.append(ln)
     return 0
 
 
