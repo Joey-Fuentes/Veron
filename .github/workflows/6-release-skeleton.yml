@@ -523,6 +523,10 @@ jobs:
             echo "stages.tsv     stage <tab> digest <tab> run -- what the site renders."
           } > evidence/MANIFEST.txt
           echo "VERON-EVIDENCE-CHAIN  $att stages, $logs logs, bundled beside the release"
+          # PACKAGE THE BUNDLE for PUBLISH to upload and the pages job to render.
+          mkdir -p out
+          tar -czf out/evidence.tar.gz -C evidence .
+          echo "  wrote out/evidence.tar.gz ($(stat -c%s out/evidence.tar.gz) bytes)"
 
       - name: 'PUBLISH -- compress, size-gate, immutable tag, moving latest'
         if: ${{ !inputs.dry_run }}
