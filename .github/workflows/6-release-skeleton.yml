@@ -70,14 +70,44 @@ jobs:
             # release -- and it cost two trios (2026-08-19). The API call is
             # explicit and its stderr is shown; a real 404 is absence, any
             # other failure is a fault we retry rather than misread as absence.
+            # A HELPER THAT PRINTS THE RATE-LIMIT STATE EXACTLY. When a call
+            # fails, the log should say WHY in numbers -- how many calls are
+            # left on the installation token and when it resets -- not leave
+            # us to infer it. This is the diagnostic whose absence cost a
+            # whole evening (2026-08-19): "rate limit exceeded for
+            # installation" was hidden, then shown, but never quantified.
+            show_rate() {
+              echo "      -- rate limit state (installation token) --"
+              gh api rate_limit --jq '.resources.core
+                | "      core: \(.remaining)/\(.limit) remaining, resets at \(.reset|todate)"' \
+                2>/dev/null || echo "      (could not read rate_limit -- likely also limited)"
+            }
             exists=unknown
             for attempt in 1 2 3; do
               code=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/5%2Flatest-$arch" \
-                       --jq '.tag_name' 2>/tmp/view-err) && { exists=yes; break; }
-              if grep -q "HTTP 404" /tmp/view-err; then exists=no; break; fi
+                       --jq '.tag_name' 2>err.txt) && { exists=yes; break; }
+              if grep -q "HTTP 404" err.txt; then exists=no; break; fi
               echo "  $arch: release-exists check attempt $attempt failed (not a 404):"
-              sed 's/^/      /' /tmp/view-err
-              sleep 10
+              sed 's/^/      /' err.txt
+              # IF IT IS A RATE LIMIT, WAITING 10s IS USELESS -- the window is
+              # an hour. Read the reset time and sleep until then (capped so a
+              # bad clock cannot hang the job), rather than burning attempts
+              # inside the limited window as the 03:56-03:57 failure did.
+              if grep -qi "rate limit" err.txt; then
+                show_rate
+                reset=$(gh api rate_limit --jq '.resources.core.reset' 2>/dev/null || echo 0)
+                now=$(date +%s)
+                wait=$(( reset - now + 5 ))
+                if [ "$wait" -gt 0 ] && [ "$wait" -le 3900 ]; then
+                  echo "      rate-limited: waiting ${wait}s for the installation token to reset"
+                  sleep "$wait"
+                else
+                  echo "      rate-limited but reset time implausible (${wait}s) -- short wait then retry"
+                  sleep 30
+                fi
+              else
+                sleep 10
+              fi
             done
             if [ "$exists" = no ]; then
               echo "  $arch: no 5/latest-$arch release -- arch skipped (stated, not silent)"
@@ -493,6 +523,14 @@ jobs:
           # all of it beside the image it vouches for, because artifact
           # retention expires and releases do not.
           mkdir -p evidence/attestations evidence/logs
+          # STATE THE API BUDGET BEFORE A SWEEP THAT SPENDS IT. This step is
+          # the heaviest API consumer (one call per digest for attestations,
+          # one per run for logs); if the installation token is low, the log
+          # should say so up front rather than let every call fail silently
+          # into a false "not retained" gap (2026-08-19). Purely informational.
+          gh api rate_limit --jq '.resources.core
+            | "  API budget before sweep: \(.remaining)/\(.limit), resets \(.reset|todate)"' \
+            2>/dev/null || echo "  (rate_limit unreadable)"
           R=work/x86_64/rootfs
           {
             # certain digests: the verified inputs of this very run
