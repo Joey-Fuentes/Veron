@@ -1060,8 +1060,17 @@ jobs:
           # nothing more than fgets.
           {
             echo "VERON_COMMIT=${GITHUB_SHA}"
-            echo "VERON_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "VERON_RUN_ID=${GITHUB_RUN_ID}"
+            # VERON_BUILD_DATE and VERON_RUN_ID were REMOVED from the image:
+            # both vary every run (wall clock, run id), so baking them into
+            # /etc/veron-release made two runs of the SAME commit produce
+            # DIFFERENT images (23199513... vs 3d966930... at commit cf7153fe) --
+            # the release non-reproducibility root cause. The version is
+            # identified by VERON_COMMIT above, which is deterministic and, since
+            # the build is now reproducible, maps to exactly these image bytes.
+            # The build date and run id remain available in the PROVENANCE file
+            # shipped BESIDE the image (as `built` and `run`), so nothing is
+            # lost -- they just no longer corrupt the image's sha. veron-about
+            # skips the two now-absent rows via its release_value guards.
             echo "VERON_ARCH=x86_64"
             echo "VERON_REPO=${GITHUB_REPOSITORY}"
             # THE RELEASE, NAMED RATHER THAN HUNTED FOR. About used to point
