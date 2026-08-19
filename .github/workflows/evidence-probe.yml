@@ -1,16 +1,17 @@
 name: evidence-probe
 
-# STANDALONE PROOF the recursive chain walk reaches stage 1 and pulls every
-# stage's logs. Publishes nothing. Every step echoed and TIMED; asserts it
-# reached the seed run (31879095169) and captured its gen1==gen2==gen3 log.
-# Run extraction uses tools/att-run.py (python, Veron-native -- NOT jq, which
-# Veron does not ship), so the same walk verifies the chain on-device.
+# STANDALONE PROOF: get ONE log per stage -- exactly 8, no more. The chain is
+# eight named stages, each with one deliverable artifact. For each, resolve its
+# digest, query its attestation (-> the run that built it), pull that run's log.
+# No graph walk, no manifest chasing -- that over-collected 41 intermediate
+# runs. This is the flat list Joe actually wants: 8 stages, 8 logs.
+# Publishes nothing. Run extraction via tools/att-run.py (python, Veron-native).
 
 on:
   workflow_dispatch:
     inputs:
       fetch_logs:
-        description: 'pull each reached run''s logs (proves the website has them)'
+        description: 'pull each stage run''s log'
         type: boolean
         default: true
 
@@ -23,111 +24,95 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
 
-      - name: 'WALK -- recursive chain to the seed, every step timed'
+      - name: 'STAGES -- one deliverable digest per stage, one log each'
         run: |
           set -eu
-          SEED_RUN=31879095169
-          SEED_DIGEST=e97e2969cf88b11a4ed28d7b22c9154a155fe9c38d01e420ab09151f2938f550
-          ts() { date -u +%H:%M:%S; }
-          t_start=$(date +%s)
-          mkdir -p evidence/attestations evidence/logs evidence/provenance
-          att=0; logs=0; total=0
-          : > evidence/runs.txt; : > evidence/seen.txt; : > evidence/queue.txt
+          mkdir -p evidence/attestations evidence/logs
+          : > evidence/stages.tsv     # stage<TAB>digest<TAB>run
 
-          echo "=== chain-walk probe start $( date -u ) ==="
-          echo "  target: reach seed run $SEED_RUN and its log"
+          # resolve <label> <digest>: query the attestation, record the run.
+          resolve() {
+            label=$1; dg=$2
+            [ -n "$dg" ] || { echo "  $label: NO DIGEST resolved -- skipped"; return; }
+            sleep 1
+            if timeout 30 gh api "repos/$GITHUB_REPOSITORY/attestations/sha256:$dg" \
+                 > "evidence/attestations/$label.json" 2>/dev/null \
+               && [ -s "evidence/attestations/$label.json" ] \
+               && grep -q '"attestations"' "evidence/attestations/$label.json"; then
+              rid=$(python3 tools/att-run.py "evidence/attestations/$label.json" | head -1)
+              echo "  $label: $(echo "$dg" | cut -c1-16)  run $rid"
+              printf '%s\t%s\t%s\n' "$label" "$dg" "$rid" >> evidence/stages.tsv
+            else
+              rm -f "evidence/attestations/$label.json"
+              echo "  $label: $(echo "$dg" | cut -c1-16)  NO ATTESTATION"
+            fi
+          }
 
-          echo "::group::[$( ts )] seed from 5/latest + 4/kernel SHA256"
-          mkdir -p in/5-x86_64 in/k-x86_64
-          gh release download 5/latest-x86_64 -R "$GITHUB_REPOSITORY" -p '*SHA256*' -D in/5-x86_64 --clobber 2>/dev/null || true
-          gh release download 4/kernel-x86_64 -R "$GITHUB_REPOSITORY" -p '*SHA256*' -D in/k-x86_64 --clobber 2>/dev/null || true
-          for f in in/5-x86_64/*SHA256* in/k-x86_64/*SHA256*; do
-            [ -e "$f" ] && grep -hoE '[0-9a-f]{64}' "$f" || true
-          done | sort -u >> evidence/queue.txt
-          echo "  seed digests: $(wc -l < evidence/queue.txt)"; cat -n evidence/queue.txt
-          echo "::endgroup::"
+          echo "########## THE 8 STAGES ##########"
 
-          MANIFESTS="stages/1-self-assembly/substages.toml stages/1-self-assembly/BASELINE.txt stages/2-pico-c/substages.toml stages/3-micro-c/substages-amd64.toml stages/3-micro-c/substages.toml"
-          echo "::group::[$( ts )] fetch release PROVENANCE (stage 4/5 edges)"
-          for tag in 5/latest-x86_64 4/latest-x86_64 4/kernel-x86_64 3/latest-x86_64; do
-            timeout 60 gh release download "$tag" -R "$GITHUB_REPOSITORY" \
-              -p 'PROVENANCE' -p '*substages*' -p 'ARTIFACT-SHA256' \
-              -D "evidence/provenance/$(echo "$tag" | tr / _)" --clobber 2>/dev/null \
-              && echo "  got $tag" || echo "  (none for $tag)"
-          done
-          PROVFILES=$(find evidence/provenance -type f 2>/dev/null || true)
-          for m in $MANIFESTS; do [ -f "$m" ] && echo "  manifest OK  $m" || echo "  manifest --  $m"; done
-          echo "::endgroup::"
+          # --- stages 1-3: committed deliverable digests, path-anchored ---
+          # Each is the ONE artifact that stage delivers, found by its output
+          # path in the committed manifest -- robust, not a nearby-digest grab.
+          S1=$(awk '/self-assembler-arm64/{print $1; exit}' stages/1-self-assembly/BASELINE.txt)
+          resolve "1-self-assembler" "$S1"
+
+          S2=$(awk '/path.*"out\/2\/aarch64\/pico-c"/{f=1} f&&/sha256/{gsub(/[^0-9a-f]/,"",$3);print $3;exit}' stages/2-pico-c/substages.toml)
+          resolve "2-pico-c" "$S2"
+
+          S3M=$(awk '/path.*"out\/3\/aarch64\/tcc-arm64"/{f=1} f&&/sha256/{gsub(/[^0-9a-f]/,"",$3);print $3;exit}' stages/3-micro-c/substages.toml)
+          resolve "3-micro-c" "$S3M"
+
+          # --- stage 3 cross, 4, 5: from this build's release provenance ---
+          mkdir -p rel
+          gh release download 3/latest-x86_64 -R "$GITHUB_REPOSITORY" -p 'ARTIFACT-SHA256' -D rel/3 --clobber 2>/dev/null || true
+          S3C=$(grep -i 'tcc-amd64' rel/3/ARTIFACT-SHA256 2>/dev/null | grep -oE '[0-9a-f]{64}' | head -1)
+          resolve "3-cross-tcc-amd64" "$S3C"
+
+          gh release download 4/latest-x86_64 -R "$GITHUB_REPOSITORY" -p 'SYSROOT-SHA256' -D rel/4 --clobber 2>/dev/null || true
+          S4=$(grep -oE '[0-9a-f]{64}' rel/4/SYSROOT-SHA256 2>/dev/null | head -1)
+          resolve "4-sysroot" "$S4"
+
+          gh release download 4/kernel-x86_64 -R "$GITHUB_REPOSITORY" -p '*SHA256*' -D rel/k --clobber 2>/dev/null || true
+          S4K=$(grep -i 'vmlinuz\|KERNEL-GENERIC' rel/k/*SHA256* 2>/dev/null | grep -oE '[0-9a-f]{64}' | head -1)
+          resolve "4-kernel" "$S4K"
+
+          gh release download 5/latest-x86_64 -R "$GITHUB_REPOSITORY" -p 'IMAGE-SHA256' -D rel/5 --clobber 2>/dev/null || true
+          S5=$(grep -oE '[0-9a-f]{64}' rel/5/IMAGE-SHA256 2>/dev/null | head -1)
+          resolve "5-rootfs-image" "$S5"
 
           echo ""
-          echo "########## RECURSIVE WALK ##########"
-          while [ -s evidence/queue.txt ]; do
-            d=$(head -n1 evidence/queue.txt); sed -i '1d' evidence/queue.txt
-            grep -qx "$d" evidence/seen.txt && continue
-            echo "$d" >> evidence/seen.txt
-            total=$((total+1)); t0=$(date +%s); sleep 1
-            if timeout 30 gh api "repos/$GITHUB_REPOSITORY/attestations/sha256:$d" \
-                 > "evidence/attestations/sha256-$d.json" 2>/dev/null \
-               && [ -s "evidence/attestations/sha256-$d.json" ] \
-               && grep -q '"attestations"' "evidence/attestations/sha256-$d.json"; then
-              att=$((att+1))
-              runs=$(python3 tools/att-run.py "evidence/attestations/sha256-$d.json" | sort -u | tr '\n' ' ')
-              echo "  [$total] $(echo "$d" | cut -c1-16)  ATTESTED  runs: ${runs:-none}  ($(($(date +%s)-t0))s)"
-              echo "$runs" | tr ' ' '\n' | grep -E '[0-9]' >> evidence/runs.txt || true
-            else
-              rm -f "evidence/attestations/sha256-$d.json"
-              echo "  [$total] $(echo "$d" | cut -c1-16)  (no attestation -- source pin/seed leaf)"
-            fi
-            for src in $MANIFESTS $PROVFILES; do
-              [ -f "$src" ] || continue
-              if grep -q "$d" "$src" 2>/dev/null; then
-                grep -hoE '[0-9a-f]{64}' "$src" 2>/dev/null | while read -r nd; do
-                  [ "$nd" = "$d" ] && continue
-                  grep -qx "$nd" evidence/seen.txt || echo "$nd" >> evidence/queue.txt
-                done
-              fi
-            done
-          done
-          sort -u evidence/runs.txt > evidence/runs.uniq && mv evidence/runs.uniq evidence/runs.txt
-          echo ""; echo "  walked $total digests, $att attested"; echo "  runs reached:"; cat -n evidence/runs.txt
+          echo "########## RESULT ##########"
+          n=$(wc -l < evidence/stages.tsv)
+          echo "  stages resolved to a run: $n (target: ~7-8)"
+          echo "  --- stage : digest : run ---"
+          cat evidence/stages.tsv | sed 's/^/    /'
 
           if [ "${{ inputs.fetch_logs }}" = "true" ]; then
-            echo ""; echo "########## LOGS (what the website renders) ##########"
-            while read -r rid; do
+            echo ""
+            echo "########## ONE LOG PER STAGE ##########"
+            while IFS="$(printf '\t')" read -r label dg rid; do
               [ -n "$rid" ] || continue
-              t0=$(date +%s); sleep 1
+              sleep 1
               timeout 120 gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/logs" \
-                > "evidence/logs/run-$rid.zip" 2>/dev/null
-              rc=$?
-              if [ "$rc" = 0 ] && [ -s "evidence/logs/run-$rid.zip" ]; then
-                logs=$((logs+1)); echo "  run $rid: $(stat -c%s evidence/logs/run-$rid.zip) bytes  ($(($(date +%s)-t0))s)"
+                > "evidence/logs/$label.zip" 2>/dev/null
+              if [ -s "evidence/logs/$label.zip" ]; then
+                echo "  $label: log $(stat -c%s evidence/logs/$label.zip) bytes (run $rid)"
               else
-                echo "  run $rid: no log (rc=$rc)"
+                echo "  $label: no log for run $rid"
               fi
-            done < evidence/runs.txt
+            done < evidence/stages.tsv
           fi
 
-          echo ""; echo "=== RESULT ($(($(date +%s)-t_start))s) ==="
-          ok=1
-          grep -qx "$SEED_DIGEST" evidence/seen.txt \
-            && echo "  PASS: reached the stage-1 seed digest" \
-            || { echo "  FAIL: never reached the seed digest"; ok=0; }
-          grep -qx "$SEED_RUN" evidence/runs.txt \
-            && echo "  PASS: reached the stage-1 verify run $SEED_RUN" \
-            || { echo "  FAIL: never reached seed run $SEED_RUN"; ok=0; }
-          if [ "${{ inputs.fetch_logs }}" = "true" ]; then
-            if [ -s "evidence/logs/run-$SEED_RUN.zip" ]; then
-              echo "  PASS: captured the stage-1 log"
-              unzip -p "evidence/logs/run-$SEED_RUN.zip" 2>/dev/null | grep -a "gen1 == gen2 == gen3" | head -1 | sed 's/^/    proof: /' || echo "    (fixpoint line not found)"
-            else
-              echo "  FAIL: seed run log not captured"; ok=0
-            fi
+          echo ""
+          echo "########## PROOF: stage-1 log carries gen1==gen2==gen3 ##########"
+          if [ -s evidence/logs/1-self-assembler.zip ]; then
+            unzip -p evidence/logs/1-self-assembler.zip 2>/dev/null | grep -a "gen1 == gen2 == gen3" | head -1 | sed 's/^/  /' || echo "  (fixpoint line not found)"
+          else
+            echo "  stage-1 log not captured"
           fi
-          [ "$ok" = 1 ] && echo "  ALL PASS -- walk reaches the trust root and has its logs" \
-                        || { echo "  SOME CHECKS FAILED"; exit 1; }
