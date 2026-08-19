@@ -1,0 +1,152 @@
+name: evidence-probe
+
+# A STANDALONE DIAGNOSTIC for the evidence-chain step, which hangs for
+# 10+ minutes showing nothing useful. RULED (Joe, 2026-08-19): test this
+# ONE step on the side, every command echoed and TIMED, one at a time,
+# maximally verbose. Nothing is hidden, nothing is swallowed, no 2>/dev/null.
+# This does NOT publish anything -- it only fetches the same inputs the real
+# evidence step does and reports, in the log, exactly what each call does and
+# how long it takes. When we can SEE where it hangs, we fix the real step.
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_digests:
+        description: 'cap how many digests to probe (0 = all)'
+        type: string
+        default: '5'
+      fetch_logs:
+        description: 'also probe the run-logs endpoint (the suspected hang)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+  attestations: read
+  id-token: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # A helper every call goes through: echo the command, run it with a
+      # hard timeout, print the exit code AND wall-clock seconds it took.
+      # `set -x` would echo too, but this gives us TIMING per call, which is
+      # what tells us WHICH call hangs.
+      - name: 'PROBE -- fetch inputs and time every single call'
+        run: |
+          set -eu
+          ts() { date -u +%H:%M:%S; }               # wall clock, second precision
+          run() {                                     # run <label> <timeout> <cmd...>
+            label=$1; tmo=$2; shift 2
+            echo "::group::[$( ts )] $label"
+            echo "  \$ $*"
+            t0=$(date +%s)
+            set +e
+            timeout "$tmo" "$@"
+            rc=$?
+            set -e
+            t1=$(date +%s)
+            echo "  -> exit=$rc  elapsed=$((t1 - t0))s  (timeout was ${tmo}s)"
+            [ "$rc" = 124 ] && echo "  !! TIMED OUT -- this is the hang"
+            echo "::endgroup::"
+            return 0
+          }
+
+          echo "=================================================="
+          echo "  evidence-probe start: $( date -u )"
+          echo "  repo: $GITHUB_REPOSITORY"
+          echo "=================================================="
+
+          # ---- STEP 1: how much API budget do we have, and is it secondary? ----
+          run "rate_limit (primary quota snapshot)" 30 \
+            gh api rate_limit --jq '.resources.core | "core \(.remaining)/\(.limit) reset \(.reset|todate)"'
+
+          # ---- STEP 2: download the input SHA256SUMS the real step reads ----
+          mkdir -p in/5-x86_64 in/k-x86_64 evidence/attestations evidence/logs
+          run "download 5/latest-x86_64 IMAGE-SHA256" 60 \
+            gh release download 5/latest-x86_64 -R "$GITHUB_REPOSITORY" \
+              -p 'IMAGE-SHA256' -p '*SHA256*' -D in/5-x86_64 --clobber
+          run "download 4/kernel-x86_64 SHA256s" 60 \
+            gh release download 4/kernel-x86_64 -R "$GITHUB_REPOSITORY" \
+              -p '*SHA256*' -D in/k-x86_64 --clobber
+
+          # ---- STEP 3: build the digest list, SHOW it ----
+          echo "::group::[$( ts )] build digests.txt"
+          { for f in in/5-x86_64/*SHA256* in/k-x86_64/*SHA256*; do
+              [ -f "$f" ] || continue
+              echo "  reading $f:" >&2
+              grep -hoE '[0-9a-f]{64}' "$f" || true
+            done
+          } | sort -u > evidence/digests.txt
+          total=$(wc -l < evidence/digests.txt)
+          echo "  total unique digests: $total"
+          echo "  --- the digests ---"
+          cat -n evidence/digests.txt
+          echo "::endgroup::"
+
+          # optionally cap how many we probe
+          cap='${{ inputs.max_digests }}'
+          if [ "$cap" != 0 ] && [ "$total" -gt "$cap" ]; then
+            head -n "$cap" evidence/digests.txt > evidence/digests.capped
+            mv evidence/digests.capped evidence/digests.txt
+            echo "  (capped to first $cap for this probe)"
+          fi
+
+          # ---- STEP 4: the attestation loop -- ONE call at a time, TIMED ----
+          echo ""
+          echo "########## ATTESTATION CALLS (one per digest) ##########"
+          : > evidence/runs.txt
+          n=0
+          while read -r d; do
+            [ -n "$d" ] || continue
+            n=$((n+1))
+            run "attestation #$n  sha256:$d" 30 \
+              gh api "repos/$GITHUB_REPOSITORY/attestations/sha256:$d" \
+                > "evidence/att-$d.json"
+            if [ -s "evidence/att-$d.json" ]; then
+              runs=$(grep -oE 'actions/runs/[0-9]+' "evidence/att-$d.json" | grep -oE '[0-9]+' | sort -u || true)
+              echo "  -> attestation names runs: ${runs:-<none>}"
+              echo "$runs" >> evidence/runs.txt
+            else
+              echo "  -> empty/no attestation for this digest"
+            fi
+          done < evidence/digests.txt
+          sort -u evidence/runs.txt | grep -E '[0-9]' > evidence/runs.uniq || true
+          mv evidence/runs.uniq evidence/runs.txt || : > evidence/runs.txt
+          echo "  unique runs referenced: $(wc -l < evidence/runs.txt)"
+          cat -n evidence/runs.txt || true
+
+          # ---- STEP 5: the LOGS loop -- THE SUSPECTED HANG, opt-in ----
+          if [ "${{ inputs.fetch_logs }}" = "true" ]; then
+            echo ""
+            echo "########## LOGS CALLS (the suspected hang) ##########"
+            m=0
+            while read -r rid; do
+              [ -n "$rid" ] || continue
+              m=$((m+1))
+              run "logs #$m  run $rid" 120 \
+                gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/logs" \
+                  > "evidence/logs-$rid.zip"
+              if [ -s "evidence/logs-$rid.zip" ]; then
+                echo "  -> got $(stat -c%s "evidence/logs-$rid.zip") bytes"
+              else
+                echo "  -> no log archive (expired or timed out)"
+              fi
+            done < evidence/runs.txt
+          else
+            echo ""
+            echo "########## LOGS loop SKIPPED (fetch_logs=false) ##########"
+            echo "  run again with fetch_logs=true to probe the logs endpoint"
+          fi
+
+          echo ""
+          echo "=================================================="
+          echo "  evidence-probe done: $( date -u )"
+          echo "=================================================="
