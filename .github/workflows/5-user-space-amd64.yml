@@ -224,9 +224,13 @@ jobs:
           set -eu
           sudo apt-get update
           # qemu-system-x86, NOT qemu-system-arm. Same package set otherwise:
-          # bubblewrap is the sandbox and e2fsprogs supplies mke2fs and
-          # debugfs, neither of which is architecture-specific.
-          sudo apt-get install -y bubblewrap qemu-system-x86 e2fsprogs
+          # bubblewrap is the sandbox. e2fsprogs is NO LONGER airlocked
+          # (ruled 2026-08-18): by image-build time every package is built
+          # and merged into ../sysroot, so the image is laid with the BUILT
+          # mke2fs/debugfs -- the same binaries the running system ships,
+          # tracing to source like everything else. The host tool was the
+          # last provenance seam and it is closed here and in stage 6.
+          sudo apt-get install -y bubblewrap qemu-system-x86
           # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor and
           # bwrap then fails on loopback setup. hermetic-gcc10/15/16 and
           # float-probe already carry this; stage5-entry lost a run to its
@@ -1167,7 +1171,9 @@ jobs:
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
           build_img() {
             rm -f "$1"
-            /sbin/mke2fs -q -t ext4 -d ../sysroot \
+            MKE2FS=../sysroot/usr/sbin/mke2fs
+            [ -x "$MKE2FS" ] || { echo "  mke2fs: WARN host fallback (built one not in sysroot)" >&2; MKE2FS=/sbin/mke2fs; }
+            "$MKE2FS" -q -t ext4 -d ../sysroot \
               -U 00000000-0000-4000-8000-000000000001 \
               -E hash_seed=00000000-0000-4000-8000-000000000002 \
               -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
@@ -1175,7 +1181,7 @@ jobs:
             # DECLARED TRANSFORMATION, not a silent fixup: rewrites the three
             # superblock timestamps and every inode's times, with debugfs so
             # the checksums are recomputed rather than left wrong.
-            python3 ../tools/normalize-ext4.py "$1"
+            VERON_ROOTFS=../sysroot python3 ../tools/normalize-ext4.py "$1"
           }
           build_img rootfs.img
           sha256sum rootfs.img | tee IMAGE-SHA256
@@ -2403,12 +2409,14 @@ jobs:
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
           build_img() {
             rm -f "$1"
-            /sbin/mke2fs -q -t ext4 -d ../sysroot \
+            MKE2FS=../sysroot/usr/sbin/mke2fs
+            [ -x "$MKE2FS" ] || { echo "  mke2fs: WARN host fallback (built one not in sysroot)" >&2; MKE2FS=/sbin/mke2fs; }
+            "$MKE2FS" -q -t ext4 -d ../sysroot \
               -U 00000000-0000-4000-8000-000000000001 \
               -E hash_seed=00000000-0000-4000-8000-000000000002 \
               -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
               -m 0 -b 4096 "$1" "${SZ}M"
-            python3 ../tools/normalize-ext4.py "$1"
+            VERON_ROOTFS=../sysroot python3 ../tools/normalize-ext4.py "$1"
           }
           # KEEP THE FULL IMAGE. Everything above -- the guest tests, the
           # desktop screenshot, the two-instance DHCP run -- was measured

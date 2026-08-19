@@ -1,0 +1,133 @@
+name    = "e2fsprogs"
+version = "1.47.4"
+group   = "system"
+license = "GPL-2.0"
+srcdir  = "e2fsprogs-1.47.4"
+
+# THE HOST TOOL THAT WROTE COMMITTED BYTES, NOW BUILT FROM SOURCE.
+# veron-mkimage laid every root and persist filesystem with the HOST's
+# /sbin/mke2fs (apt's e2fsprogs), and its /sbin/debugfs -- the one place
+# in a chain that self-assembles from a hand-written seed where a host
+# binary's exact version decided shipped image bytes. RULED (Joe,
+# 2026-08-18): build it. mkimage then calls the BUILT mke2fs, the
+# stage-6 airlock drops its e2fsprogs line, and the source-traceability
+# invariant closes its last seam. It also puts mke2fs, resize2fs and
+# e2fsck ON the running system -- which is what the persist grow needs.
+
+[source]
+url       = "https://downloads.sourceforge.net/project/e2fsprogs/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.gz"
+sha256    = "2cec05f39c20ee621f14926195664e66e6017190ac8e4bbdb16d86082e43c5da"
+signature = "https://downloads.sourceforge.net/project/e2fsprogs/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.gz.asc"
+# tytso signs each release; the .asc is a detached signature over the
+# .tar.gz. VERIFIED 2026-08-18: gpg --verify reported a good signature
+# from Theodore Tso for THIS tarball (sha256 2cec05...) and a BAD
+# signature for a byte-different GitHub repack of the same version --
+# the signature caught the wrong copy, which is the whole reason this
+# pin is signature-checked rather than matched by name. The signing
+# subkey F2F95956950D81A3 lives under primary D36F769BC11804F0; the
+# fingerprint recorded here is the one gpg named and confirmed against
+# the imported key identity.
+signing_key = "2B69B954DBFE0879288137C9F2F95956950D81A3"
+crosschecked_against = []
+
+[deps]
+# THE TOOLCHAIN IS STAGE 4; these are stage-5 peers e2fsprogs links.
+# util-linux is NOT in this set, so blkid/uuid come from e2fsprogs' OWN
+# bundled libblkid/libuuid -- which is why --disable-libblkid/-libuuid
+# are NOT passed: we want the internal ones, there being no system
+# provider. pkgconf drives the configure feature probes.
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["fuse2fs", "nls", "e2scrub"]
+
+[declared]
+configure_flags = [
+    "--prefix=/usr",
+    "--sbindir=/usr/sbin",
+    "--enable-elf-shlibs",
+    "--disable-nls",
+    "--disable-fuse2fs",
+    "--disable-e2scrub",
+    "--disable-rpath",
+]
+verification    = "none -- upstream 'make check' not run; guest test exercises mke2fs + resize2fs"
+packaged_as     = ["e2fsprogs"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256
+matches MIRRORS.tsv on both routes.
+
+WHY IT IS HERE, PRECISELY: veron-mkimage (stage 6) calls /sbin/mke2fs
+three times to lay root-A, root-B and persist, and their bytes are part
+of every published image. A host mke2fs means those bytes trace to
+Ubuntu's package, not to source -- the lone violation of the chain's
+own invariant, in a project whose stage 1 is a hand-assembled ELF. This
+recipe closes it: mkimage will call the built mke2fs, and the airlock
+line that apt-installed e2fsprogs is removed in the same change.
+
+WHAT mkimage NEEDS AND THIS MUST PROVIDE: mke2fs with -d (populate from
+a directory tree), -U (fixed UUID), -E hash_seed=, -b 4096, -O feature
+toggles, -m 0. All are libext2fs mainline, present since well before
+1.47. debugfs is also used by the ext4 normalizer path and ships here.
+
+--enable-elf-shlibs BUILDS libext2fs/libcom_err/libe2p/libss AS SHARED
+objects, which mke2fs and resize2fs then link. The alternative is fat
+static tools; shared matches how every other library package in this
+set is consumed and keeps the binaries small.
+
+--disable-fuse2fs DROPS the FUSE mount helper: there is no libfuse in
+this set, configure would find none, and fuse2fs is not wanted on the
+appliance. Stated so the absence is a decision, not a silent probe.
+
+--disable-e2scrub DROPS the LVM online-scrub shell scripts and their
+systemd units -- this system has neither LVM nor systemd. Off means no
+dead scripts in files.tsv.
+
+--disable-nls DROPS message translation: one C.UTF-8 locale ships and
+nothing consumes .mo catalogs. Consistent with the rest of the set.
+
+--enable-libblkid AND --enable-libuuid ARE LEFT ON (the default) AND
+THAT IS DELIBERATE: util-linux is not in this set, so nothing else
+provides libblkid/libuuid. e2fsprogs bundles its own; early-filesystems
+already calls `busybox blkid`, but a future consumer of the library
+form (grow tooling, findfs) wants the real one present. Passing
+--disable-libblkid here would remove a capability with no replacement.
+
+WHAT IS NOT BUILT: fuse2fs (above), and the test suite is not run in
+CI -- 'make check' formats scratch images and takes minutes; the guest
+test below proves the two tools the system actually depends on run in
+the image they ship to.
+"""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/e2fsprogs-1.47.4.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--sbindir=/usr/sbin",
+         "--enable-elf-shlibs", "--disable-nls", "--disable-fuse2fs",
+         "--disable-e2scrub", "--disable-rpath"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+# install-libs PLACES libext2fs ET AL; plain install alone leaves the
+# shared libs unstaged and mke2fs would not resolve at runtime.
+run  = [["make", "install", "DESTDIR=$D"],
+        ["make", "install-libs", "DESTDIR=$D"]]
+
+[guest]
+# THE TWO TOOLS THE SYSTEM DEPENDS ON, exercised for real: mke2fs makes
+# a throwaway filesystem in a file and resize2fs grows it. --help alone
+# would prove the binary loads; this proves libext2fs works.
+test   = [["/bin/sh", "-c",
+  "dd if=/dev/zero of=/tmp/t.img bs=1M count=16 && /usr/sbin/mke2fs -q -F -t ext4 -U 00000000-0000-4000-8000-0000000000c1 /tmp/t.img && /usr/sbin/dumpe2fs -h /tmp/t.img | grep -c 'Filesystem UUID'"]]
+expect = ["1"]

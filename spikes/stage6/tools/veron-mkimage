@@ -71,9 +71,9 @@ ROOT_MB=${VERON_ROOT_MB:-}
 PERSIST_MB=${VERON_PERSIST_MB:-256}
 
 usage() { echo "usage: veron-mkimage --rootfs DIR --kernel FILE --out IMG [--modules-tar T] [--firmware-dir D]" >&2; exit 2; }
-ROOTFS=""; KERNEL=""; OUT=""; MODTAR=""; FWDIR=""
+ROOTFS=""; KERNEL=""; OUT=""; MODTAR=""; FWDIR=""; SRC_ROOTFS=""
 while [ $# -gt 0 ]; do case "$1" in
-    --rootfs)       ROOTFS=$2; shift 2 ;;
+    --rootfs)       ROOTFS=$2; SRC_ROOTFS=$2; shift 2 ;;
     --kernel)       KERNEL=$2; shift 2 ;;
     --out)          OUT=$2; shift 2 ;;
     --modules-tar)  MODTAR=$2; shift 2 ;;
@@ -136,19 +136,34 @@ slot_kb=$((ROOT_MB * 1024))
 [ "$rootfs_kb" -lt "$slot_kb" ] || { echo "veron-mkimage: staged ${rootfs_kb} KB does not fit ${slot_kb} KB slot" >&2; exit 1; }
 echo "  staged ${rootfs_kb} KB; slot ${ROOT_MB} MiB (need + 100 MB, ruled 2026-08-18)"
 
+# THE mke2fs THAT WRITES THESE FILESYSTEMS IS THE ONE WE BUILT, not the
+# host's. RULED (Joe, 2026-08-18): the host e2fsprogs was the lone tool
+# whose bytes reached a published image without tracing to source, in a
+# chain whose stage 1 is a hand-assembled ELF. The built binary lives in
+# the rootfs this very run staged ($ROOTFS/usr/sbin/mke2fs); prefer it,
+# and say so. The host path remains only as a labelled fallback for the
+# transition and prints a warning if ever taken.
+MKE2FS="$SRC_ROOTFS/usr/sbin/mke2fs"
+if [ -x "$MKE2FS" ]; then
+    echo "  mke2fs: the built one ($MKE2FS)"
+else
+    MKE2FS=/sbin/mke2fs
+    echo "  mke2fs: WARNING falling back to host $MKE2FS -- built e2fsprogs not in rootfs" >&2
+fi
+
 # ---- root-A: the system; root-B and persist: empty ext4, fixed identity.
 # SOURCE_DATE_EPOCH pins every timestamp mke2fs invents.
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
 mkfs_args="-q -t ext4 -b 4096 -O ^has_journal,^resize_inode,^dir_index,^metadata_csum -m 0"
-/sbin/mke2fs $mkfs_args -d "$ROOTFS" \
+"$MKE2FS" $mkfs_args -d "$ROOTFS" \
     -U 00000000-0000-4000-8000-0000000000a1 \
     -E hash_seed=00000000-0000-4000-8000-0000000000a2 \
     "$W/p2.rootA" $((ROOT_MB * MB / 1024))k
-/sbin/mke2fs $mkfs_args \
+"$MKE2FS" $mkfs_args \
     -U 00000000-0000-4000-8000-0000000000b1 \
     -E hash_seed=00000000-0000-4000-8000-0000000000b2 \
     "$W/p3.rootB" $((ROOT_MB * MB / 1024))k
-/sbin/mke2fs $mkfs_args \
+"$MKE2FS" $mkfs_args \
     -U 00000000-0000-4000-8000-0000000000c1 \
     -E hash_seed=00000000-0000-4000-8000-0000000000c2 \
     "$W/p4.persist" $((PERSIST_MB * MB / 1024))k

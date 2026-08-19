@@ -326,6 +326,7 @@ jobs:
             elif [ -d fwtree ]; then
               ABSORB="$ABSORB --firmware-dir fwtree"
             fi
+            VERON_ROOTFS="work/$arch/rootfs" \
             VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw"
             sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw2" 2>/dev/null || true
             cmp "out/veron-$arch.raw" "out/veron-$arch.raw2"               && echo "  $arch image REPRODUCED (built twice, same bytes)"               || { echo "  $arch image NOT reproducible"; exit 1; }

@@ -36,6 +36,16 @@ import re
 import struct
 import subprocess
 import sys
+import os
+def _veron_tool(name):
+    """Prefer the built e2fsprogs tool (ruled 2026-08-18) when the image
+    build points us at the staged rootfs; else fall back to PATH."""
+    r = os.environ.get("VERON_ROOTFS", "")
+    if r:
+        cand = os.path.join(r, "usr/sbin", name)
+        if os.path.exists(cand):
+            return cand
+    return name
 
 SB_OFFSET = 1024
 # s_mtime, s_wtime, s_lastcheck, s_mkfs_time
@@ -59,7 +69,7 @@ def sha(path):
 
 
 def main(img, ts_epoch=946684800, ts_str="20000101000000"):
-    debugfs, dumpe2fs = tool("debugfs"), tool("dumpe2fs")
+    debugfs, dumpe2fs = tool(_veron_tool("debugfs")), tool("dumpe2fs")
     before = sha(img)
 
     info = subprocess.run([dumpe2fs, img], capture_output=True, text=True).stdout
