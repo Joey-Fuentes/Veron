@@ -2728,8 +2728,12 @@ jobs:
             # rootfs.img.tar.zst's sha, its byte count, or its mode. This makes
             # every shipped artifact diffable run-to-run, the same way stage 6's
             # manifests are. Paths are bare names here (CWD is stage5/out), so
-            # manifest.py lives two levels up.
-            python3 ../../tools/manifest.py "stage-5 published assets" $assets
+            # manifest.py is at the repo root; $GITHUB_WORKSPACE points there
+            # regardless of CWD (this step runs from spikes/stage5/out, which is
+            # THREE levels down -- an earlier "../../tools" resolved to
+            # spikes/tools and killed the publish step with exit 2, run
+            # 87594886080).
+            python3 "$GITHUB_WORKSPACE/tools/manifest.py" "stage-5 published assets" $assets
             # ---- PHASE 2: REPLACE EACH ASSET EXPLICITLY ----
             # NOT bare --clobber over the batch: clobber's delete-then-replace
             # races on large assets and can no-op silently (the 320 MB bug).
