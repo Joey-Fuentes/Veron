@@ -69,15 +69,18 @@ a directory tree), -U (fixed UUID), -E hash_seed=, -b 4096, -O feature
 toggles, -m 0. All are libext2fs mainline, present since well before
 1.47. debugfs is also used by the ext4 normalizer path and ships here.
 
-NO --enable-elf-shlibs: the ext2fs libraries link STATICALLY into the
-tools. RULED (Joe, 2026-08-19): mke2fs must run THE SAME WAY on the CI
-host that lays images and on Veron itself. A shared build made mke2fs a
-Veron-sysroot dynamic object the CI host could not exec (its interpreter
-lives in the sysroot -- "required file not found"); a loader wrapper
-fixes that but makes the invocation DIFFERENT in the two places, and
-identical-everywhere is the property wanted. Static costs a slightly
-larger mke2fs/resize2fs; the tools are tiny and few, so the cost is nil
-and one invocation works from CI and on the appliance alike.
+THE SHIPPED TOOLS ARE THE .static BUILDS. e2fsprogs' Makefiles define
+mke2fs.static, debugfs.static, resize2fs.static, e2fsck.static and
+dumpe2fs.static as fully-static targets (misc/, debugfs/, resize/,
+e2fsck/ Makefile.in), reachable via top-level `make all-static` (on by
+default; --enable-subset would turn it off and we do not pass it). The
+install step overlays these over the dynamic binaries. RULED (Joe,
+2026-08-19): mke2fs must run THE SAME WAY on the CI host that lays the
+image and on Veron -- a dynamic binary needs the sysroot's loader the
+runner lacks ("required file not found"); the static one needs nothing.
+Verified from source that configure adds -static only when it can link
+libc.a, which the stage-4 sysroot has. --enable-elf-shlibs is therefore
+NOT passed (it would build shared libs the .static tools do not use).
 
 --disable-fuse2fs DROPS the FUSE mount helper: there is no libfuse in
 this set, configure would find none, and fuse2fs is not wanted on the
@@ -118,15 +121,33 @@ run  = [["./configure", "--prefix=/usr", "--sbindir=/usr/sbin",
 [[steps]]
 name = "build"
 cwd  = "$S"
-run  = [["make", "-j$J"]]
+# make builds the dynamic tools; make all-static builds the FULLY-STATIC
+# variants (mke2fs.static, debugfs.static, resize2fs.static, e2fsck.static,
+# dumpe2fs.static) -- first-class targets in e2fsprogs' own Makefiles
+# (misc/, debugfs/, resize/, e2fsck/), gated on by default. Verified from
+# the 1.47.4 source, not assumed: configure adds -static to LDFLAGS_STATIC
+# only when it can link against glibc's libc.a, which the stage-4 sysroot
+# provides ($SYS/lib/libc.a). This is the LFS "static tools" build.
+run  = [["make", "-j$J"], ["make", "-j$J", "all-static"]]
 
 [[steps]]
 name = "install"
 cwd  = "$S"
 # install-libs PLACES libext2fs ET AL; plain install alone leaves the
 # shared libs unstaged and mke2fs would not resolve at runtime.
+# install the dynamic set + libs, THEN replace the four tools the system
+# actually invokes with their .static builds. RULED (Joe, 2026-08-19):
+# mke2fs must run the SAME WAY on the CI host that lays images and on
+# Veron. A dynamic binary needs the sysroot loader the CI host lacks
+# ("required file not found"); the static one needs nothing. resize2fs
+# and e2fsck ship static too -- the persist grow calls them on-device.
 run  = [["make", "install", "DESTDIR=$D"],
-        ["make", "install-libs", "DESTDIR=$D"]]
+        ["make", "install-libs", "DESTDIR=$D"],
+        ["cp", "$S/misc/mke2fs.static",     "$D/usr/sbin/mke2fs"],
+        ["cp", "$S/debugfs/debugfs.static", "$D/usr/sbin/debugfs"],
+        ["cp", "$S/resize/resize2fs.static","$D/usr/sbin/resize2fs"],
+        ["cp", "$S/e2fsck/e2fsck.static",   "$D/usr/sbin/e2fsck"],
+        ["cp", "$S/misc/dumpe2fs.static",   "$D/usr/sbin/dumpe2fs"]]
 
 [guest]
 # THE TWO TOOLS THE SYSTEM DEPENDS ON, exercised for real: mke2fs makes

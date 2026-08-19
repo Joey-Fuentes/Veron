@@ -1107,7 +1107,7 @@ package dosfstools 4.2
 package e2fsprogs 1.47.4
   group        system
   license      GPL-2.0
-  recipe-sha   4ec0b64d9ca53ee7f9b6cc5805d6e36c9c22ab21f445d4e5a9fd0db3acb088e2
+  recipe-sha   2d60388d989f91d40b536c6bc1b618717fb3b8d54fa020791709d8bee921ccc4
 
   source
     url        https://downloads.sourceforge.net/project/e2fsprogs/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.gz
@@ -1131,12 +1131,30 @@ package e2fsprogs 1.47.4
     [03] build
          cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
          argv ["make", "-j1"]
-    [04] install
+    [04] build
          cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
-         argv ["make", "install", "DESTDIR=dest/e2fsprogs"]
+         argv ["make", "-j1", "all-static"]
     [05] install
          cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
+         argv ["make", "install", "DESTDIR=dest/e2fsprogs"]
+    [06] install
+         cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
          argv ["make", "install-libs", "DESTDIR=dest/e2fsprogs"]
+    [07] install
+         cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
+         argv ["cp", "build/e2fsprogs-1.47.4/e2fsprogs-1.47.4/misc/mke2fs.static", "dest/e2fsprogs/usr/sbin/mke2fs"]
+    [08] install
+         cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
+         argv ["cp", "build/e2fsprogs-1.47.4/e2fsprogs-1.47.4/debugfs/debugfs.static", "dest/e2fsprogs/usr/sbin/debugfs"]
+    [09] install
+         cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
+         argv ["cp", "build/e2fsprogs-1.47.4/e2fsprogs-1.47.4/resize/resize2fs.static", "dest/e2fsprogs/usr/sbin/resize2fs"]
+    [10] install
+         cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
+         argv ["cp", "build/e2fsprogs-1.47.4/e2fsprogs-1.47.4/e2fsck/e2fsck.static", "dest/e2fsprogs/usr/sbin/e2fsck"]
+    [11] install
+         cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
+         argv ["cp", "build/e2fsprogs-1.47.4/e2fsprogs-1.47.4/misc/dumpe2fs.static", "dest/e2fsprogs/usr/sbin/dumpe2fs"]
 
 ======================================================================
 package elfutils 0.192
