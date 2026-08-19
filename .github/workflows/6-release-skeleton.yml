@@ -70,44 +70,46 @@ jobs:
             # release -- and it cost two trios (2026-08-19). The API call is
             # explicit and its stderr is shown; a real 404 is absence, any
             # other failure is a fault we retry rather than misread as absence.
-            # A HELPER THAT PRINTS THE RATE-LIMIT STATE EXACTLY. When a call
-            # fails, the log should say WHY in numbers -- how many calls are
-            # left on the installation token and when it resets -- not leave
-            # us to infer it. This is the diagnostic whose absence cost a
-            # whole evening (2026-08-19): "rate limit exceeded for
-            # installation" was hidden, then shown, but never quantified.
-            show_rate() {
-              echo "      -- rate limit state (installation token) --"
-              gh api rate_limit --jq '.resources.core
-                | "      core: \(.remaining)/\(.limit) remaining, resets at \(.reset|todate)"' \
-                2>/dev/null || echo "      (could not read rate_limit -- likely also limited)"
+            # RATE-LIMIT-AWARE FETCH. A 403 here is almost always GitHub's
+            # SECONDARY (burst/anti-scraping) limit, NOT the primary hourly
+            # quota: it fires on request PATTERN (too fast, too concurrent),
+            # the core quota reads full (5000/5000) the whole time, and it is
+            # invisible to the rate_limit endpoint (GitHub docs: "There is not
+            # a way to check the status of your secondary rate limit"). So the
+            # remedy is Retry-After / short backoff -- the core reset is the
+            # WRONG bucket and waiting an hour for it is a bug (2026-08-19).
+            # gh_get <path> <jqexpr> -> echoes value on success, sets RC.
+            gh_get() {
+              # --include gives us the response headers, incl. Retry-After.
+              gh api --include "$1" > resp.txt 2>err.txt
+              return $?
+            }
+            classify_and_wait() {   # $1 = attempt number
+              if grep -qiE "HTTP/[0-9.]+ 404|^Status: 404" resp.txt err.txt 2>/dev/null; then
+                echo 404; return
+              fi
+              # secondary-limit signature: 403 + scraping/secondary text
+              if grep -qiE "secondary rate limit|scraping GitHub|rate limit exceeded" resp.txt err.txt 2>/dev/null; then
+                ra=$(grep -iE "^Retry-After:" resp.txt 2>/dev/null | tr -dc '0-9')
+                if [ -z "$ra" ]; then ra=$(( 30 * $1 )); fi   # backoff: 30,60,90...
+                [ "$ra" -gt 300 ] && ra=300                    # cap a single wait
+                echo "      secondary rate limit -- honoring Retry-After=${ra}s (core quota is irrelevant here)" >&2
+                sleep "$ra"; echo retry; return
+              fi
+              echo other; return
             }
             exists=unknown
-            for attempt in 1 2 3; do
-              code=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/5%2Flatest-$arch" \
-                       --jq '.tag_name' 2>err.txt) && { exists=yes; break; }
-              if grep -q "HTTP 404" err.txt; then exists=no; break; fi
-              echo "  $arch: release-exists check attempt $attempt failed (not a 404):"
-              sed 's/^/      /' err.txt
-              # IF IT IS A RATE LIMIT, WAITING 10s IS USELESS -- the window is
-              # an hour. Read the reset time and sleep until then (capped so a
-              # bad clock cannot hang the job), rather than burning attempts
-              # inside the limited window as the 03:56-03:57 failure did.
-              if grep -qi "rate limit" err.txt; then
-                show_rate
-                reset=$(gh api rate_limit --jq '.resources.core.reset' 2>/dev/null || echo 0)
-                now=$(date +%s)
-                wait=$(( reset - now + 5 ))
-                if [ "$wait" -gt 0 ] && [ "$wait" -le 3900 ]; then
-                  echo "      rate-limited: waiting ${wait}s for the installation token to reset"
-                  sleep "$wait"
-                else
-                  echo "      rate-limited but reset time implausible (${wait}s) -- short wait then retry"
-                  sleep 30
-                fi
-              else
-                sleep 10
+            for attempt in 1 2 3 4 5; do
+              if gh_get "repos/$GITHUB_REPOSITORY/releases/tags/5%2Flatest-$arch"; then
+                # success body has the tag; confirm it parsed
+                grep -q '"tag_name"' resp.txt && { exists=yes; break; }
               fi
+              verdict=$(classify_and_wait "$attempt")
+              case "$verdict" in
+                404)   exists=no; break ;;
+                retry) echo "  $arch: retrying after secondary-limit backoff (attempt $attempt)"; continue ;;
+                *)     echo "  $arch: release-exists check attempt $attempt failed:"; sed 's/^/      /' err.txt; sleep $(( 5 * attempt )) ;;
+              esac
             done
             if [ "$exists" = no ]; then
               echo "  $arch: no 5/latest-$arch release -- arch skipped (stated, not silent)"
@@ -523,13 +525,15 @@ jobs:
           # all of it beside the image it vouches for, because artifact
           # retention expires and releases do not.
           mkdir -p evidence/attestations evidence/logs
-          # STATE THE API BUDGET BEFORE A SWEEP THAT SPENDS IT. This step is
-          # the heaviest API consumer (one call per digest for attestations,
-          # one per run for logs); if the installation token is low, the log
-          # should say so up front rather than let every call fail silently
-          # into a false "not retained" gap (2026-08-19). Purely informational.
+          # THIS STEP IS THE HEAVIEST API CONSUMER (one call per digest for
+          # attestations, one per run for logs). The risk is NOT the primary
+          # hourly quota -- that is 5000/hr and reads full -- but GitHub's
+          # SECONDARY (burst) limit, which fires on calls-too-fast. So the
+          # sweep is SERIALIZED WITH SPACING below (a short sleep between
+          # calls), per GitHub's own guidance to avoid secondary limits.
+          # The core budget is printed only as context; it is not the wall.
           gh api rate_limit --jq '.resources.core
-            | "  API budget before sweep: \(.remaining)/\(.limit), resets \(.reset|todate)"' \
+            | "  primary quota (not the usual constraint): \(.remaining)/\(.limit)"' \
             2>/dev/null || echo "  (rate_limit unreadable)"
           R=work/x86_64/rootfs
           {
@@ -551,6 +555,7 @@ jobs:
             # step for 24 minutes (2026-08-19): the logs endpoint below
             # redirects to a zip and gh follows it with no time limit, so one
             # slow archive blocks the whole loop. 30s is generous for a JSON.
+            sleep 1   # SERIALIZE WITH SPACING -- avoid the secondary burst limit
             if timeout 30 gh api "repos/Joey-Fuentes/Veron/attestations/sha256:$d" \
                  > "evidence/attestations/sha256-$d.json" 2>/dev/null \
                && [ -s "evidence/attestations/sha256-$d.json" ] \
@@ -573,6 +578,7 @@ jobs:
             # 120s CAP: a log archive is tens of MB at worst; longer means the
             # endpoint stalled on its redirect (the 24-minute hang). A timeout
             # is recorded as a GAP, exactly like logs Actions no longer retains.
+            sleep 1   # SERIALIZE WITH SPACING -- avoid the secondary burst limit
             timeout 120 gh api "repos/Joey-Fuentes/Veron/actions/runs/$rid/logs" \
                  > "evidence/logs/run-$rid.zip" 2>/dev/null
             rc=$?
