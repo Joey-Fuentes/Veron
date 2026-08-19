@@ -82,9 +82,13 @@ jobs:
           S4K=$(grep -i 'vmlinuz\|KERNEL-GENERIC' rel/k/*SHA256* 2>/dev/null | grep -oE '[0-9a-f]{64}' | head -1)
           resolve "4-kernel" "$S4K"
 
-          gh release download 5/latest-x86_64 -R "$GITHUB_REPOSITORY" -p 'IMAGE-SHA256' -D rel/5 --clobber 2>/dev/null || true
-          S5=$(grep -oE '[0-9a-f]{64}' rel/5/IMAGE-SHA256 2>/dev/null | head -1)
-          resolve "5-rootfs-image" "$S5"
+          # STAGE 5 attests the FILES (rootfs.img.tar.zst, Image, PROVENANCE,
+          # IMAGE-SHA256, ...), NOT the uncompressed-image digest that lives
+          # INSIDE IMAGE-SHA256 as text. So resolve stage 5 by the sha256 of a
+          # small attested subject we can fetch cheaply: PROVENANCE itself.
+          gh release download 5/latest-x86_64 -R "$GITHUB_REPOSITORY" -p 'PROVENANCE' -p 'IMAGE-SHA256' -D rel/5 --clobber 2>/dev/null || true
+          S5=$(sha256sum rel/5/PROVENANCE 2>/dev/null | cut -d' ' -f1)
+          resolve "5-provenance" "$S5"
 
           echo ""
           echo "########## RESULT ##########"
