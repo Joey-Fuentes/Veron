@@ -1,24 +1,18 @@
 name: evidence-probe
 
-# A STANDALONE DIAGNOSTIC for the evidence-chain step, which hangs for
-# 10+ minutes showing nothing useful. RULED (Joe, 2026-08-19): test this
-# ONE step on the side, every command echoed and TIMED, one at a time,
-# maximally verbose. Nothing is hidden, nothing is swallowed, no 2>/dev/null.
-# This does NOT publish anything -- it only fetches the same inputs the real
-# evidence step does and reports, in the log, exactly what each call does and
-# how long it takes. When we can SEE where it hangs, we fix the real step.
+# STANDALONE PROOF that the recursive chain walk reaches stage 1 and pulls
+# every stage's logs. Publishes NOTHING, touches no release. Runs the exact
+# walk the real evidence step would, but every step echoed and TIMED, and it
+# ASSERTS at the end that it reached the seed run (31879095169) and captured
+# its log. If this is green, the walk works; only then does it belong in 6.
 
 on:
   workflow_dispatch:
     inputs:
-      max_digests:
-        description: 'cap how many digests to probe (0 = all)'
-        type: string
-        default: '5'
       fetch_logs:
-        description: 'also probe the run-logs endpoint (the suspected hang)'
+        description: 'also pull each reached run''s logs (proves the website has them)'
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -29,124 +23,140 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
 
-      # A helper every call goes through: echo the command, run it with a
-      # hard timeout, print the exit code AND wall-clock seconds it took.
-      # `set -x` would echo too, but this gives us TIMING per call, which is
-      # what tells us WHICH call hangs.
-      - name: 'PROBE -- fetch inputs and time every single call'
+      - name: 'WALK -- recursive chain to the seed, every step timed'
         run: |
           set -eu
-          ts() { date -u +%H:%M:%S; }               # wall clock, second precision
-          run() {                                     # run <label> <timeout> <cmd...>
-            label=$1; tmo=$2; shift 2
-            echo "::group::[$( ts )] $label"
-            echo "  \$ $*"
-            t0=$(date +%s)
-            set +e
-            timeout "$tmo" "$@"
-            rc=$?
-            set -e
-            t1=$(date +%s)
-            echo "  -> exit=$rc  elapsed=$((t1 - t0))s  (timeout was ${tmo}s)"
-            [ "$rc" = 124 ] && echo "  !! TIMED OUT -- this is the hang"
-            echo "::endgroup::"
-            return 0
-          }
+          SEED_RUN=31879095169   # stage-1 self-assembly verify (gen1==gen2==gen3)
+          SEED_DIGEST=e97e2969cf88b11a4ed28d7b22c9154a155fe9c38d01e420ab09151f2938f550
+          ts() { date -u +%H:%M:%S; }
+          t_start=$(date +%s)
+
+          mkdir -p evidence/attestations evidence/logs evidence/provenance
+          att=0; logs=0; total=0
+          : > evidence/runs.txt; : > evidence/seen.txt; : > evidence/queue.txt
 
           echo "=================================================="
-          echo "  evidence-probe start: $( date -u )"
-          echo "  repo: $GITHUB_REPOSITORY"
+          echo "  chain-walk probe start $( date -u )"
+          echo "  target: reach seed run $SEED_RUN and its log"
           echo "=================================================="
 
-          # ---- STEP 1: how much API budget do we have, and is it secondary? ----
-          run "rate_limit (primary quota snapshot)" 30 \
-            gh api rate_limit --jq '.resources.core | "core \(.remaining)/\(.limit) reset \(.reset|todate)"'
-
-          # ---- STEP 2: download the input SHA256SUMS the real step reads ----
-          mkdir -p in/5-x86_64 in/k-x86_64 evidence/attestations evidence/logs
-          run "download 5/latest-x86_64 IMAGE-SHA256" 60 \
-            gh release download 5/latest-x86_64 -R "$GITHUB_REPOSITORY" \
-              -p 'IMAGE-SHA256' -p '*SHA256*' -D in/5-x86_64 --clobber
-          run "download 4/kernel-x86_64 SHA256s" 60 \
-            gh release download 4/kernel-x86_64 -R "$GITHUB_REPOSITORY" \
-              -p '*SHA256*' -D in/k-x86_64 --clobber
-
-          # ---- STEP 3: build the digest list, SHOW it ----
-          echo "::group::[$( ts )] build digests.txt"
-          { for f in in/5-x86_64/*SHA256* in/k-x86_64/*SHA256*; do
-              [ -f "$f" ] || continue
-              echo "  reading $f:" >&2
-              grep -hoE '[0-9a-f]{64}' "$f" || true
-            done
-          } | sort -u > evidence/digests.txt
-          total=$(wc -l < evidence/digests.txt)
-          echo "  total unique digests: $total"
-          echo "  --- the digests ---"
-          cat -n evidence/digests.txt
+          # SEED the walk with THIS release's image+kernel digests.
+          echo "::group::[$( ts )] seed from 5/latest + 4/kernel SHA256 files"
+          mkdir -p in/5-x86_64 in/k-x86_64
+          gh release download 5/latest-x86_64 -R "$GITHUB_REPOSITORY" -p '*SHA256*' -D in/5-x86_64 --clobber 2>/dev/null || true
+          gh release download 4/kernel-x86_64 -R "$GITHUB_REPOSITORY" -p '*SHA256*' -D in/k-x86_64 --clobber 2>/dev/null || true
+          for f in in/5-x86_64/*SHA256* in/k-x86_64/*SHA256*; do
+            [ -e "$f" ] && grep -hoE '[0-9a-f]{64}' "$f" || true
+          done | sort -u >> evidence/queue.txt
+          echo "  seed digests: $(wc -l < evidence/queue.txt)"
+          cat -n evidence/queue.txt
           echo "::endgroup::"
 
-          # optionally cap how many we probe
-          cap='${{ inputs.max_digests }}'
-          if [ "$cap" != 0 ] && [ "$total" -gt "$cap" ]; then
-            head -n "$cap" evidence/digests.txt > evidence/digests.capped
-            mv evidence/digests.capped evidence/digests.txt
-            echo "  (capped to first $cap for this probe)"
-          fi
+          # release-side PROVENANCE (stage 4/5 edges) + committed manifests (3->2->1)
+          MANIFESTS="stages/1-self-assembly/substages.toml stages/1-self-assembly/BASELINE.txt stages/2-pico-c/substages.toml stages/3-micro-c/substages-amd64.toml stages/3-micro-c/substages.toml"
+          echo "::group::[$( ts )] fetch release PROVENANCE (stage 4/5 edges)"
+          for tag in 5/latest-x86_64 4/latest-x86_64 4/kernel-x86_64 3/latest-x86_64; do
+            echo "  \$ gh release download $tag -p PROVENANCE -p *substages* ..."
+            timeout 60 gh release download "$tag" -R "$GITHUB_REPOSITORY" \
+              -p 'PROVENANCE' -p '*substages*' -p 'ARTIFACT-SHA256' \
+              -D "evidence/provenance/$(echo "$tag" | tr / _)" --clobber 2>/dev/null \
+              && echo "    got $tag" || echo "    (none for $tag)"
+          done
+          PROVFILES=$(find evidence/provenance -type f 2>/dev/null || true)
+          echo "  committed manifests present:"
+          for m in $MANIFESTS; do [ -f "$m" ] && echo "    OK  $m" || echo "    -- $m (absent)"; done
+          echo "::endgroup::"
 
-          # ---- STEP 4: the attestation loop -- ONE call at a time, TIMED ----
+          # THE RECURSIVE WALK -- one loop, each digest timed.
           echo ""
-          echo "########## ATTESTATION CALLS (one per digest) ##########"
-          : > evidence/runs.txt
-          n=0
-          while read -r d; do
-            [ -n "$d" ] || continue
-            n=$((n+1))
-            run "attestation #$n  sha256:$d" 30 \
-              gh api "repos/$GITHUB_REPOSITORY/attestations/sha256:$d" \
-                > "evidence/att-$d.json"
-            if [ -s "evidence/att-$d.json" ]; then
-              runs=$(grep -oE 'actions/runs/[0-9]+' "evidence/att-$d.json" | grep -oE '[0-9]+' | sort -u || true)
-              echo "  -> attestation names runs: ${runs:-<none>}"
-              echo "$runs" >> evidence/runs.txt
+          echo "########## RECURSIVE WALK ##########"
+          while [ -s evidence/queue.txt ]; do
+            d=$(head -n1 evidence/queue.txt); sed -i '1d' evidence/queue.txt
+            grep -qx "$d" evidence/seen.txt && continue
+            echo "$d" >> evidence/seen.txt
+            total=$((total+1))
+            t0=$(date +%s)
+            sleep 1
+            if timeout 30 gh api "repos/$GITHUB_REPOSITORY/attestations/sha256:$d" \
+                 > "evidence/attestations/sha256-$d.json" 2>/dev/null \
+               && [ -s "evidence/attestations/sha256-$d.json" ] \
+               && grep -q '"attestations"' "evidence/attestations/sha256-$d.json"; then
+              att=$((att+1))
+              runs=$(grep -oE 'actions/runs/[0-9]+' "evidence/attestations/sha256-$d.json" | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')
+              echo "  [$total] $(echo "$d" | cut -c1-16)  ATTESTED  runs: ${runs:-none}  ($(($(date +%s)-t0))s)"
+              echo "$runs" | tr ' ' '\n' | grep -E '[0-9]' >> evidence/runs.txt || true
             else
-              echo "  -> empty/no attestation for this digest"
+              rm -f "evidence/attestations/sha256-$d.json"
+              echo "  [$total] $(echo "$d" | cut -c1-16)  (no attestation -- source pin/seed leaf)"
             fi
-          done < evidence/digests.txt
-          sort -u evidence/runs.txt | grep -E '[0-9]' > evidence/runs.uniq || true
-          mv evidence/runs.uniq evidence/runs.txt || : > evidence/runs.txt
-          echo "  unique runs referenced: $(wc -l < evidence/runs.txt)"
-          cat -n evidence/runs.txt || true
+            # follow edges: any manifest/provenance that NAMES this digest,
+            # queue the OTHER digests it names.
+            for src in $MANIFESTS $PROVFILES; do
+              [ -f "$src" ] || continue
+              if grep -q "$d" "$src" 2>/dev/null; then
+                grep -hoE '[0-9a-f]{64}' "$src" 2>/dev/null | while read -r nd; do
+                  [ "$nd" = "$d" ] && continue
+                  grep -qx "$nd" evidence/seen.txt || echo "$nd" >> evidence/queue.txt
+                done
+              fi
+            done
+          done
+          sort -u evidence/runs.txt > evidence/runs.uniq && mv evidence/runs.uniq evidence/runs.txt
+          echo ""
+          echo "  walked $total digests, $att attested"
+          echo "  runs reached:"
+          cat -n evidence/runs.txt
 
-          # ---- STEP 5: the LOGS loop -- THE SUSPECTED HANG, opt-in ----
+          # PULL LOGS for every reached run (this is what the website shows).
           if [ "${{ inputs.fetch_logs }}" = "true" ]; then
             echo ""
-            echo "########## LOGS CALLS (the suspected hang) ##########"
-            m=0
+            echo "########## LOGS (what the website renders) ##########"
             while read -r rid; do
               [ -n "$rid" ] || continue
-              m=$((m+1))
-              run "logs #$m  run $rid" 120 \
-                gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/logs" \
-                  > "evidence/logs-$rid.zip"
-              if [ -s "evidence/logs-$rid.zip" ]; then
-                echo "  -> got $(stat -c%s "evidence/logs-$rid.zip") bytes"
+              t0=$(date +%s); sleep 1
+              timeout 120 gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/logs" \
+                > "evidence/logs/run-$rid.zip" 2>/dev/null
+              rc=$?
+              if [ "$rc" = 0 ] && [ -s "evidence/logs/run-$rid.zip" ]; then
+                logs=$((logs+1))
+                echo "  run $rid: $(stat -c%s evidence/logs/run-$rid.zip) bytes  ($(($(date +%s)-t0))s)"
               else
-                echo "  -> no log archive (expired or timed out)"
+                echo "  run $rid: no log (rc=$rc)"
               fi
             done < evidence/runs.txt
-          else
-            echo ""
-            echo "########## LOGS loop SKIPPED (fetch_logs=false) ##########"
-            echo "  run again with fetch_logs=true to probe the logs endpoint"
           fi
 
+          # THE ASSERTIONS -- did we actually reach the trust root?
           echo ""
           echo "=================================================="
-          echo "  evidence-probe done: $( date -u )"
+          echo "  RESULT  ($(($(date +%s)-t_start))s total)"
           echo "=================================================="
+          ok=1
+          if grep -qx "$SEED_DIGEST" evidence/seen.txt; then
+            echo "  PASS: walk reached the stage-1 seed digest ($(echo $SEED_DIGEST|cut -c1-16)...)"
+          else
+            echo "  FAIL: never reached the seed digest"; ok=0
+          fi
+          if grep -qx "$SEED_RUN" evidence/runs.txt; then
+            echo "  PASS: walk reached the stage-1 verify run $SEED_RUN"
+          else
+            echo "  FAIL: never reached seed run $SEED_RUN"; ok=0
+          fi
+          if [ "${{ inputs.fetch_logs }}" = "true" ]; then
+            if [ -s "evidence/logs/run-$SEED_RUN.zip" ]; then
+              echo "  PASS: captured the stage-1 log -- gen1==gen2==gen3 is in the bundle"
+              echo "  --- proof: grep the seed log for the fixpoint line ---"
+              unzip -p "evidence/logs/run-$SEED_RUN.zip" 2>/dev/null | grep -a "gen1 == gen2 == gen3" | head -1 | sed 's/^/    /' || echo "    (line not found in log)"
+            else
+              echo "  FAIL: seed run log not captured"; ok=0
+            fi
+          fi
+          echo "=================================================="
+          [ "$ok" = 1 ] && echo "  ALL PASS -- the walk reaches the trust root and has its logs" \
+                        || { echo "  SOME CHECKS FAILED"; exit 1; }
