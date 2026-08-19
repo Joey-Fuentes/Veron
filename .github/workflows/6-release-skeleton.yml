@@ -62,6 +62,23 @@ jobs:
               echo "  $arch: no 5/latest-$arch release -- arch skipped (stated, not silent)"
               continue
             fi
+            # THE INCOMPLETE MARKER IS THE FIRST THING CHECKED (Joe, 2026-08-19).
+            # Stage 5 raises PUBLISHING-INCOMPLETE before its first asset and
+            # removes it only after re-downloading and verifying the pair. Its
+            # presence means the release may be mid-publish or failed
+            # verification -- either way the pair may be inconsistent, exactly
+            # the 49d3919f-hash-beside-e18e188a-bytes failure. Refuse on sight;
+            # do not download the image, do not guess.
+            if gh release view "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
+                 --json assets --jq '.assets[].name' 2>/dev/null \
+                 | grep -qx "PUBLISHING-INCOMPLETE"; then
+              echo "  $arch: 5/latest-$arch carries PUBLISHING-INCOMPLETE --"
+              echo "         refusing an in-progress or unverified publish."
+              gh release download "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
+                -p PUBLISHING-INCOMPLETE -D "in/5-$arch" --clobber 2>/dev/null \
+                && sed 's/^/         /' "in/5-$arch/PUBLISHING-INCOMPLETE" || true
+              exit 1
+            fi
             # THE IMAGE DIGEST IS CHECKED BEFORE ANYTHING CONSUMES IT --
             # the same refusal discipline every stage seam already has.
             # IMAGE-SHA256 names the UNCOMPRESSED rootfs.img; the release
@@ -326,7 +343,6 @@ jobs:
             elif [ -d fwtree ]; then
               ABSORB="$ABSORB --firmware-dir fwtree"
             fi
-            VERON_ROOTFS="work/$arch/rootfs" \
             VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw"
             sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw2" 2>/dev/null || true
             cmp "out/veron-$arch.raw" "out/veron-$arch.raw2"               && echo "  $arch image REPRODUCED (built twice, same bytes)"               || { echo "  $arch image NOT reproducible"; exit 1; }

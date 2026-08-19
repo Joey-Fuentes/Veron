@@ -224,13 +224,9 @@ jobs:
           set -eu
           sudo apt-get update
           # qemu-system-x86, NOT qemu-system-arm. Same package set otherwise:
-          # bubblewrap is the sandbox. e2fsprogs is NO LONGER airlocked
-          # (ruled 2026-08-18): by image-build time every package is built
-          # and merged into ../sysroot, so the image is laid with the BUILT
-          # mke2fs/debugfs -- the same binaries the running system ships,
-          # tracing to source like everything else. The host tool was the
-          # last provenance seam and it is closed here and in stage 6.
-          sudo apt-get install -y bubblewrap qemu-system-x86
+          # bubblewrap is the sandbox and e2fsprogs supplies mke2fs and
+          # debugfs, neither of which is architecture-specific.
+          sudo apt-get install -y bubblewrap qemu-system-x86 e2fsprogs
           # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor and
           # bwrap then fails on loopback setup. hermetic-gcc10/15/16 and
           # float-probe already carry this; stage5-entry lost a run to its
@@ -1171,9 +1167,7 @@ jobs:
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
           build_img() {
             rm -f "$1"
-            MKE2FS=../sysroot/usr/sbin/mke2fs   # static: runs like on Veron
-            [ -x "$MKE2FS" ] || { echo "  mke2fs: WARN host fallback" >&2; MKE2FS=/sbin/mke2fs; }
-            "$MKE2FS" -q -t ext4 -d ../sysroot \
+            /sbin/mke2fs -q -t ext4 -d ../sysroot \
               -U 00000000-0000-4000-8000-000000000001 \
               -E hash_seed=00000000-0000-4000-8000-000000000002 \
               -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
@@ -1181,7 +1175,7 @@ jobs:
             # DECLARED TRANSFORMATION, not a silent fixup: rewrites the three
             # superblock timestamps and every inode's times, with debugfs so
             # the checksums are recomputed rather than left wrong.
-            VERON_ROOTFS=../sysroot python3 ../tools/normalize-ext4.py "$1"
+            python3 ../tools/normalize-ext4.py "$1"
           }
           build_img rootfs.img
           sha256sum rootfs.img | tee IMAGE-SHA256
@@ -2409,14 +2403,12 @@ jobs:
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
           build_img() {
             rm -f "$1"
-            MKE2FS=../sysroot/usr/sbin/mke2fs   # static: runs like on Veron
-            [ -x "$MKE2FS" ] || { echo "  mke2fs: WARN host fallback" >&2; MKE2FS=/sbin/mke2fs; }
-            "$MKE2FS" -q -t ext4 -d ../sysroot \
+            /sbin/mke2fs -q -t ext4 -d ../sysroot \
               -U 00000000-0000-4000-8000-000000000001 \
               -E hash_seed=00000000-0000-4000-8000-000000000002 \
               -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
               -m 0 -b 4096 "$1" "${SZ}M"
-            VERON_ROOTFS=../sysroot python3 ../tools/normalize-ext4.py "$1"
+            python3 ../tools/normalize-ext4.py "$1"
           }
           # KEEP THE FULL IMAGE. Everything above -- the guest tests, the
           # desktop screenshot, the two-instance DHCP run -- was measured
@@ -2620,6 +2612,28 @@ jobs:
             gh release create 5/latest-x86_64 --title 'Veron stage 5 (x86_64)' \
               --notes 'The stage-5 system image for x86_64, and the kernel and initramfs that boot it. Separate from stage5/latest, which is aarch64. Open with the zstd in toolbox/latest.' \
               2>/dev/null || true
+            # ---- PHASE 1: RAISE THE INCOMPLETE MARKER BEFORE ANY ASSET ----
+            # RULED (Joe, 2026-08-19): publishing is a two-phase commit. A
+            # release is INCONSISTENT until proven otherwise, and stage 6
+            # must be able to see that from the tag alone. The failure this
+            # prevents was real: `gh release upload --clobber` updated
+            # IMAGE-SHA256 to 49d3919f but LEFT the old 320 MB tarball
+            # (e18e188a) in place -- clobber silently keeps a large asset it
+            # fails to replace. The hash said one image, the bytes were
+            # another, and stage 6 consumed the lie. A marker removed only
+            # after a real download-verify turns that into a caught failure.
+            {
+              echo "PUBLISH IN PROGRESS -- do not consume this release."
+              echo "run    ${GITHUB_RUN_ID}"
+              echo "commit ${GITHUB_SHA}"
+              echo "began  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "image  $(cut -d' ' -f1 IMAGE-SHA256)"
+              echo "This file is removed only after every published asset is"
+              echo "re-downloaded and verified. Its presence means the pair"
+              echo "may be inconsistent -- refuse the release while it exists."
+            } > PUBLISHING-INCOMPLETE
+            gh release upload 5/latest-x86_64 PUBLISHING-INCOMPLETE --clobber || {
+              echo "VERON-STAGE5-UNPUBLISHED -- could not raise the marker"; exit 1; }
             # AN ADOPTED CHECKPOINT TRAVELS WITH THE IMAGE, because a claim
             # made only in a run log is a claim nobody finds later. If this
             # run reused packages compiled against a different sysroot, the
@@ -2696,12 +2710,59 @@ jobs:
             } > PROVENANCE
             sed 's/^/    /' PROVENANCE
             assets="$assets PROVENANCE"
-            echo "  uploading: $assets"
-            if gh release upload 5/latest-x86_64 $assets --clobber; then
+            echo "  uploading (delete-then-upload, per asset): $assets"
+            # ---- PHASE 2: REPLACE EACH ASSET EXPLICITLY ----
+            # NOT bare --clobber over the batch: clobber's delete-then-replace
+            # races on large assets and can no-op silently (the 320 MB bug).
+            # Delete each name first, then upload -- so a failed upload leaves
+            # NO asset (a visible gap the verify catches) rather than a stale
+            # one (an invisible lie). The marker is already up; a crash here
+            # leaves INCOMPLETE raised, which is exactly right.
+            upload_ok=yes
+            for a in $assets; do
+              gh release delete-asset 5/latest-x86_64 "$a" -R "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+              if ! gh release upload 5/latest-x86_64 "$a"; then
+                echo "  UPLOAD FAILED: $a"; upload_ok=no; break
+              fi
+            done
+            # ---- PHASE 3: VERIFY THE PUBLISHED RELEASE LIKE A STRANGER ----
+            # Download every asset fresh from the tag and check the pair the
+            # consumer checks: the unpacked rootfs must hash to IMAGE-SHA256.
+            # This is the step that would have caught 49d3919f-vs-e18e188a.
+            verify_ok=no
+            if [ "$upload_ok" = yes ]; then
+              vdir=$(mktemp -d)
+              if gh release download 5/latest-x86_64 -R "$GITHUB_REPOSITORY" \
+                   -p 'rootfs.img.tar.zst' -p 'IMAGE-SHA256' -D "$vdir" --clobber; then
+                ( cd "$vdir" && tar --zstd -xf rootfs.img.tar.zst \
+                  && sha256sum -c IMAGE-SHA256 ) && verify_ok=yes
+              fi
+              # also confirm every asset NAME is present on the tag
+              present=$(gh release view 5/latest-x86_64 -R "$GITHUB_REPOSITORY" \
+                        --json assets --jq '.assets[].name' 2>/dev/null)
+              for a in $assets; do
+                echo "$present" | grep -qx "$a" || { echo "  MISSING ON TAG: $a"; verify_ok=no; }
+              done
+              rm -rf "$vdir"
+            fi
+            # ---- PHASE 4: LOWER OR ANNOTATE THE MARKER ----
+            if [ "$verify_ok" = yes ]; then
+              gh release delete-asset 5/latest-x86_64 PUBLISHING-INCOMPLETE \
+                -R "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
               echo "VERON-STAGE5-PUBLISHED-AMD64  $(cut -d' ' -f1 IMAGE-SHA256)"
               echo "IMAGE_PUBLISHED=yes" >> "$GITHUB_ENV"
             else
-              echo "VERON-STAGE5-UNPUBLISHED -- the image stands"
+              {
+                echo "PUBLISH FAILED VERIFICATION -- do not consume."
+                echo "run    ${GITHUB_RUN_ID}"
+                echo "image  $(cut -d' ' -f1 IMAGE-SHA256)"
+                echo "failed $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                echo "upload_ok=$upload_ok verify_ok=$verify_ok"
+                echo "The published pair did not verify; the marker stays."
+              } > PUBLISHING-INCOMPLETE
+              gh release upload 5/latest-x86_64 PUBLISHING-INCOMPLETE --clobber || true
+              echo "VERON-STAGE5-UNPUBLISHED -- verification failed, marker stands"
+              exit 1
             fi
           else
             echo "  too large to publish: $((asset/1048576)) MB, cap is 2 GB"
