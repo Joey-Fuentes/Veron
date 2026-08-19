@@ -48,16 +48,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
-        # PIN TO THE DISPATCH COMMIT, not the branch tip. On workflow_dispatch,
-        # checkout@v5 defaults to GITHUB_REF (the branch's CURRENT head), which
-        # drifts if main advances after the run starts -- so the job would build
-        # a different commit than GITHUB_SHA, which is what gets tagged and
-        # attested. Pinning ref to github.sha makes the code built, the release
-        # tag, and the attestation all one commit. (Bug found 2026-08-19: a run
-        # dispatched at b987f396 checked out cf7153fe and published mismatched
-        # provenance.)
-        with:
-          ref: ${{ github.sha }}
 
       - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
         env:
@@ -81,6 +71,17 @@ jobs:
             # unverified input, which is correct, aimed at the wrong file,
             # which is fixed.
             ( cd "in/5-$arch"               && tar --zstd -xf rootfs.img.tar.zst               && sha256sum -c IMAGE-SHA256 )
+            # REPRODUCIBILITY INSTRUMENTATION: log the EXACT identity of every
+            # input this run pulled -- rootfs.img, its tarball, and IMAGE-SHA256
+            # -- so two runs are diffable. "rootfs.img: OK" only says the file
+            # matched ITS OWN downloaded IMAGE-SHA256; if 5/latest was
+            # republished between runs, both say OK while consuming different
+            # bytes. The sha here makes that visible instead of hidden.
+            echo "::group::stage-5 inputs manifest ($arch)"
+            python3 tools/manifest.py "rootfs.img ($arch)" "in/5-$arch/rootfs.img"
+            python3 tools/manifest.py "rootfs.img.tar.zst ($arch)" "in/5-$arch/rootfs.img.tar.zst"
+            python3 tools/manifest.py "IMAGE-SHA256 ($arch)" "in/5-$arch/IMAGE-SHA256"
+            echo "::endgroup::"
             # THE ATTESTATION IS CHECKED HERE TOO: stage 6 is the first
             # consumer that exists to serve strangers, so it verifies what
             # a stranger would verify, and refuses what they would refuse.
@@ -336,10 +337,26 @@ jobs:
             elif [ -d fwtree ]; then
               ABSORB="$ABSORB --firmware-dir fwtree"
             fi
+            # REPRODUCIBILITY INSTRUMENTATION: log the identity (path, mode,
+            # size, sha256, and a whole-tree TREE-SHA) of EVERY input to
+            # veron-mkimage, so two runs can be diffed to find exactly where
+            # they fork. If the TREE-SHAs match across runs but the image
+            # differs, mkimage is the culprit; if an input TREE-SHA differs,
+            # that input is. FWIN is the firmware dir actually passed.
+            FWIN=$(printf '%s' "$ABSORB" | sed -n 's/.*--firmware-dir \([^ ]*\).*/\1/p')
+            echo "::group::mkimage inputs manifest ($arch)"
+            python3 tools/manifest.py "rootfs-tree ($arch)" "work/$arch/rootfs"
+            python3 tools/manifest.py "kernel ($arch)" "$KERNEL"
+            [ -n "$MODTAR" ] && python3 tools/manifest.py "modules-tar ($arch)" "$MODTAR" || echo "  (no modules tar)"
+            [ -n "$FWIN" ] && python3 tools/manifest.py "firmware-dir ($arch)" "$FWIN" || echo "  (no firmware dir)"
+            echo "::endgroup::"
             VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw"
             sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw2" 2>/dev/null || true
             cmp "out/veron-$arch.raw" "out/veron-$arch.raw2"               && echo "  $arch image REPRODUCED (built twice, same bytes)"               || { echo "  $arch image NOT reproducible"; exit 1; }
             rm -f "out/veron-$arch.raw2"
+            echo "::group::mkimage output manifest ($arch)"
+            python3 tools/manifest.py "image-raw ($arch)" "out/veron-$arch.raw"
+            echo "::endgroup::"
           done
 
       - name: 'ISO -- hybrid live image, persistence optional (PLACEHOLDER)'
@@ -614,12 +631,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v5
-        # SAME PIN as the release job: the pages job must render from the exact
-        # commit the release was built and attested at, not whatever main has
-        # advanced to since. Without this, pages could render with a different
-        # generator than the run published.
-        with:
-          ref: ${{ github.sha }}
 
       - name: 'PAGES-IN -- re-download every tier from its tag and verify like a stranger'
         env:
