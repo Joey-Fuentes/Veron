@@ -1,0 +1,89 @@
+name: repro-probe
+
+# STANDALONE PROOF of where image non-determinism comes from. Builds the disk
+# image TWICE from the SAME rootfs in one run, with the same veron-mkimage and
+# the same normalize-ext4.py the release uses, then diffs the two images byte
+# for byte (tools/repro-diff.py) and localizes every differing offset to its
+# ext4/GPT structure. Same input must give the same output; this finds exactly
+# where it does not. Publishes nothing, touches no release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'arch to probe'
+        type: string
+        default: x86_64
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ARCH: ${{ inputs.arch }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'install e2fsprogs + zstd'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq e2fsprogs zstd
+
+      - name: 'FETCH -- the same stage-5 rootfs + kernel the release consumes'
+        run: |
+          set -eu
+          mkdir -p "in/5-$ARCH" "in/k-$ARCH"
+          gh release download "5/latest-$ARCH" -R "$GITHUB_REPOSITORY" -D "in/5-$ARCH" --clobber
+          ( cd "in/5-$ARCH" && tar --zstd -xf rootfs.img.tar.zst && sha256sum -c IMAGE-SHA256 )
+          gh release download "4/kernel-$ARCH" -R "$GITHUB_REPOSITORY" -D "in/k-$ARCH" --clobber 2>/dev/null || true
+          echo "rootfs.img sha256:"
+          sha256sum "in/5-$ARCH/rootfs.img"
+
+      - name: 'EXTRACT -- one rootfs tree, used for BOTH builds'
+        run: |
+          set -eu
+          mkdir -p "work/$ARCH/rootfs"
+          /sbin/debugfs -R "rdump / work/$ARCH/rootfs" "in/5-$ARCH/rootfs.img" >/dev/null 2>&1
+          [ -e "work/$ARCH/rootfs/etc/veron-release" ] || { echo "rdump produced no tree"; exit 1; }
+          ( cd "work/$ARCH/rootfs" && find . -type f -exec sha256sum {} + | sort ) > tree.manifest
+          echo "rootfs tree: $(wc -l < tree.manifest) files, manifest sha:"
+          sha256sum tree.manifest
+
+      - name: 'BUILD TWICE -- same tree, same tools, same normalizer'
+        run: |
+          set -eu
+          KERNEL="in/k-$ARCH/vmlinuz-generic"
+          [ -s "$KERNEL" ] || KERNEL="in/5-$ARCH/Image"
+          mkdir -p out
+          for n in A B; do
+            echo "::group::build $n"
+            VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py \
+              sh spikes/stage6/tools/veron-mkimage \
+                --rootfs "work/$ARCH/rootfs" --kernel "$KERNEL" \
+                --out "out/img-$n.raw"
+            echo "::endgroup::"
+          done
+          echo "=== the two images, hashed ==="
+          sha256sum out/img-A.raw out/img-B.raw
+
+      - name: 'DIFF -- localize every differing byte to its ext4 structure'
+        run: |
+          set -eu
+          python3 tools/repro-diff.py out/img-A.raw out/img-B.raw
+
+      - name: 'SUPERBLOCK -- carve root-A from each and diff its fields'
+        if: always()
+        run: |
+          set -eu
+          python3 tools/repro-carve.py root out/img-A.raw out/img-B.raw || true
+          for n in A B; do
+            dumpe2fs -h "out/img-$n.raw.root" 2>/dev/null > "sb-$n.txt" || true
+          done
+          echo "=== root-A superblock field diff (A vs B) ==="
+          if diff sb-A.txt sb-B.txt; then
+            echo "(superblocks identical -- drift is elsewhere, see the byte map)"
+          else
+            echo "^ these superblock fields differ between identical-input builds"
+          fi
