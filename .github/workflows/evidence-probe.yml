@@ -1,16 +1,16 @@
 name: evidence-probe
 
-# STANDALONE PROOF that the recursive chain walk reaches stage 1 and pulls
-# every stage's logs. Publishes NOTHING, touches no release. Runs the exact
-# walk the real evidence step would, but every step echoed and TIMED, and it
-# ASSERTS at the end that it reached the seed run (31879095169) and captured
-# its log. If this is green, the walk works; only then does it belong in 6.
+# STANDALONE PROOF the recursive chain walk reaches stage 1 and pulls every
+# stage's logs. Publishes nothing. Every step echoed and TIMED; asserts it
+# reached the seed run (31879095169) and captured its gen1==gen2==gen3 log.
+# Run extraction uses tools/att-run.py (python, Veron-native -- NOT jq, which
+# Veron does not ship), so the same walk verifies the chain on-device.
 
 on:
   workflow_dispatch:
     inputs:
       fetch_logs:
-        description: 'also pull each reached run''s logs (proves the website has them)'
+        description: 'pull each reached run''s logs (proves the website has them)'
         type: boolean
         default: true
 
@@ -32,71 +32,58 @@ jobs:
       - name: 'WALK -- recursive chain to the seed, every step timed'
         run: |
           set -eu
-          SEED_RUN=31879095169   # stage-1 self-assembly verify (gen1==gen2==gen3)
+          SEED_RUN=31879095169
           SEED_DIGEST=e97e2969cf88b11a4ed28d7b22c9154a155fe9c38d01e420ab09151f2938f550
           ts() { date -u +%H:%M:%S; }
           t_start=$(date +%s)
-
           mkdir -p evidence/attestations evidence/logs evidence/provenance
           att=0; logs=0; total=0
           : > evidence/runs.txt; : > evidence/seen.txt; : > evidence/queue.txt
 
-          echo "=================================================="
-          echo "  chain-walk probe start $( date -u )"
+          echo "=== chain-walk probe start $( date -u ) ==="
           echo "  target: reach seed run $SEED_RUN and its log"
-          echo "=================================================="
 
-          # SEED the walk with THIS release's image+kernel digests.
-          echo "::group::[$( ts )] seed from 5/latest + 4/kernel SHA256 files"
+          echo "::group::[$( ts )] seed from 5/latest + 4/kernel SHA256"
           mkdir -p in/5-x86_64 in/k-x86_64
           gh release download 5/latest-x86_64 -R "$GITHUB_REPOSITORY" -p '*SHA256*' -D in/5-x86_64 --clobber 2>/dev/null || true
           gh release download 4/kernel-x86_64 -R "$GITHUB_REPOSITORY" -p '*SHA256*' -D in/k-x86_64 --clobber 2>/dev/null || true
           for f in in/5-x86_64/*SHA256* in/k-x86_64/*SHA256*; do
             [ -e "$f" ] && grep -hoE '[0-9a-f]{64}' "$f" || true
           done | sort -u >> evidence/queue.txt
-          echo "  seed digests: $(wc -l < evidence/queue.txt)"
-          cat -n evidence/queue.txt
+          echo "  seed digests: $(wc -l < evidence/queue.txt)"; cat -n evidence/queue.txt
           echo "::endgroup::"
 
-          # release-side PROVENANCE (stage 4/5 edges) + committed manifests (3->2->1)
           MANIFESTS="stages/1-self-assembly/substages.toml stages/1-self-assembly/BASELINE.txt stages/2-pico-c/substages.toml stages/3-micro-c/substages-amd64.toml stages/3-micro-c/substages.toml"
           echo "::group::[$( ts )] fetch release PROVENANCE (stage 4/5 edges)"
           for tag in 5/latest-x86_64 4/latest-x86_64 4/kernel-x86_64 3/latest-x86_64; do
-            echo "  \$ gh release download $tag -p PROVENANCE -p *substages* ..."
             timeout 60 gh release download "$tag" -R "$GITHUB_REPOSITORY" \
               -p 'PROVENANCE' -p '*substages*' -p 'ARTIFACT-SHA256' \
               -D "evidence/provenance/$(echo "$tag" | tr / _)" --clobber 2>/dev/null \
-              && echo "    got $tag" || echo "    (none for $tag)"
+              && echo "  got $tag" || echo "  (none for $tag)"
           done
           PROVFILES=$(find evidence/provenance -type f 2>/dev/null || true)
-          echo "  committed manifests present:"
-          for m in $MANIFESTS; do [ -f "$m" ] && echo "    OK  $m" || echo "    -- $m (absent)"; done
+          for m in $MANIFESTS; do [ -f "$m" ] && echo "  manifest OK  $m" || echo "  manifest --  $m"; done
           echo "::endgroup::"
 
-          # THE RECURSIVE WALK -- one loop, each digest timed.
           echo ""
           echo "########## RECURSIVE WALK ##########"
           while [ -s evidence/queue.txt ]; do
             d=$(head -n1 evidence/queue.txt); sed -i '1d' evidence/queue.txt
             grep -qx "$d" evidence/seen.txt && continue
             echo "$d" >> evidence/seen.txt
-            total=$((total+1))
-            t0=$(date +%s)
-            sleep 1
+            total=$((total+1)); t0=$(date +%s); sleep 1
             if timeout 30 gh api "repos/$GITHUB_REPOSITORY/attestations/sha256:$d" \
                  > "evidence/attestations/sha256-$d.json" 2>/dev/null \
                && [ -s "evidence/attestations/sha256-$d.json" ] \
                && grep -q '"attestations"' "evidence/attestations/sha256-$d.json"; then
               att=$((att+1))
-              runs=$(grep -oE 'actions/runs/[0-9]+' "evidence/attestations/sha256-$d.json" | grep -oE '[0-9]+' | sort -u | tr '\n' ' ')
+              runs=$(python3 tools/att-run.py "evidence/attestations/sha256-$d.json" | sort -u | tr '\n' ' ')
               echo "  [$total] $(echo "$d" | cut -c1-16)  ATTESTED  runs: ${runs:-none}  ($(($(date +%s)-t0))s)"
               echo "$runs" | tr ' ' '\n' | grep -E '[0-9]' >> evidence/runs.txt || true
             else
               rm -f "evidence/attestations/sha256-$d.json"
               echo "  [$total] $(echo "$d" | cut -c1-16)  (no attestation -- source pin/seed leaf)"
             fi
-            # follow edges: any manifest/provenance that NAMES this digest,
-            # queue the OTHER digests it names.
             for src in $MANIFESTS $PROVFILES; do
               [ -f "$src" ] || continue
               if grep -q "$d" "$src" 2>/dev/null; then
@@ -108,15 +95,10 @@ jobs:
             done
           done
           sort -u evidence/runs.txt > evidence/runs.uniq && mv evidence/runs.uniq evidence/runs.txt
-          echo ""
-          echo "  walked $total digests, $att attested"
-          echo "  runs reached:"
-          cat -n evidence/runs.txt
+          echo ""; echo "  walked $total digests, $att attested"; echo "  runs reached:"; cat -n evidence/runs.txt
 
-          # PULL LOGS for every reached run (this is what the website shows).
           if [ "${{ inputs.fetch_logs }}" = "true" ]; then
-            echo ""
-            echo "########## LOGS (what the website renders) ##########"
+            echo ""; echo "########## LOGS (what the website renders) ##########"
             while read -r rid; do
               [ -n "$rid" ] || continue
               t0=$(date +%s); sleep 1
@@ -124,39 +106,28 @@ jobs:
                 > "evidence/logs/run-$rid.zip" 2>/dev/null
               rc=$?
               if [ "$rc" = 0 ] && [ -s "evidence/logs/run-$rid.zip" ]; then
-                logs=$((logs+1))
-                echo "  run $rid: $(stat -c%s evidence/logs/run-$rid.zip) bytes  ($(($(date +%s)-t0))s)"
+                logs=$((logs+1)); echo "  run $rid: $(stat -c%s evidence/logs/run-$rid.zip) bytes  ($(($(date +%s)-t0))s)"
               else
                 echo "  run $rid: no log (rc=$rc)"
               fi
             done < evidence/runs.txt
           fi
 
-          # THE ASSERTIONS -- did we actually reach the trust root?
-          echo ""
-          echo "=================================================="
-          echo "  RESULT  ($(($(date +%s)-t_start))s total)"
-          echo "=================================================="
+          echo ""; echo "=== RESULT ($(($(date +%s)-t_start))s) ==="
           ok=1
-          if grep -qx "$SEED_DIGEST" evidence/seen.txt; then
-            echo "  PASS: walk reached the stage-1 seed digest ($(echo $SEED_DIGEST|cut -c1-16)...)"
-          else
-            echo "  FAIL: never reached the seed digest"; ok=0
-          fi
-          if grep -qx "$SEED_RUN" evidence/runs.txt; then
-            echo "  PASS: walk reached the stage-1 verify run $SEED_RUN"
-          else
-            echo "  FAIL: never reached seed run $SEED_RUN"; ok=0
-          fi
+          grep -qx "$SEED_DIGEST" evidence/seen.txt \
+            && echo "  PASS: reached the stage-1 seed digest" \
+            || { echo "  FAIL: never reached the seed digest"; ok=0; }
+          grep -qx "$SEED_RUN" evidence/runs.txt \
+            && echo "  PASS: reached the stage-1 verify run $SEED_RUN" \
+            || { echo "  FAIL: never reached seed run $SEED_RUN"; ok=0; }
           if [ "${{ inputs.fetch_logs }}" = "true" ]; then
             if [ -s "evidence/logs/run-$SEED_RUN.zip" ]; then
-              echo "  PASS: captured the stage-1 log -- gen1==gen2==gen3 is in the bundle"
-              echo "  --- proof: grep the seed log for the fixpoint line ---"
-              unzip -p "evidence/logs/run-$SEED_RUN.zip" 2>/dev/null | grep -a "gen1 == gen2 == gen3" | head -1 | sed 's/^/    /' || echo "    (line not found in log)"
+              echo "  PASS: captured the stage-1 log"
+              unzip -p "evidence/logs/run-$SEED_RUN.zip" 2>/dev/null | grep -a "gen1 == gen2 == gen3" | head -1 | sed 's/^/    proof: /' || echo "    (fixpoint line not found)"
             else
               echo "  FAIL: seed run log not captured"; ok=0
             fi
           fi
-          echo "=================================================="
-          [ "$ok" = 1 ] && echo "  ALL PASS -- the walk reaches the trust root and has its logs" \
+          [ "$ok" = 1 ] && echo "  ALL PASS -- walk reaches the trust root and has its logs" \
                         || { echo "  SOME CHECKS FAILED"; exit 1; }
