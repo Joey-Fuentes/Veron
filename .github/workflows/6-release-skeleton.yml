@@ -57,10 +57,30 @@ jobs:
           mkdir -p in
           found=0
           for arch in $ARCHES; do
-            if ! gh release download "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
-                 -D "in/5-$arch" --clobber 2>/dev/null; then
+            # ABSENT AND FAILED ARE DIFFERENT, AND CONFLATING THEM COST A
+            # TRIO (2026-08-19): a healthy 5/latest-x86_64 with all eight
+            # assets was reported "no release" because `gh release download`
+            # hiccupped and `2>/dev/null` swallowed the reason. First ASK if
+            # the release exists; only "genuinely absent" skips. A download
+            # that then fails on an existing release is a transient fault --
+            # retry it, and fail loudly if it still will not come.
+            if ! gh release view "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
+                 --json name >/dev/null 2>&1; then
               echo "  $arch: no 5/latest-$arch release -- arch skipped (stated, not silent)"
               continue
+            fi
+            dl_ok=no
+            for attempt in 1 2 3; do
+              if gh release download "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
+                   -D "in/5-$arch" --clobber; then
+                dl_ok=yes; break
+              fi
+              echo "  $arch: download attempt $attempt failed (release exists) -- retrying in 10s"
+              sleep 10
+            done
+            if [ "$dl_ok" != yes ]; then
+              echo "  $arch: 5/latest-$arch EXISTS but could not be downloaded after 3 tries -- failing, not skipping"
+              exit 1
             fi
             # THE IMAGE DIGEST IS CHECKED BEFORE ANYTHING CONSUMES IT --
             # the same refusal discipline every stage seam already has.
@@ -471,7 +491,11 @@ jobs:
           att=0
           : > evidence/runs.txt
           while read -r d; do
-            if gh api "repos/Joey-Fuentes/Veron/attestations/sha256:$d" \
+            # TIMEOUT ON EVERY NETWORK CALL. An unbounded gh api hung this
+            # step for 24 minutes (2026-08-19): the logs endpoint below
+            # redirects to a zip and gh follows it with no time limit, so one
+            # slow archive blocks the whole loop. 30s is generous for a JSON.
+            if timeout 30 gh api "repos/Joey-Fuentes/Veron/attestations/sha256:$d" \
                  > "evidence/attestations/sha256-$d.json" 2>/dev/null \
                && [ -s "evidence/attestations/sha256-$d.json" ] \
                && grep -q '"attestations"' "evidence/attestations/sha256-$d.json"; then
@@ -490,13 +514,21 @@ jobs:
           logs=0
           while read -r rid; do
             [ -n "$rid" ] || continue
-            if gh api "repos/Joey-Fuentes/Veron/actions/runs/$rid/logs" \
-                 > "evidence/logs/run-$rid.zip" 2>/dev/null \
-               && [ -s "evidence/logs/run-$rid.zip" ]; then
+            # 120s CAP: a log archive is tens of MB at worst; longer means the
+            # endpoint stalled on its redirect (the 24-minute hang). A timeout
+            # is recorded as a GAP, exactly like logs Actions no longer retains.
+            timeout 120 gh api "repos/Joey-Fuentes/Veron/actions/runs/$rid/logs" \
+                 > "evidence/logs/run-$rid.zip" 2>/dev/null
+            rc=$?
+            if [ "$rc" = 0 ] && [ -s "evidence/logs/run-$rid.zip" ]; then
               logs=$((logs+1))
             else
               rm -f "evidence/logs/run-$rid.zip"
-              echo "run $rid: logs no longer retained by Actions" >> evidence/GAPS.txt
+              if [ "$rc" = 124 ]; then
+                echo "run $rid: logs fetch timed out (endpoint stalled) -- gap" >> evidence/GAPS.txt
+              else
+                echo "run $rid: logs no longer retained by Actions" >> evidence/GAPS.txt
+              fi
             fi
           done < evidence/runs.txt
           {
