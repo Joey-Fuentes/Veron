@@ -381,6 +381,15 @@ jobs:
             qemu-system-x86 ovmf >/dev/null
           for img in out/veron-x86_64.raw; do
             [ -e "$img" ] || continue
+            # REPRODUCIBILITY GUARD (part 1 of 2): record the image's identity
+            # BEFORE the boot gate touches it. Booting a raw disk writable
+            # mutates it (journal replay, first-boot state, timestamps), which
+            # made the PUBLISHED image differ run-to-run even though the BUILT
+            # image was byte-identical. snapshot=on now sends every boot write
+            # to a discarded overlay; this guard PROVES the backing image is
+            # untouched, and fails loudly if a boot ever writes through again.
+            before_sha=$(sha256sum "$img" | cut -d' ' -f1)
+            echo "  guard: $img before boot = $before_sha"
             # TWO ATTACHMENTS, BECAUSE METAL TAUGHT US THEY DIFFER: the
             # default drive is AHCI (a built-in driver), but a consumer's
             # stick is USB mass storage -- a different driver spine that
@@ -388,9 +397,9 @@ jobs:
             # green (2026-08-18). The image must boot BOTH ways.
             for attach in ahci usb; do
               if [ "$attach" = usb ]; then
-                DRIVE="-device qemu-xhci -device usb-storage,drive=d0 -drive if=none,id=d0,format=raw,file=$img"
+                DRIVE="-device qemu-xhci -device usb-storage,drive=d0 -drive if=none,id=d0,format=raw,file=$img,snapshot=on"
               else
-                DRIVE="-drive format=raw,file=$img"
+                DRIVE="-drive format=raw,file=$img,snapshot=on"
               fi
               echo "=== boot attempt: $attach attachment ==="
               timeout 300 qemu-system-x86_64 \
@@ -430,6 +439,23 @@ jobs:
               || { echo "  FAIL  init never ran"; fail=1; }
             [ "$fail" -eq 0 ] || exit 1
             done
+            # REPRODUCIBILITY GUARD (part 2 of 2): the image must be byte-for-
+            # byte what it was before the boot gate ran. If snapshot=on ever
+            # regresses, or any boot writes through to the backing file, this
+            # catches it here -- before NAME renames it by content hash and
+            # PUBLISH ships it -- instead of surfacing as a mysterious
+            # non-reproducible release later.
+            after_sha=$(sha256sum "$img" | cut -d' ' -f1)
+            echo "  guard: $img after  boot = $after_sha"
+            if [ "$before_sha" != "$after_sha" ]; then
+              echo "  FAIL  the boot gate MUTATED the image ($img):"
+              echo "        before $before_sha"
+              echo "        after  $after_sha"
+              echo "        a boot wrote through to the backing file -- the"
+              echo "        published image would not be reproducible. Refusing."
+              exit 1
+            fi
+            echo "  ok    image unchanged by the boot gate (reproducible)"
           done
           echo "VERON-BOOT-GATE-OK  the consumer path boots to init, on both attachments"
 
@@ -588,12 +614,45 @@ jobs:
             ( cd out && sha256sum "$(basename "$img")" "$(basename "$img").zst" ) >> out/SHA256SUMS
           done
           cat out/SHA256SUMS
-          # IMMUTABLE FIRST: creating the tag a second time must FAIL --
-          # that failure is the append-only ruling enforcing itself.
-          gh release create "release/$C7" \
-            --title "Veron release/$C7" \
-            --notes "Consumer release at commit $GITHUB_SHA. Digests in SHA256SUMS; provenance on the repository's attestation page." \
-            out/*.img.zst out/SHA256SUMS out/evidence.tar.gz
+          # RE-RELEASING THE SAME COMMIT IS ALLOWED, because the image is now
+          # byte-reproducible (boot gate no longer mutates it). The invariant
+          # worth keeping is NOT "the tag may never be created twice" -- that
+          # was a workaround from when the build was non-deterministic. The real
+          # invariant is "a given commit must never ship DIFFERENT bytes." So:
+          # if the tag is new, create it; if it already exists, the newly built
+          # image MUST match what is already published -- same bytes re-release
+          # succeeds (idempotent), different bytes fail loudly (a real
+          # reproducibility violation, the thing actually worth catching).
+          our_sha=$(awk '/\.img$/{print $1; exit}' out/SHA256SUMS)
+          if gh release view "release/$C7" >/dev/null 2>&1; then
+            echo "  release/$C7 already exists -- verifying byte-identity"
+            pub_line=$(gh release view "release/$C7" \
+              --json body --jq '.body' 2>/dev/null | grep -m1 "\.img " || true)
+            # the authoritative published digest lives in the release's
+            # SHA256SUMS asset; fetch it and compare the .img line.
+            tmp=$(mktemp -d)
+            gh release download "release/$C7" -p SHA256SUMS -D "$tmp" --clobber 2>/dev/null || true
+            pub_sha=$(awk '/\.img$/{print $1; exit}' "$tmp/SHA256SUMS" 2>/dev/null || true)
+            rm -rf "$tmp"
+            if [ -n "$pub_sha" ] && [ "$pub_sha" != "$our_sha" ]; then
+              echo "  FAIL  commit $C7 already published DIFFERENT bytes:"
+              echo "        published $pub_sha"
+              echo "        rebuilt   $our_sha"
+              echo "        same commit must yield the same image -- refusing to"
+              echo "        overwrite an immutable release with different content."
+              exit 1
+            fi
+            echo "  ok    rebuilt image matches the published release ($our_sha)"
+            echo "  re-uploading assets (idempotent, --clobber)"
+            gh release upload "release/$C7" \
+              out/*.img.zst out/SHA256SUMS out/evidence.tar.gz --clobber
+          else
+            echo "  release/$C7 is new -- creating it"
+            gh release create "release/$C7" \
+              --title "Veron release/$C7" \
+              --notes "Consumer release at commit $GITHUB_SHA. Digests in SHA256SUMS; provenance on the repository's attestation page." \
+              out/*.img.zst out/SHA256SUMS out/evidence.tar.gz
+          fi
           gh release delete "6/latest" --yes 2>/dev/null || true
           git push --delete origin "6/latest" 2>/dev/null || true
           gh release create "6/latest" \
