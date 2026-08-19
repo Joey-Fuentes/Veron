@@ -541,13 +541,23 @@ jobs:
             for f in in/5-x86_64/*SHA256* in/k-x86_64/*SHA256*; do
               [ -e "$f" ] && grep -hoE '[0-9a-f]{64}' "$f" || true
             done
-            # the whole recorded chain: every 64-hex string in the records
-            if [ -d "$R" ]; then
-              find "$R/usr/share/veron" "$R/etc/veron" -maxdepth 3 -type f 2>/dev/null \
-                | while read -r rf; do grep -hoE '[0-9a-f]{64}' "$rf" 2>/dev/null || true; done
-            fi
+            # RECORD DIGESTS ARE NO LONGER SWEPT INTO THE ATTESTATION QUERY.
+            # The evidence-probe (2026-08-19) proved this scrape WAS the "13
+            # minutes doing nothing": hundreds of package/recipe/file digests,
+            # none individually attested, each a gh api call returning <none>.
+            # Only image+kernel (the SHA256-file digests above) are attestable.
           } | sort -u > evidence/digests.txt
           total=$(wc -l < evidence/digests.txt)
+          echo "  attestable artifact digests: $total (image + kernel only)"
+          # The record digests remain evidence -- as pins already covered
+          # transitively by the image attestation (they live in the rootfs it
+          # signs). Counted for honesty below, never queried one-by-one.
+          if [ -d "$R" ]; then
+            rec=$(find "$R/usr/share/veron" "$R/etc/veron" -maxdepth 3 -type f 2>/dev/null \
+              | while read -r rf; do grep -hoE '[0-9a-f]{64}' "$rf" 2>/dev/null || true; done \
+              | sort -u | wc -l)
+            echo "  record-pinned digests (covered transitively by image attestation): $rec"
+          fi
           att=0
           : > evidence/runs.txt
           while read -r d; do
