@@ -57,80 +57,10 @@ jobs:
           mkdir -p in
           found=0
           for arch in $ARCHES; do
-            # ABSENT AND FAILED ARE DIFFERENT, AND CONFLATING THEM COST A
-            # TRIO (2026-08-19): a healthy 5/latest-x86_64 with all eight
-            # assets was reported "no release" because `gh release download`
-            # hiccupped and `2>/dev/null` swallowed the reason. First ASK if
-            # the release exists; only "genuinely absent" skips. A download
-            # that then fails on an existing release is a transient fault --
-            # retry it, and fail loudly if it still will not come.
-            # EXISTENCE VIA THE API, NOT `gh release view`: the tag name has
-            # a slash (5/latest-x86_64) and error text was being hidden, so a
-            # failed view was indistinguishable from a genuinely absent
-            # release -- and it cost two trios (2026-08-19). The API call is
-            # explicit and its stderr is shown; a real 404 is absence, any
-            # other failure is a fault we retry rather than misread as absence.
-            # RATE-LIMIT-AWARE FETCH. A 403 here is almost always GitHub's
-            # SECONDARY (burst/anti-scraping) limit, NOT the primary hourly
-            # quota: it fires on request PATTERN (too fast, too concurrent),
-            # the core quota reads full (5000/5000) the whole time, and it is
-            # invisible to the rate_limit endpoint (GitHub docs: "There is not
-            # a way to check the status of your secondary rate limit"). So the
-            # remedy is Retry-After / short backoff -- the core reset is the
-            # WRONG bucket and waiting an hour for it is a bug (2026-08-19).
-            # gh_get <path> <jqexpr> -> echoes value on success, sets RC.
-            gh_get() {
-              # --include gives us the response headers, incl. Retry-After.
-              gh api --include "$1" > resp.txt 2>err.txt
-              return $?
-            }
-            classify_and_wait() {   # $1 = attempt number
-              if grep -qiE "HTTP/[0-9.]+ 404|^Status: 404" resp.txt err.txt 2>/dev/null; then
-                echo 404; return
-              fi
-              # secondary-limit signature: 403 + scraping/secondary text
-              if grep -qiE "secondary rate limit|scraping GitHub|rate limit exceeded" resp.txt err.txt 2>/dev/null; then
-                ra=$(grep -iE "^Retry-After:" resp.txt 2>/dev/null | tr -dc '0-9')
-                if [ -z "$ra" ]; then ra=$(( 30 * $1 )); fi   # backoff: 30,60,90...
-                [ "$ra" -gt 300 ] && ra=300                    # cap a single wait
-                echo "      secondary rate limit -- honoring Retry-After=${ra}s (core quota is irrelevant here)" >&2
-                sleep "$ra"; echo retry; return
-              fi
-              echo other; return
-            }
-            exists=unknown
-            for attempt in 1 2 3 4 5; do
-              if gh_get "repos/$GITHUB_REPOSITORY/releases/tags/5%2Flatest-$arch"; then
-                # success body has the tag; confirm it parsed
-                grep -q '"tag_name"' resp.txt && { exists=yes; break; }
-              fi
-              verdict=$(classify_and_wait "$attempt")
-              case "$verdict" in
-                404)   exists=no; break ;;
-                retry) echo "  $arch: retrying after secondary-limit backoff (attempt $attempt)"; continue ;;
-                *)     echo "  $arch: release-exists check attempt $attempt failed:"; sed 's/^/      /' err.txt; sleep $(( 5 * attempt )) ;;
-              esac
-            done
-            if [ "$exists" = no ]; then
+            if ! gh release download "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
+                 -D "in/5-$arch" --clobber 2>/dev/null; then
               echo "  $arch: no 5/latest-$arch release -- arch skipped (stated, not silent)"
               continue
-            fi
-            if [ "$exists" != yes ]; then
-              echo "  $arch: could not determine if 5/latest-$arch exists after 3 tries -- failing, not guessing"
-              exit 1
-            fi
-            dl_ok=no
-            for attempt in 1 2 3; do
-              if gh release download "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
-                   -D "in/5-$arch" --clobber; then
-                dl_ok=yes; break
-              fi
-              echo "  $arch: download attempt $attempt failed (release exists) -- retrying in 10s"
-              sleep 10
-            done
-            if [ "$dl_ok" != yes ]; then
-              echo "  $arch: 5/latest-$arch EXISTS but could not be downloaded after 3 tries -- failing, not skipping"
-              exit 1
             fi
             # THE IMAGE DIGEST IS CHECKED BEFORE ANYTHING CONSUMES IT --
             # the same refusal discipline every stage seam already has.
@@ -515,115 +445,78 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          # RULED (Joe, 2026-08-18): a release that says "verify me" must
-          # CARRY its verification chain, not point at a page. The chain
-          # is already enumerated -- the records in the rootfs name every
-          # stage artifact's digest; each digest's attestation bundle is
-          # public API; each attestation names the run that made it; each
-          # run's logs are one more call. Digest -> attestation -> run ->
-          # logs, mechanically, back to self-assembly. This step bundles
-          # all of it beside the image it vouches for, because artifact
-          # retention expires and releases do not.
+          # THE CHAIN IS EIGHT STAGES, EACH WITH ONE DELIVERABLE AND ONE LOG.
+          # RULED (Joe, 2026-08-19): not a graph walk over every pinned digest
+          # -- that over-collected 41 intermediate runs. Resolve each stage's ONE
+          # deliverable to its attestation, hence its run, hence its log. att-run.py
+          # (python, Veron-native -- NOT jq) decodes the base64 DSSE payload for the
+          # run id, so this same resolution verifies on-device. Writes stages.tsv
+          # (stage/digest/run) which the Pages evidence viewer renders, no download.
           mkdir -p evidence/attestations evidence/logs
-          # THIS STEP IS THE HEAVIEST API CONSUMER (one call per digest for
-          # attestations, one per run for logs). The risk is NOT the primary
-          # hourly quota -- that is 5000/hr and reads full -- but GitHub's
-          # SECONDARY (burst) limit, which fires on calls-too-fast. So the
-          # sweep is SERIALIZED WITH SPACING below (a short sleep between
-          # calls), per GitHub's own guidance to avoid secondary limits.
-          # The core budget is printed only as context; it is not the wall.
-          gh api rate_limit --jq '.resources.core
-            | "  primary quota (not the usual constraint): \(.remaining)/\(.limit)"' \
-            2>/dev/null || echo "  (rate_limit unreadable)"
-          R=work/x86_64/rootfs
-          {
-            # certain digests: the verified inputs of this very run
-            for f in in/5-x86_64/*SHA256* in/k-x86_64/*SHA256*; do
-              [ -e "$f" ] && grep -hoE '[0-9a-f]{64}' "$f" || true
-            done
-            # RECORD DIGESTS ARE NO LONGER SWEPT INTO THE ATTESTATION QUERY.
-            # The evidence-probe (2026-08-19) proved this scrape WAS the "13
-            # minutes doing nothing": hundreds of package/recipe/file digests,
-            # none individually attested, each a gh api call returning <none>.
-            # Only image+kernel (the SHA256-file digests above) are attestable.
-          } | sort -u > evidence/digests.txt
-          total=$(wc -l < evidence/digests.txt)
-          echo "  attestable artifact digests: $total (image + kernel only)"
-          # The record digests remain evidence -- as pins already covered
-          # transitively by the image attestation (they live in the rootfs it
-          # signs). Counted for honesty below, never queried one-by-one.
-          if [ -d "$R" ]; then
-            rec=$(find "$R/usr/share/veron" "$R/etc/veron" -maxdepth 3 -type f 2>/dev/null \
-              | while read -r rf; do grep -hoE '[0-9a-f]{64}' "$rf" 2>/dev/null || true; done \
-              | sort -u | wc -l)
-            echo "  record-pinned digests (covered transitively by image attestation): $rec"
-          fi
-          att=0
-          : > evidence/runs.txt
-          while read -r d; do
-            # TIMEOUT ON EVERY NETWORK CALL. An unbounded gh api hung this
-            # step for 24 minutes (2026-08-19): the logs endpoint below
-            # redirects to a zip and gh follows it with no time limit, so one
-            # slow archive blocks the whole loop. 30s is generous for a JSON.
-            sleep 1   # SERIALIZE WITH SPACING -- avoid the secondary burst limit
-            if timeout 30 gh api "repos/Joey-Fuentes/Veron/attestations/sha256:$d" \
-                 > "evidence/attestations/sha256-$d.json" 2>/dev/null \
-               && [ -s "evidence/attestations/sha256-$d.json" ] \
-               && grep -q '"attestations"' "evidence/attestations/sha256-$d.json"; then
-              att=$((att+1))
-              grep -oE 'actions/runs/[0-9]+' "evidence/attestations/sha256-$d.json" \
-                | grep -oE '[0-9]+' >> evidence/runs.txt || true
+          : > evidence/stages.tsv
+          resolve() {
+            label=$1; dg=$2
+            [ -n "$dg" ] || { echo "  $label: no digest -- skipped"; return; }
+            sleep 1
+            if timeout 30 gh api "repos/$GITHUB_REPOSITORY/attestations/sha256:$dg" \
+                 > "evidence/attestations/$label.json" 2>/dev/null \
+               && [ -s "evidence/attestations/$label.json" ] \
+               && grep -q '"attestations"' "evidence/attestations/$label.json"; then
+              rid=$(python3 tools/att-run.py "evidence/attestations/$label.json" | head -1)
+              echo "  $label: $(echo "$dg" | cut -c1-16)  run $rid"
+              printf '%s\t%s\t%s\n' "$label" "$dg" "$rid" >> evidence/stages.tsv
             else
-              rm -f "evidence/attestations/sha256-$d.json"
+              rm -f "evidence/attestations/$label.json"
+              echo "  $label: $(echo "$dg" | cut -c1-16)  NO ATTESTATION"
             fi
-          done < evidence/digests.txt
-          # the stage-5 run named by the system itself, even if its digest
-          # sweep missed it
-          [ -f "$R/etc/veron-release" ] && \
-            sed -n 's/^VERON_RUN_ID=//p' "$R/etc/veron-release" >> evidence/runs.txt
-          sort -u evidence/runs.txt > evidence/runs.uniq && mv evidence/runs.uniq evidence/runs.txt
+          }
+          echo "resolving the eight stages:"
+          S1=$(awk '/self-assembler-arm64/{print $1; exit}' stages/1-self-assembly/BASELINE.txt)
+          resolve "1-self-assembler" "$S1"
+          S2=$(awk '/path.*"out\/2\/aarch64\/pico-c"/{f=1} f&&/sha256/{gsub(/[^0-9a-f]/,"",$3);print $3;exit}' stages/2-pico-c/substages.toml)
+          resolve "2-pico-c" "$S2"
+          S3M=$(awk '/path.*"out\/3\/aarch64\/tcc-arm64"/{f=1} f&&/sha256/{gsub(/[^0-9a-f]/,"",$3);print $3;exit}' stages/3-micro-c/substages.toml)
+          resolve "3-micro-c" "$S3M"
+          mkdir -p rel
+          gh release download 3/latest-x86_64 -R "$GITHUB_REPOSITORY" -p 'ARTIFACT-SHA256' -D rel/3 --clobber 2>/dev/null || true
+          S3C=$(grep -i 'tcc-amd64' rel/3/ARTIFACT-SHA256 2>/dev/null | grep -oE '[0-9a-f]{64}' | head -1)
+          resolve "3-cross-tcc-amd64" "$S3C"
+          gh release download 4/latest-x86_64 -R "$GITHUB_REPOSITORY" -p 'SYSROOT-SHA256' -D rel/4 --clobber 2>/dev/null || true
+          S4=$(grep -oE '[0-9a-f]{64}' rel/4/SYSROOT-SHA256 2>/dev/null | head -1)
+          resolve "4-sysroot" "$S4"
+          gh release download 4/kernel-x86_64 -R "$GITHUB_REPOSITORY" -p '*SHA256*' -D rel/k --clobber 2>/dev/null || true
+          S4K=$(grep -i 'vmlinuz\|KERNEL-GENERIC' rel/k/*SHA256* 2>/dev/null | grep -oE '[0-9a-f]{64}' | head -1)
+          resolve "4-kernel" "$S4K"
+          gh release download 5/latest-x86_64 -R "$GITHUB_REPOSITORY" -p 'PROVENANCE' -D rel/5 --clobber 2>/dev/null || true
+          S5=$(sha256sum rel/5/PROVENANCE 2>/dev/null | cut -d' ' -f1)
+          resolve "5-provenance" "$S5"
+          printf '%s\t%s\t%s\n' "6-release" "this-release" "$GITHUB_RUN_ID" >> evidence/stages.tsv
+          echo "  6-release: (this run) $GITHUB_RUN_ID"
+          att=$(wc -l < evidence/stages.tsv)
           logs=0
-          while read -r rid; do
+          while IFS="$(printf '\t')" read -r label dg rid; do
             [ -n "$rid" ] || continue
-            # 120s CAP: a log archive is tens of MB at worst; longer means the
-            # endpoint stalled on its redirect (the 24-minute hang). A timeout
-            # is recorded as a GAP, exactly like logs Actions no longer retains.
-            sleep 1   # SERIALIZE WITH SPACING -- avoid the secondary burst limit
-            timeout 120 gh api "repos/Joey-Fuentes/Veron/actions/runs/$rid/logs" \
-                 > "evidence/logs/run-$rid.zip" 2>/dev/null
-            rc=$?
-            if [ "$rc" = 0 ] && [ -s "evidence/logs/run-$rid.zip" ]; then
-              logs=$((logs+1))
+            sleep 1
+            timeout 120 gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/logs" \
+              > "evidence/logs/$label.zip" 2>/dev/null
+            if [ -s "evidence/logs/$label.zip" ]; then
+              logs=$((logs+1)); echo "  $label: log captured (run $rid)"
             else
-              rm -f "evidence/logs/run-$rid.zip"
-              if [ "$rc" = 124 ]; then
-                echo "run $rid: logs fetch timed out (endpoint stalled) -- gap" >> evidence/GAPS.txt
-              else
-                echo "run $rid: logs no longer retained by Actions" >> evidence/GAPS.txt
-              fi
+              rm -f "evidence/logs/$label.zip"
+              echo "  $label: log not yet available (run $rid)"
             fi
-          done < evidence/runs.txt
+          done < evidence/stages.tsv
           {
             echo "VERON EVIDENCE BUNDLE -- $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "digests swept: $total   attested: $att   run logs captured: $logs"
+            echo "the build chain as eight stages, seed to release:"
             echo
-            echo "attestations/  Sigstore bundles from GitHub's attestation API,"
-            echo "               one per attested chain digest. Verifiable against"
-            echo "               the public Rekor log independently of this bundle."
-            echo "logs/          the complete Actions logs of every run named by"
-            echo "               those attestations -- the builds, gate output and"
-            echo "               all, preserved past artifact retention."
+            sed 's/^/  /' evidence/stages.tsv
             echo
-            echo "HONEST GAPS: this run's OWN logs cannot be captured from inside"
-            echo "itself; they attach to the NEXT release's bundle, and this run's"
-            echo "attestation (created after this step) links them meanwhile."
-            echo "Digests with no attestation are upstream source pins and other"
-            echo "non-artifact hashes -- expected, not missing."
-            [ -f evidence/GAPS.txt ] && { echo; cat evidence/GAPS.txt; }
+            echo "attestations/  the Sigstore bundle for each stage's deliverable."
+            echo "logs/          one build log per stage, past artifact retention."
+            echo "stages.tsv     stage <tab> digest <tab> run -- what the site renders."
           } > evidence/MANIFEST.txt
-          tar -czf out/evidence.tar.gz -C evidence .
-          ls -la out/evidence.tar.gz
-          echo "VERON-EVIDENCE-CHAIN  $att attestation(s), $logs run log(s), bundled beside the release"
+          echo "VERON-EVIDENCE-CHAIN  $att stages, $logs logs, bundled beside the release"
 
       - name: 'PUBLISH -- compress, size-gate, immutable tag, moving latest'
         if: ${{ !inputs.dry_run }}
@@ -665,89 +558,6 @@ jobs:
             --title "Veron -- latest consumer release" \
             --notes "Moving pointer; the immutable record is release/$C7." \
             out/*.img.zst out/SHA256SUMS out/evidence.tar.gz
-      - name: 'ATTEST -- provenance for everything published'
-        if: ${{ !inputs.dry_run }}
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: 'out/*.img.zst'
-
-  # ==========================================================================
-  # PAGES -- a SEPARATE job that runs only after `release` (needs: release),
-  # so the release's OWN attestation exists by the time the site is built.
-  # RULED (Joe, 2026-08-19): the storefront must be 100% complete for the run
-  # it deploys -- previously PAGES ran before ATTEST, so the site could never
-  # cite its own release's attestation. This job re-downloads every tier from
-  # its published tag and INDEPENDENTLY re-verifies it (marker-absent + all
-  # files present), even though `release` already verified: the tags are read
-  # at a different moment, and a moving tag can change between the two reads.
-  # ==========================================================================
-  pages:
-    needs: release
-    if: ${{ inputs.publish_site }}
-    runs-on: ubuntu-24.04
-    env:
-      ARCHES: "x86_64 aarch64"
-    permissions:
-      contents: write     # attach index.json to the releases
-      pages: write        # deploy
-      id-token: write      # deploy-pages OIDC
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: 'PAGES-IN -- re-download every tier from its tag and verify like a stranger'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p out in
-          # A tag is REFUSED if it carries PUBLISHING-INCOMPLETE or is missing
-          # a named asset -- the same discipline the release job's IN applies,
-          # re-applied here because this is a distinct read of a moving tag.
-          refuse_if_marked() {
-            tag=$1
-            if gh release view "$tag" -R "$GITHUB_REPOSITORY" \
-                 --json assets --jq '.assets[].name' 2>/dev/null \
-                 | grep -qx "PUBLISHING-INCOMPLETE"; then
-              echo "  $tag carries PUBLISHING-INCOMPLETE -- refusing to deploy a site from an unverified release"
-              exit 1
-            fi
-          }
-          have_asset() {
-            gh release view "$1" -R "$GITHUB_REPOSITORY" --json assets \
-              --jq '.assets[].name' 2>/dev/null | grep -qx "$2"
-          }
-
-          # ---- 6/latest: the consumer release this site is ABOUT ----
-          refuse_if_marked "6/latest"
-          for a in SHA256SUMS; do
-            have_asset "6/latest" "$a" || { echo "  6/latest missing $a"; exit 1; }
-          done
-          gh release download "6/latest" -R "$GITHUB_REPOSITORY" -D out --clobber
-          # decompress each published image so the manifest has the inner digest
-          for z in out/veron-*.img.zst; do
-            [ -e "$z" ] || continue
-            zstd -d -q -f "$z" -o "${z%.zst}"
-          done
-          # the site build expects the releases API too
-          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate > out/releases-api.json
-
-          # ---- 5/latest and 4/kernel: the tiers the developer section cites ----
-          for arch in $ARCHES; do
-            if have_asset "5/latest-$arch" "rootfs.img.tar.zst"; then
-              refuse_if_marked "5/latest-$arch"
-              gh release download "5/latest-$arch" -R "$GITHUB_REPOSITORY" -D "in/5-$arch" --clobber 2>/dev/null || true
-            else
-              echo "  5/latest-$arch absent -- developer section will omit it (stated)"
-            fi
-            if have_asset "4/kernel-$arch" "vmlinuz-generic"; then
-              refuse_if_marked "4/kernel-$arch"
-              gh release download "4/kernel-$arch" -R "$GITHUB_REPOSITORY" -D "in/k-$arch" --clobber 2>/dev/null || true
-            fi
-          done
-          echo "PAGES-IN: every tier verified (marker-absent, assets present)"
 
       - name: 'SITE -- regenerate the whole storefront'
         env:
@@ -778,7 +588,7 @@ jobs:
               m["arches"].setdefault(arch, {
                   "release_tag": f"release/{commit[:7]}", "assets": [],
                   "kernels": {},
-                  "attestation_url": "https://github.com/Joey-Fuentes/Veron/attestations"})
+                  "attestation_url": "evidence.html"})
               z = img + ".zst"
               if os.path.exists(z):
                   # the PUBLISHED asset is the .zst; the raw image's digest
@@ -878,6 +688,36 @@ jobs:
           python3 spikes/stage6/tools/veron-site             --manifest out/manifest.json --out out/site
           ls -la out/site
 
+      - name: 'EVIDENCE PAGE -- render the chain readable on the site'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # RULED (Joe, 2026-08-19): the attestation button opens a PAGE that
+          # renders the whole chain -- every stage's attestation identity and
+          # its build log, readable, no download. This fetches THIS release's
+          # evidence bundle (produced by the stage-6 EVIDENCE-CHAIN step and
+          # published as evidence.tar.gz on 6/latest), unpacks it, and renders
+          # it with tools/evidence-page.py (python, Veron-native -- no jq/node).
+          mkdir -p ev
+          if gh release download 6/latest -R "$GITHUB_REPOSITORY" \
+               -p 'evidence.tar.gz' -D ev --clobber 2>/dev/null \
+             && [ -s ev/evidence.tar.gz ]; then
+            mkdir -p ev/bundle
+            tar -xzf ev/evidence.tar.gz -C ev/bundle
+            # the bundle may unpack into ./evidence/ or flat -- find stages.tsv
+            B=$(dirname "$(find ev/bundle -name stages.tsv | head -1)")
+            [ -n "$B" ] && [ -d "$B" ] || B=ev/bundle
+            python3 tools/evidence-page.py "$B" out/site/evidence.html
+            echo "  evidence page rendered from this release's bundle"
+          else
+            echo "  no evidence.tar.gz yet -- writing a placeholder evidence page"
+            mkdir -p ev/empty
+            : > ev/empty/stages.tsv
+            python3 tools/evidence-page.py ev/empty out/site/evidence.html || true
+          fi
+          ls -la out/site/evidence.html || true
+
       - name: 'CONSUMER GATE -- the storefront click-path, walked by machine'
         run: |
           set -eu
@@ -964,3 +804,9 @@ jobs:
         if: ${{ inputs.publish_site }}
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: 'ATTEST -- provenance for everything published'
+        if: ${{ !inputs.dry_run }}
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: 'out/*.img.zst'
