@@ -48,6 +48,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        # PIN TO THE DISPATCH COMMIT, not the branch tip. On workflow_dispatch,
+        # checkout@v5 defaults to GITHUB_REF (the branch's CURRENT head), which
+        # drifts if main advances after the run starts -- so the job would build
+        # a different commit than GITHUB_SHA, which is what gets tagged and
+        # attested. Pinning ref to github.sha makes the code built, the release
+        # tag, and the attestation all one commit. (Bug found 2026-08-19: a run
+        # dispatched at b987f396 checked out cf7153fe and published mismatched
+        # provenance.)
+        with:
+          ref: ${{ github.sha }}
 
       - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
         env:
@@ -604,6 +614,12 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v5
+        # SAME PIN as the release job: the pages job must render from the exact
+        # commit the release was built and attested at, not whatever main has
+        # advanced to since. Without this, pages could render with a different
+        # generator than the run published.
+        with:
+          ref: ${{ github.sha }}
 
       - name: 'PAGES-IN -- re-download every tier from its tag and verify like a stranger'
         env:
