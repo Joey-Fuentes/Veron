@@ -48,6 +48,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        # PIN TO THE DISPATCH COMMIT, not the branch tip. On workflow_dispatch,
+        # checkout@v5 defaults to GITHUB_REF (the branch's current head), which
+        # drifts if main advances after the run starts -- so the job would build
+        # a different commit than GITHUB_SHA, which is what gets tagged and
+        # attested. (This pin was added in 77b82410 and dropped when the pages
+        # split rebuilt this file; restored here.)
+        with:
+          ref: ${{ github.sha }}
 
       - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
         env:
