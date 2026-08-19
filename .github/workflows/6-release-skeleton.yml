@@ -64,10 +64,28 @@ jobs:
             # the release exists; only "genuinely absent" skips. A download
             # that then fails on an existing release is a transient fault --
             # retry it, and fail loudly if it still will not come.
-            if ! gh release view "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
-                 --json name >/dev/null 2>&1; then
+            # EXISTENCE VIA THE API, NOT `gh release view`: the tag name has
+            # a slash (5/latest-x86_64) and error text was being hidden, so a
+            # failed view was indistinguishable from a genuinely absent
+            # release -- and it cost two trios (2026-08-19). The API call is
+            # explicit and its stderr is shown; a real 404 is absence, any
+            # other failure is a fault we retry rather than misread as absence.
+            exists=unknown
+            for attempt in 1 2 3; do
+              code=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/5%2Flatest-$arch" \
+                       --jq '.tag_name' 2>/tmp/view-err) && { exists=yes; break; }
+              if grep -q "HTTP 404" /tmp/view-err; then exists=no; break; fi
+              echo "  $arch: release-exists check attempt $attempt failed (not a 404):"
+              sed 's/^/      /' /tmp/view-err
+              sleep 10
+            done
+            if [ "$exists" = no ]; then
               echo "  $arch: no 5/latest-$arch release -- arch skipped (stated, not silent)"
               continue
+            fi
+            if [ "$exists" != yes ]; then
+              echo "  $arch: could not determine if 5/latest-$arch exists after 3 tries -- failing, not guessing"
+              exit 1
             fi
             dl_ok=no
             for attempt in 1 2 3; do
