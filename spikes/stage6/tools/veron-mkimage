@@ -143,12 +143,17 @@ echo "  staged ${rootfs_kb} KB; slot ${ROOT_MB} MiB (need + 100 MB, ruled 2026-0
 # the rootfs this very run staged ($ROOTFS/usr/sbin/mke2fs); prefer it,
 # and say so. The host path remains only as a labelled fallback for the
 # transition and prints a warning if ever taken.
+# THE BUILT mke2fs IS STATIC (recipe: no --enable-elf-shlibs), so it runs
+# the SAME WAY here on the CI host and on Veron -- one invocation, no
+# loader, no library path. Ruled 2026-08-19 after a shared build could
+# not be exec'd from the runner. On the appliance this identical binary
+# lays persist grows; here it lays the image. Same tool, same call.
 MKE2FS="$SRC_ROOTFS/usr/sbin/mke2fs"
 if [ -x "$MKE2FS" ]; then
     echo "  mke2fs: the built one ($MKE2FS)"
 else
     MKE2FS=/sbin/mke2fs
-    echo "  mke2fs: WARNING falling back to host $MKE2FS -- built e2fsprogs not in rootfs" >&2
+    echo "  mke2fs: WARNING host fallback -- built e2fsprogs not in rootfs" >&2
 fi
 
 # ---- root-A: the system; root-B and persist: empty ext4, fixed identity.

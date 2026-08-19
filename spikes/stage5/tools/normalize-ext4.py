@@ -38,14 +38,19 @@ import subprocess
 import sys
 import os
 def _veron_tool(name):
-    """Prefer the built e2fsprogs tool (ruled 2026-08-18) when the image
-    build points us at the staged rootfs; else fall back to PATH."""
+    """The BUILT e2fsprogs tool (ruled 2026-08-18), returned as an argv
+    PREFIX. The built binaries are dynamic for the Veron sysroot, so a CI
+    host are STATIC (recipe: no --enable-elf-shlibs), so they run directly here
+    and on Veron alike -- one path, no loader. When VERON_ROOTFS is set we
+    use the built tool; else the host one. Returned as an argv prefix that
+    callers splice in.
+    """
     r = os.environ.get("VERON_ROOTFS", "")
     if r:
         cand = os.path.join(r, "usr/sbin", name)
         if os.path.exists(cand):
-            return cand
-    return name
+            return [cand]   # static binary: runs directly, like on Veron
+    return [tool(name)]     # host fallback keeps the /usr/sbin resolution
 
 SB_OFFSET = 1024
 # s_mtime, s_wtime, s_lastcheck, s_mkfs_time
@@ -69,10 +74,10 @@ def sha(path):
 
 
 def main(img, ts_epoch=946684800, ts_str="20000101000000"):
-    debugfs, dumpe2fs = tool(_veron_tool("debugfs")), tool("dumpe2fs")
+    debugfs, dumpe2fs = _veron_tool("debugfs"), _veron_tool("dumpe2fs")
     before = sha(img)
 
-    info = subprocess.run([dumpe2fs, img], capture_output=True, text=True).stdout
+    info = subprocess.run([*dumpe2fs, img], capture_output=True, text=True).stdout
     m = re.search(r"^Block size:\s+(\d+)", info, re.M)
     n = re.search(r"^Inode count:\s+(\d+)", info, re.M)
     if not m or not n:
@@ -90,7 +95,7 @@ def main(img, ts_epoch=946684800, ts_str="20000101000000"):
         f"sif <{i}> ctime {ts_str}\nsif <{i}> atime {ts_str}\n"
         f"sif <{i}> mtime {ts_str}\nsif <{i}> crtime {ts_str}\n"
         for i in range(1, inodes + 1))
-    p = subprocess.run([debugfs, "-w", "-f", "/dev/stdin", img],
+    p = subprocess.run([*debugfs, "-w", "-f", "/dev/stdin", img],
                        input=cmds, capture_output=True, text=True)
     if p.returncode != 0:
         print(f"  debugfs inode pass rc={p.returncode}")

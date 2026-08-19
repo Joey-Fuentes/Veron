@@ -45,7 +45,6 @@ optional_off = ["fuse2fs", "nls", "e2scrub"]
 configure_flags = [
     "--prefix=/usr",
     "--sbindir=/usr/sbin",
-    "--enable-elf-shlibs",
     "--disable-nls",
     "--disable-fuse2fs",
     "--disable-e2scrub",
@@ -70,10 +69,15 @@ a directory tree), -U (fixed UUID), -E hash_seed=, -b 4096, -O feature
 toggles, -m 0. All are libext2fs mainline, present since well before
 1.47. debugfs is also used by the ext4 normalizer path and ships here.
 
---enable-elf-shlibs BUILDS libext2fs/libcom_err/libe2p/libss AS SHARED
-objects, which mke2fs and resize2fs then link. The alternative is fat
-static tools; shared matches how every other library package in this
-set is consumed and keeps the binaries small.
+NO --enable-elf-shlibs: the ext2fs libraries link STATICALLY into the
+tools. RULED (Joe, 2026-08-19): mke2fs must run THE SAME WAY on the CI
+host that lays images and on Veron itself. A shared build made mke2fs a
+Veron-sysroot dynamic object the CI host could not exec (its interpreter
+lives in the sysroot -- "required file not found"); a loader wrapper
+fixes that but makes the invocation DIFFERENT in the two places, and
+identical-everywhere is the property wanted. Static costs a slightly
+larger mke2fs/resize2fs; the tools are tiny and few, so the cost is nil
+and one invocation works from CI and on the appliance alike.
 
 --disable-fuse2fs DROPS the FUSE mount helper: there is no libfuse in
 this set, configure would find none, and fuse2fs is not wanted on the
@@ -108,7 +112,7 @@ run  = [["tar", "-xf", "$DL/e2fsprogs-1.47.4.tar.gz", "-C", "$B"]]
 name = "configure"
 cwd  = "$S"
 run  = [["./configure", "--prefix=/usr", "--sbindir=/usr/sbin",
-         "--enable-elf-shlibs", "--disable-nls", "--disable-fuse2fs",
+         "--disable-nls", "--disable-fuse2fs",
          "--disable-e2scrub", "--disable-rpath"]]
 
 [[steps]]

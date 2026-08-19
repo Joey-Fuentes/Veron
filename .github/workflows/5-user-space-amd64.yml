@@ -1171,8 +1171,8 @@ jobs:
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
           build_img() {
             rm -f "$1"
-            MKE2FS=../sysroot/usr/sbin/mke2fs
-            [ -x "$MKE2FS" ] || { echo "  mke2fs: WARN host fallback (built one not in sysroot)" >&2; MKE2FS=/sbin/mke2fs; }
+            MKE2FS=../sysroot/usr/sbin/mke2fs   # static: runs like on Veron
+            [ -x "$MKE2FS" ] || { echo "  mke2fs: WARN host fallback" >&2; MKE2FS=/sbin/mke2fs; }
             "$MKE2FS" -q -t ext4 -d ../sysroot \
               -U 00000000-0000-4000-8000-000000000001 \
               -E hash_seed=00000000-0000-4000-8000-000000000002 \
@@ -2409,8 +2409,8 @@ jobs:
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
           build_img() {
             rm -f "$1"
-            MKE2FS=../sysroot/usr/sbin/mke2fs
-            [ -x "$MKE2FS" ] || { echo "  mke2fs: WARN host fallback (built one not in sysroot)" >&2; MKE2FS=/sbin/mke2fs; }
+            MKE2FS=../sysroot/usr/sbin/mke2fs   # static: runs like on Veron
+            [ -x "$MKE2FS" ] || { echo "  mke2fs: WARN host fallback" >&2; MKE2FS=/sbin/mke2fs; }
             "$MKE2FS" -q -t ext4 -d ../sysroot \
               -U 00000000-0000-4000-8000-000000000001 \
               -E hash_seed=00000000-0000-4000-8000-000000000002 \
