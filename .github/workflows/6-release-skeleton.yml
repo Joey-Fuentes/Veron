@@ -62,23 +62,6 @@ jobs:
               echo "  $arch: no 5/latest-$arch release -- arch skipped (stated, not silent)"
               continue
             fi
-            # THE INCOMPLETE MARKER IS THE FIRST THING CHECKED (Joe, 2026-08-19).
-            # Stage 5 raises PUBLISHING-INCOMPLETE before its first asset and
-            # removes it only after re-downloading and verifying the pair. Its
-            # presence means the release may be mid-publish or failed
-            # verification -- either way the pair may be inconsistent, exactly
-            # the 49d3919f-hash-beside-e18e188a-bytes failure. Refuse on sight;
-            # do not download the image, do not guess.
-            if gh release view "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
-                 --json assets --jq '.assets[].name' 2>/dev/null \
-                 | grep -qx "PUBLISHING-INCOMPLETE"; then
-              echo "  $arch: 5/latest-$arch carries PUBLISHING-INCOMPLETE --"
-              echo "         refusing an in-progress or unverified publish."
-              gh release download "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
-                -p PUBLISHING-INCOMPLETE -D "in/5-$arch" --clobber 2>/dev/null \
-                && sed 's/^/         /' "in/5-$arch/PUBLISHING-INCOMPLETE" || true
-              exit 1
-            fi
             # THE IMAGE DIGEST IS CHECKED BEFORE ANYTHING CONSUMES IT --
             # the same refusal discipline every stage seam already has.
             # IMAGE-SHA256 names the UNCOMPRESSED rootfs.img; the release
@@ -578,6 +561,89 @@ jobs:
             --title "Veron -- latest consumer release" \
             --notes "Moving pointer; the immutable record is release/$C7." \
             out/*.img.zst out/SHA256SUMS out/evidence.tar.gz
+      - name: 'ATTEST -- provenance for everything published'
+        if: ${{ !inputs.dry_run }}
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: 'out/*.img.zst'
+
+  # ==========================================================================
+  # PAGES -- a SEPARATE job that runs only after `release` (needs: release),
+  # so the release's OWN attestation exists by the time the site is built.
+  # RULED (Joe, 2026-08-19): the storefront must be 100% complete for the run
+  # it deploys -- previously PAGES ran before ATTEST, so the site could never
+  # cite its own release's attestation. This job re-downloads every tier from
+  # its published tag and INDEPENDENTLY re-verifies it (marker-absent + all
+  # files present), even though `release` already verified: the tags are read
+  # at a different moment, and a moving tag can change between the two reads.
+  # ==========================================================================
+  pages:
+    needs: release
+    if: ${{ inputs.publish_site }}
+    runs-on: ubuntu-24.04
+    env:
+      ARCHES: "x86_64 aarch64"
+    permissions:
+      contents: write     # attach index.json to the releases
+      pages: write        # deploy
+      id-token: write      # deploy-pages OIDC
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'PAGES-IN -- re-download every tier from its tag and verify like a stranger'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out in
+          # A tag is REFUSED if it carries PUBLISHING-INCOMPLETE or is missing
+          # a named asset -- the same discipline the release job's IN applies,
+          # re-applied here because this is a distinct read of a moving tag.
+          refuse_if_marked() {
+            tag=$1
+            if gh release view "$tag" -R "$GITHUB_REPOSITORY" \
+                 --json assets --jq '.assets[].name' 2>/dev/null \
+                 | grep -qx "PUBLISHING-INCOMPLETE"; then
+              echo "  $tag carries PUBLISHING-INCOMPLETE -- refusing to deploy a site from an unverified release"
+              exit 1
+            fi
+          }
+          have_asset() {
+            gh release view "$1" -R "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name' 2>/dev/null | grep -qx "$2"
+          }
+
+          # ---- 6/latest: the consumer release this site is ABOUT ----
+          refuse_if_marked "6/latest"
+          for a in SHA256SUMS; do
+            have_asset "6/latest" "$a" || { echo "  6/latest missing $a"; exit 1; }
+          done
+          gh release download "6/latest" -R "$GITHUB_REPOSITORY" -D out --clobber
+          # decompress each published image so the manifest has the inner digest
+          for z in out/veron-*.img.zst; do
+            [ -e "$z" ] || continue
+            zstd -d -q -f "$z" -o "${z%.zst}"
+          done
+          # the site build expects the releases API too
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate > out/releases-api.json
+
+          # ---- 5/latest and 4/kernel: the tiers the developer section cites ----
+          for arch in $ARCHES; do
+            if have_asset "5/latest-$arch" "rootfs.img.tar.zst"; then
+              refuse_if_marked "5/latest-$arch"
+              gh release download "5/latest-$arch" -R "$GITHUB_REPOSITORY" -D "in/5-$arch" --clobber 2>/dev/null || true
+            else
+              echo "  5/latest-$arch absent -- developer section will omit it (stated)"
+            fi
+            if have_asset "4/kernel-$arch" "vmlinuz-generic"; then
+              refuse_if_marked "4/kernel-$arch"
+              gh release download "4/kernel-$arch" -R "$GITHUB_REPOSITORY" -D "in/k-$arch" --clobber 2>/dev/null || true
+            fi
+          done
+          echo "PAGES-IN: every tier verified (marker-absent, assets present)"
 
       - name: 'SITE -- regenerate the whole storefront'
         env:
@@ -794,9 +860,3 @@ jobs:
         if: ${{ inputs.publish_site }}
         id: deployment
         uses: actions/deploy-pages@v4
-
-      - name: 'ATTEST -- provenance for everything published'
-        if: ${{ !inputs.dry_run }}
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: 'out/*.img.zst'
