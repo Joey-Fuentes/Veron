@@ -56,781 +56,600 @@ jobs:
           set -eu
           mkdir -p in
           found=0
-          for arch in $ARCHES; do
-            if ! gh release download "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
-                 -D "in/5-$arch" --clobber 2>/dev/null; then
-              echo "  $arch: no 5/latest-$arch release -- arch skipped (stated, not silent)"
-              continue
-            fi
-            # THE IMAGE DIGEST IS CHECKED BEFORE ANYTHING CONSUMES IT --
-            # the same refusal discipline every stage seam already has.
-            # IMAGE-SHA256 names the UNCOMPRESSED rootfs.img; the release
-            # ships rootfs.img.tar.zst -- so unpack, THEN check. The first
-            # dispatch failed here on exactly that (run 86974795496):
-            # "rootfs.img: No such file" -- the gate refusing an
-            # unverified input, which is correct, aimed at the wrong file,
-            # which is fixed.
-            ( cd "in/5-$arch"               && tar --zstd -xf rootfs.img.tar.zst               && sha256sum -c IMAGE-SHA256 )
-            # THE ATTESTATION IS CHECKED HERE TOO: stage 6 is the first
-            # consumer that exists to serve strangers, so it verifies what
-            # a stranger would verify, and refuses what they would refuse.
-            gh attestation verify "in/5-$arch/rootfs.img.tar.zst" \
-              -R "$GITHUB_REPOSITORY"
-            gh release download "4/kernel-$arch" -R "$GITHUB_REPOSITORY" \
-              -D "in/k-$arch" --clobber 2>/dev/null \
-              && ( cd "in/k-$arch" \
-                   && grep vmlinuz-generic KERNEL-GENERIC-SHA256 | sha256sum -c - ) \
-              || echo "  $arch: no 4/kernel-$arch -- generic kernel absent for this arch"
-            found=$((found + 1))
-          done
-          [ "$found" -gt 0 ] || { echo "no arch has a stage-5 release; nothing to do"; exit 1; }
+          for arch in $ARCHES; do          f until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
 
-      - name: 'FW -- the pinned firmware tree, prepared for absorption'
-        env:
-          # python block-buffers stdout under Actions (no tty): without
-          # this, mirror.py's route lines sit invisible in the buffer while
-          # a 619 MB download grinds -- ten silent minutes, measured, run
-          # of 2026-08-18. Loud beats fast, and this step is now both.
-          PYTHONUNBUFFERED: "1"
-        run: |
-          set -eu
-          # THE FLASH SCRIPT'S JOB MOVES INTO THE ARTIFACT: firmware
-          # fetched through the mirror like every pinned source, prepared
-          # the way upstream ships it (dedup by its own install; per-file
-          # zstd the kernel decompresses at load), WHENCE and LICENCE.*
-          # beside the blobs. Unpinned entries skip OUT LOUD; unknown
-          # pinned names fail so new sources get deliberate handlers.
-          python3 - > fw-list.tsv <<'PY'
-          import tomllib
-          for src in tomllib.load(open("sources/firmware.toml", "rb"))["source"]:
-              if not src.get("sha256"):
-                  print("SKIP\t%s\tunpinned -- stated, not silent" % src["name"])
-                  continue
-              # Tarball pins carry a url and are named by it. GIT pins have
-              # url = "" -- their artifact is the tarball fetch-git.sh
-              # generated, named <name>-<version>.tar.gz, and the mirror
-              # row recorded at mint time is the route to it. The first
-              # version derived the name from the empty url and asked
-              # mirror.py to fetch a file called nothing (run of
-              # 2026-08-18 02:13Z).
-              if src.get("url"):
-                  fname, url = src["url"].rsplit("/", 1)[-1], src["url"]
-              elif src.get("git") and src.get("commit"):
-                  fname = "%s-%s.tar.gz" % (src["name"], src["version"])
-                  url = src["git"]
-              else:
-                  raise SystemExit("source %r has neither url nor git+commit" % src["name"])
-              print("FETCH\t%s\t%s\t%s\t%s" % (src["name"], src["sha256"], fname, url))
-          PY
-          cat fw-list.tsv
-          mkdir -p fw-dl fwtree
-          while IFS="$(printf '\t')" read -r verb name a b c; do
-            case "$verb" in
-              SKIP)  echo "  $name: $a" ;;
-              FETCH) echo "::group::fetch $name ($b)"
-                     date -u +"  start %H:%M:%SZ"
-                     # HARD CEILING: a route that trickles must fail loudly,
-                     # not eat the job. 8 minutes moves 619 MB at ~1.3 MB/s;
-                     # anything slower is a bad route, and mirror.py's next
-                     # route deserves the chance the ceiling creates.
-                     timeout 480 python3 tools/mirror.py fetch "$a" "$b" --url "$c" --dest fw-dl \
-                       || { echo "  fetch of $name timed out or failed."
-                            echo "  If the github route 404'd: the mirror lacks firmware --"
-                            echo "  run  sh tools/mirror-sources.sh  once (authed) and re-dispatch;"
-                            echo "  kernel.org at runner bandwidth cannot beat this ceiling."
-                            exit 1; }
-                     date -u +"  done  %H:%M:%SZ"
-                     echo "::endgroup::"
-                     case "$name" in
-                       linux-firmware|wireless-regdb|intel-ucode) : ;;
-                       *) echo "  $name is pinned but has no handler here -- add one deliberately"; exit 1 ;;
-                     esac ;;
-            esac
-          done < fw-list.tsv
-          echo "::group::prepare the tree"
-          date -u +"  extract %H:%M:%SZ"
-          tar -xf fw-dl/linux-firmware-*.tar.xz -C fw-dl
-          # PLAIN install (dedup + layout, no compression), then compress
-          # IN PARALLEL ourselves: install-zst runs zstd one file at a
-          # time -- thousands of files, one core, many silent minutes.
-          # xargs -P fans out; -T1 per file keeps every output byte
-          # deterministic regardless of core count, which the built-twice
-          # cmp downstream depends on.
-          make -C fw-dl/linux-firmware-*/ install DESTDIR="$PWD/fwstage" FIRMWAREDIR=/ >/dev/null
-          # copy-firmware.sh INSTALLS ONLY THE BLOBS -- WHENCE and the
-          # LICENCE/GPL texts live in the source root and never reach
-          # DESTDIR ("prepared tree lost WHENCE", run of 2026-08-18). They
-          # are the redistribution terms, so they ship beside what they
-          # govern, uncompressed and readable on the installed system.
-          # -a, because upstream ships BOTH loose LICENCE.* files AND a
-          # LICENSES/ directory (cp without -r refused it, run of
-          # 2026-08-18 02:00Z). Everything license-shaped comes along.
-          cp -a fw-dl/linux-firmware-*/WHENCE* fwstage/
-          cp -a fw-dl/linux-firmware-*/LICEN* fwstage/
-          cp -a fw-dl/linux-firmware-*/GPL* fwstage/ 2>/dev/null || true
-          [ "$(find fwstage -maxdepth 2 \( -name 'LICEN*' -o -name 'GPL*' \) | wc -l)" -gt 10 ] \
-            || { echo "suspiciously few license files in the tree"; exit 1; }
-          date -u +"  compress %H:%M:%SZ"
-          find fwstage -type f ! -name 'WHENCE*' ! -name 'LICEN*' ! -name 'GPL*' ! -name '*.txt' ! -path '*/LICENSES/*' ! -path '*/intel-ucode/*' -print0 \
-            | xargs -0 -n64 -P"$(nproc)" zstd -q -19 -T1 --rm
-          cp -a fwstage/. fwtree/
-          if ls fw-dl/intel-ucode-*.tar.gz >/dev/null 2>&1; then
-            tar -xf fw-dl/intel-ucode-*.tar.gz -C fw-dl
-            # the plain family files and the license; NOT with-caveats --
-            # Intel gates those behind per-platform conditions this
-            # project has no way to honour, so they do not ship
-            cp -a fw-dl/intel-ucode-20*/intel-ucode fwtree/
-            cp fw-dl/intel-ucode-20*/license fwtree/LICENSE.intel-ucode
-          fi
-          if ls fw-dl/wireless-regdb-*.tar.xz >/dev/null 2>&1; then
-            tar -xf fw-dl/wireless-regdb-*.tar.xz -C fw-dl
-            cp fw-dl/wireless-regdb-*/regulatory.db fw-dl/wireless-regdb-*/regulatory.db.p7s fwtree/
-          fi
-          [ -e fwtree/WHENCE ] || [ -e fwtree/WHENCE.zst ] \
-            || { echo "prepared tree lost WHENCE"; exit 1; }
-          date -u +"  done %H:%M:%SZ"
-          echo "::endgroup::"
-          echo "firmware tree: $(find fwtree -type f | wc -l) file(s), $(du -sh fwtree | cut -f1)"
+name: 6-release
 
-      - name: 'IMG -- the A/B GPT disk image'
-        run: |
-          set -eu
-          # THE TOOLS ARE REAL; ONE INPUT IS NOT YET. veron-mkimage builds
-          # the full A/B GPT image reproducibly (built twice and compared
-          # below). What stage 4 does not yet publish is an EFI-STUB kernel
-          # with the initramfs baked in -- until it does, the image is
-          # assembled with the published kernel as a stand-in so every
-          # OTHER property (layout, determinism, decode) is proven per run,
-          # and the boot gate below stays off. The stand-in is stated in
-          # the artifact name: veron-<arch>-<sha7>.NOBOOT.img.
-          mkdir -p out
-          for arch in $ARCHES; do
-            [ -d "in/5-$arch" ] || continue
-            mkdir -p "work/$arch/rootfs"
-            # IN already unpacked rootfs.img beside the tarball and
-            # digest-verified it; the tree is extracted from the ext4
-            # image without privileges via debugfs rdump
-            /sbin/debugfs -R "rdump / work/$arch/rootfs" "in/5-$arch/rootfs.img" >/dev/null 2>&1
-            [ -e "work/$arch/rootfs/etc/veron-release" ]               || { echo "  $arch: rdump produced no tree"; exit 1; }
-            # RDUMP MATERIALIZES HARDLINKS AS COPIES -- the extracted tree
-            # measured ~1893 MiB where the strip step measured 1229 MB of
-            # the same system (~660 MiB of phantom duplication; git's
-            # hardlinked builtins are the bulk). Content-dedupe restores
-            # them: byte-identical regular files become hardlinks again,
-            # mke2fs -d stores each once, and every path keeps exactly the
-            # bytes the records claim. Deterministic: sorted walk, first
-            # path is the canon.
-            python3 - "work/$arch/rootfs" <<'PY'
-          import hashlib, os, sys
-          root = sys.argv[1]
-          seen = {}
-          relinked = saved = 0
-          for dirpath, dirs, files in sorted(os.walk(root)):
-              dirs.sort()
-              for f in sorted(files):
-                  p = os.path.join(dirpath, f)
-                  if os.path.islink(p) or not os.path.isfile(p):
-                      continue
-                  st = os.stat(p)
-                  if st.st_size < 4096:
-                      continue
-                  h = hashlib.sha256()
-                  with open(p, "rb") as fh:
-                      for c in iter(lambda: fh.read(1 << 20), b""):
-                          h.update(c)
-                  k = (h.hexdigest(), st.st_mode & 0o7777)
-                  if k in seen:
-                      os.unlink(p)
-                      os.link(seen[k], p)
-                      relinked += 1
-                      saved += st.st_size
-                  else:
-                      seen[k] = p
-          print(f"  dedupe: {relinked} file(s) re-hardlinked, {saved // 1048576} MiB reclaimed")
-          PY
-            KERNEL="in/k-$arch/vmlinuz-generic"
-            [ -s "$KERNEL" ] || KERNEL="in/5-$arch/Image"
-            MODTAR=$(ls in/k-$arch/modules-*.tar.zst 2>/dev/null | head -1 || true)
-            ABSORB=""
-            [ -n "$MODTAR" ] && ABSORB="--modules-tar $MODTAR"
-            # FIRMWARE PRUNE, RULED BY THE DVD (Joe, 2026-08-18: the image
-            # must fit a standard DVD-5, and the complete 847 MB tree puts
-            # two slots past that budget). What ships is the firmware THIS
-            # ARCH'S KERNEL CAN ASK FOR: every name in the modules' own
-            # modinfo firmware fields, symlink targets chased, .zst
-            # spelling matched -- plus regdb, intel-ucode, WHENCE and every
-            # license, whole. Firmware for hardware this kernel cannot
-            # drive is dead bytes by definition. Stated limitation: the
-            # prune is keyed to MODULES; this fragment's built-in drivers
-            # (storage, xhci) request no blobs, and if one ever does, the
-            # boot gate is what catches it.
-            if [ -n "$MODTAR" ] && [ -d fwtree ]; then
-              mkdir -p "work/$arch/mods-scan"
-              tar -xf "$MODTAR" -C "work/$arch/mods-scan"
-              python3 - "work/$arch/mods-scan" fwtree "work/$arch/fw" <<'PY'
-          import os, shutil, subprocess, sys
-          mods, tree, out = sys.argv[1:4]
-          want = set()
-          for dp, _, fs in os.walk(mods):
-              for f in fs:
-                  if ".ko" not in f:
-                      continue
-                  r = subprocess.run(["/usr/sbin/modinfo", "-F", "firmware",
-                                      os.path.join(dp, f)],
-                                     capture_output=True, text=True)
-                  want.update(x.strip() for x in r.stdout.splitlines() if x.strip())
-          def place(rel):
-              src = os.path.join(tree, rel)
-              for cand in (src, src + ".zst"):
-                  if os.path.lexists(cand):
-                      dst = os.path.join(out, os.path.relpath(cand, tree))
-                      os.makedirs(os.path.dirname(dst), exist_ok=True)
-                      if os.path.islink(cand):
-                          t = os.readlink(cand)
-                          if not os.path.lexists(dst):
-                              os.symlink(t, dst)
-                          # chase the target so the link resolves
-                          tgt = os.path.normpath(os.path.join(os.path.dirname(rel), t))
-                          place(tgt)
-                      elif not os.path.exists(dst):
-                          shutil.copy2(cand, dst)
-                      return True
-              return False
-          os.makedirs(out, exist_ok=True)
-          hit = sum(1 for rel in sorted(want) if place(rel))
-          # the redistribution terms and the always-wanted pieces, whole
-          for keep in ("WHENCE", "WHENCE.zst", "regulatory.db", "regulatory.db.p7s",
-                       "LICENSE.intel-ucode"):
-              p = os.path.join(tree, keep)
-              if os.path.exists(p):
-                  shutil.copy2(p, os.path.join(out, keep))
-          for e in sorted(os.listdir(tree)):
-              if e.startswith(("LICEN", "GPL")) or e == "LICENSES":
-                  srcp = os.path.join(tree, e)
-                  dstp = os.path.join(out, e)
-                  (shutil.copytree(srcp, dstp, dirs_exist_ok=True)
-                   if os.path.isdir(srcp) else shutil.copy2(srcp, dstp))
-          if os.path.isdir(os.path.join(tree, "intel-ucode")):
-              shutil.copytree(os.path.join(tree, "intel-ucode"),
-                              os.path.join(out, "intel-ucode"), dirs_exist_ok=True)
-          missing = len(want) - hit
-          total = sum(os.path.getsize(os.path.join(dp, f))
-                      for dp, _, fs in os.walk(out) for f in fs
-                      if not os.path.islink(os.path.join(dp, f)))
-          print(f"  firmware pruned to what the modules name: {hit} of {len(want)} "
-                f"referenced names present ({missing} not in the tree -- the kernel "
-                f"would miss them identically), {total // 1048576} MiB kept")
-          PY
-              rm -rf "work/$arch/mods-scan"
-              ABSORB="$ABSORB --firmware-dir work/$arch/fw"
-            elif [ -d fwtree ]; then
-              ABSORB="$ABSORB --firmware-dir fwtree"
-            fi
-            VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw"
-            sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw2" 2>/dev/null || true
-            cmp "out/veron-$arch.raw" "out/veron-$arch.raw2"               && echo "  $arch image REPRODUCED (built twice, same bytes)"               || { echo "  $arch image NOT reproducible"; exit 1; }
-            rm -f "out/veron-$arch.raw2"
-          done
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
 
-      - name: 'ISO -- hybrid live image, persistence optional (PLACEHOLDER)'
-        if: ${{ always() && false }}  # enabled when IMG exists
-        run: |
-          echo "UNBUILT: squashfs + overlay; fscrypt-on-ext4 .dat persistence"
-          exit 1
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
 
-      - name: 'BOOT GATE -- the image boots the way a consumer boots it'
-        id: bootgate
-        if: ${{ inputs.boot_gate }}
-        run: |
-          set -eu
-          # THE SCENARIO UNDER TEST IS dd-AND-BOOT: firmware finds
-          # \EFI\BOOT\BOOTX64.EFI on the ESP with EMPTY LoadOptions --
-          # no NVRAM entries, no installer, nothing. Everything after that
-          # is the image's own doing: the stub runs, fragment v8's BAKED
-          # cmdline names slot A by PARTUUID, EFI_PARTITION parses the
-          # GPT, built-in ext4 mounts the slot, and the kernel execs
-          # /usr/bin/dinit. The serial log must show each link BY NAME.
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf >/dev/null
-          for img in out/veron-x86_64.raw; do
-            [ -e "$img" ] || continue
-            # TWO ATTACHMENTS, BECAUSE METAL TAUGHT US THEY DIFFER: the
-            # default drive is AHCI (a built-in driver), but a consumer's
-            # stick is USB mass storage -- a different driver spine that
-            # the first metal flash proved missing while this gate stayed
-            # green (2026-08-18). The image must boot BOTH ways.
-            for attach in ahci usb; do
-              if [ "$attach" = usb ]; then
-                DRIVE="-device qemu-xhci -device usb-storage,drive=d0 -drive if=none,id=d0,format=raw,file=$img"
-              else
-                DRIVE="-drive format=raw,file=$img"
-              fi
-              echo "=== boot attempt: $attach attachment ==="
-              timeout 300 qemu-system-x86_64 \
-                -machine q35 -m 2048 -nographic -no-reboot -nic none \
-                -bios /usr/share/ovmf/OVMF.fd \
-                $DRIVE \
-                -serial file:boot-serial.log >/dev/null 2>&1 || true
-            echo "--- serial (tail) ---"; tail -60 boot-serial.log || true
-            # THE ONE LINE THAT ADJUDICATES: the kernel's verbatim cmdline
-            # echo. Run 87012288217 booted to a login prompt while the
-            # baked-cmdline grep failed -- witnesses contradicting each
-            # other, unreadable because only a 60-line tail of churning
-            # services survived. Never again: the line is printed by name,
-            # and the whole serial uploads below.
-            echo "--- the cmdline the kernel says it booted with ---"
-            grep -m1 "Kernel command line" boot-serial.log || echo "  (no cmdline echo found in serial at all)"
-            fail=0
-            # the x86 stub is silent on the happy path (run 87005224870);
-            # the witness is the kernel's EFI runtime banner
-            grep -Eq "efi: EFI v|EFI stub" boot-serial.log \
-              && echo "  ok    EFI handover from the fallback path confirmed" \
-              || { echo "  FAIL  no EFI evidence"; fail=1; }
-            # -i, because the kernel has TWO cmdline echoes with different
-            # capitalisation -- core's "Kernel command line:" and x86
-            # setup's older capital-C "Command line:" -- and which appears
-            # varies by version. Run 87014621708 printed the baked line
-            # verbatim while the capital-C grep failed it: the witness was
-            # hunting the wrong duplicate.
-            grep -iq "command line:.*root=PARTUUID=aaaa0002" boot-serial.log \
-              && echo "  ok    the BAKED cmdline named slot A" \
-              || { echo "  FAIL  baked cmdline absent (kernel predates fragment v8?)"; fail=1; }
-            grep -Eq "EXT4-fs \(.*\): mounted|VFS: Mounted root" boot-serial.log \
-              && echo "  ok    slot A mounted by PARTUUID" \
-              || { echo "  FAIL  root never mounted"; fail=1; }
-            grep -q "as init process" boot-serial.log \
-              && echo "  ok    the kernel handed the machine to dinit" \
-              || { echo "  FAIL  init never ran"; fail=1; }
-            [ "$fail" -eq 0 ] || exit 1
-            done
-          done
-          echo "VERON-BOOT-GATE-OK  the consumer path boots to init, on both attachments"
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The arch list is data, not structure: adding an arch is one word
+      # here once its stage-5 exists. Today x86_64 is the only populated
+      # input; the loop below simply finds nothing for the others and says
+      # so, which is the designed behavior, not a failure.
+      ARCHES: "x86_64 aarch64"
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
 
-      - name: 'EVIDENCE -- the boot serial, whole, always'
-        if: ${{ always() && inputs.boot_gate }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: boot-serial
-          path: boot-serial.log
-          if-no-files-found: ignore
+    steps:
+      - uses: actions/checkout@v5
 
-      - name: 'NAME -- the artifact says what was proven'
-        run: |
-          set -eu
-          # NOT AN EDITORIAL DECISION: the gate input decides the suffix,
-          # and a failed gate never reaches this step. .NOBOOT survives
-          # exactly as long as the boot proof is missing.
-          for raw in out/veron-*.raw; do
-            [ -e "$raw" ] || continue
-            arch=$(basename "$raw" .raw); arch=${arch#veron-}
-            SHA7=$(sha256sum "$raw" | cut -c1-7)
-            if [ "${{ inputs.boot_gate }}" = "true" ]; then
-              mv "$raw" "out/veron-$arch-$SHA7.img"
-              # COMPRESS HERE, NOT AT PUBLISH: the manifest gathers after
-              # this step, and the card must advertise the asset that will
-              # actually exist. The first card advertised the raw .img --
-              # an asset never uploaded -- and the external user's first
-              # click after the URL fix would have 404'd on it (caught in
-              # audit, 2026-08-18, minutes before that click).
-              zstd -19 -T0 -q "out/veron-$arch-$SHA7.img" \
-                -o "out/veron-$arch-$SHA7.img.zst"
-            else
-              mv "$raw" "out/veron-$arch-$SHA7.NOBOOT.img"
-            fi
-          done
-          ls -la out/*.img*
-
-      - name: 'EVIDENCE-CHAIN -- the attestations and build logs of everything this release is made from'
+      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          # THE CHAIN IS EIGHT STAGES, EACH WITH ONE DELIVERABLE AND ONE LOG.
-          # RULED (Joe, 2026-08-19): not a graph walk over every pinned digest
-          # -- that over-collected 41 intermediate runs. Resolve each stage's ONE
-          # deliverable to its attestation, hence its run, hence its log. att-run.py
-          # (python, Veron-native -- NOT jq) decodes the base64 DSSE payload for the
-          # run id, so this same resolution verifies on-device. Writes stages.tsv
-          # (stage/digest/run) which the Pages evidence viewer renders, no download.
-          mkdir -p evidence/attestations evidence/logs
-          : > evidence/stages.tsv
-          resolve() {
-            label=$1; dg=$2
-            [ -n "$dg" ] || { echo "  $label: no digest -- skipped"; return; }
-            sleep 1
-            if timeout 30 gh api "repos/$GITHUB_REPOSITORY/attestations/sha256:$dg" \
-                 > "evidence/attestations/$label.json" 2>/dev/null \
-               && [ -s "evidence/attestations/$label.json" ] \
-               && grep -q '"attestations"' "evidence/attestations/$label.json"; then
-              rid=$(python3 tools/att-run.py "evidence/attestations/$label.json" | head -1)
-              echo "  $label: $(echo "$dg" | cut -c1-16)  run $rid"
-              printf '%s\t%s\t%s\n' "$label" "$dg" "$rid" >> evidence/stages.tsv
-            else
-              rm -f "evidence/attestations/$label.json"
-              echo "  $label: $(echo "$dg" | cut -c1-16)  NO ATTESTATION"
-            fi
-          }
-          echo "resolving the eight stages:"
-          S1=$(awk '/self-assembler-arm64/{print $1; exit}' stages/1-self-assembly/BASELINE.txt)
-          resolve "1-self-assembler" "$S1"
-          S2=$(awk '/path.*"out\/2\/aarch64\/pico-c"/{f=1} f&&/sha256/{gsub(/[^0-9a-f]/,"",$3);print $3;exit}' stages/2-pico-c/substages.toml)
-          resolve "2-pico-c" "$S2"
-          S3M=$(awk '/path.*"out\/3\/aarch64\/tcc-arm64"/{f=1} f&&/sha256/{gsub(/[^0-9a-f]/,"",$3);print $3;exit}' stages/3-micro-c/substages.toml)
-          resolve "3-micro-c" "$S3M"
-          mkdir -p rel
-          gh release download 3/latest-x86_64 -R "$GITHUB_REPOSITORY" -p 'ARTIFACT-SHA256' -D rel/3 --clobber 2>/dev/null || true
-          S3C=$(grep -i 'tcc-amd64' rel/3/ARTIFACT-SHA256 2>/dev/null | grep -oE '[0-9a-f]{64}' | head -1)
-          resolve "3-cross-tcc-amd64" "$S3C"
-          gh release download 4/latest-x86_64 -R "$GITHUB_REPOSITORY" -p 'SYSROOT-SHA256' -D rel/4 --clobber 2>/dev/null || true
-          S4=$(grep -oE '[0-9a-f]{64}' rel/4/SYSROOT-SHA256 2>/dev/null | head -1)
-          resolve "4-sysroot" "$S4"
-          gh release download 4/kernel-x86_64 -R "$GITHUB_REPOSITORY" -p '*SHA256*' -D rel/k --clobber 2>/dev/null || true
-          S4K=$(grep -i 'vmlinuz\|KERNEL-GENERIC' rel/k/*SHA256* 2>/dev/null | grep -oE '[0-9a-f]{64}' | head -1)
-          resolve "4-kernel" "$S4K"
-          gh release download 5/latest-x86_64 -R "$GITHUB_REPOSITORY" -p 'PROVENANCE' -D rel/5 --clobber 2>/dev/null || true
-          S5=$(sha256sum rel/5/PROVENANCE 2>/dev/null | cut -d' ' -f1)
-          resolve "5-provenance" "$S5"
-          printf '%s\t%s\t%s\n' "6-release" "this-release" "$GITHUB_RUN_ID" >> evidence/stages.tsv
-          echo "  6-release: (this run) $GITHUB_RUN_ID"
-          att=$(wc -l < evidence/stages.tsv)
-          logs=0
-          while IFS="$(printf '\t')" read -r label dg rid; do
-            [ -n "$rid" ] || continue
-            # STAGE 6 IS THIS RUN. Its own Actions logs do not exist until the
-            # run completes, so the release job CANNOT fetch them -- that is
-            # exactly why the pages job (needs: release) runs afterward and
-            # captures this run's log then. Record 6-release in stages.tsv (the
-            # page needs the row) but do not try to pull its log here.
-            [ "$label" = "6-release" ] && { echo "  $label: log captured later by the pages job (run $rid)"; continue; }
-            sleep 1
-            timeout 120 gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/logs" \
-              > "evidence/logs/$label.zip" 2>/dev/null || true
-            if [ -s "evidence/logs/$label.zip" ]; then
-              logs=$((logs+1)); echo "  $label: log captured (run $rid)"
-            else
-              rm -f "evidence/logs/$label.zip"
-              echo "  $label: log not yet retained by Actions (run $rid)"
-            fi
-          done < evidence/stages.tsv
-          {
-            echo "VERON EVIDENCE BUNDLE -- $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "the build chain as eight stages, seed to release:"
-            echo
-            sed 's/^/  /' evidence/stages.tsv
-            echo
-            echo "attestations/  the Sigstore bundle for each stage's deliverable."
-            echo "logs/          one build log per stage, past artifact retention."
-            echo "stages.tsv     stage <tab> digest <tab> run -- what the site renders."
-          } > evidence/MANIFEST.txt
-          echo "VERON-EVIDENCE-CHAIN  $att stages, $logs logs, bundled beside the release"
-          # PACKAGE THE BUNDLE for PUBLISH to upload and the pages job to render.
-          mkdir -p out
-          tar -czf out/evidence.tar.gz -C evidence .
-          echo "  wrote out/evidence.tar.gz ($(stat -c%s out/evidence.tar.gz) bytes)"
+          mkdir -p in
+          found=0
+          for arch in $ARCHES; do          f until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
 
-      - name: 'PUBLISH -- compress, size-gate, immutable tag, moving latest'
-        if: ${{ !inputs.dry_run }}
+name: 6-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The arch list is data, not structure: adding an arch is one word
+      # here once its stage-5 exists. Today x86_64 is the only populated
+      # input; the loop below simply finds nothing for the others and says
+      # so, which is the designed behavior, not a failure.
+      ARCHES: "x86_64 aarch64"
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          # TWO STRUCTURAL REFUSALS BEFORE ANY BYTE UPLOADS: publishing
-          # requires the boot gate to have run, and no .NOBOOT artifact
-          # may ever reach a release -- the name exists so this line can
-          # read it.
-          [ "${{ inputs.boot_gate }}" = "true" ] \
-            || { echo "publish without boot_gate is not a thing"; exit 1; }
-          ! ls out/*.NOBOOT.img >/dev/null 2>&1 \
-            || { echo "a .NOBOOT artifact cannot be published"; exit 1; }
-          C7=${GITHUB_SHA::7}
-          : > out/SHA256SUMS
-          for img in out/*.img; do
-            [ -e "$img.zst" ] || zstd -19 -T0 -q "$img" -o "$img.zst"
-            size=$(stat -c %s "$img.zst")
-            # GITHUB'S CEILING IS 2 GiB PER ASSET; the gate fails BEFORE an
-            # upload half-succeeds, and says which escape hatch to take.
-            [ "$size" -lt 2147483648 ] || {
-              echo "$img.zst is $size bytes -- over the 2 GiB asset ceiling."
-              echo "Shrink slots or move to the chunked layout (spec 12)."
-              exit 1; }
-            ( cd out && sha256sum "$(basename "$img")" "$(basename "$img").zst" ) >> out/SHA256SUMS
-          done
-          cat out/SHA256SUMS
-          # IMMUTABLE FIRST: creating the tag a second time must FAIL --
-          # that failure is the append-only ruling enforcing itself.
-          gh release create "release/$C7" \
-            --title "Veron release/$C7" \
-            --notes "Consumer release at commit $GITHUB_SHA. Digests in SHA256SUMS; provenance on the repository's attestation page." \
-            out/*.img.zst out/SHA256SUMS out/evidence.tar.gz
-          gh release delete "6/latest" --yes 2>/dev/null || true
-          git push --delete origin "6/latest" 2>/dev/null || true
-          gh release create "6/latest" \
-            --title "Veron -- latest consumer release" \
-            --notes "Moving pointer; the immutable record is release/$C7." \
-            out/*.img.zst out/SHA256SUMS out/evidence.tar.gz
+          mkdir -p in
+          found=0
+          for arch in $ARCHES; do          f until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
 
-      - name: 'SITE -- regenerate the whole storefront'
+name: 6-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The arch list is data, not structure: adding an arch is one word
+      # here once its stage-5 exists. Today x86_64 is the only populated
+      # input; the loop below simply finds nothing for the others and says
+      # so, which is the designed behavior, not a failure.
+      ARCHES: "x86_64 aarch64"
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          # THE MANIFEST IS GATHERED, NOT GUESSED: consumer entries from
-          # what this run built; developer entries from the files IN
-          # digest- and attestation-verified; the upstream table from the
-          # release API; licenses from every recipe.toml in the tree.
-          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate             > out/releases-api.json
-          python3 - <<'PY'
-          import glob, hashlib, json, os, re, tomllib
-          commit = os.environ.get("GITHUB_SHA", "unknown")
-          m = {"commit": commit, "generated": os.environ.get("GITHUB_RUN_ID", ""),
-               "arches": {}, "developer": [], "upstream_releases": [],
-               "licenses": {"packages": [], "firmware": None}}
+          mkdir -p in
+          found=0
+          for arch in $ARCHES; do          f until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
 
-          def sha(p):
-              h = hashlib.sha256()
-              with open(p, "rb") as f:
-                  for c in iter(lambda: f.read(1 << 20), b""):
-                      h.update(c)
-              return h.hexdigest()
+name: 6-release
 
-          for img in glob.glob("out/veron-*.img"):
-              arch = os.path.basename(img).split("-")[1]
-              m["arches"].setdefault(arch, {
-                  "release_tag": f"release/{commit[:7]}", "assets": [],
-                  "kernels": {},
-                  "attestation_url": "evidence.html"})
-              z = img + ".zst"
-              if os.path.exists(z):
-                  # the PUBLISHED asset is the .zst; the raw image's digest
-                  # rides along as inner_* -- it is what sha256sum proves
-                  # after decompression, and what the filename's 7 chars are
-                  m["arches"][arch]["assets"].append({
-                      "name": os.path.basename(z), "sha256": sha(z),
-                      "size": os.path.getsize(z), "kind": "img",
-                      "inner_name": os.path.basename(img),
-                      "inner_sha256": sha(img)})
-              else:
-                  m["arches"][arch]["assets"].append({
-                      "name": os.path.basename(img), "sha256": sha(img),
-                      "size": os.path.getsize(img), "kind": "img"})
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
 
-          # developer section: exactly the inputs this run verified
-          for arch in os.environ.get("ARCHES", "").split():
-              five, kern = f"in/5-{arch}", f"in/k-{arch}"
-              if os.path.isdir(five):
-                  a = [{"name": n, "sha256": sha(os.path.join(five, n)),
-                        "size": os.path.getsize(os.path.join(five, n))}
-                       for n in ("rootfs.img.tar.zst", "PROVENANCE")
-                       if os.path.exists(os.path.join(five, n))]
-                  m["developer"].append({
-                      "tag": f"5/latest-{arch}",
-                      "url": f"https://github.com/Joey-Fuentes/Veron/releases/tag/5%2Flatest-{arch}",
-                      "desc": "stage 5: the user-space system image, its records and provenance -- digest- and attestation-verified by this very run",
-                      "assets": a})
-              if os.path.isdir(kern) and os.path.exists(f"{kern}/vmlinuz-generic"):
-                  m["developer"].append({
-                      "tag": f"4/kernel-{arch}",
-                      "url": f"https://github.com/Joey-Fuentes/Veron/releases/tag/4%2Fkernel-{arch}",
-                      "desc": "the generic kernel: broad drivers, pinned firmware, digest-verified by this run",
-                      "assets": [{"name": "vmlinuz-generic",
-                                  "sha256": sha(f"{kern}/vmlinuz-generic"),
-                                  "size": os.path.getsize(f"{kern}/vmlinuz-generic")}]})
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
 
-          # upstream: every release, via the API dump (paginated JSON arrays
-          # concatenated by gh -- normalize by regex split on ][)
-          raw = open("out/releases-api.json").read()
-          rels = []
-          for chunk in re.split(r"\]\s*\[", raw):
-              chunk = chunk.strip()
-              if not chunk.startswith("["):
-                  chunk = "[" + chunk
-              if not chunk.endswith("]"):
-                  chunk = chunk + "]"
-              rels.extend(json.loads(chunk))
-          for r in rels:
-              m["upstream_releases"].append({
-                  "tag": r["tag_name"], "title": r.get("name") or "",
-                  "url": r["html_url"],
-                  "assets": [a["name"] for a in r.get("assets", [])]})
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The arch list is data, not structure: adding an arch is one word
+      # here once its stage-5 exists. Today x86_64 is the only populated
+      # input; the loop below simply finds nothing for the others and says
+      # so, which is the designed behavior, not a failure.
+      ARCHES: "x86_64 aarch64"
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
 
-          # licenses: every recipe in the tree; the amd64 overlay wins
-          pkgs = {}
-          for base in ("spikes/stage5/packages", "spikes/stage5/packages-amd64"):
-              for rp in sorted(glob.glob(f"{base}/*/recipe.toml")):
-                  t = tomllib.load(open(rp, "rb"))
-                  name = os.path.basename(os.path.dirname(rp))
-                  pkgs[name] = {"name": name,
-                                "version": str(t.get("version", "")),
-                                "license": t.get("license", "unstated")}
-          m["licenses"]["packages"] = sorted(pkgs.values(), key=lambda p: p["name"])
+    steps:
+      - uses: actions/checkout@v5
 
-          # THE STOREFRONT DESCRIBES THE LATEST PUBLISHED RELEASE, not
-          # merely this run. A docs-only site refresh must not require
-          # minting a release, and must not hide a release that exists
-          # (the first version did both: the consumer card was built only
-          # from this run's artifacts, so publish_site alone showed
-          # "not yet" above flash instructions that worked -- incoherent).
-          # The published release carries index.json for exactly this:
-          # any arch this run did not itself gate-and-name adopts the
-          # published manifest's entry, so the card, the link and the
-          # release always agree.
-          import subprocess as sp
-          have_proven = {a for a, r in m["arches"].items()
-                         if any(not x["name"].endswith(".NOBOOT.img")
-                                for x in r["assets"])}
-          try:
-              sp.run(["gh", "release", "download", "6/latest",
-                      "-p", "index.json", "-O", "out/published-index.json",
-                      "--clobber"], check=True, capture_output=True)
-              prev = json.load(open("out/published-index.json"))
-              for arch, entry in prev.get("arches", {}).items():
-                  if arch not in have_proven:
-                      m["arches"][arch] = entry
-                      print(f"  {arch}: consumer card adopted from published {entry['release_tag']}")
-          except Exception as e:
-              print(f"  no published index adopted ({e}); first release or none yet")
-
-          json.dump(m, open("out/manifest.json", "w"), indent=1)
-          print(f"manifest: {len(m['developer'])} developer release(s), "
-                f"{len(m['upstream_releases'])} upstream, "
-                f"{len(m['licenses']['packages'])} package licenses")
-          PY
-          python3 spikes/stage6/tools/veron-site             --manifest out/manifest.json --out out/site
-          ls -la out/site
-
-      - name: 'EVIDENCE PAGE -- render the chain readable on the site'
+      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          # RULED (Joe, 2026-08-19): the attestation button opens a PAGE that
-          # renders the whole chain -- every stage's attestation identity and
-          # its build log, readable, no download. This fetches THIS release's
-          # evidence bundle (produced by the stage-6 EVIDENCE-CHAIN step and
-          # published as evidence.tar.gz on 6/latest), unpacks it, and renders
-          # it with tools/evidence-page.py (python, Veron-native -- no jq/node).
-          mkdir -p ev
-          if gh release download 6/latest -R "$GITHUB_REPOSITORY" \
-               -p 'evidence.tar.gz' -D ev --clobber 2>/dev/null \
-             && [ -s ev/evidence.tar.gz ]; then
-            mkdir -p ev/bundle
-            tar -xzf ev/evidence.tar.gz -C ev/bundle
-            # the bundle may unpack into ./evidence/ or flat -- find stages.tsv
-            B=$(dirname "$(find ev/bundle -name stages.tsv | head -1)")
-            [ -n "$B" ] && [ -d "$B" ] || B=ev/bundle
-            # CAPTURE THE RELEASE RUN'S OWN LOG HERE. The release job could not
-            # fetch its own logs (they did not exist until it finished); this
-            # pages job runs after it (needs: release), so now they do. Pull the
-            # 6-release run's log and add it to the bundle before rendering, so
-            # the page shows every stage's log including the release itself.
-            mkdir -p "$B/logs"
-            rel_run=$(awk -F"\t" '/^6-release/{print $3}' "$B/stages.tsv" | head -1)
-            if [ -n "$rel_run" ]; then
-              timeout 120 gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rel_run/logs" \
-                > "$B/logs/6-release.zip" 2>/dev/null || true
-              [ -s "$B/logs/6-release.zip" ] \
-                && echo "  captured the release run's own log (run $rel_run)" \
-                || { rm -f "$B/logs/6-release.zip"; echo "  release log not yet available (run $rel_run)"; }
-            fi
-            python3 tools/evidence-page.py "$B" out/site/evidence.html
-            echo "  evidence page rendered from this release's bundle"
-          else
-            echo "  no evidence.tar.gz yet -- writing a placeholder evidence page"
-            mkdir -p ev/empty
-            : > ev/empty/stages.tsv
-            python3 tools/evidence-page.py ev/empty out/site/evidence.html || true
-          fi
-          ls -la out/site/evidence.html || true
+          mkdir -p in
+          found=0
+          for arch in $ARCHES; do          f until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
 
-      - name: 'CONSUMER GATE -- the storefront click-path, walked by machine'
-        run: |
-          set -eu
-          # THE GATE THIS PROJECT WAS MISSING, added after release one
-          # shipped three consumer-path defects a first user found by
-          # hand (2026-08-18): placeholder URLs in the doc, %2F-encoded
-          # download paths GitHub 404s, and a card advertising an asset
-          # that was never uploaded. Every other gate tests what the
-          # build produced; this one tests what a stranger clicks. It
-          # walks the generated page exactly as a user would: every
-          # download href must answer HTTP 200 with a plausible size
-          # (nine bytes is a 404 page, and we have the receipt), and the
-          # flash block's own filename-resolution must derive the very
-          # asset the card advertises.
-          python3 - <<'PY'
-          import re, subprocess, sys
-          html = open("out/site/index.html").read()
-          hrefs = sorted(set(re.findall(
-              r'href="(https://github\.com/[^"]+/releases/download/[^"]+)"', html)))
-          if not hrefs:
-              print("  no download hrefs on the page -- empty-state site, nothing to walk")
-              sys.exit(0)
-          fail = 0
-          for u in hrefs:
-              if "%2F" in u.split("/releases/download/", 1)[1]:
-                  print(f"  FAIL  encoded slash in a download path: {u}")
-                  fail += 1; continue
-              r = subprocess.run(["curl", "-fsSIL", "-o", "/dev/null",
-                                  "-w", "%{http_code} %{size_download} %{url_effective}\n",
-                                  "--max-time", "30", u],
-                                 capture_output=True, text=True)
-              head = subprocess.run(["curl", "-fsSL", "--max-time", "60",
-                                     "-r", "0-0", "-o", "/dev/null",
-                                     "-w", "%{http_code}", u],
-                                    capture_output=True, text=True)
-              ok = head.returncode == 0 and head.stdout.strip() in ("200", "206")
-              print(("  ok    " if ok else "  FAIL  ") + u)
-              fail += 0 if ok else 1
-          # the flash block must resolve to the advertised asset
-          m = re.search(r"grep -o '([^']+)' SHA256SUMS", html)
-          card = re.search(r'>(veron-x86_64-[0-9a-f]{7}\.img\.zst)<', html)
-          if m and card:
-              sums_url = next((u for u in hrefs if u.endswith("SHA256SUMS")), None)
-              if sums_url:
-                  sums = subprocess.run(["curl", "-fsSL", "--max-time", "30", sums_url],
-                                        capture_output=True, text=True).stdout
-                  hit = re.findall(m.group(1).replace("[.]", "\\."), sums)
-                  ok = card.group(1) in hit
-                  print(("  ok    " if ok else "  FAIL  ")
-                        + f"flash block resolves to the card's asset ({card.group(1)})")
-                  fail += 0 if ok else 1
-          sys.exit(1 if fail else 0)
-          PY
-          echo "VERON-CONSUMER-GATE-OK  every advertised click answers"
+name: 6-release
 
-      - name: 'INDEX -- the machine-readable manifest joins the release it describes'
-        if: ${{ !inputs.dry_run }}
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The arch list is data, not structure: adding an arch is one word
+      # here once its stage-5 exists. Today x86_64 is the only populated
+      # input; the loop below simply finds nothing for the others and says
+      # so, which is the designed behavior, not a failure.
+      ARCHES: "x86_64 aarch64"
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          # SITE generates the manifest, so it cannot ride in PUBLISH's
-          # own upload any more (publish now runs first, so the consumer
-          # gate walks LIVE urls -- run 87030806805 walked this run's
-          # card before this run's release existed). It joins both tags
-          # here, after the gate has proven every advertised click.
-          C7=${GITHUB_SHA::7}
-          cp out/site/index.json out/index.json
-          gh release upload "release/$C7" out/index.json --clobber
-          gh release upload "6/latest" out/index.json --clobber
-          echo "index.json attached to release/$C7 and 6/latest"
+          mkdir -p in
+          found=0
+          for arch in $ARCHES; do          f until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
 
-      - name: 'PAGES -- deploy the storefront'
-        if: ${{ inputs.publish_site }}
-        uses: actions/configure-pages@v5
+name: 6-release
 
-      - name: 'PAGES -- upload the site'
-        if: ${{ inputs.publish_site }}
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: out/site
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
 
-      - name: 'PAGES -- go live'
-        if: ${{ inputs.publish_site }}
-        id: deployment
-        uses: actions/deploy-pages@v4
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
 
-      - name: 'ATTEST -- provenance for everything published'
-        if: ${{ !inputs.dry_run }}
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: 'out/*.img.zst'
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The arch list is data, not structure: adding an arch is one word
+      # here once its stage-5 exists. Today x86_64 is the only populated
+      # input; the loop below simply finds nothing for the others and says
+      # so, which is the designed behavior, not a failure.
+      ARCHES: "x86_64 aarch64"
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p in
+          found=0
+          for arch in $ARCHES; do          f until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
+
+name: 6-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The arch list is data, not structure: adding an arch is one word
+      # here once its stage-5 exists. Today x86_64 is the only populated
+      # input; the loop below simply finds nothing for the others and says
+      # so, which is the designed behavior, not a failure.
+      ARCHES: "x86_64 aarch64"
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p in
+          found=0
+          for arch in $ARCHES; do          f until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
+
+name: 6-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The arch list is data, not structure: adding an arch is one word
+      # here once its stage-5 exists. Today x86_64 is the only populated
+      # input; the loop below simply finds nothing for the others and says
+      # so, which is the designed behavior, not a failure.
+      ARCHES: "x86_64 aarch64"
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p in
+          found=0
+          for arch in $ARCHES; do          f until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
+
+name: 6-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The arch list is data, not structure: adding an arch is one word
+      # here once its stage-5 exists. Today x86_64 is the only populated
+      # input; the loop below simply finds nothing for the others and says
+      # so, which is the designed behavior, not a failure.
+      ARCHES: "x86_64 aarch64"
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p in
+          found=0
+          for arch in $ARCHES; do          f until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
+
+name: 6-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # The arch list is data, not structure: adding an arch is one word
+      # here once its stage-5 exists. Today x86_64 is the only populated
+      # input; the loop below simply finds nothing for the others and says
+      # so, which is the designed behavior, not a failure.
+      ARCHES: "x86_64 aarch64"
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p in
+          found=0
+          for arch in $ARCHES; do          f until every placeholder
+# below has become a real step. Committed now so the structure can be
+# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+#
+# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
+# ruling: it reads EVERY arch's current stage-5 and kernel releases,
+# builds consumer images for whichever arches have inputs, and regenerates
+# the ENTIRE site every run -- the storefront is a function of all current
+# releases, never of what just ran.
+
+name: 6-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        type: boolean
+        default: true
+      publish_site:
+        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        type: boolean
+        default: false
+      boot_gate:
+        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  pages: write
+
+jobs:
+  release:
+    runs-on: 
