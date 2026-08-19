@@ -72,8 +72,9 @@ toggles, -m 0. All are libext2fs mainline, present since well before
 THE SHIPPED TOOLS ARE THE .static BUILDS. e2fsprogs' Makefiles define
 mke2fs.static, debugfs.static, resize2fs.static, e2fsck.static and
 dumpe2fs.static as fully-static targets (misc/, debugfs/, resize/,
-e2fsck/ Makefile.in), reachable via top-level `make all-static` (on by
-default; --enable-subset would turn it off and we do not pass it). The
+e2fsck/ Makefile.in), built by naming each in its subdir (the top-level `make all-static`
+aggregate is avoided -- it requires uuidd.static, absent unless the
+uuidd daemon is enabled, which it is not here). The
 install step overlays these over the dynamic binaries. RULED (Joe,
 2026-08-19): mke2fs must run THE SAME WAY on the CI host that lays the
 image and on Veron -- a dynamic binary needs the sysroot's loader the
@@ -121,14 +122,25 @@ run  = [["./configure", "--prefix=/usr", "--sbindir=/usr/sbin",
 [[steps]]
 name = "build"
 cwd  = "$S"
-# make builds the dynamic tools; make all-static builds the FULLY-STATIC
-# variants (mke2fs.static, debugfs.static, resize2fs.static, e2fsck.static,
+# make builds the dynamic tools; the per-subdir .static targets build
+# the FULLY-STATIC variants (mke2fs.static, debugfs.static, resize2fs.static, e2fsck.static,
 # dumpe2fs.static) -- first-class targets in e2fsprogs' own Makefiles
 # (misc/, debugfs/, resize/, e2fsck/), gated on by default. Verified from
 # the 1.47.4 source, not assumed: configure adds -static to LDFLAGS_STATIC
 # only when it can link against glibc's libc.a, which the stage-4 sysroot
 # provides ($SYS/lib/libc.a). This is the LFS "static tools" build.
-run  = [["make", "-j$J"], ["make", "-j$J", "all-static"]]
+# NOT `make all-static`: that aggregate demands uuidd.static, which is
+# not built unless the uuidd daemon feature is on (it is not here), so
+# the recursive target dies "No rule to make target uuidd.static"
+# (metal, 2026-08-19). Build the FIVE specific .static targets instead,
+# each in its own subdir -- they exist unconditionally (verified in the
+# 1.47.4 Makefiles) and the plain `make` above already built the static
+# libraries they link.
+run  = [["make", "-j$J"],
+        ["make", "-j$J", "-C", "misc",    "mke2fs.static", "dumpe2fs.static"],
+        ["make", "-j$J", "-C", "debugfs", "debugfs.static"],
+        ["make", "-j$J", "-C", "resize",  "resize2fs.static"],
+        ["make", "-j$J", "-C", "e2fsck",  "e2fsck.static"]]
 
 [[steps]]
 name = "install"
