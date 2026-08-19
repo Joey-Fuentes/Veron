@@ -496,14 +496,20 @@ jobs:
           logs=0
           while IFS="$(printf '\t')" read -r label dg rid; do
             [ -n "$rid" ] || continue
+            # STAGE 6 IS THIS RUN. Its own Actions logs do not exist until the
+            # run completes, so the release job CANNOT fetch them -- that is
+            # exactly why the pages job (needs: release) runs afterward and
+            # captures this run's log then. Record 6-release in stages.tsv (the
+            # page needs the row) but do not try to pull its log here.
+            [ "$label" = "6-release" ] && { echo "  $label: log captured later by the pages job (run $rid)"; continue; }
             sleep 1
             timeout 120 gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/logs" \
-              > "evidence/logs/$label.zip" 2>/dev/null
+              > "evidence/logs/$label.zip" 2>/dev/null || true
             if [ -s "evidence/logs/$label.zip" ]; then
               logs=$((logs+1)); echo "  $label: log captured (run $rid)"
             else
               rm -f "evidence/logs/$label.zip"
-              echo "  $label: log not yet available (run $rid)"
+              echo "  $label: log not yet retained by Actions (run $rid)"
             fi
           done < evidence/stages.tsv
           {
@@ -708,6 +714,20 @@ jobs:
             # the bundle may unpack into ./evidence/ or flat -- find stages.tsv
             B=$(dirname "$(find ev/bundle -name stages.tsv | head -1)")
             [ -n "$B" ] && [ -d "$B" ] || B=ev/bundle
+            # CAPTURE THE RELEASE RUN'S OWN LOG HERE. The release job could not
+            # fetch its own logs (they did not exist until it finished); this
+            # pages job runs after it (needs: release), so now they do. Pull the
+            # 6-release run's log and add it to the bundle before rendering, so
+            # the page shows every stage's log including the release itself.
+            mkdir -p "$B/logs"
+            rel_run=$(awk -F"\t" '/^6-release/{print $3}' "$B/stages.tsv" | head -1)
+            if [ -n "$rel_run" ]; then
+              timeout 120 gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rel_run/logs" \
+                > "$B/logs/6-release.zip" 2>/dev/null || true
+              [ -s "$B/logs/6-release.zip" ] \
+                && echo "  captured the release run's own log (run $rel_run)" \
+                || { rm -f "$B/logs/6-release.zip"; echo "  release log not yet available (run $rel_run)"; }
+            fi
             python3 tools/evidence-page.py "$B" out/site/evidence.html
             echo "  evidence page rendered from this release's bundle"
           else
