@@ -64,10 +64,22 @@ name = "unpack"
 cwd  = "$B"
 run  = [["tar", "-xf", "$DL/perl-5.44.0.tar.gz", "-C", "$B"]]
 
+# DETERMINISTIC CONFIGURE. perl's Configure bakes per-run values into
+# Config_heavy.pl, config.h and perlthanks: the build clock (cf_time) and the
+# runner's hostname, which appears in myhostname, cf_email, perladmin AND the
+# uname string myuname. Two from-scratch runs on different runners differed in
+# all of these (04:50:20 vs 06:06:04; runnervmzvulz vs runnervm76f27).
+# SOURCE_DATE_EPOCH=0 is set in the sandbox but perl 5.44 does not use it for
+# cf_time, so every field is pinned explicitly via Configure's own -D overrides.
+# myuname is the one that hides -- it is `uname -a` output and carries the
+# hostname in two more places (myuname + the "Target system" comment).
 [[steps]]
 name = "configure"
 cwd  = "$S"
-run  = [["./Configure", "-des", "-Dprefix=/usr", "-Dman1dir=none", "-Dman3dir=none"]]
+run  = [["./Configure", "-des", "-Dprefix=/usr", "-Dman1dir=none", "-Dman3dir=none",
+          "-Dcf_by=veron", "-Dcf_email=veron@veron.build", "-Dperladmin=veron@veron.build",
+          "-Dmyhostname=veron", "-Dcf_time=Thu Jan  1 00:00:00 UTC 1970",
+          "-Dmyuname=veron"]]
 
 [[steps]]
 name = "build"

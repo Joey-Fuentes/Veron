@@ -109,6 +109,18 @@ name = "install"
 cwd  = "$S"
 run  = [["make", "install", "DESTDIR=$D"]]
 
+[[steps]]
+# REMOVE GEM BUILD LOGS. Each gem C extension leaves a mkmf.log carrying random
+# /tmp/ccXXXX.o compiler temp names, so two from-scratch builds differ (the
+# bigdecimal log showed /tmp/ccwbDnXr.o vs /tmp/cciimwRi.o). ruby never reads
+# these at runtime; they are build detritus. Deleting them makes the package
+# reproducible and is correct regardless. Reference $D (the DESTDIR) in the
+# command, matching how other shell steps use it; cwd stays $S like install.
+name = "strip-mkmf-logs"
+cwd  = "$S"
+why  = "gem mkmf.log files carry per-run /tmp temp names and must not ship"
+shell = "find \"$D\" -name mkmf.log -type f -delete; echo 'removed gem mkmf.log build logs'"
+
 [guest]
 # build_only, SO THIS NEVER RUNS. A package excluded from the image has no
 # guest to test it in. The assertion that matters is that wpewebkit's

@@ -694,7 +694,7 @@ package perl 5.44.0
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
   license      Artistic-1.0-Perl OR GPL-1.0-or-later
-  recipe-sha   2afa5d34710a18d63446dad8d2319c0fe6a77050dfc506efa52d28fb79d3b751
+  recipe-sha   b70441b1603752905f63528532b39b4ee0f535efdd6e6c61b420b07716525349
 
   source
     url        https://www.cpan.org/src/5.0/perl-5.44.0.tar.gz
@@ -714,7 +714,7 @@ package perl 5.44.0
          argv ["tar", "-xf", "dl/perl-5.44.0.tar.gz", "-C", "build/perl-5.44.0"]
     [02] configure
          cwd  build/perl-5.44.0/perl-5.44.0
-         argv ["./Configure", "-des", "-Dprefix=/usr", "-Dman1dir=none", "-Dman3dir=none"]
+         argv ["./Configure", "-des", "-Dprefix=/usr", "-Dman1dir=none", "-Dman3dir=none", "-Dcf_by=veron", "-Dcf_email=veron@veron.build", "-Dperladmin=veron@veron.build", "-Dmyhostname=veron", "-Dcf_time=Thu Jan  1 00:00:00 UTC 1970", "-Dmyuname=veron"]
     [03] build
          cwd  build/perl-5.44.0/perl-5.44.0
          argv ["make", "-j1"]
@@ -2286,7 +2286,7 @@ package ruby 4.0.6
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
   license      BSD-2-Clause OR Ruby
-  recipe-sha   488ccc63a635160b9fd62e302eba5749efc4520d953f45dd773f299ddf7c2e4b
+  recipe-sha   e852b0e22b4085315966799ab5882b896d09bfaa6ce1524ebddd817f8db60265
 
   source
     url        https://cache.ruby-lang.org/pub/ruby/4.0/ruby-4.0.6.tar.gz
@@ -2313,6 +2313,10 @@ package ruby 4.0.6
     [04] install
          cwd  build/ruby-4.0.6/ruby-4.0.6
          argv ["make", "install", "DESTDIR=dest/ruby"]
+    [05] strip-mkmf-logs
+         cwd  build/ruby-4.0.6/ruby-4.0.6
+         SHELL (declared) why=gem mkmf.log files carry per-run /tmp temp names and must not ship
+         | find "dest/ruby" -name mkmf.log -type f -delete; echo 'removed gem mkmf.log build logs'
 
 ======================================================================
 package sqlite 3.53.4
