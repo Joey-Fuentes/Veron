@@ -1,0 +1,57 @@
+name    = "veron-init"
+version = "1.0"
+group   = "system"
+license = "BSD-2-Clause"
+srcdir  = "."
+
+# veron-init -- the pre-dinit mount shim that runs as PID 1 on the real image.
+#
+# THE REAL IMAGE HAS NO INITRAMFS. It boots EFI-stub with a kernel-baked
+# cmdline; the kernel mounts root=PARTUUID and execs init directly. The job
+# guest/init does for CI -- mount /proc /sys /dev, and a tmpfs on /run BEFORE
+# anything creates a socket there -- had no home on hardware, so dinit's
+# /run/dinitctl control socket was shadowed by early-filesystems' later tmpfs
+# on /run, and shutdown/reboot/dinitctl all failed with `connect: No such
+# file`. This shim is that home: it mounts /run (and proc/sys/dev) then execs
+# dinit, so the socket lands on a tmpfs that is never re-shadowed.
+#
+# THE CMDLINE NAMES IT. stage-4's CONFIG_CMDLINE carries
+# init=/usr/bin/veron-init instead of init=/usr/bin/dinit; the shim's last act
+# is execv("/usr/bin/dinit"). Normal boots gain one exec; nothing else changes.
+# early-filesystems is idempotent against every mount here (it skips a dst
+# already in /proc/mounts), so the shim and fstab do not fight.
+
+[source]
+kind      = "local"
+path      = "packages/veron-init/files"
+url       = "this repository"
+sha256    = "n/a -- the source is in this repository; the commit is the pin"
+signature = "n/a -- provenance is the commit that carries these files"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "none -- it is PID 1's first exec; a package test cannot exercise the mount+exec path without being init"
+packaged_as     = ["veron-init"]
+
+# STATIC, ON PURPOSE. PID 1 runs before any service; a static binary cannot be
+# tripped by a loader or libc that a later mount was going to provide. The root
+# is a full glibc tree by the time the kernel execs this, so dynamic would also
+# work -- static is the belt-and-suspenders choice for the one process whose
+# failure panics the kernel.
+
+[[steps]]
+name = "build"
+cwd  = "$B"
+run  = [["sh", "-c", "cp /packages/veron-init/files/veron-init.c . && cc -static -O2 -Wall -Wextra -std=c11 -o veron-init veron-init.c"]]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+run  = [["sh", "-c", "mkdir -p $D/usr/bin && cp veron-init $D/usr/bin/veron-init && chmod 0755 $D/usr/bin/veron-init"]]
