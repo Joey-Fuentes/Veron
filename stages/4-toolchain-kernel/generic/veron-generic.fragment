@@ -210,7 +210,9 @@ CONFIG_BT_HCIBTUSB=m
 # The consumer image boots with NO bootloader and NO initramfs: the kernel
 # is the PE the firmware loads (\EFI\BOOT\BOOTX64.EFI and the per-slot
 # paths), LoadOptions is the command line, the built-in storage above
-# mounts root=PARTUUID= natively, and init=/usr/bin/dinit takes over.
+# mounts root=PARTUUID= natively, and init=/usr/bin/veron-init takes over
+# (the pre-dinit mount shim: it puts a tmpfs on /run so dinit's control
+# socket is not shadowed, then execs /usr/bin/dinit).
 # Every link in that sentence is a config option, and defconfig currently
 # provides most of them BY ACCIDENT of upstream defaults -- which is
 # exactly the kind of unpinned load-bearing fact this fragment exists to
@@ -237,7 +239,7 @@ CONFIG_DEVTMPFS_MOUNT=y
 # would discard what entries pass and is exactly the wrong tool; it stays
 # off, and REQUIRED-CONFIGS pins its absence.
 CONFIG_CMDLINE_BOOL=y
-CONFIG_CMDLINE="root=PARTUUID=aaaa0002-0000-4000-8000-564552304e02 rootwait rw init=/usr/bin/dinit console=ttyS0,115200 panic=30 vt.global_cursor_default=0"
+CONFIG_CMDLINE="root=PARTUUID=aaaa0002-0000-4000-8000-564552304e02 rootwait rw init=/usr/bin/veron-init console=ttyS0,115200 panic=30 vt.global_cursor_default=0"
 
 # v10: THE SILENT PANEL AND THE FAST-PATH HARDWARE, one cycle.
 # console=tty0 IS GONE, and that is the whole mechanism: the panel is
