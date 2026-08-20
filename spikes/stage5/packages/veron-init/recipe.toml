@@ -55,3 +55,8 @@ run  = [["sh", "-c", "cp /packages/veron-init/files/veron-init.c . && cc -static
 name = "install"
 cwd  = "$B"
 run  = [["sh", "-c", "mkdir -p $D/usr/bin && cp veron-init $D/usr/bin/veron-init && chmod 0755 $D/usr/bin/veron-init"]]
+
+[installs]
+prefixes = ["usr/bin"]
+files    = 1
+digest   = "d976ce3bf593680a31d7561d9ae5482f277902eac795e555a77df48587f823f8"
