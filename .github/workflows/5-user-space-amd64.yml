@@ -1176,6 +1176,18 @@ jobs:
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
           build_img() {
             rm -f "$1"
+            # REMOVE THE FONTCONFIG CACHE BEFORE IMAGING. The VERON-STAGE5-OK
+            # smoke test and the desktop boots run with sysroot bound WRITABLE
+            # (bwrap --bind sysroot /), and fontconfig builds
+            # /var/cache/fontconfig/*.cache-N with per-run absolute paths and
+            # MTIMES baked in. Those 4 bytes (two cache files' mtime) were the
+            # entire remaining cross-run image difference at a fixed commit --
+            # the cache-9 files under /var/cache/fontconfig, found via
+            # debugfs icheck/ncheck on the differing blocks. The cache is
+            # DESIGNED to be built at runtime in the tmpfs overlay (see the
+            # dejavu-fonts recipe), not shipped in the image, so clearing it
+            # here restores reproducibility and ships exactly what was intended.
+            rm -rf ../sysroot/var/cache/fontconfig
             /sbin/mke2fs -q -t ext4 -d ../sysroot \
               -U 00000000-0000-4000-8000-000000000001 \
               -E hash_seed=00000000-0000-4000-8000-000000000002 \
@@ -2412,6 +2424,18 @@ jobs:
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
           build_img() {
             rm -f "$1"
+            # REMOVE THE FONTCONFIG CACHE BEFORE IMAGING. The VERON-STAGE5-OK
+            # smoke test and the desktop boots run with sysroot bound WRITABLE
+            # (bwrap --bind sysroot /), and fontconfig builds
+            # /var/cache/fontconfig/*.cache-N with per-run absolute paths and
+            # MTIMES baked in. Those 4 bytes (two cache files' mtime) were the
+            # entire remaining cross-run image difference at a fixed commit --
+            # the cache-9 files under /var/cache/fontconfig, found via
+            # debugfs icheck/ncheck on the differing blocks. The cache is
+            # DESIGNED to be built at runtime in the tmpfs overlay (see the
+            # dejavu-fonts recipe), not shipped in the image, so clearing it
+            # here restores reproducibility and ships exactly what was intended.
+            rm -rf ../sysroot/var/cache/fontconfig
             /sbin/mke2fs -q -t ext4 -d ../sysroot \
               -U 00000000-0000-4000-8000-000000000001 \
               -E hash_seed=00000000-0000-4000-8000-000000000002 \
