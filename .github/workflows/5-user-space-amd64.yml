@@ -2621,13 +2621,21 @@ jobs:
           # sysroot -- 619 MB, written once per chain -- and reused here on an
           # image seven times larger without rethinking it, which cost about
           # thirty minutes a run for a few percent of size.
-          ZSTD_CLEVEL=10 tar --zstd -cf rootfs.img.tar.zst rootfs.img
+          # DETERMINISTIC TAR, matching stage 4's sysroot.tar.zst and this
+          # workflow's own loginkit.tar.gz. The inner rootfs.img is already
+          # byte-reproducible; a bare `tar --zstd` still embedded the file's
+          # per-run mtime in the tar header, so the .tar.zst differed run-to-run
+          # (1c90fb5a vs 16ef70c1 at a fixed commit) even though IMAGE-SHA256
+          # matched. --mtime=@0 pins it; the rest match stage 4 exactly.
+          ZSTD_CLEVEL=10 tar --sort=name --mtime=@0 --owner=0 --group=0 \
+            --numeric-owner --format=gnu --zstd -cf rootfs.img.tar.zst rootfs.img
           printf '  rootfs.img.tar.zst (stripped): %s\n' "$(du -h rootfs.img.tar.zst | cut -f1)"
           # THE FULL IMAGE TOO, WHEN THE STRIP RAN. A run where stripping was
           # skipped or failed has no rootfs-full.img, and publishing a missing
           # file would fail the step for a reason unrelated to the image.
           if [ -e rootfs-full.img ]; then
-            ZSTD_CLEVEL=10 tar --zstd -cf rootfs-full.img.tar.zst rootfs-full.img
+            ZSTD_CLEVEL=10 tar --sort=name --mtime=@0 --owner=0 --group=0 \
+              --numeric-owner --format=gnu --zstd -cf rootfs-full.img.tar.zst rootfs-full.img
             printf '  rootfs-full.img.tar.zst (unstripped): %s\n' \
               "$(du -h rootfs-full.img.tar.zst | cut -f1)"
             printf '  the stripped image is what a device runs; the full one\n'
