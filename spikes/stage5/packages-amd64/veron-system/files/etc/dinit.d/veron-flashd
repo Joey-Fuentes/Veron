@@ -1,6 +1,6 @@
 # The flasher's privileged half. See scripts/flashd for the protocol
 # and the refusals -- the refusals are the point.
 type = process
-command = /etc/dinit.d/scripts/flashd
+command = /bin/busybox sh /etc/dinit.d/scripts/flashd
 restart = true
 depends-on = early-filesystems

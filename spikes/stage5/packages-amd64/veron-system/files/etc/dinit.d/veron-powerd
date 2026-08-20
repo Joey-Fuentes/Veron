@@ -3,6 +3,6 @@
 # shutdown. See scripts/powerd. restart = true so a refused verb (the
 # say-and-loop path) never leaves the machine without a power service.
 type = process
-command = /etc/dinit.d/scripts/powerd
+command = /bin/busybox sh /etc/dinit.d/scripts/powerd
 restart = true
 depends-on = early-filesystems
