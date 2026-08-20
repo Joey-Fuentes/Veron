@@ -2509,7 +2509,7 @@ package python 3.14.6
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
   license      PSF-2.0
-  recipe-sha   b7cc31e40e694eba26ac845bfb27f941946f6a2966f8926f1e383c711f07ee0b
+  recipe-sha   fe04c617b6be1938453dbd26f36a9b26026dbf4e90165bb8c33d2c0050d53f12
 
   source
     url        https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz
@@ -2530,17 +2530,21 @@ package python 3.14.6
     [02] configure
          cwd  build/python-3.14.6/Python-3.14.6
          argv ["./configure", "--prefix=/usr", "--enable-shared", "--with-system-expat", "--without-ensurepip", "--disable-test-modules"]
-    [03] which-modules
+    [03] disable-uuid-module
+         cwd  build/python-3.14.6/Python-3.14.6
+         SHELL (declared) why=python must not link e2fsprogs' non-PIC static libuuid into a shared _uuid.so
+         | printf '*disabled*\n_uuid\n' >> Modules/Setup.local
+    [04] which-modules
          cwd  build/python-3.14.6/Python-3.14.6
          SHELL (declared) why=reading configure's own summary of what it will skip is a grep, not an argv
          | echo '--- modules configure could NOT build ---'; sed -n '/Could not build/,/^$/p' config.log 2>/dev/null | head -20; grep -iE 'MODULE_(ZLIB|BZ2|LZMA|ZSTD|CTYPES|READLINE|CURSES|PYEXPAT)_STATE' Makefile 2>/dev/null | head -12
-    [04] build
+    [05] build
          cwd  build/python-3.14.6/Python-3.14.6
          argv ["make", "-j1"]
-    [05] install
+    [06] install
          cwd  build/python-3.14.6/Python-3.14.6
          argv ["make", "DESTDIR=dest/python", "install"]
-    [06] verify-modules
+    [07] verify-modules
          cwd  build/python-3.14.6/Python-3.14.6
          SHELL (declared) why=importing a list of modules and reporting which failed is a loop
          | set -eu; PYBIN=dest/python/usr/bin/python3.14; PYLIB=dest/python/usr/lib; echo "interpreter: $PYBIN"; fail=0; for m in zlib bz2 lzma ctypes readline curses pyexpat; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  MISSING  $m"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  absent   $m (3.14 feature, not fatal)"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null && echo "  ok   $m (unexpected -- update optional_off)" || echo "  absent   $m (expected)"; done; [ "$fail" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }
