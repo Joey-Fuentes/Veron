@@ -128,6 +128,21 @@ run  = [["./configure", "--prefix=/usr", "--enable-shared",
          "--disable-test-modules"]]
 
 [[steps]]
+# DISABLE THE _uuid C EXTENSION. e2fsprogs ships libuuid.a as a non-PIC static
+# library (for the static mke2fs/debugfs tools -- see the e2fsprogs recipe).
+# Python's configure autodetects it and builds _uuid as a SHARED object, whose
+# link fails: gen_uuid.o carries a local-exec TLS reloc (R_X86_64_TPOFF32
+# against jrand_seed) that ld refuses inside a shared object. The stdlib `uuid`
+# module works without this C accelerator (pure-Python fallback), so disabling
+# it fixes the build with no functional loss and no change to e2fsprogs' static
+# libuuid. Modules/Setup.local's *disabled* section is honoured by 3.11+.
+name = "disable-uuid-module"
+cwd  = "$S"
+timeout = 60
+why = "python must not link e2fsprogs' non-PIC static libuuid into a shared _uuid.so"
+shell = "printf '*disabled*\\n_uuid\\n' >> Modules/Setup.local"
+
+[[steps]]
 # WHAT CONFIGURE DECIDED TO BUILD, BEFORE SPENDING TWENTY MINUTES ON IT.
 # Python does not fail when it cannot find a library for an extension module;
 # it prints a note and carries on, which is precisely how the toolchain python
