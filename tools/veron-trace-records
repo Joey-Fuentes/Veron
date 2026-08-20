@@ -448,7 +448,14 @@ def main():
     tcc3 = committed_tcc(a.repo) or "unknown"
     with open(os.path.join(a.out, "CHAIN"), "w") as f:
         f.write("stage5 commit %s\n" % a.commit)
-        f.write("stage5 run %s\n" % a.run)
+        # 'stage5 run' was REMOVED: it wrote GITHUB_RUN_ID, which differs every
+        # run, into CHAIN -- a file copied into the image at
+        # /usr/share/veron/trace/CHAIN. That made two runs of the SAME commit
+        # produce DIFFERENT images (a0b5f57c vs bcdd5cb2 at 0b490c7), the same
+        # class of bug as VERON_RUN_ID in /etc/veron-release. The run id is not
+        # read by veron-trace --verify (which checks stage5 commit + the stage4
+        # seams) and is already recorded in PROVENANCE beside the image, so
+        # nothing is lost. The commit above identifies the build deterministically.
         f.write("stage4 sysroot %s\n" % sysroot_sha)
         f.write("stage4 kernel %s\n" % kernel_sha)
         f.write("stage4 provenance %s\n" % prov_sha)
