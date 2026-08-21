@@ -254,40 +254,78 @@ wx=$((px - 12)); wy=$((py + ph - 1 - 447))
 bx=$((wx + 535)); by=$((wy + 119))
 ax=$((bx * 32767 / sw)); ay=$((by * 32767 / sh))
 note "screen ${sw}x${sh}; pane bottom at y=$((py + ph - 1)); window client origin ($wx,$wy); button centre ($bx,$by)"
-mon "mouse_move $ax $ay" >/dev/null
-sleep 1
+# arm_wait SECONDS -- poll flashd's status through the serial shell for ARMED.
+# (world-readable; the flasher tails it, so can the serial shell.) The echo of
+# the typed line carries "MG-ARM-/", never "MG-ARM-<digit>".
+arm_wait() {
+    _t=0
+    while [ "$_t" -lt "$1" ]; do
+        printf 'grep -c ARMED /run/veron-flash/status | sed s/^/MG-ARM-/; echo VERON-MG-$((9+0))\n' > "$FIFO"
+        sleep 3; _t=$((_t + 3))
+        grep -aq "MG-ARM-[1-9]" "$SER" && return 0
+        grep -aq "REFUSED" "$SER" && return 1
+        alive || return 1
+    done
+    return 1
+}
+printf '\n' > "$FIFO"; sleep 1
+
+# ROUTE 1: THE POINTER. Motion in a few steps (libinput wants to see the
+# device move before it believes a button), then press, then release.
+mon "info mice" | sed 's/^/    mice: /'
+mon "mouse_move $((ax - 2000)) $((ay - 2000))" >/dev/null; sleep 0.3
+mon "mouse_move $((ax - 500)) $((ay - 500))" >/dev/null; sleep 0.3
+mon "mouse_move $ax $ay" >/dev/null; sleep 0.5
 mon "mouse_move $ax $ay" "mouse_button 1" >/dev/null
 sleep 0.3
 mon "mouse_button 0" >/dev/null
 sleep 2
 snapshot 02-flasher-armed.png
-ok "clicked 'Reflash this boot device...' -- 02-flasher-armed.png"
-
-# DID THE CLICK LAND? flashd answers every request on /run/veron-flash/status
-# (world-readable; the flasher tails it, so can the serial shell). ARMED
-# within a minute means the button fired and the precheck passed; anything
-# else is named here, now -- not discovered seven minutes later as "the
-# loader never reported a marker". This is the same file the flasher shows in
-# 02-flasher-armed.png; reading it changes nothing.
-printf '\n' > "$FIFO"; sleep 1
-_t=0; _armed=0
-while [ "$_t" -lt 60 ]; do
-    printf 'grep -c ARMED /run/veron-flash/status | sed s/^/MG-ARM-/; echo VERON-MG-$((9+0))\n' > "$FIFO"
-    sleep 3; _t=$((_t + 3))
-    if grep -aq "^MG-ARM-[1-9]\|MG-ARM-[1-9]" "$SER"; then _armed=1; break; fi
-    grep -aq "REFUSED" "$SER" && break
-    alive || break
-done
-if [ "$_armed" = 1 ]; then
-    ok "flashd reports ARMED -- the button fired and the one-shot marker is on the ESP"
+if arm_wait 30; then
+    ok "clicked 'Reflash this boot device...' -- flashd reports ARMED (02-flasher-armed.png)"
 else
-    bad "the click did not arm maintenance mode within 60s"
-    note "flashd's status, as the flasher saw it:"
-    printf 'cat /run/veron-flash/status | sed s/^/MG-ST:/; echo VERON-MG-$((8+0))\n' > "$FIFO"
-    wait_serial "VERON-MG-8" 15 >/dev/null 2>&1 || true
-    grep -a "MG-ST:" "$SER" | grep -av "sed s/^/MG-ST" | sed 's/^/    /'
-    note "if the status is empty the click missed the button: compare the computed centre above with 02-flasher-armed.png"
-    cleanup; exit 1
+    # THE POINTER DID NOT REACH THE BUTTON. Say what the machine knows about
+    # the pointer -- qemu's view, the kernel's, and labwc's -- so the next
+    # edit is aimed, then take the other road a person has: the keyboard.
+    note "the pointer click did not arm (run 2: centre was exact, flashd's status stayed empty) -- pointer evidence:"
+    # every input device the kernel has, by name and handler (event node);
+    # the PS/2 mouse q35 always carries should be here beside the tablet.
+    ask 'grep "^N:\|^H:\|^B: EV" /proc/bus/input/devices | sed s/^/MG-INPUT:/' "10+0" 15
+    ask 'ls -l /dev/input | sed s/^/MG-NODES:/' "11+0" 15
+    # labwc's own account of what libinput added. /run/labwc.log is veron's
+    # after device-nodes ran; if it is not, that is reported, not hidden.
+    ask 'grep -i "adding\|pointer\|tablet\|mouse\|libinput\|seat" /run/labwc.log 2>&1 | tail -12 | sed s/^/MG-LABWC:/' "12+0" 15
+    grep -a "MG-INPUT:\|MG-NODES:\|MG-LABWC:" "$SER" | grep -av "sed s/^/MG-" | sed 's/^/    /'
+    # ROUTE 2: THE KEYBOARD. FLTK traverses focus in creation order; the
+    # window comes up with focus on "Download latest release" (the dotted
+    # focus box in 02-flasher-armed.png), and the skipped, deactivated
+    # "Write + verify" is not a stop. Nine Tabs reach the button; Space fires
+    # it. If focus started one widget off, a Shift+Tab or a Tab and another
+    # Space corrects it -- the only other things those can land on are the
+    # empty confirm box (a typed space) and the text pane (nothing).
+    note "trying the keyboard route: Tab x9 to the button, Space"
+    mon "--keys=tab,tab,tab,tab,tab,tab,tab,tab,tab,spc" >/dev/null
+    if arm_wait 20; then
+        ok "keyboard route armed maintenance mode (Tab x9, Space) -- the pointer route is the defect to fix"
+    else
+        mon "--keys=shift-tab,spc" >/dev/null
+        if arm_wait 15; then
+            ok "keyboard route armed maintenance mode (Tab x8) -- the pointer route is the defect to fix"
+        else
+            mon "--keys=tab,tab,spc" >/dev/null
+            if arm_wait 15; then
+                ok "keyboard route armed maintenance mode (Tab x10) -- the pointer route is the defect to fix"
+            else
+                bad "neither the pointer nor the keyboard armed maintenance mode"
+                note "flashd's status, as the flasher saw it:"
+                ask 'cat /run/veron-flash/status | sed s/^/MG-ST:/' "8+0" 15
+                grep -a "MG-ST:" "$SER" | grep -av "sed s/^/MG-ST" | sed 's/^/    /'
+                snapshot 02b-flasher-after-keys.png
+                cleanup; exit 1
+            fi
+        fi
+    fi
+    snapshot 02-flasher-armed.png
 fi
 
 # ======================= BOOT 2: maintenance ===============================
