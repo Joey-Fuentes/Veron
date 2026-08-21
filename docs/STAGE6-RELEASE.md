@@ -516,3 +516,43 @@ recipe on main references, after a release has proven the new pins;
    REMAINING: licenses page from the ledger + firmware list.]
    boot-gating every image in qemu before publish; attest everything.
 8. First official release: `release/<commit7>`.
+
+## The maintenance gate (added 2026-08-21)
+
+Maintenance mode -- the one-shot boot that lifts the running system into RAM
+so the stick it booted from becomes a writable target -- worked on paper and
+did not come up on bare metal. `6-release.yml` now carries a second gate
+beside the boot gate, `maintenance_gate`, and it tests the mode the only way
+that means anything: as a person would, nothing mocked.
+
+`spikes/stage6/tools/veron-maintenance-gate` boots the built image under
+OVMF as USB mass storage behind xhci (so the kernel sees a removable stick,
+exactly as on a port), with virtio-gpu, a virtio keyboard and a virtio tablet.
+It waits for the desktop, presses Super+Return, types `veron-flasher`, Enter,
+screenshots the flasher, CLICKS "Reflash this boot device..." (the button is
+located from the frame: the flasher's white log pane is found with
+`frame-find.py`, and the button's fixed offset from it in main.cxx gives the
+target), lets the flasher arm flashd and reboot the machine itself, watches
+the loader take the marker and veron-maintenance-init pivot into RAM, waits
+for the desktop again, opens the flasher again, and screenshots it listing
+the stick. Three frames -- `01-flasher-normal.png`, `02-flasher-armed.png`,
+`03-flasher-maintenance.png` -- and the serial log upload as the
+`maintenance-gate` artifact. The verdict lines (cmdline, `/` is tmpfs, no
+old root in the mount table, `/persist` not remounted, a removable
+`/sys/block` entry, flashd's own maintenance line, the readable
+`/run/veron-maintenance.log`) are read from the same running machine over
+its serial shell -- observation only; no typed command changes state.
+
+One qemu process hosts both boots (no `-no-reboot`); the image is attached
+`snapshot=on`, so the one-shot marker lives in the overlay and the backing
+image is proven unchanged before and after, as the boot gate proves.
+
+What reading the code while writing the gate suggests it will find:
+`veron-maintenance-init` skips every mountpoint while copying (lstat on a
+mountpoint reports the mounted filesystem's device), so the RAM root would
+have no `/proc`, `/sys` or `/dev`; after the pivot the release check opens
+`/proc/mounts`, gets ENOENT, calls that unsafe and halts -- and the halt
+cannot be logged to the ESP because `/sys` is missing too. A black screen,
+nothing written anywhere. The gate's serial log is where that shows up
+(`VERON-MAINTENANCE: ABORTED ... still mounted after pivot`), and the stage
+5 fix, when it lands, is proven by this gate going green.

@@ -1,0 +1,335 @@
+#!/bin/sh
+# veron-maintenance-gate -- boot the consumer image the way a person does,
+# enter maintenance mode the way a person does, and SEE that the boot stick
+# became writable.
+#
+# WHAT A PERSON DOES, AND NOTHING ELSE. Every step below has a counterpart in
+# someone at the machine:
+#
+#   1. power on from the USB stick, wait for the desktop
+#   2. Super+Return opens foot
+#   3. type `veron-flasher`, Enter
+#   4. look at the flasher  ........................ 01-flasher-normal.png
+#   5. click "Reflash this boot device..."
+#   6. watch it arm and reboot itself ............... 02-flasher-armed.png
+#   7. the machine comes back up, into RAM, to the desktop
+#   8. Super+Return, `veron-flasher`, Enter, again
+#   9. look: the stick is now a listed target ....... 03-flasher-maintenance.png
+#
+# NOTHING IS MOCKED. The VM boots from the SAME image bytes a consumer dd's,
+# attached as USB MASS STORAGE (the stick), through OVMF's removable fallback
+# path -- the same firmware path, the same loader, the same one-shot marker
+# on the ESP, the same reboot. The keyboard and the pointer are qemu's virtio
+# input devices driven through the human monitor; the screen is read back
+# with `screendump`, exactly as stage 5's desktop test reads its frame.
+#
+# THE SERIAL LINE IS FOR WATCHING, NOT FOR DRIVING. The kernel, the loader
+# and veron-maintenance-init all narrate to ttyS0; the waits below read that
+# narration instead of sleeping for guesses. At the very end, the console
+# shell (the same `veron` shell a person gets on the serial port) is asked
+# to print the facts the verdict rests on -- the cmdline, the mount table,
+# the flasher service's status line, the block devices -- so that the
+# screenshot a human reads and the verdict a machine reads are about the
+# same system state. No command typed there changes anything.
+#
+# ONE qemu PROCESS FOR BOTH BOOTS. The reboot into maintenance mode happens
+# INSIDE the VM (the flasher asks the power service, dinit reboots, OVMF
+# starts again). That is why there is no -no-reboot here, and why the image
+# is attached snapshot=on: the one-shot marker flashd writes to the ESP has
+# to survive the reboot -- it lives in the process-lifetime overlay -- while
+# the backing image is never written. The before/after digest check proves
+# the second half.
+#
+# usage: veron-maintenance-gate --image IMG --out DIR
+#            [--ovmf /usr/share/ovmf/OVMF.fd] [--mem 6144] [--kvm auto|on|off]
+# exit 0 = VERON-MAINTENANCE-GATE-OK, 1 = a named failure, 2 = usage.
+set -u
+
+IMG=; OUT=; OVMF=/usr/share/ovmf/OVMF.fd; MEM=6144; KVM=auto
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --image) IMG=$2; shift 2 ;;
+        --out)   OUT=$2; shift 2 ;;
+        --ovmf)  OVMF=$2; shift 2 ;;
+        --mem)   MEM=$2; shift 2 ;;
+        --kvm)   KVM=$2; shift 2 ;;
+        *) echo "usage: $0 --image IMG --out DIR [--ovmf F] [--mem MB] [--kvm auto|on|off]" >&2; exit 2 ;;
+    esac
+done
+[ -s "$IMG" ] && [ -n "$OUT" ] || { echo "usage: $0 --image IMG --out DIR" >&2; exit 2; }
+[ -s "$OVMF" ] || { echo "VERON-MAINTENANCE-GATE-FAIL  no OVMF at $OVMF" >&2; exit 1; }
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+S5=$(cd "$HERE/../../stage5/tools" && pwd)      # qemu-monitor.py, ppm2png.py
+MON="$S5/qemu-monitor.py"
+PNG="$S5/ppm2png.py"
+FIND="$HERE/frame-find.py"
+for t in "$MON" "$PNG" "$FIND"; do
+    [ -s "$t" ] || { echo "VERON-MAINTENANCE-GATE-FAIL  missing tool $t" >&2; exit 1; }
+done
+
+mkdir -p "$OUT"
+OUT=$(cd "$OUT" && pwd)
+SER="$OUT/maintenance-serial.log"
+SOCK="$OUT/maint-mon.sock"
+FIFO="$OUT/maint-console.in"
+rm -f "$SER" "$SOCK" "$FIFO" "$OUT"/0?-*.png "$OUT"/probe.ppm "$OUT"/shot.ppm
+mkfifo "$FIFO"
+
+fail=0
+ok()   { echo "  ok    $*"; }
+bad()  { echo "  FAIL  $*"; fail=1; }
+note() { echo "  $*" >&2; }   # stderr: several callers capture stdout
+
+# ---- the VM ---------------------------------------------------------------
+before_sha=$(sha256sum "$IMG" | cut -d' ' -f1)
+note "image before: $before_sha"
+
+ACCEL="-cpu qemu64"
+case "$KVM" in
+    on)   ACCEL="-enable-kvm -cpu host" ;;
+    auto) if [ -w /dev/kvm ]; then ACCEL="-enable-kvm -cpu host"; fi ;;
+esac
+note "accel: $ACCEL"
+
+# HOLD THE FIFO OPEN for the life of the run; a `>` that finishes closes the
+# write end, the guest's serial shell sees EOF and exits (stage 5 learned this).
+( exec sleep 100000 ) > "$FIFO" &
+holder=$!
+
+# THE STICK IS USB. usb-storage behind xhci is what a consumer's port looks
+# like to the kernel; the flasher lists /sys/block entries with removable=1,
+# and this attachment is what makes the image's own disk one of them. AHCI
+# would report removable=0 and the maintenance flasher would list nothing --
+# a pass that tests the wrong machine.
+qemu-system-x86_64 \
+    -machine q35 $ACCEL -smp 4 -m "$MEM" \
+    -display none -nic none \
+    -bios "$OVMF" \
+    -device qemu-xhci -device usb-storage,drive=d0 \
+    -drive if=none,id=d0,format=raw,file="$IMG",snapshot=on \
+    -vga none -device virtio-gpu-pci \
+    -device virtio-keyboard-pci -device virtio-tablet-pci \
+    -serial stdio \
+    -monitor unix:"$SOCK",server,nowait \
+    < "$FIFO" > "$SER" 2>&1 &
+qpid=$!
+
+cleanup() {
+    kill "$qpid" "$holder" 2>/dev/null; sleep 1
+    kill -9 "$qpid" "$holder" 2>/dev/null
+    wait "$qpid" 2>/dev/null
+    rm -f "$SOCK" "$FIFO" "$OUT"/probe.ppm "$OUT"/shot.ppm
+}
+
+for _ in $(seq 1 30); do [ -S "$SOCK" ] && break; sleep 1; done
+[ -S "$SOCK" ] || { bad "qemu never opened its monitor socket"; tail -20 "$SER"; cleanup; exit 1; }
+
+alive() { kill -0 "$qpid" 2>/dev/null; }
+mon()   { python3 "$MON" "$SOCK" "$@" 2>/dev/null; }
+
+# wait_serial REGEX SECONDS [COUNT] -- until the serial log matches, or the
+# ceiling. COUNT lets the same line be awaited for the SECOND boot.
+wait_serial() {
+    _re=$1; _max=$2; _n=${3:-1}; _t=0
+    while [ "$_t" -lt "$_max" ]; do
+        _c=$(grep -acE "$_re" "$SER" 2>/dev/null); _c=${_c:-0}
+        [ "$_c" -ge "$_n" ] && { note "'$_re' (x$_n) after ${_t}s"; return 0; }
+        alive || { note "qemu exited while waiting for '$_re'"; return 1; }
+        sleep 2; _t=$((_t + 2))
+    done
+    note "TIMEOUT ${_max}s waiting for '$_re' (x$_n)"
+    return 1
+}
+
+# screen_block COLOUR MINRUN -- one screendump, then frame-find; prints "x y w h rows"
+screen_block() {
+    rm -f "$OUT/probe.ppm"
+    mon --wait=0.6 "screendump $OUT/probe.ppm" >/dev/null
+    [ -s "$OUT/probe.ppm" ] || return 1
+    python3 "$FIND" "$OUT/probe.ppm" "$1" --min-run "$2"
+}
+# wait_block COLOUR MINRUN SECONDS -- poll the frame until the block shows
+wait_block() {
+    _t=0
+    while [ "$_t" -lt "$3" ]; do
+        _r=$(screen_block "$1" "$2") && { echo "$_r"; return 0; }
+        alive || return 1
+        sleep 2; _t=$((_t + 2))
+    done
+    return 1
+}
+# snapshot NAME -- a full frame to PNG
+snapshot() {
+    rm -f "$OUT/shot.ppm"
+    mon --wait=0.6 "screendump $OUT/shot.ppm" >/dev/null
+    sleep 2
+    [ -s "$OUT/shot.ppm" ] || { note "(no frame for $1)"; return 1; }
+    python3 "$PNG" "$OUT/shot.ppm" "$OUT/$1" | sed 's/^/    /'
+    rm -f "$OUT/shot.ppm"
+}
+# type_line "text" -- every key in ONE monitor connection, then Enter
+type_line() {
+    _s=$1; _keys=""
+    while [ -n "$_s" ]; do
+        _c=${_s%"${_s#?}"}; _s=${_s#?}
+        case "$_c" in
+            -) _k=minus ;;  .) _k=dot ;;  /) _k=slash ;;  " ") _k=spc ;;
+            \;) _k=semicolon ;; \$) _k=shift-4 ;; \() _k=shift-9 ;; \)) _k=shift-0 ;;
+            \*) _k=shift-8 ;; \|) _k=shift-backslash ;; "'") _k=apostrophe ;;
+            \>) _k=shift-dot ;; \<) _k=shift-comma ;; =) _k=equal ;; _) _k=shift-minus ;;
+            [A-Z]) _k=shift-$(echo "$_c" | tr 'A-Z' 'a-z') ;;
+            *) _k=$_c ;;
+        esac
+        _keys="$_keys,$_k"
+    done
+    mon "--keys=${_keys#,},ret" >/dev/null
+}
+# open_flasher -- Super+Return until foot shows, then `veron-flasher`, then
+# wait for its white log pane. Prints the pane's "x y w h rows".
+open_flasher() {
+    _foot=""
+    # Super+Return is repeated because the desktop's readiness is not on the
+    # serial line (labwc logs to /run/labwc.log); a press before the
+    # compositor is up lands on an empty VT and does nothing, a press after
+    # opens foot. Twelve tries, twenty seconds apart, is four minutes of
+    # patience for a TCG boot.
+    for _try in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        mon "sendkey meta_l-ret" >/dev/null
+        _foot=$(wait_block 242424 300 20) && break
+    done
+    [ -n "$_foot" ] || { note "foot never appeared (no #242424 block after 12 tries)"; return 1; }
+    note "foot is up at [$_foot]"
+    sleep 2
+    type_line "veron-flasher"
+    _pane=$(wait_block ffffff 500 60) || { note "the flasher's log pane (white, >=500px) never appeared"; return 1; }
+    note "flasher pane at [$_pane]"
+    sleep 2
+    echo "$_pane"
+}
+# ask "shell line" MARKER SECONDS -- type a line into the serial shell and wait
+# for MARKER in its OUTPUT. The marker is produced by arithmetic the typed
+# text does not contain, so the echo of the command cannot satisfy the wait.
+ask() {
+    printf '%s; echo VERON-MG-$((%s))\n' "$1" "$2" > "$FIFO"
+    wait_serial "VERON-MG-$(( $2 ))" "$3" >/dev/null
+}
+
+# =========================== BOOT 1: normal ================================
+echo "=== boot 1: the normal system, from the USB stick ==="
+wait_serial "veron-boot: normal boot" 240 || { bad "the loader did not run the normal path"; }
+wait_serial "as init process" 300 || { bad "the kernel never started init on boot 1"; }
+# dinit announces each service on the console; labwc's line is the first
+# word that the desktop is being started (its readiness is polled visually).
+wait_serial "labwc" 420 || { bad "labwc never started on boot 1"; }
+[ "$fail" = 0 ] || { tail -40 "$SER"; cleanup; exit 1; }
+sleep 5
+
+pane=$(open_flasher) || { bad "could not open the flasher on the normal desktop"; snapshot 01-flasher-normal.png; tail -30 "$SER"; cleanup; exit 1; }
+snapshot 01-flasher-normal.png
+ok "boot 1: desktop, foot, veron-flasher -- 01-flasher-normal.png"
+
+# ---- the click -------------------------------------------------------------
+# THE BUTTON IS FOUND FROM THE WINDOW, THE WINDOW FROM ITS LOG PANE. main.cxx
+# lays the window out in fixed client coordinates: the Fl_Text_Display at
+# (10,140) 660x310 -- its white interior starts ~2px inside its frame, so the
+# pane's top-left is client (12,142) -- and "Reflash this boot device..." at
+# (400,106) 270x26, centre (535,119). Wayland does not let a client pick its
+# position, so the window is wherever labwc put it; reading the pane off the
+# frame is how a person finds the button too. The tablet speaks absolute
+# coordinates 0..32767 across the whole screen.
+set -- $pane
+px=$1; py=$2
+dims=$(python3 "$FIND" "$OUT/probe.ppm" ffffff --size 2>/dev/null || echo "1280 800")
+set -- $dims
+sw=$1; sh=$2
+wx=$((px - 12)); wy=$((py - 142))
+bx=$((wx + 535)); by=$((wy + 119))
+ax=$((bx * 32767 / sw)); ay=$((by * 32767 / sh))
+note "screen ${sw}x${sh}; window client origin ($wx,$wy); button centre ($bx,$by)"
+mon "mouse_move $ax $ay" >/dev/null
+sleep 1
+mon "mouse_move $ax $ay" "mouse_button 1" >/dev/null
+sleep 0.3
+mon "mouse_button 0" >/dev/null
+sleep 2
+snapshot 02-flasher-armed.png
+ok "clicked 'Reflash this boot device...' -- 02-flasher-armed.png"
+
+# ======================= BOOT 2: maintenance ===============================
+echo "=== boot 2: the reboot into RAM ==="
+# The flasher asked flashd to arm; flashd wrote the marker; the flasher asked
+# powerd to reboot; dinit rebooted; OVMF ran the loader again. The loader's
+# own line is the first proof the marker was there and was taken.
+wait_serial "veron-boot: maintenance command line armed" 420 \
+    && ok "the loader found and took the one-shot marker" \
+    || bad "no maintenance boot: the loader never reported an armed marker (did the click land? did flashd arm? did the reboot happen?)"
+[ "$fail" = 0 ] || { grep -aE "ARMED|REFUSED|veron-flashd|veron-boot|reboot|shutdown" "$SER" | tail -20; cleanup; exit 1; }
+wait_serial "Kernel command line:.*veron.maintenance=1|Command line:.*veron.maintenance=1" 120 \
+    && ok "the kernel booted with veron.maintenance=1 on its command line" \
+    || bad "the kernel's command line does not carry the maintenance flags (LoadOptions dropped? CMDLINE_OVERRIDE?)"
+wait_serial "VERON-MAINTENANCE: entering maintenance mode" 120 \
+    && ok "veron-maintenance-init is PID 1" \
+    || bad "init= was not honoured: veron-maintenance-init never ran"
+wait_serial "VERON-MAINTENANCE: running from RAM; the boot disk is released" 900 \
+    && ok "the pivot completed and the stick was verified released" \
+    || { bad "the pivot did not complete"; grep -a "VERON-MAINTENANCE" "$SER" | tail -20; }
+[ "$fail" = 0 ] || { cleanup; exit 1; }
+# the same dinit line, counted past everything boot 1 and its shutdown said
+_base=$(grep -ac labwc "$SER"); _base=${_base:-0}
+wait_serial "labwc" 420 $((_base + 1)) || bad "labwc never started on the maintenance boot"
+[ "$fail" = 0 ] || { tail -40 "$SER"; cleanup; exit 1; }
+sleep 5
+
+pane=$(open_flasher) || { bad "could not open the flasher on the maintenance desktop"; snapshot 03-flasher-maintenance.png; tail -30 "$SER"; cleanup; exit 1; }
+snapshot 03-flasher-maintenance.png
+ok "boot 2: desktop, foot, veron-flasher in MAINTENANCE mode -- 03-flasher-maintenance.png"
+
+# ---- the facts behind the frame ------------------------------------------
+echo "=== the facts the third frame shows, read from the same machine ==="
+printf '\n' > "$FIFO"; sleep 1
+ask 'echo "MG-CMDLINE $(cat /proc/cmdline)"' "1+0" 20
+ask 'echo "MG-ROOT $(awk '"'"'$2=="/"{print $3}'"'"' /proc/mounts)"' "2+0" 20
+ask 'echo "MG-OLDROOT $(grep -c oldroot /proc/mounts)"' "3+0" 20
+ask 'for b in /sys/block/*; do echo "MG-BLOCK ${b##*/} removable=$(cat $b/removable)"; done' "4+0" 20
+ask 'echo "MG-PERSIST $(grep -c " /persist " /proc/mounts)"' "5+0" 20
+ask 'cat /run/veron-flash/status | sed s/^/MG-FLASHD:/' "6+0" 20
+ask 'cat /run/veron-maintenance.log | sed s/^/MG-LOG:/' "7+0" 20
+sleep 1
+grep -a "MG-" "$SER" | grep -av 'echo "MG-\|sed s/^/MG-\|VERON-MG-' | sed 's/^/    /'
+
+grep -aq "MG-CMDLINE .*veron.maintenance=1" "$SER" \
+    && ok "cmdline carries veron.maintenance=1 (what the flasher and flashd read)" \
+    || bad "the running cmdline lacks veron.maintenance=1"
+grep -aq "MG-ROOT tmpfs" "$SER" \
+    && ok "/ is a tmpfs -- the system is in RAM" \
+    || bad "/ is not a tmpfs"
+grep -aq "MG-OLDROOT 0" "$SER" \
+    && ok "nothing remains mounted from the old root" \
+    || bad "the old root is still in the mount table"
+grep -aq "MG-PERSIST 0" "$SER" \
+    && ok "/persist was not remounted from the stick (banked in RAM instead)" \
+    || bad "/persist is mounted from the stick during maintenance -- the flasher would write under a live filesystem"
+grep -aq "MG-BLOCK sd[a-z] removable=1" "$SER" \
+    && ok "the USB stick is present as a removable block device -- the list the flasher builds" \
+    || bad "no removable block device: the stick is not something the flasher would list"
+grep -aq "MG-FLASHD:veron-flashd: maintenance mode -- the boot device is a legal target" "$SER" \
+    && ok "flashd itself reports maintenance mode: the boot device is a legal target" \
+    || bad "flashd did not enter maintenance mode"
+grep -aq "MG-LOG:.*running from RAM" "$SER" \
+    && ok "/run/veron-maintenance.log is readable from the running system" \
+    || bad "the maintenance log is missing from /run (hidden by a later tmpfs mount?)"
+
+cleanup
+after_sha=$(sha256sum "$IMG" | cut -d' ' -f1)
+note "image after:  $after_sha"
+[ "$before_sha" = "$after_sha" ] \
+    && ok "the backing image is unchanged (two boots, one marker, all in the snapshot overlay)" \
+    || bad "the gate MUTATED the image: a boot wrote through to the backing file"
+
+if [ "$fail" = 0 ]; then
+    echo "VERON-MAINTENANCE-GATE-OK  normal desktop -> flasher -> button -> reboot into RAM -> flasher sees the stick"
+    exit 0
+fi
+echo "VERON-MAINTENANCE-GATE-FAIL  see the ok/FAIL lines above, the three PNGs and maintenance-serial.log"
+exit 1

@@ -27,6 +27,10 @@ on:
         description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
         type: boolean
         default: false
+      maintenance_gate:
+        description: 'the user journey into maintenance mode, unmocked: boot the image as a USB stick to the desktop, open foot, run veron-flasher, click "Reflash this boot device...", let it reboot itself into RAM, open the flasher again and screenshot it listing the stick. Slow (two graphical boots, one RAM pivot); does not gate publishing yet.'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -489,6 +493,48 @@ jobs:
         with:
           name: boot-serial
           path: boot-serial.log
+          if-no-files-found: ignore
+
+      - name: 'MAINTENANCE GATE -- a person enters maintenance mode, and the stick becomes writable'
+        id: maintgate
+        if: ${{ inputs.maintenance_gate }}
+        run: |
+          set -eu
+          # THE WHOLE JOURNEY, DRIVEN LIKE A PERSON DRIVES IT, NOTHING MOCKED:
+          # see spikes/stage6/tools/veron-maintenance-gate for every step and
+          # why. Normal desktop -> Super+Return -> `veron-flasher` -> click
+          # "Reflash this boot device..." -> the machine reboots ITSELF into
+          # RAM -> desktop again -> flasher again -> the stick is a target.
+          # Three screenshots and the serial log upload whatever the verdict.
+          #
+          # WHY THIS EXISTS: maintenance mode worked on paper and did not come
+          # up on bare metal (2026-08-21). The first run of this gate is the
+          # reproduction; every later run is the regression test. It is a
+          # separate step from BOOT GATE because it needs a display, a pointer,
+          # USB attachment, a bigger RAM budget for the pivot, and a VM that is
+          # ALLOWED to reboot -- four things the boot gate deliberately has not.
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 ovmf >/dev/null
+          # KVM when the runner has it (GitHub's Linux runners do, behind a
+          # root-only node); TCG otherwise. The gate prints which.
+          [ -e /dev/kvm ] && sudo chmod 666 /dev/kvm || true
+          mkdir -p out/maintenance-gate
+          for img in out/veron-x86_64.raw; do
+            [ -e "$img" ] || { echo "no x86_64 image to test"; exit 1; }
+            sh spikes/stage6/tools/veron-maintenance-gate \
+              --image "$img" --out out/maintenance-gate --mem 6144 --kvm auto 2>&1
+          done
+
+      - name: 'EVIDENCE -- the maintenance journey: three frames and its serial'
+        if: ${{ always() && inputs.maintenance_gate }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintenance-gate
+          path: |
+            out/maintenance-gate/01-flasher-normal.png
+            out/maintenance-gate/02-flasher-armed.png
+            out/maintenance-gate/03-flasher-maintenance.png
+            out/maintenance-gate/maintenance-serial.log
           if-no-files-found: ignore
 
       - name: 'NAME -- the artifact says what was proven'
