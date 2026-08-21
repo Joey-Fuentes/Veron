@@ -27,10 +27,11 @@
 #     stick's persist partition, so user state survives a geometry change.
 #     Writes a filesystem, not a raw image; targets p4 by PARTUUID on <dev>.
 #   ARM-MAINTENANCE <preserve|discard> -- the privileged half of entering
-#     maintenance mode. Mounts efivarfs, reads BootCurrent, and writes a
-#     one-shot BootNext (via veron-efiboot clone-cmdline) whose command line
-#     boots init=/usr/bin/veron-maintenance-init. The flasher measures RAM
-#     fit first; this half needs root, which the flasher is not.
+#     maintenance mode. Mounts the ESP and writes a one-shot marker file
+#     (\EFI\veron\once.cmdline) that veron-boot.efi reads, applies, and deletes
+#     on the next boot, so the kernel comes up as veron-maintenance-init. No EFI
+#     variables: this works on any firmware, including removable-fallback boots.
+#     The flasher measures RAM fit first; this half needs root, which it is not.
 # Status streams to /run/veron-flash/status, world-readable, appended --
 # the GUI tails it; so can a person with cat.
 set -u
@@ -74,38 +75,41 @@ while :; do
   # only root can do.
   if [ "$verb" = "ARM-MAINTENANCE" ]; then
     case "$mode" in preserve|discard) : ;; *) say "REFUSED: ARM-MAINTENANCE mode must be preserve or discard"; continue ;; esac
-    # efivarfs carries the boot variables and is not mounted at boot (nothing
-    # needed it until now). Mount it read-write; without it BootCurrent cannot
-    # be read nor a BootNext written.
-    EV=/sys/firmware/efi/efivars
-    if ! /bin/busybox mountpoint -q "$EV" 2>/dev/null; then
-      /bin/busybox mount -t efivarfs efivarfs "$EV" 2>>"$DIR/status" \
-        || { say "REFUSED: could not mount efivarfs -- EFI variables are unreachable"; continue; }
-    fi
-    # BootCurrent names the entry the firmware booted -- the one to clone so the
-    # device path (disk, ESP partition, kernel file) is exactly right. It is a
-    # 6-byte variable: 4 attribute bytes then the 2-byte little-endian number.
-    bc="$EV/BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c"
-    [ -r "$bc" ] || { say "REFUSED: BootCurrent is not present -- this firmware did not record the booted entry"; continue; }
-    lo=$(/bin/busybox od -An -tu1 -j4 -N1 "$bc" | /bin/busybox tr -d ' ')
-    hi=$(/bin/busybox od -An -tu1 -j5 -N1 "$bc" | /bin/busybox tr -d ' ')
-    [ -n "$lo" ] && [ -n "$hi" ] || { say "REFUSED: could not read BootCurrent"; continue; }
-    cur=$(printf '%04X' "$(( lo + hi * 256 ))")
+    # Arming is a one-shot marker file on the ESP, not an EFI-variable edit.
+    # veron-boot.efi (the loader at \EFI\BOOT\BOOTX64.EFI) reads this file on the
+    # next boot, applies its command line, and deletes it -- so the override is
+    # inherently single-shot and needs no firmware cooperation. This is the
+    # portable path: it works identically whether the machine booted from NVRAM
+    # or the removable fallback, and on firmware that never forwards an entry's
+    # OptionalData to the stub. Writing it needs root (mounting the ESP), which
+    # is why it lives in flashd and not the unprivileged flasher.
+    #
     # Build the maintenance command line from the running one: keep everything,
-    # drop the existing init= (and any stale maintenance flags), add ours.
+    # drop the existing init= and any stale maintenance flags, add ours.
     base=$(/bin/busybox sed -e 's/[[:space:]]*init=[^ ]*//g' \
                             -e 's/[[:space:]]*veron\.maintenance=[^ ]*//g' \
                             -e 's/[[:space:]]*veron\.persist=[^ ]*//g' /proc/cmdline)
     mcmd="$base init=/usr/bin/veron-maintenance-init veron.maintenance=1 veron.persist=$mode"
-    say "arming a one-shot maintenance boot (cloning Boot$cur) ..."
-    # veron-efiboot takes the BARE 4-hex-digit number and prepends Boot itself;
-    # passing "Boot$cur" would be 8 chars and rejected. $cur is already 4 hex.
-    if ! /usr/bin/veron-efiboot clone-cmdline "$cur" 0099 --cmdline "$mcmd" >>"$DIR/status" 2>&1; then
-      say "REFUSED: could not write the maintenance boot entry"; continue
+    # Mount the ESP (p1) by its fixed PARTUUID; it is FAT32.
+    esp=/dev/disk/by-partuuid/aaaa0001-0000-4000-8000-564552304e01
+    [ -e "$esp" ] || { say "REFUSED: cannot find the ESP partition to arm maintenance"; continue; }
+    M=/run/veron-esp-arm
+    /bin/busybox mkdir -p "$M"
+    if ! /bin/busybox mount -t vfat "$esp" "$M" 2>>"$DIR/status"; then
+      say "REFUSED: could not mount the ESP to write the maintenance marker"; continue
     fi
-    if ! /usr/bin/veron-efiboot boot-next 0099 >>"$DIR/status" 2>&1; then
-      say "REFUSED: wrote the entry but could not set BootNext"; continue
+    /bin/busybox mkdir -p "$M/EFI/veron" 2>>"$DIR/status"
+    # write the marker, flush, and verify it is on disk before we call it armed.
+    if ! printf '%s\n' "$mcmd" > "$M/EFI/veron/once.cmdline" 2>>"$DIR/status"; then
+      /bin/busybox umount "$M" 2>/dev/null
+      say "REFUSED: could not write the maintenance marker to the ESP"; continue
     fi
+    /bin/busybox sync
+    if [ ! -s "$M/EFI/veron/once.cmdline" ]; then
+      /bin/busybox umount "$M" 2>/dev/null
+      say "REFUSED: the maintenance marker did not persist to the ESP"; continue
+    fi
+    /bin/busybox umount "$M" 2>>"$DIR/status" || /bin/busybox umount -l "$M" 2>/dev/null
     say "ARMED: reboot to enter maintenance mode (persist=$mode)"
     continue
   fi

@@ -52,8 +52,10 @@ MB=1048576
 # so the grow-to-fill-the-disk service can extend it in place at first
 # boot; the shipped number is a floor, not a home.
 # ESP 128 MiB, RULED (Joe, 2026-08-18): FAT32 at the ruled 1 KiB
-# clusters floors at ~66 MiB; content is three ~15 MB kernels with a
-# four-copy update peak; 128 carries 4x headroom over that peak. Frozen
+# clusters floors at ~66 MiB; content is two ~15 MB slot kernels plus the
+# tiny chainloader at BOOTX64.EFI, with a four-copy update peak; 128 carries
+# ample headroom over that peak (the loader is kilobytes, so the ESP is if
+# anything smaller than the old three-kernel layout). Frozen
 # on installed disks like every window here.
 ESP_MB=${VERON_ESP_MB:-128}
 # SLOT SIZE, RULED (Joe, 2026-08-18): exactly what the staged world
@@ -70,29 +72,36 @@ ESP_MB=${VERON_ESP_MB:-128}
 ROOT_MB=${VERON_ROOT_MB:-}
 PERSIST_MB=${VERON_PERSIST_MB:-256}
 
-usage() { echo "usage: veron-mkimage --rootfs DIR --kernel FILE --out IMG [--modules-tar T] [--firmware-dir D]" >&2; exit 2; }
-ROOTFS=""; KERNEL=""; OUT=""; MODTAR=""; FWDIR=""; SRC_ROOTFS=""
+usage() { echo "usage: veron-mkimage --rootfs DIR --kernel FILE --loader FILE --out IMG [--modules-tar T] [--firmware-dir D]" >&2; exit 2; }
+ROOTFS=""; KERNEL=""; LOADER=""; OUT=""; MODTAR=""; FWDIR=""; SRC_ROOTFS=""
 while [ $# -gt 0 ]; do case "$1" in
     --rootfs)       ROOTFS=$2; SRC_ROOTFS=$2; shift 2 ;;
     --kernel)       KERNEL=$2; shift 2 ;;
+    --loader)       LOADER=$2; shift 2 ;;
     --out)          OUT=$2; shift 2 ;;
     --modules-tar)  MODTAR=$2; shift 2 ;;
     --firmware-dir) FWDIR=$2; shift 2 ;;
     *) usage ;;
 esac; done
-[ -n "$ROOTFS" ] && [ -n "$KERNEL" ] && [ -n "$OUT" ] || usage
+[ -n "$ROOTFS" ] && [ -n "$KERNEL" ] && [ -n "$LOADER" ] && [ -n "$OUT" ] || usage
 [ -d "$ROOTFS" ] || { echo "no rootfs dir: $ROOTFS" >&2; exit 1; }
 [ -s "$KERNEL" ] || { echo "no kernel: $KERNEL" >&2; exit 1; }
+[ -s "$LOADER" ] || { echo "no loader: $LOADER" >&2; exit 1; }
 
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 
-# ---- ESP: both slot paths carry the SAME kernel at image build; the
-# fallback is slot A because A is the populated, committed slot ----------
+# ---- ESP: the two slot paths carry the kernel; the fallback path
+# \EFI\BOOT\BOOTX64.EFI is veron-boot.efi, the chainloader, NOT a kernel. The
+# firmware always runs BOOTX64.EFI on the removable path, so making it the
+# loader is what lets a one-shot marker on the ESP redirect the boot portably --
+# no NVRAM entry, no firmware cooperation. The loader chainloads the slot kernel
+# (\EFI\veron\A\linux.efi), applying a maintenance command line if a marker is
+# present. Slot A is the populated, committed slot. --------------------
 mkdir -p "$W/esp/EFI/BOOT" "$W/esp/EFI/veron/A" "$W/esp/EFI/veron/B"
 cp "$KERNEL" "$W/esp/EFI/veron/A/linux.efi"
 cp "$KERNEL" "$W/esp/EFI/veron/B/linux.efi"
-cp "$KERNEL" "$W/esp/EFI/BOOT/BOOTX64.EFI"
+cp "$LOADER" "$W/esp/EFI/BOOT/BOOTX64.EFI"
 python3 "$HERE/veron-mkfat" --size $((ESP_MB * MB)) --root "$W/esp" \
     --out "$W/p1.esp" >&2
 

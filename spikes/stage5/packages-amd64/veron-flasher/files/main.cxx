@@ -268,7 +268,7 @@ static void cb_own(Fl_Widget*, void*) {
 static bool   restore_pending = false;
 static std::string restore_dev;
 // Arming maintenance is a flashd round trip too: the flasher asks (ARM-
-// MAINTENANCE), flashd writes the one-shot boot entry and answers "ARMED:", and
+// MAINTENANCE), flashd writes the one-shot ESP marker and answers "ARMED:", and
 // only then do we reboot. This flag carries that intent across the status watch.
 static bool   reboot_after_arm = false;
 #define PERSIST_BACKUP_PATH "/run/veron-persist-backup"
@@ -298,7 +298,7 @@ static void poll_status(void*) {
                     logln("no persist backup present -- nothing to restore (was this a discard?).");
                 }
             }
-            // flashd confirms the one-shot boot entry is written with "ARMED:".
+            // flashd confirms the one-shot ESP marker is written with "ARMED:".
             // Only now do we reboot -- into the maintenance init, which lifts the
             // system into RAM and frees the stick. Reboot via the power service
             // (the unprivileged path, same as the menu).

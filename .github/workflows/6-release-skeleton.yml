@@ -349,6 +349,29 @@ jobs:
             elif [ -d fwtree ]; then
               ABSORB="$ABSORB --firmware-dir fwtree"
             fi
+            # veron-boot.efi -- the one-shot maintenance chainloader that lands
+            # at \EFI\BOOT\BOOTX64.EFI. Built here from source with the host GNU
+            # toolchain (freestanding + objcopy to PE, no gnu-efi/EDK2): compile
+            # position-independent so the PE needs no .reloc and runs at any base
+            # the firmware picks, link as a shared object at the EFI entry, then
+            # objcopy to a PE32+ EFI application (subsystem 10). The result is
+            # deterministic, so it does not perturb the twice-built byte compare.
+            LOADER="out/veron-boot-$arch.efi"
+            if [ "$arch" = "x86_64" ]; then
+              cc -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone \
+                 -fpic -fno-stack-check -Ispikes/stage6/boot \
+                 -c spikes/stage6/boot/veron-boot.c -o "out/veron-boot-$arch.o"
+              ld -nostdlib -shared -Bsymbolic -e efi_main \
+                 "out/veron-boot-$arch.o" -o "out/veron-boot-$arch.so"
+              objcopy -O pei-x86-64 --subsystem=efi-app \
+                 "out/veron-boot-$arch.so" "$LOADER"
+              rm -f "out/veron-boot-$arch.o" "out/veron-boot-$arch.so"
+              [ -s "$LOADER" ] || { echo "  veron-boot.efi build produced nothing"; exit 1; }
+              echo "  built veron-boot.efi ($(stat -c%s "$LOADER") bytes)"
+            else
+              echo "  veron-boot.efi: only x86_64 is wired today; no loader for $arch"
+              exit 1
+            fi
             # REPRODUCIBILITY INSTRUMENTATION: log the identity (path, mode,
             # size, sha256, TREE-SHA) of EVERY input to veron-mkimage, so two
             # runs are diffable to find exactly where they fork. If the
@@ -358,10 +381,11 @@ jobs:
             FWIN=$(printf '%s' "$ABSORB" | sed -n 's/.*--firmware-dir \([^ ]*\).*/\1/p')
             python3 tools/manifest.py "rootfs-tree ($arch)" "work/$arch/rootfs"
             python3 tools/manifest.py "kernel ($arch)" "$KERNEL"
+            python3 tools/manifest.py "loader ($arch)" "$LOADER"
             [ -n "$MODTAR" ] && python3 tools/manifest.py "modules-tar ($arch)" "$MODTAR" || echo "  (no modules tar)"
             [ -n "$FWIN" ] && python3 tools/manifest.py "firmware-dir ($arch)" "$FWIN" || echo "  (no firmware dir)"
-            VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw"
-            sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" $ABSORB                 --out "out/veron-$arch.raw2" 2>/dev/null || true
+            VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" --loader "$LOADER" $ABSORB                 --out "out/veron-$arch.raw"
+            sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" --loader "$LOADER" $ABSORB                 --out "out/veron-$arch.raw2" 2>/dev/null || true
             cmp "out/veron-$arch.raw" "out/veron-$arch.raw2"               && echo "  $arch image REPRODUCED (built twice, same bytes)"               || { echo "  $arch image NOT reproducible"; exit 1; }
             rm -f "out/veron-$arch.raw2"
             python3 tools/manifest.py "image-raw ($arch)" "out/veron-$arch.raw"
@@ -430,6 +454,12 @@ jobs:
             grep -Eq "efi: EFI v|EFI stub" boot-serial.log \
               && echo "  ok    EFI handover from the fallback path confirmed" \
               || { echo "  FAIL  no EFI evidence"; fail=1; }
+            # veron-boot.efi is now the fallback path; it must run and chainload.
+            # A normal boot (no marker) prints its "normal boot" line; the kernel
+            # then comes up on its baked cmdline exactly as before.
+            grep -q "veron-boot: starting the kernel" boot-serial.log \
+              && echo "  ok    veron-boot chainloader ran and launched the kernel" \
+              || { echo "  FAIL  veron-boot loader did not run (fallback path wrong?)"; fail=1; }
             # -i, because the kernel has TWO cmdline echoes with different
             # capitalisation -- core's "Kernel command line:" and x86
             # setup's older capital-C "Command line:" -- and which appears
