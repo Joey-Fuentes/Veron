@@ -98,10 +98,12 @@ while :; do
                             -e 's/[[:space:]]*veron\.persist=[^ ]*//g' /proc/cmdline)
     mcmd="$base init=/usr/bin/veron-maintenance-init veron.maintenance=1 veron.persist=$mode"
     say "arming a one-shot maintenance boot (cloning Boot$cur) ..."
-    if ! /usr/bin/veron-efiboot clone-cmdline "Boot$cur" Boot0099 --cmdline "$mcmd" >>"$DIR/status" 2>&1; then
+    # veron-efiboot takes the BARE 4-hex-digit number and prepends Boot itself;
+    # passing "Boot$cur" would be 8 chars and rejected. $cur is already 4 hex.
+    if ! /usr/bin/veron-efiboot clone-cmdline "$cur" 0099 --cmdline "$mcmd" >>"$DIR/status" 2>&1; then
       say "REFUSED: could not write the maintenance boot entry"; continue
     fi
-    if ! /usr/bin/veron-efiboot boot-next Boot0099 >>"$DIR/status" 2>&1; then
+    if ! /usr/bin/veron-efiboot boot-next 0099 >>"$DIR/status" 2>&1; then
       say "REFUSED: wrote the entry but could not set BootNext"; continue
     fi
     say "ARMED: reboot to enter maintenance mode (persist=$mode)"
