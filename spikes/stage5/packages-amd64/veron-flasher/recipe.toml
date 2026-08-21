@@ -54,7 +54,7 @@ cwd  = "$B"
 shell = """
 set -eu
 mkdir -p "$D/usr/bin"
-g++ -O2 -std=c++17 /packages/veron-flasher/files/main.cxx \
+g++ -O2 -std=c++17 /packages-amd64/veron-flasher/files/main.cxx \
     $(fltk-config --cxxflags) $(fltk-config --ldflags) \
     -o "$D/usr/bin/veron-flasher"
 "$D/usr/bin/veron-flasher" --version

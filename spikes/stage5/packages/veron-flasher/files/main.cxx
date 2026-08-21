@@ -34,6 +34,7 @@
 #include <vector>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 static Fl_Text_Buffer *logbuf;
@@ -86,11 +87,66 @@ static std::string boot_disk() {
     return sl == std::string::npos ? t : t.substr(0, sl);
 }
 
+// ---- maintenance mode -------------------------------------------------- *
+// Maintenance mode reboots the whole system into RAM so the boot stick it
+// came from becomes an ordinary, writable disk -- the one thing normal
+// operation forbids. This app only ORCHESTRATES it: it never writes a disk
+// (flashd does) and never pivots (veron-maintenance-init does). Here we detect
+// the mode, measure whether the pivot will fit in RAM before offering it, and
+// arm the one-shot boot entry that triggers it.
+
+static bool in_maintenance() {
+    FILE *f = fopen("/proc/cmdline", "r");
+    if (!f) return false;
+    char line[4096] = {0};
+    if (!fgets(line, sizeof line, f)) line[0] = 0;
+    fclose(f);
+    return strstr(line, "veron.maintenance=1") != nullptr;
+}
+
+static long long mem_available() {
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (!f) return -1;
+    char key[64]; long long val; char unit[16];
+    long long avail = -1;
+    while (fscanf(f, "%63s %lld %15s", key, &val, unit) == 3)
+        if (!strcmp(key, "MemAvailable:")) { avail = val * 1024; break; }
+    fclose(f);
+    return avail;
+}
+
+static long long tree_bytes(const std::string &path) {
+    long long total = 0;
+    DIR *d = opendir(path.c_str());
+    if (!d) return 0;
+    while (dirent *e = readdir(d)) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        std::string p = path + "/" + e->d_name;
+        struct stat st;
+        if (lstat(p.c_str(), &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) total += tree_bytes(p);
+        else total += st.st_size;
+    }
+    closedir(d);
+    return total;
+}
+
+static long long root_used_bytes() {
+    struct statvfs v;
+    if (statvfs("/", &v) != 0) return -1;
+    return (long long)(v.f_blocks - v.f_bfree) * (long long)v.f_frsize;
+}
+
 static void scan_devices() {
     devchoice->clear(); devnames.clear(); devcaps.clear();
     bool internal = mode_install && mode_install->value();
+    bool maint = in_maintenance();
     std::string sacred = boot_disk();
-    if (sacred.empty()) { devchoice->add("boot disk unknown -- refusing to list targets"); devchoice->value(0); return; }
+    // Normally an unknowable boot disk is a hard refusal. Under maintenance the
+    // root is a tmpfs by design, so boot_disk() is EXPECTED to be empty and the
+    // stick SHOULD be listed -- that empty result is the signal the pivot
+    // worked, not a reason to hide every target.
+    if (sacred.empty() && !maint) { devchoice->add("boot disk unknown -- refusing to list targets"); devchoice->value(0); return; }
     DIR *d = opendir("/sys/block");
     if (!d) return;
     while (dirent *e = readdir(d)) {
@@ -205,13 +261,40 @@ static void cb_own(Fl_Widget*, void*) {
     }
 }
 
+// When a maintenance-mode flash preserves persist, we must restore it AFTER the
+// image lands and verifies. flashd reports success as a "VERIFIED:" line; we
+// watch for it and then send RESTORE-PERSIST for the same device. This state
+// carries the pending restore between the flash request and that line.
+static bool   restore_pending = false;
+static std::string restore_dev;
+#define PERSIST_BACKUP_PATH "/run/veron-persist-backup"
+
 static void poll_status(void*) {
     static long off = 0;
     FILE *f = fopen("/run/veron-flash/status", "r");
     if (f) {
         fseek(f, off, SEEK_SET);
         char line[512];
-        while (fgets(line, sizeof line, f)) { logbuf->append(line); off = ftell(f); }
+        while (fgets(line, sizeof line, f)) {
+            logbuf->append(line);
+            off = ftell(f);
+            // The verified line is flashd's success signal for a raw write. If a
+            // persist restore is pending (maintenance + preserve), fire it now
+            // that the new image -- and its fresh, empty persist partition -- is
+            // on the stick.
+            if (restore_pending && strstr(line, "VERIFIED:")) {
+                restore_pending = false;
+                struct stat bst;
+                if (stat(PERSIST_BACKUP_PATH, &bst) == 0 && S_ISDIR(bst.st_mode)) {
+                    logln("image verified; restoring preserved persist ...");
+                    FILE *c = fopen("/run/veron-flash/cmd", "w");
+                    if (c) { fprintf(c, "RESTORE-PERSIST %s %s\n", PERSIST_BACKUP_PATH, restore_dev.c_str()); fclose(c); }
+                    else logln("could not reach flashd to restore persist.");
+                } else {
+                    logln("no persist backup present -- nothing to restore (was this a discard?).");
+                }
+            }
+        }
         fclose(f);
     }
     Fl::repeat_timeout(0.5, poll_status);
@@ -250,7 +333,103 @@ static void cb_flash(Fl_Widget*, void*) {
     else
         fprintf(f, "FLASH %s %s\n", image_path.c_str(), dev.c_str());
     fclose(f);
+    // In maintenance mode, if a persist backup was banked by the pivot, arrange
+    // to restore it once the write verifies (poll_status watches for VERIFIED:).
+    if (in_maintenance()) {
+        struct stat bst;
+        if (stat(PERSIST_BACKUP_PATH, &bst) == 0 && S_ISDIR(bst.st_mode)) {
+            restore_pending = true; restore_dev = dev;
+            logln("persist backup present; it will be restored after the write verifies.");
+        }
+    }
     logln("request sent; the service's validation and progress follow:");
+}
+
+// Read the entry firmware chose this boot (BootCurrent), so we clone the RIGHT
+// entry -- the one that actually names this disk. Returns -1 if unreadable.
+static int boot_current() {
+    // efivarfs: 4-byte attributes, then the 2-byte little-endian entry number.
+    FILE *f = fopen("/sys/firmware/efi/efivars/BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c", "rb");
+    if (!f) return -1;
+    unsigned char b[6];
+    size_t n = fread(b, 1, sizeof b, f);
+    fclose(f);
+    if (n < 6) return -1;
+    return b[4] | (b[5] << 8);
+}
+
+// The maintenance command line: the CURRENT effective cmdline with init= swapped
+// to the maintenance shim and the maintenance flags appended. We read the
+// effective line from /proc/cmdline (already complete: root=, rootwait, rw,
+// console=, etc.), drop the existing init= token, and add ours. LoadOptions
+// REPLACES the built-in cmdline, so this must be whole, not a fragment.
+static std::string maintenance_cmdline(bool preserve) {
+    FILE *f = fopen("/proc/cmdline", "r");
+    std::string cur;
+    if (f) { char line[4096] = {0}; if (fgets(line, sizeof line, f)) cur = line; fclose(f); }
+    while (!cur.empty() && (cur.back() == '\n' || cur.back() == ' ')) cur.pop_back();
+    // strip any existing init= token
+    std::string out; size_t i = 0;
+    while (i < cur.size()) {
+        size_t sp = cur.find(' ', i);
+        std::string tok = cur.substr(i, sp == std::string::npos ? std::string::npos : sp - i);
+        if (tok.compare(0, 5, "init=") != 0 &&
+            tok.compare(0, 17, "veron.maintenance") != 0 &&
+            tok.compare(0, 14, "veron.persist=") != 0 && !tok.empty())
+            out += (out.empty() ? "" : " ") + tok;
+        if (sp == std::string::npos) break;
+        i = sp + 1;
+    }
+    out += " init=/usr/bin/veron-maintenance-init veron.maintenance=1";
+    out += preserve ? " veron.persist=preserve" : " veron.persist=discard";
+    return out;
+}
+
+// Arm maintenance mode: verify the pivot fits in RAM, then clone the current
+// boot entry with the maintenance cmdline and point BootNext at it, and reboot.
+// PRECONDITION FIRST, ALWAYS: we refuse before doing anything destructive or
+// irreversible if preserve will not fit, so the machine never reboots into a
+// pivot that then cannot keep the user's data.
+static void arm_maintenance(bool preserve) {
+    long long avail = mem_available();
+    long long rootb = root_used_bytes();
+    long long persistb = preserve ? tree_bytes("/persist") : 0;
+    // headroom for the overlay writes, the running desktop, and slack.
+    const long long HEADROOM = 768LL * 1024 * 1024;
+    long long need = (rootb > 0 ? rootb : 0) + persistb + HEADROOM;
+    logln("== maintenance mode precheck ==");
+    char m[256];
+    snprintf(m, sizeof m, "  RAM available: %.2f GB", avail / 1e9); logln(m);
+    snprintf(m, sizeof m, "  system to copy: %.2f GB", rootb / 1e9); logln(m);
+    if (preserve) { snprintf(m, sizeof m, "  persist to preserve: %.2f GB", persistb / 1e9); logln(m); }
+    snprintf(m, sizeof m, "  needed (with headroom): %.2f GB", need / 1e9); logln(m);
+    if (avail < 0 || rootb < 0) { logln("REFUSED: could not measure memory or system size."); return; }
+    if (need > avail) {
+        logln("REFUSED: not enough RAM to lift the system"
+              + std::string(preserve ? " and persist" : "") + " into memory.");
+        if (preserve) logln("  You can retry with 'discard' to drop user state, which needs less RAM -- but that erases it.");
+        return;
+    }
+    int cur = boot_current();
+    if (cur < 0) { logln("REFUSED: could not read BootCurrent -- cannot find the entry to clone."); return; }
+    char curname[16], maintname[16];
+    snprintf(curname, sizeof curname, "Boot%04X", cur);
+    snprintf(maintname, sizeof maintname, "Boot%04X", 0x0099);  // fixed maintenance slot
+    std::string cmd = maintenance_cmdline(preserve);
+    logln("arming a one-shot maintenance boot (cloning " + std::string(curname) + ") ...");
+    // clone-cmdline preserves the device path (disk, ESP partition, kernel) and
+    // swaps only the command line; boot-next makes it try-once.
+    std::string c1 = "/usr/bin/veron-efiboot clone-cmdline " + std::string(curname)
+                   + " " + std::string(maintname) + " --cmdline '" + cmd + "'";
+    std::string c2 = "/usr/bin/veron-efiboot boot-next " + std::string(maintname);
+    if (system(c1.c_str()) != 0) { logln("REFUSED: could not write the maintenance boot entry (efivars writable? running as the right user?)."); return; }
+    if (system(c2.c_str()) != 0) { logln("REFUSED: wrote the entry but could not set BootNext."); return; }
+    logln("maintenance boot armed. The system will reboot into RAM; the boot");
+    logln("device becomes writable there. Rebooting via the power service ...");
+    // reboot through the power service (unprivileged path), same as the menu.
+    FILE *p = fopen("/run/veron-power/cmd", "w");
+    if (p) { fprintf(p, "reboot\n"); fclose(p); }
+    else logln("could not reach the power service to reboot -- reboot manually to enter maintenance.");
 }
 
 int main(int argc, char **argv) {
@@ -273,6 +452,20 @@ int main(int argc, char **argv) {
     confirm_name = new Fl_Input(150, 106, 230, 26, "Type target to arm:");
     confirm_name->tooltip("For INSTALL only: type the device name exactly, e.g. nvme0n1");
     btn_flash->deactivate();
+    // MAINTENANCE: the one control that reboots the system into RAM so the boot
+    // stick becomes writable. Only shown/useful on a normal boot; in maintenance
+    // mode the mode is already active and the stick is already a listed target.
+    Fl_Button *btn_maint = new Fl_Button(400, 106, 270, 26, "Reflash this boot device...");
+    btn_maint->tooltip("Reboots the whole system into RAM so the stick it booted from can be rewritten.");
+    btn_maint->callback([](Fl_Widget*, void*){
+        // A tiny consent: preserve is default; discard requires the typed word.
+        // Here we keep it simple -- preserve unless the confirm box says DISCARD.
+        bool preserve = true;
+        if (confirm_name && confirm_name->value() && !strcmp(confirm_name->value(), "DISCARD"))
+            preserve = false;
+        if (!preserve) logln("persist=DISCARD confirmed -- user state will NOT be kept.");
+        arm_maintenance(preserve);
+    });
     Fl_Text_Display *disp = new Fl_Text_Display(10, 140, 660, 310);
     logbuf = new Fl_Text_Buffer();
     disp->buffer(logbuf);
@@ -281,9 +474,18 @@ int main(int argc, char **argv) {
     btn_flash->callback(cb_flash);
     rescan->callback([](Fl_Widget*, void*){ scan_devices(); });
     scan_devices();
-    logln("Veron Flasher -- every claim below is earned, none assumed.");
-    logln("The write happens in a root service that refuses the boot disk");
-    logln("and anything non-removable; 'verified' means byte-for-byte read-back.");
+    if (in_maintenance()) {
+        logln("== MAINTENANCE MODE ACTIVE ==");
+        logln("The system is running from RAM. The boot device is now a WRITABLE");
+        logln("target -- it appears in the list above. Flashing it here rewrites");
+        logln("the stick you booted from. Persist, if preserved, is restored after.");
+    } else {
+        logln("Veron Flasher -- every claim below is earned, none assumed.");
+        logln("The write happens in a root service that refuses the boot disk");
+        logln("and anything non-removable; 'verified' means byte-for-byte read-back.");
+        logln("To rewrite THIS boot device, use 'Reflash this boot device' -- it");
+        logln("reboots into RAM first so the stick is safe to overwrite.");
+    }
     Fl::add_timeout(0.5, poll_status);
     win.end(); win.show(argc, argv);
     return Fl::run();
