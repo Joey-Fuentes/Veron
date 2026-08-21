@@ -330,8 +330,12 @@ static void cb_flash(Fl_Widget*, void*) {
             return;
         }
     }
-    logln(std::string("== requesting ") + (install ? "INSTALL" : "FLASH") +
-          " of " + image_path + " onto " + dev + " ==");
+    // name the verb that is actually sent, and the source it is sent with:
+    // a stream has no image_path, and "FLASH of  onto sda" read as a bug.
+    logln(std::string("== requesting ") +
+          (install ? "INSTALL" : (image_path.empty() ? "STREAM" : "FLASH")) +
+          " of " + (image_path.empty() ? latest_url : image_path) +
+          " onto " + dev + " ==");
     FILE *f = fopen("/run/veron-flash/cmd", "w");
     if (!f) {
         logln("cannot reach the flashd service -- is it running? "

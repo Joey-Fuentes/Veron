@@ -167,8 +167,13 @@ while :; do
     [ "$dev" != "$rootdisk" ]   || { say "REFUSED: $dev is the disk this system is running from"; continue; }
   fi
   cap=$(( $(cat "/sys/block/$dev/size") * 512 ))
-  if [ "$verb" = "FLASH" ]; then
-    [ "$rem" = "1" ]            || { say "REFUSED: $dev is not removable -- FLASH writes sticks, never internal disks. Installing to an internal disk is the INSTALL verb, with its own consent."; continue; }
+  # FLASH AND STREAM ARE THE SAME PROMISE -- a stick, never an internal disk;
+  # STREAM only differs in where the bytes come from. The else-branch below is
+  # INSTALL's, and STREAM fell into it: the first stream to a stick in
+  # maintenance mode (hardware, 2026-08-21) got "REFUSED: sda is removable --
+  # INSTALL targets internal disks" three times running. Only INSTALL is INSTALL.
+  if [ "$verb" = "FLASH" ] || [ "$verb" = "STREAM" ]; then
+    [ "$rem" = "1" ]            || { say "REFUSED: $dev is not removable -- $verb writes sticks, never internal disks. Installing to an internal disk is the INSTALL verb, with its own consent."; continue; }
   else
     # INSTALL: internal only, and the capacity handshake is the consent.
     [ "$rem" = "0" ]            || { say "REFUSED: $dev is removable -- INSTALL targets internal disks; use FLASH for sticks"; continue; }
