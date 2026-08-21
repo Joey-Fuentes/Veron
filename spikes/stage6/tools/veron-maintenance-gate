@@ -97,16 +97,18 @@ note "accel: $ACCEL"
 ( exec sleep 100000 ) > "$FIFO" &
 holder=$!
 
-# THE STICK IS USB. usb-storage behind xhci is what a consumer's port looks
-# like to the kernel; the flasher lists /sys/block entries with removable=1,
-# and this attachment is what makes the image's own disk one of them. AHCI
-# would report removable=0 and the maintenance flasher would list nothing --
-# a pass that tests the wrong machine.
+# THE STICK IS USB, AND IT SAYS SO. usb-storage behind xhci is what a
+# consumer's port looks like to the kernel; the flasher lists /sys/block
+# entries with removable=1, and that is what a real stick reports. qemu's
+# usb-storage reports removable=0 unless told otherwise -- run 88168607444
+# reached the maintenance flasher with every fact right and the Target list
+# showing only the DVD-ROM: sda was a "fixed disk" that no flasher would ever
+# list. removable=on makes the VM's stick say what the hardware says.
 qemu-system-x86_64 \
     -machine q35 $ACCEL -smp 4 -m "$MEM" \
     -display none -nic none \
     -bios "$OVMF" \
-    -device qemu-xhci -device usb-storage,drive=d0 \
+    -device qemu-xhci -device usb-storage,drive=d0,removable=on \
     -drive if=none,id=d0,format=raw,file="$IMG",snapshot=on \
     -vga none -device virtio-gpu-pci \
     -device virtio-keyboard-pci -device virtio-tablet-pci \
