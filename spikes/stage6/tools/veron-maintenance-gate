@@ -230,23 +230,30 @@ snapshot 01-flasher-normal.png
 ok "boot 1: desktop, foot, veron-flasher -- 01-flasher-normal.png"
 
 # ---- the click -------------------------------------------------------------
-# THE BUTTON IS FOUND FROM THE WINDOW, THE WINDOW FROM ITS LOG PANE. main.cxx
-# lays the window out in fixed client coordinates: the Fl_Text_Display at
-# (10,140) 660x310 -- its white interior starts ~2px inside its frame, so the
-# pane's top-left is client (12,142) -- and "Reflash this boot device..." at
+# THE BUTTON IS FOUND FROM THE WINDOW, THE WINDOW FROM ITS LOG PANE'S BOTTOM.
+# main.cxx lays the window out in fixed client coordinates: the
+# Fl_Text_Display at (10,140) 660x310 -- its white interior, inside a 2px
+# frame, spans client rows 142..447 -- and "Reflash this boot device..." at
 # (400,106) 270x26, centre (535,119). Wayland does not let a client pick its
 # position, so the window is wherever labwc put it; reading the pane off the
-# frame is how a person finds the button too. The tablet speaks absolute
+# frame is how a person finds the button too.
+#
+# THE BOTTOM EDGE, NOT THE TOP. The flasher writes its own lines into the
+# pane, and the long ones leave less than a 200px white run on their rows --
+# so frame-find's block splits at the text and the biggest piece is the empty
+# lower part (run 1: a 224-row block at y=420 where the pane's top was 338).
+# The top of that piece is wherever the last line of text happens to end; the
+# bottom of it is the bottom of the pane, always. The tablet speaks absolute
 # coordinates 0..32767 across the whole screen.
 set -- $pane
-px=$1; py=$2
+px=$1; py=$2; ph=$4
 dims=$(python3 "$FIND" "$OUT/probe.ppm" ffffff --size 2>/dev/null || echo "1280 800")
 set -- $dims
 sw=$1; sh=$2
-wx=$((px - 12)); wy=$((py - 142))
+wx=$((px - 12)); wy=$((py + ph - 1 - 447))
 bx=$((wx + 535)); by=$((wy + 119))
 ax=$((bx * 32767 / sw)); ay=$((by * 32767 / sh))
-note "screen ${sw}x${sh}; window client origin ($wx,$wy); button centre ($bx,$by)"
+note "screen ${sw}x${sh}; pane bottom at y=$((py + ph - 1)); window client origin ($wx,$wy); button centre ($bx,$by)"
 mon "mouse_move $ax $ay" >/dev/null
 sleep 1
 mon "mouse_move $ax $ay" "mouse_button 1" >/dev/null
@@ -256,12 +263,39 @@ sleep 2
 snapshot 02-flasher-armed.png
 ok "clicked 'Reflash this boot device...' -- 02-flasher-armed.png"
 
+# DID THE CLICK LAND? flashd answers every request on /run/veron-flash/status
+# (world-readable; the flasher tails it, so can the serial shell). ARMED
+# within a minute means the button fired and the precheck passed; anything
+# else is named here, now -- not discovered seven minutes later as "the
+# loader never reported a marker". This is the same file the flasher shows in
+# 02-flasher-armed.png; reading it changes nothing.
+printf '\n' > "$FIFO"; sleep 1
+_t=0; _armed=0
+while [ "$_t" -lt 60 ]; do
+    printf 'grep -c ARMED /run/veron-flash/status | sed s/^/MG-ARM-/; echo VERON-MG-$((9+0))\n' > "$FIFO"
+    sleep 3; _t=$((_t + 3))
+    if grep -aq "^MG-ARM-[1-9]\|MG-ARM-[1-9]" "$SER"; then _armed=1; break; fi
+    grep -aq "REFUSED" "$SER" && break
+    alive || break
+done
+if [ "$_armed" = 1 ]; then
+    ok "flashd reports ARMED -- the button fired and the one-shot marker is on the ESP"
+else
+    bad "the click did not arm maintenance mode within 60s"
+    note "flashd's status, as the flasher saw it:"
+    printf 'cat /run/veron-flash/status | sed s/^/MG-ST:/; echo VERON-MG-$((8+0))\n' > "$FIFO"
+    wait_serial "VERON-MG-8" 15 >/dev/null 2>&1 || true
+    grep -a "MG-ST:" "$SER" | grep -av "sed s/^/MG-ST" | sed 's/^/    /'
+    note "if the status is empty the click missed the button: compare the computed centre above with 02-flasher-armed.png"
+    cleanup; exit 1
+fi
+
 # ======================= BOOT 2: maintenance ===============================
 echo "=== boot 2: the reboot into RAM ==="
 # The flasher asked flashd to arm; flashd wrote the marker; the flasher asked
 # powerd to reboot; dinit rebooted; OVMF ran the loader again. The loader's
 # own line is the first proof the marker was there and was taken.
-wait_serial "veron-boot: maintenance command line armed" 420 \
+wait_serial "veron-boot: maintenance command line armed" 180 \
     && ok "the loader found and took the one-shot marker" \
     || bad "no maintenance boot: the loader never reported an armed marker (did the click land? did flashd arm? did the reboot happen?)"
 [ "$fail" = 0 ] || { grep -aE "ARMED|REFUSED|veron-flashd|veron-boot|reboot|shutdown" "$SER" | tail -20; cleanup; exit 1; }
