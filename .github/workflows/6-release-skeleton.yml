@@ -350,28 +350,14 @@ jobs:
               ABSORB="$ABSORB --firmware-dir fwtree"
             fi
             # veron-boot.efi -- the one-shot maintenance chainloader that lands
-            # at \EFI\BOOT\BOOTX64.EFI. Built here from source with the host GNU
-            # toolchain (freestanding + objcopy to PE, no gnu-efi/EDK2): compile
-            # position-independent so the PE needs no .reloc and runs at any base
-            # the firmware picks, link as a shared object at the EFI entry, then
-            # objcopy to a PE32+ EFI application (subsystem 10). The result is
-            # deterministic, so it does not perturb the twice-built byte compare.
-            LOADER="out/veron-boot-$arch.efi"
-            if [ "$arch" = "x86_64" ]; then
-              cc -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone \
-                 -fpic -fno-stack-check -Ispikes/stage6/boot \
-                 -c spikes/stage6/boot/veron-boot.c -o "out/veron-boot-$arch.o"
-              ld -nostdlib -shared -Bsymbolic -e efi_main \
-                 "out/veron-boot-$arch.o" -o "out/veron-boot-$arch.so"
-              objcopy -O pei-x86-64 --subsystem=efi-app \
-                 "out/veron-boot-$arch.so" "$LOADER"
-              rm -f "out/veron-boot-$arch.o" "out/veron-boot-$arch.so"
-              [ -s "$LOADER" ] || { echo "  veron-boot.efi build produced nothing"; exit 1; }
-              echo "  built veron-boot.efi ($(stat -c%s "$LOADER") bytes)"
-            else
-              echo "  veron-boot.efi: only x86_64 is wired today; no loader for $arch"
-              exit 1
-            fi
+            # at \EFI\BOOT\BOOTX64.EFI. It is BOOT CODE, so it is built in stage 4
+            # under the pinned toolchain and published beside the kernel; here we
+            # only consume it, exactly as we consume the kernel -- never compiled
+            # on this host. It arrives inside the 4/kernel-$arch release already
+            # downloaded to in/k-$arch/.
+            LOADER="in/k-$arch/veron-boot.efi"
+            [ -s "$LOADER" ] || { echo "  FAIL: veron-boot.efi absent from 4/kernel-$arch -- stage 4 must publish it"; exit 1; }
+            echo "  loader: veron-boot.efi ($(stat -c%s "$LOADER") bytes) from 4/kernel-$arch"
             # REPRODUCIBILITY INSTRUMENTATION: log the identity (path, mode,
             # size, sha256, TREE-SHA) of EVERY input to veron-mkimage, so two
             # runs are diffable to find exactly where they fork. If the

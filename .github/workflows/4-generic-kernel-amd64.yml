@@ -261,6 +261,47 @@ jobs:
             boot.log
           if-no-files-found: ignore
 
+      - name: 'LOADER: veron-boot.efi, built hermetically in the box'
+        run: |
+          set -eu
+          # veron-boot.efi is boot code, so it is built here under the pinned
+          # stage-4 toolchain and published beside the kernel -- never with a
+          # host compiler. The pinned binutils targets ELF only, so we cannot
+          # objcopy to PE; instead we lay the loader out as one contiguous,
+          # position-independent image with its entry at offset 0 (veron-boot.lds),
+          # flatten it with objcopy -O binary, and wrap it in a PE32+ EFI header
+          # with mkpe -- our own from-source tool, the same trick the kernel uses
+          # for its own stub. No host tools, no PE-capable binutils.
+          box() { bwrap --unshare-all --die-with-parent \
+                  --bind "$PWD/lfs" / --bind "$PWD/build" /build \
+                  --ro-bind "$PWD/spikes/stage6/boot" /boot-src \
+                  --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
+                  --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
+                  --chdir /build \
+                  /usr/bin/sh -c "$*"; }
+          box "cc -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone \
+                 -fpic -fno-stack-check -ffunction-sections -fdata-sections \
+                 -I/boot-src -c /boot-src/veron-boot.c -o /build/veron-boot.o"
+          box "ld -nostdlib -T /boot-src/veron-boot.lds -Bsymbolic \
+                 /build/veron-boot.o -o /build/veron-boot.elf"
+          box "objcopy -O binary /build/veron-boot.elf /build/veron-boot.bin"
+          # bss size = __bss_end - __bss_start, read from the ELF symbols in the box.
+          box "cc -O2 -Wall -Wextra -std=c11 -o /build/mkpe /boot-src/mkpe.c"
+          box 'set -eu; bs=$(readelf -s /build/veron-boot.elf | awk "/__bss_start/{print \$2}"); \
+               be=$(readelf -s /build/veron-boot.elf | awk "/__bss_end/{print \$2}"); \
+               bss=$(( 0x$be - 0x$bs )); \
+               /build/mkpe /build/veron-boot.bin "$bss" /build/veron-boot.efi'
+          [ -s build/veron-boot.efi ] || { echo "  FAIL: veron-boot.efi not produced"; exit 1; }
+          # prove it is a PE32+ EFI application (subsystem 10) before we ship it.
+          python3 - <<'PY'
+          d=open("build/veron-boot.efi","rb").read()
+          pe=int.from_bytes(d[0x3c:0x40],"little")
+          assert d[:2]==b"MZ" and d[pe:pe+4]==b"PE\x00\x00", "not a PE"
+          ss=int.from_bytes(d[pe+24+68:pe+24+70],"little")
+          assert ss==10, f"subsystem {ss} != 10 (EFI application)"
+          print(f"  ok    veron-boot.efi is PE32+ EFI application ({len(d)} bytes)")
+          PY
+
       - name: 'PUBLISH: 4/kernel-x86_64'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -269,9 +310,10 @@ jobs:
           mkdir -p rel
           cp build/arch/x86/boot/bzImage rel/vmlinuz-generic
           cp build/.config rel/config-generic
+          cp build/veron-boot.efi rel/veron-boot.efi
           tar --sort=name --owner=0 --group=0 --numeric-owner --format=gnu \
               --zstd -cf rel/modules-$KERNEL-generic.tar.zst -C build/staging .
-          ( cd rel && sha256sum vmlinuz-generic config-generic \
+          ( cd rel && sha256sum vmlinuz-generic config-generic veron-boot.efi \
               modules-$KERNEL-generic.tar.zst ) > rel/KERNEL-GENERIC-SHA256
           { echo "The generic kernel: linux-$KERNEL, the pinned tarball's own"
             echo "defconfig plus veron-generic.fragment (committed, gated),"
