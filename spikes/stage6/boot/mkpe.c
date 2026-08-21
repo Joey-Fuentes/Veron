@@ -67,7 +67,7 @@ int main(int argc, char **argv)
     w32(o, 0);                       /* TimeDateStamp -- 0 for reproducibility */
     w32(o, 0);                       /* PointerToSymbolTable */
     w32(o, 0);                       /* NumberOfSymbols */
-    w16(o, 240 - 24);                /* SizeOfOptionalHeader (PE32+ = 240, minus the 24 already counted) */
+    w16(o, 240);                     /* SizeOfOptionalHeader: PE32+ optional header is exactly 240 bytes (28 std + 88 win-specific + 16*8 data dirs) */
     w16(o, 0x0206);                  /* Characteristics: EXECUTABLE|LINE_NUMS_STRIPPED|DEBUG_STRIPPED */
 
     /* ---- optional header (PE32+) ---- */
