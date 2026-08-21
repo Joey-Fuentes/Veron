@@ -63,9 +63,27 @@ resolve_dev() {
     return 1
 }
 
+# MAINTENANCE MODE NEVER REMOUNTS THE STICK. veron-maintenance-init copied the
+# system into RAM, banked persist at /run/veron-persist-backup, pivoted, and
+# VERIFIED the boot device was gone from the mount table -- the whole point of
+# the mode is that the stick is now an ordinary, writable disk. Mounting its
+# persist partition back onto /persist here (and device-nodes then binding
+# /home/veron from it) would hand the flasher a disk with a mounted, in-use
+# partition: flashd's umount-before-write cannot release a bind it does not
+# know about, and dd would write under a live filesystem. The cmdline flag is
+# the same one flashd and the flasher read; one grep, one skipped line.
+_maint=0
+case " $(/bin/busybox cat /proc/cmdline 2>/dev/null) " in
+    *" veron.maintenance=1 "*) _maint=1 ;;
+esac
+
 while read -r src dst type opts rest; do
     case "$src" in ''|'#'*) continue ;; esac
     case "$dst" in ''|/) continue ;; esac
+    if [ "$_maint" = 1 ] && [ "$dst" = /persist ]; then
+        echo "early-filesystems: maintenance mode -- /persist stays unmounted (banked in RAM at /run/veron-persist-backup)"
+        continue
+    fi
     if [ -e /proc/mounts ] && /bin/busybox grep -q " $dst " /proc/mounts; then
         continue
     fi

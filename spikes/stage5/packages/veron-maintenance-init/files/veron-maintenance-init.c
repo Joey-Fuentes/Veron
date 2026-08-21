@@ -237,8 +237,30 @@ static void copy_tree(const char *src, const char *dst, dev_t root_dev) {
         if (lstat(s, &st) != 0) { announce2("skip (lstat failed): ", s); continue; }
 
         /* one-filesystem: never cross into another mount (proc/sys/dev/run,
-         * the persist mounts, anything). */
-        if (st.st_dev != root_dev) continue;
+         * the persist mounts, anything).
+         *
+         * BUT THE MOUNTPOINT ITSELF MUST EXIST IN THE COPY. lstat on a
+         * mountpoint reports the MOUNTED filesystem's st_dev, so /proc, /sys,
+         * /dev, /run, /tmp, /persist and the /home/veron bind were all being
+         * skipped OUTRIGHT -- not copied, and not created either. The RAM root
+         * therefore had no /proc at all, and after the pivot
+         * old_root_still_mounted() opened /proc/mounts, got ENOENT, returned
+         * "unsafe", and fatal() halted a pivot that had succeeded. Measured by
+         * the stage-6 maintenance gate (run 88147619553, 2026-08-21): "the boot
+         * stick is still mounted after pivot" with the stick released. On bare
+         * metal that was the black screen. A foreign-device directory is now
+         * recreated EMPTY, with the mode and owner its mounted root had (the
+         * kernel and dinit mount the real things onto it again); anything else
+         * foreign is still skipped. */
+        if (st.st_dev != root_dev) {
+            if (S_ISDIR(st.st_mode)) {
+                if (mkdir(t, st.st_mode & 07777) != 0 && errno != EEXIST)
+                    { announce2("skip (mountpoint mkdir failed): ", t); continue; }
+                if (chown(t, st.st_uid, st.st_gid) != 0) { /* non-fatal */ }
+                if (chmod(t, st.st_mode & 07777) != 0) { /* non-fatal */ }
+            }
+            continue;
+        }
 
         /* hardlink: if we've copied this inode already, link instead of copy. */
         if (!S_ISDIR(st.st_mode) && st.st_nlink > 1) {
@@ -355,11 +377,36 @@ int main(void)
     copy_tree("/", RAM_ROOT, root_dev);
     announce("system copied");
 
-    /* STEP 5: persist backup (preserve only). Needs /run to exist in the copy. */
+    /* STEP 4b: the mountpoints the RAM system needs, made sure of by name.
+     * copy_tree recreates any mountpoint it meets; a root booted some other
+     * way might never have had one of these mounted, and every one is needed. */
+    {
+        static const struct { const char *p; mode_t m; } need[] = {
+            { RAM_ROOT "/proc", 0555 }, { RAM_ROOT "/sys", 0555 },
+            { RAM_ROOT "/dev",  0755 }, { RAM_ROOT "/run", 0755 },
+            { RAM_ROOT "/tmp",  01777 }, { RAM_ROOT "/mnt", 0755 },
+        };
+        for (size_t i = 0; i < sizeof need / sizeof need[0]; i++)
+            if (mkdir(need[i].p, need[i].m) != 0 && errno != EEXIST)
+                fatal("could not create a mountpoint in the RAM root");
+    }
+
+    /* STEP 4c: A tmpfs ON THE RAM ROOT'S /run, BEFORE ANYTHING IS PUT THERE.
+     * veron-init does exactly this before exec'ing dinit, and its comment says
+     * why: /etc/fstab lists a tmpfs on /run, early-filesystems mounts whatever
+     * is not mounted yet, and a /run that is a plain directory when dinit
+     * creates /run/dinitctl gets a tmpfs mounted OVER it seconds later -- the
+     * socket vanishes and shutdown, reboot and dinitctl cannot reach PID 1.
+     * Here the same mount would ALSO hide the persist backup and this log.
+     * Mounted now, under RAM_ROOT, it travels through pivot_root with the
+     * tree; early-filesystems sees " /run " present and leaves it alone. */
+    if (mount("tmpfs", RAM_ROOT "/run", "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755") != 0)
+        fatal("could not mount a tmpfs on the RAM root's /run");
+
+    /* STEP 5: persist backup (preserve only), into the /run tmpfs just made. */
     if (preserve) {
         struct stat rr; dev_t ram_dev = 0;
         if (stat(RAM_ROOT, &rr) == 0) ram_dev = rr.st_dev;
-        if (mkdir("/mnt/ram/run", 0755) != 0 && errno != EEXIST) { /* may already exist from copy */ }
         announce("backing up persist to RAM for restore after the flash");
         backup_persist(ram_dev);
     }
@@ -374,6 +421,19 @@ int main(void)
     if (syscall(SYS_pivot_root, ".", "mnt/oldroot") != 0) fatal("pivot_root onto the RAM copy failed");
     if (chroot(".") != 0) fatal("chroot after pivot_root failed");
     if (chdir("/") != 0) fatal("chdir / after pivot_root failed");
+
+    /* THE VIRTUAL FILESYSTEMS, AGAIN, ON THE NEW ROOT -- BEFORE THE DETACH AND
+     * THE VERIFY. The /proc, /sys and /dev mounted in STEP 1 sit on the OLD
+     * root and go away with it in the detach below. Without these three the
+     * verify cannot read /proc/mounts (and calls that "unsafe"), fatal() cannot
+     * find the ESP through /sys to record anything, and announce() has no
+     * /dev/console to speak to. devtmpfs is a singleton, so mounting it here
+     * is the same instance the kernel populated, nodes and all. These are the
+     * mounts veron-init makes, in the same order, for the same dinit. */
+    mount("proc",     "/proc", "proc",     0, NULL);
+    mount("sysfs",    "/sys",  "sysfs",    0, NULL);
+    mount("devtmpfs", "/dev",  "devtmpfs", 0, "mode=0755");
+
     /* release the stick: detach the old root. MNT_DETACH so a lingering ref
      * cannot block us; the device is freed once the last ref drops, and nothing
      * else is running to hold one. */
