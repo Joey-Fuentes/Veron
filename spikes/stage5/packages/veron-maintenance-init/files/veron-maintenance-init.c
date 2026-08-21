@@ -61,20 +61,108 @@
 
 /* ---- console + failure ------------------------------------------------- */
 
+/* ---- console + failure ------------------------------------------------- *
+ * The machine has no visible console during this pivot (it runs before any
+ * display is up, and on real hardware the early boot text is not shown). So
+ * every announcement is also kept in an in-memory log that gets written where
+ * it can be READ afterward: on a successful pivot, to /run/veron-maintenance.log
+ * in the RAM system (a terminal there can cat it); on a fatal halt, to the ESP
+ * (mounted just to record the failure), so a normal reboot can recover it at
+ * \EFI\veron\maintenance.log. Console/stderr writes stay too, for the rare case
+ * someone does have serial. */
+static char logbuf[16384];
+static size_t loglen;
+static void logappend(const char *a, const char *b) {
+    for (const char *p = a; p && *p && loglen < sizeof logbuf - 1; p++) logbuf[loglen++] = *p;
+    for (const char *p = b; p && *p && loglen < sizeof logbuf - 1; p++) logbuf[loglen++] = *p;
+    if (loglen < sizeof logbuf - 1) logbuf[loglen++] = '\n';
+}
+/* flush the in-memory log to a path; best-effort, never fatal. */
+static void logflush(const char *path) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    size_t off = 0;
+    while (off < loglen) {
+        ssize_t w = write(fd, logbuf + off, loglen - off);
+        if (w <= 0) break;
+        off += (size_t)w;
+    }
+    fsync(fd);
+    close(fd);
+}
+
 static void announce(const char *msg) {
     int fd = open("/dev/console", O_WRONLY | O_NOCTTY);
     if (fd >= 0) { dprintf(fd, "VERON-MAINTENANCE: %s\n", msg); close(fd); }
     dprintf(2, "VERON-MAINTENANCE: %s\n", msg);
+    logappend(msg, NULL);
 }
 static void announce2(const char *a, const char *b) {
     int fd = open("/dev/console", O_WRONLY | O_NOCTTY);
     if (fd >= 0) { dprintf(fd, "VERON-MAINTENANCE: %s%s\n", a, b); close(fd); }
     dprintf(2, "VERON-MAINTENANCE: %s%s\n", a, b);
+    logappend(a, b);
+}
+/* Resolve a PARTUUID to its /dev node WITHOUT udev. This image has no udev and
+ * no mdev, so /dev/disk/by-partuuid/ does not exist -- devtmpfs gives the raw
+ * nodes but not the by-* symlink trees. The kernel exposes each partition's
+ * PARTUUID in /sys/class/block/<part>/uevent, so we scan those and map the match
+ * back to /dev/<name>. Writes "/dev/<name>" into out (size len); returns 0 on
+ * success, -1 if not found. */
+static int partuuid_dev(const char *want, char *out, size_t len) {
+    DIR *d = opendir("/sys/class/block");
+    if (!d) return -1;
+    int found = -1;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        char uev[512];
+        snprintf(uev, sizeof uev, "/sys/class/block/%s/uevent", e->d_name);
+        FILE *f = fopen(uev, "r");
+        if (!f) continue;
+        char line[512];
+        while (fgets(line, sizeof line, f)) {
+            /* trim newline */
+            size_t n = strlen(line);
+            while (n && (line[n-1] == '\n' || line[n-1] == '\r')) line[--n] = 0;
+            if (strncmp(line, "PARTUUID=", 9) == 0 && strcasecmp(line + 9, want) == 0) {
+                /* device names are short (sdaN, nvme0n1pN); guard anyway. */
+                if (strlen(e->d_name) + 6 <= len) {
+                    out[0] = '/'; out[1] = 'd'; out[2] = 'e'; out[3] = 'v'; out[4] = '/';
+                    strcpy(out + 5, e->d_name);
+                    found = 0;
+                }
+                break;
+            }
+        }
+        fclose(f);
+        if (found == 0) break;
+    }
+    closedir(d);
+    return found;
+}
+
+/* On a fatal halt there is no RAM system to read a log from, so record the
+ * failure on the ESP -- real disk that survives the halt. Resolve p1 by
+ * PARTUUID (via sysfs, no udev), mount it, write the log, unmount. Best-effort:
+ * if any step fails we still halt. */
+static void log_to_esp(void) {
+    char esp[64];
+    if (partuuid_dev("aaaa0001-0000-4000-8000-564552304e01", esp, sizeof esp) != 0) return;
+    if (mkdir("/mnt/esp-log", 0755) != 0 && errno != EEXIST) return;
+    if (mount(esp, "/mnt/esp-log", "vfat", 0, NULL) != 0) return;
+    mkdir("/mnt/esp-log/EFI", 0755);
+    mkdir("/mnt/esp-log/EFI/veron", 0755);
+    logflush("/mnt/esp-log/EFI/veron/maintenance.log");
+    sync();
+    umount("/mnt/esp-log");
 }
 static void fatal(const char *msg) {
     announce("ABORTED -- the maintenance pivot did not complete:");
     announce(msg);
     announce("halting; reboot returns you to the normal system (this entry was try-once)");
+    announce("this log was written to \\EFI\\veron\\maintenance.log on the ESP");
+    log_to_esp();
     sync();
     for (;;) pause();
 }
@@ -194,7 +282,8 @@ static void copy_tree(const char *src, const char *dst, dev_t root_dev) {
  * unmount it. flashd's RESTORE-PERSIST verb copies it back into the freshly
  * flashed stick afterwards. */
 static void backup_persist(dev_t ram_dev) {
-    const char *node = "/dev/disk/by-partuuid/" PERSIST_PARTUUID;
+    char node[64];
+    if (partuuid_dev(PERSIST_PARTUUID, node, sizeof node) != 0) { announce("persist partition not found by PARTUUID -- skipping backup"); return; }
     struct stat pst;
     if (lstat(node, &pst) != 0) { announce("persist partition not found by PARTUUID -- skipping backup"); return; }
     if (mkdir("/mnt/persist-src", 0755) != 0 && errno != EEXIST) { announce("could not make persist mountpoint -- skipping"); return; }
@@ -292,6 +381,9 @@ int main(void)
     if (old_root_still_mounted()) fatal("the boot stick is still mounted after pivot -- refusing to continue");
 
     announce("running from RAM; the boot disk is released. starting dinit.");
+    /* We are now in the RAM root. Leave the log where a terminal in the running
+     * maintenance system can read it: /run/veron-maintenance.log. */
+    logflush("/run/veron-maintenance.log");
     char *argv[] = { "/usr/bin/dinit", NULL };
     execv("/usr/bin/dinit", argv);
     fatal("exec of /usr/bin/dinit failed -- no init to run");

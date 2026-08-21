@@ -42,6 +42,24 @@ mkdir -p "$DIR"
 /bin/busybox chmod 620 "$DIR/cmd"
 : > "$DIR/status"; /bin/busybox chmod 644 "$DIR/status"
 say() { echo "$@" >> "$DIR/status"; }
+
+# Resolve a PARTUUID to its /dev node WITHOUT udev. This image has no udev and
+# no mdev, so /dev/disk/by-partuuid/ does not exist -- devtmpfs gives us the raw
+# nodes (/dev/sda1, ...) but not the by-* symlink trees. The kernel does expose
+# each partition's PARTUUID in /sys/class/block/<part>/uevent (the very source
+# udev would read), so we scan those and map the match back to /dev/<name>.
+# Prints the device path on success, nothing on failure.
+partuuid_dev() {
+  _want=$1
+  for _ue in /sys/class/block/*/uevent; do
+    [ -r "$_ue" ] || continue
+    if /bin/busybox grep -qi "^PARTUUID=$_want\$" "$_ue"; then
+      _name=$(/bin/busybox basename "$(dirname "$_ue")")
+      [ -b "/dev/$_name" ] && { echo "/dev/$_name"; return 0; }
+    fi
+  done
+  return 1
+}
 # MAINTENANCE MODE inverts one rule. Normally an unknowable boot disk is a
 # hard refusal -- the safe default when we cannot tell what we are running from.
 # But the maintenance boot pivots root into a tmpfs on purpose, precisely so the
@@ -90,9 +108,10 @@ while :; do
                             -e 's/[[:space:]]*veron\.maintenance=[^ ]*//g' \
                             -e 's/[[:space:]]*veron\.persist=[^ ]*//g' /proc/cmdline)
     mcmd="$base init=/usr/bin/veron-maintenance-init veron.maintenance=1 veron.persist=$mode"
-    # Mount the ESP (p1) by its fixed PARTUUID; it is FAT32.
-    esp=/dev/disk/by-partuuid/aaaa0001-0000-4000-8000-564552304e01
-    [ -e "$esp" ] || { say "REFUSED: cannot find the ESP partition to arm maintenance"; continue; }
+    # Find the ESP (p1) by its fixed PARTUUID via sysfs; it is FAT32. This image
+    # has no udev, so we resolve through /sys/class/block, not /dev/disk.
+    esp=$(partuuid_dev aaaa0001-0000-4000-8000-564552304e01)
+    [ -n "$esp" ] && [ -b "$esp" ] || { say "REFUSED: cannot find the ESP partition to arm maintenance"; continue; }
     M=/run/veron-esp-arm
     /bin/busybox mkdir -p "$M"
     if ! /bin/busybox mount -t vfat "$esp" "$M" 2>>"$DIR/status"; then
@@ -195,13 +214,15 @@ while :; do
     # It writes a FILESYSTEM, not a raw image, so it stands apart from FLASH.
     case "$backup" in /*) : ;; *) say "REFUSED: persist backup path must be absolute"; continue ;; esac
     [ -d "$backup" ]              || { say "REFUSED: no persist backup at $backup"; continue; }
-    # p4 by PARTUUID on the freshly written stick; the kernel re-read the table
-    # after the flash, so by-partuuid resolves to the new partition node.
-    pnode=/dev/disk/by-partuuid/aaaa0004-0000-4000-8000-564552304e04
-    [ -b "$pnode" ]              || { say "REFUSED: persist partition not found on the flashed stick yet"; continue; }
+    # p4 by PARTUUID on the freshly written stick, resolved via sysfs (no udev).
+    # The kernel re-read the table after the flash, so the uevent now carries the
+    # new partition's PARTUUID.
+    pnode=$(partuuid_dev aaaa0004-0000-4000-8000-564552304e04)
+    [ -n "$pnode" ] && [ -b "$pnode" ] || { say "REFUSED: persist partition not found on the flashed stick yet"; continue; }
     # sanity: the persist partition must live on the disk we just flashed, not
-    # some other disk that happens to carry the same PARTUUID.
-    presolved=$(/bin/busybox readlink -f "$pnode" 2>/dev/null || echo "")
+    # some other disk that happens to carry the same PARTUUID. partuuid_dev
+    # already returns a real /dev node; confirm it sits on /dev/$dev.
+    presolved="$pnode"
     case "$presolved" in
       /dev/"$dev"*) : ;;
       *) say "REFUSED: $pnode is not on /dev/$dev -- refusing to write persist to another disk"; continue ;;
