@@ -227,6 +227,15 @@ wait_serial "labwc" 120 || { bad "labwc never started on boot 1"; }
 [ "$fail" = 0 ] || { tail -40 "$SER"; cleanup; exit 1; }
 sleep 5
 
+# A FILE IN THE USER'S HOME, BEFORE ANYTHING ELSE. This is the user's own
+# test (hardware, 2026-08-21: `touch ~/testy`, reboot into maintenance, `ls`
+# -- gone). The serial shell is the same veron account as the desktop, and
+# /home/veron is the persist-backed home on a normal boot, so the file lands
+# on the stick's persist partition; boot 2 must show it from the RAM bank.
+printf '\n' > "$FIFO"; sleep 1
+ask 'touch ~/veron-gate-testy && echo "MG-TESTY-WRITTEN $(ls -ld ~ | cut -c1-10) $(df -P ~ | tail -1 | cut -d" " -f1)"' "20+0" 20
+grep -a "MG-TESTY-WRITTEN" "$SER" | grep -av 'echo "MG-TESTY' | tail -1 | sed 's/^/    /'
+
 pane=$(open_flasher) || { bad "could not open the flasher on the normal desktop"; snapshot 01-flasher-normal.png; tail -30 "$SER"; cleanup; exit 1; }
 snapshot 01-flasher-normal.png
 ok "boot 1: desktop, foot, veron-flasher -- 01-flasher-normal.png"
@@ -380,7 +389,8 @@ ask 'echo "MG-CMDLINE $(cat /proc/cmdline)"' "1+0" 20
 ask 'echo "MG-ROOT $(awk '"'"'$2=="/"{print $3}'"'"' /proc/mounts)"' "2+0" 20
 ask 'echo "MG-OLDROOT $(grep -c oldroot /proc/mounts)"' "3+0" 20
 ask 'for b in /sys/block/*; do echo "MG-BLOCK ${b##*/} removable=$(cat $b/removable)"; done' "4+0" 20
-ask 'echo "MG-PERSIST $(grep -c " /persist " /proc/mounts)"' "5+0" 20
+ask 'echo "MG-PERSIST $(grep " /persist " /proc/mounts | grep -c "^/dev/") $(grep " /persist " /proc/mounts | cut -d" " -f1,3 | head -1)"' "5+0" 20
+ask 'echo "MG-HOME $(grep " /home/veron " /proc/mounts | cut -d" " -f1,3 | head -1) testy=$([ -e ~/veron-gate-testy ] && echo present || echo MISSING)"' "13+0" 20
 ask 'cat /run/veron-flash/status | sed s/^/MG-FLASHD:/' "6+0" 20
 ask 'cat /run/veron-maintenance.log | sed s/^/MG-LOG:/' "7+0" 20
 sleep 1
@@ -396,8 +406,11 @@ grep -aq "MG-OLDROOT 0" "$SER" \
     && ok "nothing remains mounted from the old root" \
     || bad "the old root is still in the mount table"
 grep -aq "MG-PERSIST 0" "$SER" \
-    && ok "/persist was not remounted from the stick (banked in RAM instead)" \
+    && ok "/persist is not mounted from the stick ($(grep -a 'MG-PERSIST 0' "$SER" | grep -av 'echo "MG-PERSIST' | tail -1 | cut -d' ' -f3-))" \
     || bad "/persist is mounted from the stick during maintenance -- the flasher would write under a live filesystem"
+grep -aq "MG-HOME .*testy=present" "$SER" \
+    && ok "the file left in ~ on the normal boot is in ~ in maintenance mode -- the user's persist is there, from RAM" \
+    || bad "the user's persist is NOT in maintenance mode: ~/veron-gate-testy missing ($(grep -a 'MG-HOME' "$SER" | grep -av 'echo "MG-HOME' | tail -1))"
 grep -aq "MG-BLOCK sd[a-z] removable=1" "$SER" \
     && ok "the USB stick is present as a removable block device -- the list the flasher builds" \
     || bad "no removable block device: the stick is not something the flasher would list"
