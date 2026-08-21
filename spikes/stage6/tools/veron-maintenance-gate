@@ -362,10 +362,28 @@ else
     grep -a "VERON-MAINTENANCE" "$SER" | tail -20 | sed 's/^/    /'
 fi
 [ "$fail" = 0 ] || { cleanup; exit 1; }
-# the same dinit line, counted past everything boot 1 and its shutdown said
-_base=$(grep -ac labwc "$SER"); _base=${_base:-0}
-wait_serial "labwc" 120 $((_base + 1)) || bad "labwc never started on the maintenance boot"
-[ "$fail" = 0 ] || { tail -40 "$SER"; cleanup; exit 1; }
+# THE MAINTENANCE DESKTOP TAKES LONGER THAN THE NORMAL ONE -- run 88157055125
+# measured "[  OK  ] labwc" landing at the 120s edge, where boot 1 had it in
+# seconds -- so this waits on dinit's EXACT start line for labwc, counted past
+# boot 1's, echoes each service dinit reports meanwhile (a stall then names
+# the service it stalled on), and reports the time it took. 240s ceiling.
+_base=$(grep -ac "OK  \] labwc" "$SER"); _base=${_base:-0}
+_t=0; _last=""
+while [ "$_t" -lt 240 ]; do
+    _c=$(grep -ac "OK  \] labwc" "$SER"); _c=${_c:-0}
+    [ "$_c" -gt "$_base" ] && break
+    alive || { note "qemu exited while waiting for the maintenance desktop"; break; }
+    _now=$(grep -a "^\[  OK  \]\|^\[STOPPD\]\|restarting too quickly" "$SER" | tail -1)
+    [ "$_now" != "$_last" ] && { note "${_t}s  $_now"; _last=$_now; }
+    sleep 2; _t=$((_t + 2))
+done
+_c=$(grep -ac "OK  \] labwc" "$SER"); _c=${_c:-0}
+if [ "$_c" -gt "$_base" ]; then
+    ok "dinit started labwc on the maintenance boot (${_t}s after the pivot)"
+else
+    bad "labwc never started on the maintenance boot (240s)"
+    tail -40 "$SER" | sed 's/^/    /'; cleanup; exit 1
+fi
 sleep 5
 
 pane=$(open_flasher) || { bad "could not open the flasher on the maintenance desktop"; snapshot 03-flasher-maintenance.png; tail -30 "$SER"; cleanup; exit 1; }
