@@ -267,6 +267,10 @@ static void cb_own(Fl_Widget*, void*) {
 // carries the pending restore between the flash request and that line.
 static bool   restore_pending = false;
 static std::string restore_dev;
+// Arming maintenance is a flashd round trip too: the flasher asks (ARM-
+// MAINTENANCE), flashd writes the one-shot boot entry and answers "ARMED:", and
+// only then do we reboot. This flag carries that intent across the status watch.
+static bool   reboot_after_arm = false;
 #define PERSIST_BACKUP_PATH "/run/veron-persist-backup"
 
 static void poll_status(void*) {
@@ -293,6 +297,17 @@ static void poll_status(void*) {
                 } else {
                     logln("no persist backup present -- nothing to restore (was this a discard?).");
                 }
+            }
+            // flashd confirms the one-shot boot entry is written with "ARMED:".
+            // Only now do we reboot -- into the maintenance init, which lifts the
+            // system into RAM and frees the stick. Reboot via the power service
+            // (the unprivileged path, same as the menu).
+            if (reboot_after_arm && strstr(line, "ARMED:")) {
+                reboot_after_arm = false;
+                logln("maintenance armed; rebooting into RAM now ...");
+                FILE *p = fopen("/run/veron-power/cmd", "w");
+                if (p) { fprintf(p, "reboot\n"); fclose(p); }
+                else logln("could not reach the power service -- reboot manually to enter maintenance.");
             }
         }
         fclose(f);
@@ -345,45 +360,6 @@ static void cb_flash(Fl_Widget*, void*) {
     logln("request sent; the service's validation and progress follow:");
 }
 
-// Read the entry firmware chose this boot (BootCurrent), so we clone the RIGHT
-// entry -- the one that actually names this disk. Returns -1 if unreadable.
-static int boot_current() {
-    // efivarfs: 4-byte attributes, then the 2-byte little-endian entry number.
-    FILE *f = fopen("/sys/firmware/efi/efivars/BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c", "rb");
-    if (!f) return -1;
-    unsigned char b[6];
-    size_t n = fread(b, 1, sizeof b, f);
-    fclose(f);
-    if (n < 6) return -1;
-    return b[4] | (b[5] << 8);
-}
-
-// The maintenance command line: the CURRENT effective cmdline with init= swapped
-// to the maintenance shim and the maintenance flags appended. We read the
-// effective line from /proc/cmdline (already complete: root=, rootwait, rw,
-// console=, etc.), drop the existing init= token, and add ours. LoadOptions
-// REPLACES the built-in cmdline, so this must be whole, not a fragment.
-static std::string maintenance_cmdline(bool preserve) {
-    FILE *f = fopen("/proc/cmdline", "r");
-    std::string cur;
-    if (f) { char line[4096] = {0}; if (fgets(line, sizeof line, f)) cur = line; fclose(f); }
-    while (!cur.empty() && (cur.back() == '\n' || cur.back() == ' ')) cur.pop_back();
-    // strip any existing init= token
-    std::string out; size_t i = 0;
-    while (i < cur.size()) {
-        size_t sp = cur.find(' ', i);
-        std::string tok = cur.substr(i, sp == std::string::npos ? std::string::npos : sp - i);
-        if (tok.compare(0, 5, "init=") != 0 &&
-            tok.compare(0, 17, "veron.maintenance") != 0 &&
-            tok.compare(0, 14, "veron.persist=") != 0 && !tok.empty())
-            out += (out.empty() ? "" : " ") + tok;
-        if (sp == std::string::npos) break;
-        i = sp + 1;
-    }
-    out += " init=/usr/bin/veron-maintenance-init veron.maintenance=1";
-    out += preserve ? " veron.persist=preserve" : " veron.persist=discard";
-    return out;
-}
 
 // Arm maintenance mode: verify the pivot fits in RAM, then clone the current
 // boot entry with the maintenance cmdline and point BootNext at it, and reboot.
@@ -410,26 +386,19 @@ static void arm_maintenance(bool preserve) {
         if (preserve) logln("  You can retry with 'discard' to drop user state, which needs less RAM -- but that erases it.");
         return;
     }
-    int cur = boot_current();
-    if (cur < 0) { logln("REFUSED: could not read BootCurrent -- cannot find the entry to clone."); return; }
-    char curname[16], maintname[16];
-    snprintf(curname, sizeof curname, "Boot%04X", cur);
-    snprintf(maintname, sizeof maintname, "Boot%04X", 0x0099);  // fixed maintenance slot
-    std::string cmd = maintenance_cmdline(preserve);
-    logln("arming a one-shot maintenance boot (cloning " + std::string(curname) + ") ...");
-    // clone-cmdline preserves the device path (disk, ESP partition, kernel) and
-    // swaps only the command line; boot-next makes it try-once.
-    std::string c1 = "/usr/bin/veron-efiboot clone-cmdline " + std::string(curname)
-                   + " " + std::string(maintname) + " --cmdline '" + cmd + "'";
-    std::string c2 = "/usr/bin/veron-efiboot boot-next " + std::string(maintname);
-    if (system(c1.c_str()) != 0) { logln("REFUSED: could not write the maintenance boot entry (efivars writable? running as the right user?)."); return; }
-    if (system(c2.c_str()) != 0) { logln("REFUSED: wrote the entry but could not set BootNext."); return; }
-    logln("maintenance boot armed. The system will reboot into RAM; the boot");
-    logln("device becomes writable there. Rebooting via the power service ...");
-    // reboot through the power service (unprivileged path), same as the menu.
-    FILE *p = fopen("/run/veron-power/cmd", "w");
-    if (p) { fprintf(p, "reboot\n"); fclose(p); }
-    else logln("could not reach the power service to reboot -- reboot manually to enter maintenance.");
+    // The RAM fit is the only thing this app can decide on its own. Writing the
+    // one-shot boot entry needs to mount efivarfs and write an EFI variable --
+    // privileged work, and this app is the veron user, always unprivileged. So
+    // it asks flashd (root) to arm, exactly as every disk write goes through
+    // flashd. flashd reports ARMED on the status stream; poll_status watches for
+    // it and then reboots. reboot_after_arm carries that intent.
+    reboot_after_arm = true;
+    logln("RAM is sufficient. Asking the flash service to arm maintenance mode ...");
+    FILE *c = fopen("/run/veron-flash/cmd", "w");
+    if (!c) { logln("REFUSED: could not reach the flash service to arm maintenance."); reboot_after_arm = false; return; }
+    fprintf(c, "ARM-MAINTENANCE %s\n", preserve ? "preserve" : "discard");
+    fclose(c);
+    logln("request sent; the service's response follows:");
 }
 
 int main(int argc, char **argv) {

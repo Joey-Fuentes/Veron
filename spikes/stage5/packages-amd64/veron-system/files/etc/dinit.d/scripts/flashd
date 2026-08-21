@@ -26,6 +26,11 @@
 #     veron-maintenance-init before the pivot) into the freshly written
 #     stick's persist partition, so user state survives a geometry change.
 #     Writes a filesystem, not a raw image; targets p4 by PARTUUID on <dev>.
+#   ARM-MAINTENANCE <preserve|discard> -- the privileged half of entering
+#     maintenance mode. Mounts efivarfs, reads BootCurrent, and writes a
+#     one-shot BootNext (via veron-efiboot clone-cmdline) whose command line
+#     boots init=/usr/bin/veron-maintenance-init. The flasher measures RAM
+#     fit first; this half needs root, which the flasher is not.
 # Status streams to /run/veron-flash/status, world-readable, appended --
 # the GUI tails it; so can a person with cat.
 set -u
@@ -56,8 +61,52 @@ while :; do
     INSTALL) img=$a1; dev=$a2; want_cap=$a3 ;;
     STREAM)  url=$a1; zsha=$a2; isha=$a3; dev=$a4; img=; want_cap= ;;
     RESTORE-PERSIST) backup=$a1; dev=$a2; img=; want_cap= ;;
+    ARM-MAINTENANCE) mode=$a1; img=; want_cap= ;;
     *) say "REFUSED: unknown verb '$verb'"; continue ;;
   esac
+
+  # ARM-MAINTENANCE stands entirely apart from the disk verbs: it writes no
+  # disk, so it runs before the sacred-disk machinery. It arms the one-shot
+  # boot into RAM that maintenance mode needs, and it is here in flashd -- the
+  # root service -- because writing an EFI boot variable needs privilege the
+  # flasher (the veron user, always unprivileged) does not have. The flasher
+  # measured that the pivot fits in RAM before asking; this half is the part
+  # only root can do.
+  if [ "$verb" = "ARM-MAINTENANCE" ]; then
+    case "$mode" in preserve|discard) : ;; *) say "REFUSED: ARM-MAINTENANCE mode must be preserve or discard"; continue ;; esac
+    # efivarfs carries the boot variables and is not mounted at boot (nothing
+    # needed it until now). Mount it read-write; without it BootCurrent cannot
+    # be read nor a BootNext written.
+    EV=/sys/firmware/efi/efivars
+    if ! /bin/busybox mountpoint -q "$EV" 2>/dev/null; then
+      /bin/busybox mount -t efivarfs efivarfs "$EV" 2>>"$DIR/status" \
+        || { say "REFUSED: could not mount efivarfs -- EFI variables are unreachable"; continue; }
+    fi
+    # BootCurrent names the entry the firmware booted -- the one to clone so the
+    # device path (disk, ESP partition, kernel file) is exactly right. It is a
+    # 6-byte variable: 4 attribute bytes then the 2-byte little-endian number.
+    bc="$EV/BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+    [ -r "$bc" ] || { say "REFUSED: BootCurrent is not present -- this firmware did not record the booted entry"; continue; }
+    lo=$(/bin/busybox od -An -tu1 -j4 -N1 "$bc" | /bin/busybox tr -d ' ')
+    hi=$(/bin/busybox od -An -tu1 -j5 -N1 "$bc" | /bin/busybox tr -d ' ')
+    [ -n "$lo" ] && [ -n "$hi" ] || { say "REFUSED: could not read BootCurrent"; continue; }
+    cur=$(printf '%04X' "$(( lo + hi * 256 ))")
+    # Build the maintenance command line from the running one: keep everything,
+    # drop the existing init= (and any stale maintenance flags), add ours.
+    base=$(/bin/busybox sed -e 's/[[:space:]]*init=[^ ]*//g' \
+                            -e 's/[[:space:]]*veron\.maintenance=[^ ]*//g' \
+                            -e 's/[[:space:]]*veron\.persist=[^ ]*//g' /proc/cmdline)
+    mcmd="$base init=/usr/bin/veron-maintenance-init veron.maintenance=1 veron.persist=$mode"
+    say "arming a one-shot maintenance boot (cloning Boot$cur) ..."
+    if ! /usr/bin/veron-efiboot clone-cmdline "Boot$cur" Boot0099 --cmdline "$mcmd" >>"$DIR/status" 2>&1; then
+      say "REFUSED: could not write the maintenance boot entry"; continue
+    fi
+    if ! /usr/bin/veron-efiboot boot-next Boot0099 >>"$DIR/status" 2>&1; then
+      say "REFUSED: wrote the entry but could not set BootNext"; continue
+    fi
+    say "ARMED: reboot to enter maintenance mode (persist=$mode)"
+    continue
+  fi
 
   # ---- VALIDATION IS THE PRODUCT ----------------------------------
   case "$dev" in *[!a-z0-9]*|"") say "REFUSED: '$dev' is not a device name"; continue ;; esac
