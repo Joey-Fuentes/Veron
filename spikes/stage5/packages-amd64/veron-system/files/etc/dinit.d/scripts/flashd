@@ -21,6 +21,11 @@
 #     request cannot name a disk it has not looked at. This is the
 #     bare-metal install path: booted from the live stick, the stick is
 #     the sacred boot disk and the internal drive is the legal target.
+#   RESTORE-PERSIST <backup-dir> <dev> -- the preserve half of maintenance
+#     mode. After a reflash, copy the RAM-banked persist (written by
+#     veron-maintenance-init before the pivot) into the freshly written
+#     stick's persist partition, so user state survives a geometry change.
+#     Writes a filesystem, not a raw image; targets p4 by PARTUUID on <dev>.
 # Status streams to /run/veron-flash/status, world-readable, appended --
 # the GUI tails it; so can a person with cat.
 set -u
@@ -31,7 +36,17 @@ mkdir -p "$DIR"
 /bin/busybox chmod 620 "$DIR/cmd"
 : > "$DIR/status"; /bin/busybox chmod 644 "$DIR/status"
 say() { echo "$@" >> "$DIR/status"; }
-say "veron-flashd: ready"
+# MAINTENANCE MODE inverts one rule. Normally an unknowable boot disk is a
+# hard refusal -- the safe default when we cannot tell what we are running from.
+# But the maintenance boot pivots root into a tmpfs on purpose, precisely so the
+# stick STOPS being the root and becomes a legal target; there, root-is-RAM is
+# expected and rootdisk being empty is the SIGNAL that the pivot worked, not a
+# reason to refuse. We read the flag once, from the cmdline the maintenance boot
+# was launched with, and let it relax exactly that one refusal below -- nothing
+# else. Every other validation still applies to the stick in full.
+maint=0
+case " $(cat /proc/cmdline 2>/dev/null) " in *" veron.maintenance=1 "*) maint=1 ;; esac
+[ "$maint" = 1 ] && say "veron-flashd: maintenance mode -- the boot device is a legal target"
 
 while :; do
   # a FIFO read blocks until a writer arrives; one request at a time
@@ -40,6 +55,7 @@ while :; do
     FLASH)   img=$a1; dev=$a2; want_cap= ;;
     INSTALL) img=$a1; dev=$a2; want_cap=$a3 ;;
     STREAM)  url=$a1; zsha=$a2; isha=$a3; dev=$a4; img=; want_cap= ;;
+    RESTORE-PERSIST) backup=$a1; dev=$a2; img=; want_cap= ;;
     *) say "REFUSED: unknown verb '$verb'"; continue ;;
   esac
 
@@ -63,8 +79,19 @@ while :; do
     */block/*)   rootdisk=$(/bin/busybox basename "$rootlink") ;;
     *)           rootdisk="" ;;
   esac
-  [ -n "$rootdisk" ] || { say "REFUSED: cannot determine the boot disk -- refusing everything rather than guessing"; continue; }
-  [ "$dev" != "$rootdisk" ]     || { say "REFUSED: $dev is the disk this system is running from"; continue; }
+  # No knowable boot disk: a hard refusal on a normal boot (we will not guess),
+  # but EXPECTED under maintenance mode, where root is a tmpfs by design and the
+  # stick is meant to be writable. Only maintenance relaxes this; a normal boot
+  # that cannot name its root still refuses everything.
+  if [ -z "$rootdisk" ]; then
+    if [ "$maint" = 1 ]; then
+      say "maintenance mode: root is RAM, no sacred disk -- $dev is writable"
+    else
+      say "REFUSED: cannot determine the boot disk -- refusing everything rather than guessing"; continue
+    fi
+  else
+    [ "$dev" != "$rootdisk" ]   || { say "REFUSED: $dev is the disk this system is running from"; continue; }
+  fi
   cap=$(( $(cat "/sys/block/$dev/size") * 512 ))
   if [ "$verb" = "FLASH" ]; then
     [ "$rem" = "1" ]            || { say "REFUSED: $dev is not removable -- FLASH writes sticks, never internal disks. Installing to an internal disk is the INSTALL verb, with its own consent."; continue; }
@@ -102,6 +129,40 @@ while :; do
       say "VERIFIED: /dev/$dev holds the release byte-for-byte ($nbytes bytes, read back and hashed)"
     else
       say "VERIFY FAILED on read-back: the device does not hold what was written -- do not boot it"
+    fi
+    continue
+  fi
+  if [ "$verb" = "RESTORE-PERSIST" ]; then
+    # The preserve half of maintenance mode. veron-maintenance-init banked the
+    # old persist into RAM before the pivot; after a fresh image lands on the
+    # stick its persist partition (p4) is empty. This copies the RAM bank into
+    # that new partition so user state survives a geometry-changing reflash.
+    # It writes a FILESYSTEM, not a raw image, so it stands apart from FLASH.
+    case "$backup" in /*) : ;; *) say "REFUSED: persist backup path must be absolute"; continue ;; esac
+    [ -d "$backup" ]              || { say "REFUSED: no persist backup at $backup"; continue; }
+    # p4 by PARTUUID on the freshly written stick; the kernel re-read the table
+    # after the flash, so by-partuuid resolves to the new partition node.
+    pnode=/dev/disk/by-partuuid/aaaa0004-0000-4000-8000-564552304e04
+    [ -b "$pnode" ]              || { say "REFUSED: persist partition not found on the flashed stick yet"; continue; }
+    # sanity: the persist partition must live on the disk we just flashed, not
+    # some other disk that happens to carry the same PARTUUID.
+    presolved=$(/bin/busybox readlink -f "$pnode" 2>/dev/null || echo "")
+    case "$presolved" in
+      /dev/"$dev"*) : ;;
+      *) say "REFUSED: $pnode is not on /dev/$dev -- refusing to write persist to another disk"; continue ;;
+    esac
+    say "restoring persist onto $pnode (from $backup) ..."
+    M=/run/veron-flash/persist-dst; /bin/busybox rm -rf "$M"; /bin/busybox mkdir -p "$M"
+    if ! /bin/busybox mount "$pnode" "$M" 2>>"$DIR/status"; then
+      say "RESTORE-PERSIST FAILED: could not mount the new persist partition"; continue
+    fi
+    if /bin/busybox cp -a "$backup"/. "$M"/ 2>>"$DIR/status"; then
+      /bin/busybox sync
+      /bin/busybox umount "$M"
+      say "VERIFIED: persist restored to $pnode"
+    else
+      /bin/busybox sync; /bin/busybox umount "$M" 2>/dev/null
+      say "RESTORE-PERSIST FAILED during copy -- persist may be incomplete"
     fi
     continue
   fi

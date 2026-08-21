@@ -1,0 +1,48 @@
+name    = "veron-maintenance-init"
+version = "1.0"
+group   = "system"
+license = "BSD-2-Clause"
+srcdir  = "."
+
+# veron-maintenance-init -- the RAM-pivot PID 1 for maintenance mode. Named on a
+# one-shot boot cmdline (init=/usr/bin/veron-maintenance-init veron.maintenance=1
+# veron.persist=preserve) that veron-efiboot arms; the kernel mounts the active
+# slot at / and execs this. It copies the running system into a tmpfs, backs up
+# persist to RAM if asked, pivot_roots onto the RAM copy, umounts and VERIFIES
+# the boot device is released, then execs dinit -- so the stick the machine
+# booted from becomes an ordinary, writable disk the flasher can rewrite in
+# place. Normal boots (init=/usr/bin/veron-init) never touch this.
+#
+# STATIC, SYSCALL-ONLY, like veron-init: no busybox applet dependency (the copy
+# is a faithful one-filesystem walk in C, handling hardlinks, symlinks, special
+# files, perms and ownership), no NSS. A fatal error HALTS rather than continue
+# into a half-pivoted state with the stick still mounted.
+
+[source]
+kind      = "local"
+path      = "packages/veron-maintenance-init/files"
+url       = "this repository"
+sha256    = "n/a -- the source is in this repository; the commit is the pin"
+signature = "n/a -- provenance is the commit that carries these files"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "none -- it is PID 1's pivot; a package test cannot exercise the copy+pivot path without being init on real hardware"
+packaged_as     = ["veron-maintenance-init"]
+
+[[steps]]
+name = "build"
+cwd  = "$B"
+run  = [["sh", "-c", "cp /packages/veron-maintenance-init/files/veron-maintenance-init.c . && cc -static -O2 -Wall -Wextra -std=c11 -o veron-maintenance-init veron-maintenance-init.c"]]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+run  = [["sh", "-c", "mkdir -p $D/usr/bin && cp veron-maintenance-init $D/usr/bin/veron-maintenance-init && chmod 0755 $D/usr/bin/veron-maintenance-init"]]

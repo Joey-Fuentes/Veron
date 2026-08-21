@@ -284,7 +284,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--no-chattr")) { no_chattr = 1; i++; }
         else break;
     }
-    if (i >= argc) die("usage: veron-efiboot [--efivars DIR] [--no-chattr] <print-entry|set-entry|boot-next|boot-order|get|delete> ...");
+    if (i >= argc) die("usage: veron-efiboot [--efivars DIR] [--no-chattr] <print-entry|set-entry|clone-cmdline|boot-next|boot-order|get|delete> ...");
     const char *verb = argv[i++];
 
     if (!strcmp(verb, "print-entry") || !strcmp(verb, "set-entry")) {
@@ -332,6 +332,62 @@ int main(int argc, char **argv) {
          * variable is an uncommitted state, not an absence. */
         if (chattr_immutable(p, 0, NULL) < 0) die_errno("clearing immutable flag");
         if (unlink(p) < 0 && errno != ENOENT) die_errno("unlink");
+        return 0;
+    }
+    if (!strcmp(verb, "clone-cmdline")) {
+        /* Clone an existing boot entry, changing ONLY its command line. This is
+         * the maintenance-mode trigger's workhorse: the flasher takes the entry
+         * the machine is actually booting (right disk GUID, ESP partition range,
+         * kernel file) and re-emits it verbatim with init=/usr/bin/
+         * veron-maintenance-init veron.maintenance=1 ... swapped in, then points
+         * BootNext at it. Preserving the device path byte-for-byte is the whole
+         * point: reconstructing it from spec constants would risk naming the
+         * wrong disk, and the entry that booted us is by definition correct.
+         *
+         *   veron-efiboot clone-cmdline <srcBoot####> <dstBoot####> --cmdline '...'
+         *
+         * EFI_LOAD_OPTION = Attributes(4) FilePathListLength(2)
+         *   Description(UTF-16, NUL-term) DevicePath(FilePathListLength)
+         *   OptionalData(rest = the cmdline). We keep everything through the
+         * device path and replace OptionalData. read_var returns the efivarfs
+         * 4-byte attribute prefix ahead of the load option; skip it. */
+        if (i >= argc) die("clone-cmdline needs a source Boot#### number");
+        const char *src = argv[i++];
+        if (i >= argc) die("clone-cmdline needs a destination Boot#### number");
+        const char *dst = argv[i++];
+        const char *newcmd = NULL;
+        while (i < argc) {
+            if (!strcmp(argv[i], "--cmdline")) newcmd = need(argc, argv, &i, "--cmdline");
+            else die("clone-cmdline: unexpected argument");
+            i++;
+        }
+        if (!newcmd || !*newcmd) die("clone-cmdline needs --cmdline '<new command line>'");
+
+        char srcname[16]; snprintf(srcname, sizeof srcname, "Boot%04X", hex4(src));
+        uint8_t *raw; size_t rawlen;
+        if (read_var(srcname, &raw, &rawlen) != 0) die_errno("reading the source entry");
+        /* skip the efivarfs 4-byte attribute prefix to reach the load option */
+        if (rawlen < 4 + 6) die("source entry is too small to be a boot option");
+        uint8_t *lo = raw + 4; size_t lolen = rawlen - 4;
+        /* Attributes(4) + FilePathListLength(2) */
+        uint16_t fplen = lo[4] | (lo[5] << 8);
+        /* Description: UTF-16LE starting at offset 6, NUL-terminated (2 zero
+         * bytes). Walk to its end. */
+        size_t off = 6;
+        while (off + 1 < lolen && !(lo[off] == 0 && lo[off + 1] == 0)) off += 2;
+        if (off + 1 >= lolen) die("source entry description is not terminated");
+        off += 2;                             /* consume the UTF-16 NUL */
+        size_t keep = off + fplen;            /* through the end of the device path */
+        if (keep > lolen) die("source entry device path runs past the option");
+
+        /* rebuild: keep [0, keep), append the new cmdline as OptionalData */
+        buf b = {0};
+        put(&b, lo, keep);
+        put_utf16(&b, newcmd);
+
+        char dstname[16]; snprintf(dstname, sizeof dstname, "Boot%04X", hex4(dst));
+        write_var(dstname, b.p, b.len);
+        free(b.p); free(raw);
         return 0;
     }
     die("unknown verb");

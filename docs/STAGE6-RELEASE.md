@@ -234,7 +234,7 @@ unlink(), never a zero-length write; retry EINTR/EBUSY with ~50ms backoff;
 NEVER set efi_no_storage_paranoia -- the kernel's QueryVariableInfo free-
 space margin is the guard against the documented Samsung/Lenovo store-
 exhaustion bricks and stays on. The writer lives at
-stages/6-verification-distribution (source: spikes/stage6/efiboot/ until
+stages/6-verification-distribution (source: spikes/stage5/packages/veron-efiboot/ -- it is a normal package now, not spike tooling; earlier it lived in spikes/stage6/efiboot/ until
 the move), pure C, no dependencies, and is testable off-target: the
 variable ENCODING (EFI_LOAD_OPTION, HD()+File() device paths, mixed-endian
 GUIDs) is pure bytes with golden tests; only the final efivarfs write

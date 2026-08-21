@@ -1,0 +1,55 @@
+name    = "veron-efiboot"
+version = "1.0"
+group   = "system"
+license = "BSD-2-Clause"
+srcdir  = "."
+
+# veron-efiboot -- the EFI boot-variable writer, from source, no deps.
+#
+# WHY IT SHIPS. It began as stage-6 build-adjacent tooling (writing the A/B
+# boot entries at image time) but it is a normal program: the flasher execs it
+# at RUNTIME to arm maintenance mode. Maintenance mode clones the entry the
+# machine is booting, swaps in init=/usr/bin/veron-maintenance-init
+# veron.maintenance=1 as the command line, and points BootNext at it. So the
+# tool belongs in the image like any other, and this package is its home --
+# there is no second copy in spikes.
+#
+# PURE SYSCALLS. efivarfs writes with the immutable-flag dance
+# (FS_IOC_GETFLAGS/SETFLAGS) and a single write() per SetVariable. No library
+# beyond libc; built static for the same reason veron-init is -- it runs in the
+# thin moment before the desktop, when fewer assumptions is safer.
+#
+# VERBS: print-entry, set-entry, clone-cmdline, boot-next, boot-order, get,
+# delete. clone-cmdline is the maintenance trigger's workhorse: it re-emits an
+# existing entry with only its command line changed, so the device path (disk
+# GUID, ESP partition range, kernel file) is preserved byte-for-byte rather than
+# reconstructed and possibly wrong.
+
+[source]
+kind      = "local"
+path      = "packages/veron-efiboot/files"
+url       = "this repository"
+sha256    = "n/a -- the source is in this repository; the commit is the pin"
+signature = "n/a -- provenance is the commit that carries these files"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "test-encoding.py decodes what the tool emits (an independent decoder); run off-target"
+packaged_as     = ["veron-efiboot"]
+
+[[steps]]
+name = "build"
+cwd  = "$B"
+run  = [["sh", "-c", "cp /packages/veron-efiboot/files/veron-efiboot.c . && cc -static -O2 -Wall -Wextra -std=c11 -o veron-efiboot veron-efiboot.c"]]
+
+[[steps]]
+name = "install"
+cwd  = "$B"
+run  = [["sh", "-c", "mkdir -p $D/usr/bin && cp veron-efiboot $D/usr/bin/veron-efiboot && chmod 0755 $D/usr/bin/veron-efiboot"]]
