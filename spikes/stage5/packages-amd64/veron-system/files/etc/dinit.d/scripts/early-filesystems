@@ -63,15 +63,23 @@ resolve_dev() {
     return 1
 }
 
-# MAINTENANCE MODE NEVER REMOUNTS THE STICK. veron-maintenance-init copied the
-# system into RAM, banked persist at /run/veron-persist-backup, pivoted, and
-# VERIFIED the boot device was gone from the mount table -- the whole point of
-# the mode is that the stick is now an ordinary, writable disk. Mounting its
-# persist partition back onto /persist here (and device-nodes then binding
-# /home/veron from it) would hand the flasher a disk with a mounted, in-use
-# partition: flashd's umount-before-write cannot release a bind it does not
-# know about, and dd would write under a live filesystem. The cmdline flag is
-# the same one flashd and the flasher read; one grep, one skipped line.
+# MAINTENANCE MODE NEVER REMOUNTS THE STICK -- IT MOUNTS THE RAM COPY.
+# veron-maintenance-init copied the system into RAM, banked persist at
+# /run/veron-persist-backup, pivoted, and VERIFIED the boot device was gone
+# from the mount table -- the whole point of the mode is that the stick is
+# now an ordinary, writable disk. Mounting its persist partition back onto
+# /persist here (and device-nodes then binding /home/veron from it) would
+# hand the flasher a disk with a mounted, in-use partition under a live
+# filesystem. But the session still NEEDS /persist: /etc/wpa_supplicant.conf
+# is a symlink into /persist/network, so with nothing there wpa-start cannot
+# write even its empty config, no supplicant comes up, and the wifi menu says
+# so (first maintenance boot on hardware, 2026-08-21: "no supplicant on
+# wlan0"). So the bank IS /persist for this session: bind-mounted from RAM,
+# every reader finds what it expects, and the stick is never touched. With
+# persist=discard there is no bank, /persist stays an empty directory on the
+# tmpfs root, and wpa starts unconfigured exactly as on a fresh machine.
+# Writes land in RAM and are lost with it -- which is what maintenance mode
+# promises; flashd's RESTORE-PERSIST copies the bank onto the new stick.
 _maint=0
 case " $(/bin/busybox cat /proc/cmdline 2>/dev/null) " in
     *" veron.maintenance=1 "*) _maint=1 ;;
@@ -81,7 +89,16 @@ while read -r src dst type opts rest; do
     case "$src" in ''|'#'*) continue ;; esac
     case "$dst" in ''|/) continue ;; esac
     if [ "$_maint" = 1 ] && [ "$dst" = /persist ]; then
-        echo "early-filesystems: maintenance mode -- /persist stays unmounted (banked in RAM at /run/veron-persist-backup)"
+        /bin/busybox mkdir -p /persist 2>/dev/null
+        if [ -d /run/veron-persist-backup ]; then
+            if /bin/busybox mount --bind /run/veron-persist-backup /persist 2>/dev/null; then
+                echo "early-filesystems: maintenance mode -- /persist is the RAM bank (/run/veron-persist-backup); the stick stays unmounted"
+            else
+                echo "early-filesystems: maintenance mode -- could not bind the RAM bank onto /persist; /persist is empty"
+            fi
+        else
+            echo "early-filesystems: maintenance mode -- no persist bank (persist=discard); /persist is empty, the stick stays unmounted"
+        fi
         continue
     fi
     if [ -e /proc/mounts ] && /bin/busybox grep -q " $dst " /proc/mounts; then
