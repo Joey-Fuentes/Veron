@@ -22,7 +22,14 @@ CONFIG_OVERLAY_FS=y
 CONFIG_ISO9660_FS=m
 CONFIG_BLK_DEV_LOOP=y
 CONFIG_BLK_DEV_DM=m
-CONFIG_VFAT_FS=m
+# VFAT BUILT IN, not a module. The ESP is FAT32, and mounting it is a boot-
+# adjacent operation with no udev to autoload the module: the flasher arms
+# maintenance mode by mounting the ESP to write a one-shot marker, and the
+# maintenance init mounts it to record a failure log. There is no runtime path
+# that would modprobe vfat first, so as a module it is simply absent and the
+# mount fails with ENODEV. Built in, like ext4, it is always there. Its NLS
+# codepage/charset deps below are already =y for the same reason.
+CONFIG_VFAT_FS=y
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
 CONFIG_BLK_DEV_INITRD=y
