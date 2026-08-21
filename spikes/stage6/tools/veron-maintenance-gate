@@ -194,15 +194,15 @@ open_flasher() {
     # compositor is up lands on an empty VT and does nothing, a press after
     # opens foot. Twelve tries, twenty seconds apart, is four minutes of
     # patience for a TCG boot.
-    for _try in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    for _try in 1 2 3 4 5 6; do
         mon "sendkey meta_l-ret" >/dev/null
-        _foot=$(wait_block 242424 300 20) && break
+        _foot=$(wait_block 242424 300 15) && break
     done
-    [ -n "$_foot" ] || { note "foot never appeared (no #242424 block after 12 tries)"; return 1; }
+    [ -n "$_foot" ] || { note "foot never appeared (no #242424 block after 6 tries)"; return 1; }
     note "foot is up at [$_foot]"
     sleep 2
     type_line "veron-flasher"
-    _pane=$(wait_block ffffff 500 60) || { note "the flasher's log pane (white, >=500px) never appeared"; return 1; }
+    _pane=$(wait_block ffffff 500 30) || { note "the flasher's log pane (white, >=500px) never appeared"; return 1; }
     note "flasher pane at [$_pane]"
     sleep 2
     echo "$_pane"
@@ -217,11 +217,11 @@ ask() {
 
 # =========================== BOOT 1: normal ================================
 echo "=== boot 1: the normal system, from the USB stick ==="
-wait_serial "veron-boot: normal boot" 240 || { bad "the loader did not run the normal path"; }
-wait_serial "as init process" 300 || { bad "the kernel never started init on boot 1"; }
+wait_serial "veron-boot: normal boot" 90 || { bad "the loader did not run the normal path"; }
+wait_serial "as init process" 60 || { bad "the kernel never started init on boot 1"; }
 # dinit announces each service on the console; labwc's line is the first
 # word that the desktop is being started (its readiness is polled visually).
-wait_serial "labwc" 420 || { bad "labwc never started on boot 1"; }
+wait_serial "labwc" 120 || { bad "labwc never started on boot 1"; }
 [ "$fail" = 0 ] || { tail -40 "$SER"; cleanup; exit 1; }
 sleep 5
 
@@ -333,23 +333,38 @@ echo "=== boot 2: the reboot into RAM ==="
 # The flasher asked flashd to arm; flashd wrote the marker; the flasher asked
 # powerd to reboot; dinit rebooted; OVMF ran the loader again. The loader's
 # own line is the first proof the marker was there and was taken.
-wait_serial "veron-boot: maintenance command line armed" 180 \
+wait_serial "veron-boot: maintenance command line armed" 90 \
     && ok "the loader found and took the one-shot marker" \
     || bad "no maintenance boot: the loader never reported an armed marker (did the click land? did flashd arm? did the reboot happen?)"
 [ "$fail" = 0 ] || { grep -aE "ARMED|REFUSED|veron-flashd|veron-boot|reboot|shutdown" "$SER" | tail -20; cleanup; exit 1; }
-wait_serial "Kernel command line:.*veron.maintenance=1|Command line:.*veron.maintenance=1" 120 \
+wait_serial "Kernel command line:.*veron.maintenance=1|Command line:.*veron.maintenance=1" 30 \
     && ok "the kernel booted with veron.maintenance=1 on its command line" \
     || bad "the kernel's command line does not carry the maintenance flags (LoadOptions dropped? CMDLINE_OVERRIDE?)"
-wait_serial "VERON-MAINTENANCE: entering maintenance mode" 120 \
+wait_serial "VERON-MAINTENANCE: entering maintenance mode" 30 \
     && ok "veron-maintenance-init is PID 1" \
     || bad "init= was not honoured: veron-maintenance-init never ran"
-wait_serial "VERON-MAINTENANCE: running from RAM; the boot disk is released" 900 \
-    && ok "the pivot completed and the stick was verified released" \
-    || { bad "the pivot did not complete"; grep -a "VERON-MAINTENANCE" "$SER" | tail -20; }
+# THE PIVOT EITHER FINISHES OR HALTS, AND BOTH ARE ONE LINE. It takes seconds
+# on KVM; two minutes is already generous. init's fatal() prints "ABORTED"
+# the moment it gives up, and that ends the wait at once. While waiting,
+# init's latest line is echoed so a stall is visible as the step it stalled on.
+_t=0; _last=""
+while [ "$_t" -lt 120 ]; do
+    grep -aqE "VERON-MAINTENANCE: (running from RAM|ABORTED)" "$SER" && break
+    alive || { note "qemu exited during the pivot"; break; }
+    _now=$(grep -a "VERON-MAINTENANCE:" "$SER" | tail -1)
+    [ "$_now" != "$_last" ] && { note "${_t}s  $_now"; _last=$_now; }
+    sleep 2; _t=$((_t + 2))
+done
+if grep -aq "VERON-MAINTENANCE: running from RAM; the boot disk is released" "$SER"; then
+    ok "the pivot completed and the stick was verified released (${_t}s)"
+else
+    bad "the pivot did not complete -- veron-maintenance-init said:"
+    grep -a "VERON-MAINTENANCE" "$SER" | tail -20 | sed 's/^/    /'
+fi
 [ "$fail" = 0 ] || { cleanup; exit 1; }
 # the same dinit line, counted past everything boot 1 and its shutdown said
 _base=$(grep -ac labwc "$SER"); _base=${_base:-0}
-wait_serial "labwc" 420 $((_base + 1)) || bad "labwc never started on the maintenance boot"
+wait_serial "labwc" 120 $((_base + 1)) || bad "labwc never started on the maintenance boot"
 [ "$fail" = 0 ] || { tail -40 "$SER"; cleanup; exit 1; }
 sleep 5
 

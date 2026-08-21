@@ -132,6 +132,24 @@ if [ -n "$FWDIR" ]; then
     cp -a "$FWDIR"/. "$STAGE/usr/lib/firmware/"
     echo "  firmware: $(find "$STAGE/usr/lib/firmware" -type f | wc -l) file(s), licenses: $(find "$STAGE/usr/lib/firmware" -maxdepth 1 -name 'LICEN*' | wc -l)"
 fi
+# THE TOP-LEVEL SKELETON, GUARANTEED BY THE IMAGE. The stage-5 rootfs ships
+# no /mnt, and its /proc /sys /dev /run /tmp exist only because early-
+# filesystems does `mkdir -p` on a read-write root at every normal boot. An
+# init that runs BEFORE dinit on a fresh image inherits whatever the tree
+# happens to contain -- and the maintenance gate's first full run halted on
+# exactly that: `VERON-MAINTENANCE: could not create /mnt/ram` (run
+# 88136855635, 2026-08-21), the bare-metal black screen. A root filesystem
+# owes its mountpoints to whoever boots it; this is where the consumer root
+# is assembled, so this is where they are made sure of. mkdir -p: idempotent
+# over a tree that already has them. Timestamps need no care here:
+# normalize-ext4.py rewrites every inode's times after mke2fs, which is what
+# keeps the image byte-identical run to run already.
+for _d in proc sys dev run tmp mnt root; do
+    mkdir -p "$STAGE/$_d"
+done
+chmod 1777 "$STAGE/tmp"
+chmod 0700 "$STAGE/root"
+echo "  skeleton: proc sys dev run tmp mnt root present"
 ROOTFS="$STAGE"
 
 # SIZE THE SLOT FROM THE STAGED WORLD: need + 100 MB, aligned up to
