@@ -1,0 +1,14 @@
+#!/bin/busybox sh
+# /sbin/swapoff -- dinit's shutdown execs this by absolute path near the end of
+# teardown ("swapoff -a"). Nothing in the image linked /sbin/swapoff, so every
+# shutdown printed "/sbin/swapoff: No such file or directory" (maintenance
+# gate, run 88236802763). Veron runs no swap -- there is no swap partition and
+# no swapfile -- so the correct behaviour is "there was nothing to turn off":
+# hand off to busybox's applet if this build has it, and otherwise succeed
+# quietly rather than failing the shutdown with a missing-file error. Either
+# way exit 0, because a shutdown must not be held up by swap that never existed.
+if /bin/busybox swapoff "$@" 2>/dev/null; then
+    exit 0
+fi
+# no applet, or nothing to turn off -- both are success at shutdown.
+exit 0

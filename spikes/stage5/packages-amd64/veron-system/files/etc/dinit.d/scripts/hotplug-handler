@@ -107,22 +107,14 @@ block)
         # partitions) all no-op after the first succeeds. Backgrounded:
         # the enumeration wait can hold 12s and hotplug must not.
         [ -S /run/dinitctl ] || exit 0
-        # THE BOOT REPLAY IS NOT AN INSERTION, AND THE RULE IS IN THE DEVICE.
-        # media is for a REMOVABLE disk that is NOT the one we run from. The
-        # coldplug replay can only ever announce the root stick (skipped as
-        # root) and internal disks (skipped as not removable); a real
-        # insertion is neither. A time-boxed mark was tried and lost the race
-        # to the kernel's asynchronous helper spawn; the device is the rule.
-        # (Before any of this, every boot started media, found nothing, and
-        # dinit logged "[FAILED] media" on a machine with nothing plugged in.)
-        _disk=$DEV
-        case "$_disk" in
-            nvme*n*p[0-9]*|mmcblk*p[0-9]*) _disk=${_disk%p[0-9]*} ;;
-            sd*[0-9]*|vd*[0-9]*|hd*[0-9]*) _disk=${_disk%%[0-9]*} ;;
-        esac
-        [ "$(/bin/busybox cat /sys/block/$_disk/removable 2>/dev/null)" = 1 ] || exit 0
-        /bin/busybox grep -qs "^/dev/$_disk[p0-9]* / " /proc/mounts && exit 0
-        /bin/busybox grep -qs "^/dev/$_disk[p0-9]* /persist " /proc/mounts && exit 0
+        # KICK media; media-mount ITSELF decides what is mountable. It
+        # excludes the boot disk (derived from mountinfo, the same way flashd
+        # derives its sacred disk), skips auto-mount entirely in maintenance
+        # mode, and treats "nothing to mount" as success -- so the coldplug
+        # replay re-announcing the root stick's own partitions no longer ends
+        # in "[FAILED] media" on a machine with nothing else plugged in
+        # (hardware, run 88236802763). The handler stays a one-liner: the
+        # policy lives in one place, media-mount, not split across two files.
         DINIT_SOCKET_PATH=/run/dinitctl /usr/bin/dinitctl start media \
             >/dev/null 2>&1 &
         ;;

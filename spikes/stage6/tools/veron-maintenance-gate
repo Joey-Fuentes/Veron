@@ -478,7 +478,21 @@ for i, b in enumerate(boots, 1):
     missing = [n for n, _ in marks[1:] if n not in b]
     if missing: print("  boot %d: never reported: %s" % (i, ", ".join(missing)))
 PY
-grep -a "restarting too quickly\|\[FAILED\]\|No such file or directory\|wayland-app:" "$SER" | sort | uniq -c | sort -rn | head -10 | sed 's/^/  noise: /'
+# SERVICE FAILURES FAIL THE GATE. A boot that reaches the desktop but leaves a
+# service [FAILED], calls a missing binary, or crash-loops a helper is NOT a
+# passing boot -- a green light over those is a false assurance (this section
+# once printed them under the heading "noise", which was wrong and hid real
+# maintenance-mode defects). Each distinct problem is listed and counted, and
+# its presence sets the gate to FAIL.
+_problems=$(grep -aE "\[FAILED\]|No such file or directory|restarting too quickly|process terminated with exit code [1-9]" "$SER" \
+            | sort | uniq -c | sort -rn | head -20)
+if [ -n "$_problems" ]; then
+    echo "  SERVICE FAILURES ON THE BOOT (these fail the gate):"
+    printf '%s\n' "$_problems" | sed 's/^/    FAIL  /'
+    bad "the boot left service failures above -- not a clean boot"
+else
+    ok "no service failures, missing binaries, or crash-loops on either boot"
+fi
 
 after_sha=$(sha256sum "$IMG" | cut -d' ' -f1)
 note "image after:  $after_sha"

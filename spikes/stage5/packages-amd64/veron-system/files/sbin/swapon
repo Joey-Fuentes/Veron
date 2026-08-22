@@ -1,0 +1,4 @@
+#!/bin/busybox sh
+# /sbin/swapon -- present for symmetry with swapoff; Veron enables no swap, so
+# this succeeds without doing anything unless a real busybox applet handles it.
+/bin/busybox swapon "$@" 2>/dev/null || exit 0

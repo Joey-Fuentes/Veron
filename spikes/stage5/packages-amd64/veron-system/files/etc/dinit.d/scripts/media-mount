@@ -66,6 +66,49 @@ stop_media() {
 
 [ "${1:-}" = stop ] && stop_media
 
+# THE BOOT DISK IS NEVER A MOUNT TARGET -- BUT A KEY STICK STILL IS. media must
+# not touch the disk the system booted from (in normal mode it carries
+# root/persist; in maintenance mode it is the flasher's writable target). It
+# MUST still mount a DIFFERENT inserted stick, because the key-file second
+# factor lives on one: verify.c fopen()s /run/media/veron/stick/veron.key and
+# lock.c kicks this service on a refused unlock so "insert key, press Enter"
+# works without a reboot. An earlier version of this fix refused to mount at
+# all in maintenance mode -- which would lock an ARMED user out of the
+# maintenance desktop, since /persist (hence auth.conf) is the RAM bank there
+# too. So the rule is exclude-the-boot-disk, not refuse.
+#
+# NORMAL: the boot disk is the whole-disk parent of what is mounted at /,
+# from mountinfo major:minor (alias-proof, as flashd derives its sacred disk).
+# MAINTENANCE: / is tmpfs so mountinfo names no disk -- resolve the boot stick
+# by the ESP's fixed PARTUUID via sysfs (no udev), same PARTUUID flashd and
+# veron-maintenance-init use.
+_esp_partuuid=aaaa0001-0000-4000-8000-564552304e01
+_bootdisk_of() {
+    _n=${1#/dev/}
+    case "$_n" in
+        nvme*p[0-9]*|mmcblk*p[0-9]*) echo "${_n%p[0-9]*}" ;;
+        *[0-9]) echo "$_n" | /bin/busybox sed 's/[0-9]*$//' ;;
+        *) echo "$_n" ;;
+    esac
+}
+BOOTDISK=""
+_rootmm=$(/bin/busybox awk '$5=="/"{print $3; exit}' /proc/self/mountinfo)
+_rootlink=$(/bin/busybox readlink -f "/sys/dev/block/$_rootmm" 2>/dev/null || echo "")
+case "$_rootlink" in
+    */block/*/*) BOOTDISK=$(echo "$_rootlink" | /bin/busybox sed 's|.*/block/\([^/]*\)/.*|\1|') ;;
+    */block/*)   BOOTDISK=$(/bin/busybox basename "$_rootlink") ;;
+esac
+if [ -z "$BOOTDISK" ]; then
+    for _ue in /sys/class/block/*/uevent; do
+        [ -r "$_ue" ] || continue
+        if /bin/busybox grep -qi "^PARTUUID=$_esp_partuuid\$" "$_ue"; then
+            BOOTDISK=$(_bootdisk_of "/dev/$(/bin/busybox basename "$(dirname "$_ue")")")
+            break
+        fi
+    done
+fi
+[ -n "$BOOTDISK" ] && echo "media: boot disk is $BOOTDISK -- excluded; any OTHER stick still mounts"
+
 # start
 /bin/busybox mkdir -p "$MNT"
 
@@ -101,6 +144,7 @@ while [ "$_try" -lt 12 ]; do
     for disk in /sys/block/*; do
         name=${disk##*/}
         case "$name" in loop*|ram*|zram*|dm-*|md*) continue ;; esac
+        [ "$name" = "${BOOTDISK:-}" ] && continue
         removable=$(/bin/busybox cat "$disk/removable" 2>/dev/null)
         real=$(/bin/busybox readlink -f "$disk")
         case "$real" in */usb*) _found=1 ;; *) [ "$removable" = 1 ] && _found=1 ;; esac
@@ -165,5 +209,9 @@ for disk in /sys/block/*; do
     echo "  in this kernel? (vfat is not; see KERNEL-CHANGES.md)" >&2
 done
 
-echo "media: no removable device found -- is it plugged in?" >&2
-exit 1
+# NOTHING TO MOUNT IS NOT A FAILURE. On a machine whose only removable disk is
+# the boot stick there is legitimately nothing to auto-mount; a scripted dinit
+# service that exits non-zero here is reported "[FAILED] media" on a clean
+# boot. A real insertion re-triggers media through the hotplug handler.
+echo "media: no removable device to mount (boot disk excluded) -- nothing to do"
+exit 0
