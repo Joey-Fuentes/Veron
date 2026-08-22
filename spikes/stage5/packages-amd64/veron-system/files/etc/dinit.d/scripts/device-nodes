@@ -311,7 +311,39 @@ if /bin/busybox mountpoint -q /persist 2>/dev/null || [ -d /persist ]; then
     done
     [ -e /persist/wpa_supplicant.conf ] && \
         /bin/busybox chown veron:veron /persist/wpa_supplicant.conf 2>/dev/null || true
-    echo "  /persist -> veron owns its state; auth store and 0711 left intact"
+
+    # ESTABLISH THE LAYOUT IF NOTHING ELSE DID -- THE INSTALLED-SYSTEM CASE.
+    # Everything above assumes guest/init already ran: it sets /persist 0711
+    # and creates veron-auth (2750, group auth) before dinit. But guest/init
+    # is the LIVE image's initramfs; an INSTALLED A/B system boots through
+    # veron-init, which never runs it, so on a freshly flashed persist
+    # partition /persist is a bare ext4 root -- root:root 0755 -- with no
+    # veron-auth. Enrolment then fails ("cannot create /persist/veron-auth:
+    # Permission denied", hardware 2026-08-22) and the lock screen can never
+    # be armed. So here, idempotently: give veron ownership of /persist and
+    # set 0711 traversal if it is still root-owned, and create the auth store
+    # (veron:auth 2750, setgid) if it is absent. On a live system guest/init
+    # already did all of this and every step below is a no-op; on an
+    # installed system this is the one place it happens. Never recursive,
+    # never widening: the auth store's group is set to auth exactly as
+    # enrol and guest/init set it.
+    _pu=$(/bin/busybox stat -c %U /persist 2>/dev/null)
+    if [ "$_pu" = root ]; then
+        /bin/busybox chown veron:veron /persist 2>/dev/null \
+            && echo "  /persist was root-owned (installed system, fresh persist) -- now veron"
+    fi
+    # 0711: owner rwx, world traverse-only -- the greeter walks THROUGH to the
+    # group-auth store, cannot list /persist. Matches guest/init exactly.
+    /bin/busybox chmod 0711 /persist 2>/dev/null
+    if [ ! -d /persist/veron-auth ]; then
+        if /bin/busybox mkdir -p /persist/veron-auth 2>/dev/null; then
+            /bin/busybox chown veron:auth /persist/veron-auth 2>/dev/null \
+                || /bin/busybox chown veron:veron /persist/veron-auth 2>/dev/null
+            /bin/busybox chmod 2750 /persist/veron-auth 2>/dev/null
+            echo "  /persist/veron-auth created (veron:auth 2750) -- enrolment can now write"
+        fi
+    fi
+    echo "  /persist -> veron owns its state; auth store present, 0711 traversal set"
 fi
 
 exit 0
