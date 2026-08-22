@@ -53,6 +53,22 @@ if [ -w /proc/sys/kernel/hotplug ]; then
     [ -n "$aliases" ] && printf '%s\n' "$aliases" | /bin/busybox xargs /bin/busybox modprobe -a -q 2>/dev/null
     echo "hotplug: $na modalias entries handed to one modprobe"
 
+    # THE GPU, BY NAME, EARLY. The batch modprobe above resolves modaliases,
+    # but on real hardware the GPU driver ends up loading only via the
+    # per-device replay below -- so amdgpu came up at ~t=15s (dmesg), behind
+    # the whole replay, and device-nodes' backlight wait then burned its full
+    # 10s ceiling because the backlight class device does not exist until
+    # amdgpu is up. Loading the display drivers here by name, in one shot,
+    # brings the card (and its backlight) up BEFORE the replay and before
+    # device-nodes, so the wait finds its node immediately. modprobe by name
+    # is reliable where the modalias batch was not; -q stays quiet for a
+    # driver that is not present or is built in. Harmless on machines without
+    # that GPU (modprobe just returns).
+    for _gpu in amdgpu i915 xe nouveau virtio_gpu; do
+        /bin/busybox modprobe -q "$_gpu" 2>/dev/null &
+    done
+    echo "hotplug: display drivers requested by name (amdgpu i915 xe nouveau virtio_gpu)"
+
     # 2. THE FULL COLDPLUG REPLAY -- every device's own uevent, as the kernel's
     #    own coldplug does. The narrow version (five classes only) never loaded
     #    virtio-gpu: it is a PCI device, CONFIG_DRM_VIRTIO_GPU=m, in none of
@@ -66,28 +82,12 @@ if [ -w /proc/sys/kernel/hotplug ]; then
     #    forks than five classes, but it runs once, before the desktop, and a
     #    working display is not negotiable; the handler is cheap per event
     #    (modprobe on add+MODALIAS, then a chgrp).
-    # EXPERIMENT 1 (reversible): the per-device uevent replay below forks the
-    # handler ~1200 times on real hardware (PID 202->1412, ~10.6s, t=3.4->14.0
-    # in dmesg) and amdgpu only loads at its tail (t=14.8). This SKIPS the
-    # storm to test whether the batch modprobe above already loaded the GPU --
-    # if the display still comes up and boot is ~10s faster, the storm was
-    # waste. To restore: delete this block, un-comment the loop below.
-    /bin/busybox mkdir -p /persist/boot-logs 2>/dev/null || true
-    {
-        echo "EXPERIMENT-1 no-replay boot at uptime=$(/bin/busybox awk '{print $1;exit}' /proc/uptime)s"
-        echo "  DRM cards after batch-only: $(/bin/busybox ls /dev/dri 2>/dev/null | /bin/busybox tr '\n' ' ')"
-        echo "  amdgpu loaded: $(/bin/busybox lsmod 2>/dev/null | /bin/busybox grep -c '^amdgpu')"
-    } >> /persist/boot-logs/experiment1.log 2>/dev/null || true
-    echo "hotplug: EXPERIMENT 1 -- coldplug replay SKIPPED (batch modprobe only)"
+    n=0
+    for u in $(/bin/busybox find /sys/devices -name uevent -type f 2>/dev/null); do
+        echo add > "$u" 2>/dev/null && n=$((n + 1))
+    done
+    echo "hotplug: coldplug replay complete ($n device uevents re-announced)"
     exit 0
-
-    # ---- original replay, disabled for experiment 1 ----
-    # n=0
-    # for u in $(/bin/busybox find /sys/devices -name uevent -type f 2>/dev/null); do
-    #     echo add > "$u" 2>/dev/null && n=$((n + 1))
-    # done
-    # echo "hotplug: coldplug replay complete ($n device uevents re-announced)"
-    # exit 0
 fi
 echo "VERON-HOTPLUG-NONE  /proc/sys/kernel/hotplug is not writable"
 echo "  boot-time devices keep devtmpfs defaults; modules will not"
