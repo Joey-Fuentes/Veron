@@ -21,7 +21,8 @@ now=$(/bin/busybox awk '{print $1; exit}' /proc/uptime 2>/dev/null)
 # result: did the desktop actually come up? yambar STARTED and a DRM card = good.
 ds() { DINIT_SOCKET_PATH=/run/dinitctl /usr/bin/dinitctl status "$1" 2>/dev/null; }
 yambar_state=$(ds yambar | /bin/busybox awk '/State:/{print $2; exit}')
-have_card=no; [ -e /dev/dri/card0 ] && have_card=yes
+have_card=no; for _c in /dev/dri/card[0-9]*; do [ -e "$_c" ] && { have_card=yes; break; }; done
+# any card, not card0: real AMD hardware enumerates card1 with no card0.
 result=ok
 [ "$yambar_state" = STARTED ] || result=NO-YAMBAR
 [ "$have_card" = yes ] || result=NO-DRM

@@ -32,3 +32,11 @@ depends-on = device-nodes
 # nothing executed them. /dev/console needs no shell: the dying process
 # speaks directly into the boot log the harness already captures.
 logfile = /dev/console
+# KILL, NOT TERM, ON THE WAY DOWN -- same reason as the console service. This
+# is the second busybox getty (login prompt on tty3); like console it blocks
+# in the tty waiting for input and does not act on SIGTERM, so at shutdown
+# dinit would wait the full default stop-timeout (10s) before killing it. It
+# holds no state, so SIGKILL as the stop signal loses nothing and removes the
+# wait. Without this the hang the console fix removes would simply reappear
+# here whenever console-auth is the getty dinit stops last.
+term-signal = KILL

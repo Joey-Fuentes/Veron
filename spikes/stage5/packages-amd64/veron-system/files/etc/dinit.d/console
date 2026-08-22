@@ -52,6 +52,18 @@ run-as = veron
 restart = true
 depends-on = early-filesystems
 depends-on = device-nodes
+# KILL, NOT TERM, ON THE WAY DOWN. busybox getty sits blocked in the tty
+# read()/open() waiting for a login and does not act on SIGTERM there, so at
+# shutdown dinit sent TERM, waited out the full default stop-timeout (10s),
+# and only then killed it -- observed on hardware 2026-08-22 as
+#   dinit: Service console with pid NNNN exceeded allowed stop time: killing
+# which was the entire shutdown hang. A getty on an idle tty holds no state:
+# nothing to flush, no children to reap, no login in progress during a
+# shutdown. Asking it politely buys a 10s wait for a signal it will not
+# answer, so we send SIGKILL as the stop signal directly. This is the honest
+# stop for a process that has no graceful shutdown, not a shortened wait for
+# one. (Contrast labwc/seatd, which stop cleanly on TERM and are left alone.)
+term-signal = KILL
 # STRAIGHT TO THE SERIAL CONSOLE, BECAUSE A FILE NEEDS A READER AND THE
 # READER IS DEAD. These services die silently at boot in the CI guest; the
 # /run logfile captured their words and the tmpfs discarded them, and the

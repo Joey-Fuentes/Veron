@@ -284,22 +284,35 @@ if [ ! -S /run/seatd.sock ]; then
 fi
 # WAIT FOR A DRM CARD BEFORE EXEC. Modules load asynchronously at coldplug
 # (virtio-gpu is DRM_VIRTIO_GPU=m), so even ordered after hotplug the card can
-# be a moment behind. wlroots does not wait: no /dev/dri/card0 means exit 1,
-# and dinit's restart tries again on a ten-second beat, the whole desktop
-# group tearing down and rebuilding each time (maintenance gate, run
-# 88229790525). Up to ten seconds here for the node turns that loop into a
-# clean start; if it never comes, the message below still fires.
+# be a moment behind. wlroots does not wait: no DRM node means exit 1, and
+# dinit's restart tries again on a ten-second beat, the whole desktop group
+# tearing down and rebuilding each time (maintenance gate, run 88229790525).
+# A short wait here for the node turns that loop into a clean start; if it
+# never comes, the message below still fires.
+#
+# ANY CARD, NOT card0 -- AND THIS WAS THE FIRST-UNLOCK 10s BLACK SCREEN.
+# This loop used to test /dev/dri/card0 specifically. On real AMD hardware
+# the GPU enumerates as card1 with NO card0 (machine #1, 2026-08-22), so the
+# test was always false, the loop ran its full 100 x 0.1s = 10s, gave up, and
+# only then exec'd labwc. Because this script runs at SESSION START -- the
+# instant the greeter unlocks -- every cold boot paid exactly 10s of black
+# between pressing Enter and the desktop. A Super+L re-lock never re-runs
+# this script, which is why only the first unlock was slow. Waiting at the
+# greeter could not help: card0 was never going to appear. The card it
+# needed (card1) had existed since amdgpu loaded at ~4s, so with the right
+# test the loop exits on its first check and the wait is zero.
+_have_card() { for _c in /dev/dri/card[0-9]*; do [ -e "$_c" ] && return 0; done; return 1; }
 _n=0
-while [ ! -e /dev/dri/card0 ] && [ "$_n" -lt 100 ]; do
+while ! _have_card && [ "$_n" -lt 100 ]; do
     /bin/busybox sleep 0.1
     _n=$((_n + 1))
 done
-if [ ! -e /dev/dri/card0 ]; then
+if ! _have_card; then
     # NOT A HARD EXIT. wlroots can fall back to other backends, and saying so
     # is more useful than refusing to start -- but the cause is worth naming
     # because the kernel side of it is recorded in KERNEL-CHANGES.md.
-    echo "labwc-session: no /dev/dri/card0 -- DRM or virtio-gpu is absent from"
-    echo "  this kernel. labwc -Dbackends=drm has nothing to open."
+    echo "labwc-session: no /dev/dri/card* -- DRM or the GPU driver is absent"
+    echo "  from this kernel. labwc -Dbackends=drm has nothing to open."
 fi
 if [ ! -x /usr/bin/labwc ]; then
     echo "labwc-session: no /usr/bin/labwc in this image"
