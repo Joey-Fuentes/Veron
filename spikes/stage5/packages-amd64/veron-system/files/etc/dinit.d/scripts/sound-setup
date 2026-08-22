@@ -56,6 +56,19 @@ pick_card() {
 # it, sound-setup could still race the module and write no asound.conf, which
 # was the whole "cannot find card 0 / no sound" failure (machine #1,
 # 2026-08-17: card enumerated as 1, no card 0, and asound.conf was absent).
+# RUN THE WAIT-AND-CONFIGURE TAIL IN THE BACKGROUND. The poll below waits up
+# to 20 x 0.5s = 10s for the ALSA card to appear (snd_hda_intel probes
+# asynchronously). Inline, that 10s was spent ON THE BOOT CRITICAL PATH:
+# `sound` is a scripted service and boot waits for it to finish, so on the
+# generic kernel where the codec is slow to enumerate, every boot -- and the
+# first desktop bring-up after unlock -- stalled here for the full ceiling
+# (hardware 2026-08-22). Everything from the wait through writing asound.conf
+# and restoring volume genuinely needs the card, so the WHOLE tail is
+# backgrounded together (the same shape device-nodes uses for its late-node
+# waits): the service returns immediately, boot proceeds, and sound configures
+# itself seconds later when the codec is ready. Nothing downstream needs
+# asound.conf synchronously -- the desktop reads it when a sound first plays.
+(
 _w=0
 while [ "$_w" -lt 20 ]; do
     for _p in /proc/asound/card*/pcm*p; do
@@ -133,4 +146,8 @@ else
     done
     echo "VERON-SOUND-DEFAULTED  no saved state; set 70% and unmuted"
 fi
+) &
+
+# The configuration runs in the background subshell above; the service itself
+# returns now so boot is never held waiting for the audio codec.
 exit 0
