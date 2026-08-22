@@ -167,20 +167,27 @@ while :; do
     [ "$dev" != "$rootdisk" ]   || { say "REFUSED: $dev is the disk this system is running from"; continue; }
   fi
   cap=$(( $(cat "/sys/block/$dev/size") * 512 ))
-  # FLASH AND STREAM ARE THE SAME PROMISE -- a stick, never an internal disk;
-  # STREAM only differs in where the bytes come from. The else-branch below is
-  # INSTALL's, and STREAM fell into it: the first stream to a stick in
-  # maintenance mode (hardware, 2026-08-21) got "REFUSED: sda is removable --
-  # INSTALL targets internal disks" three times running. Only INSTALL is INSTALL.
-  if [ "$verb" = "FLASH" ] || [ "$verb" = "STREAM" ]; then
-    [ "$rem" = "1" ]            || { say "REFUSED: $dev is not removable -- $verb writes sticks, never internal disks. Installing to an internal disk is the INSTALL verb, with its own consent."; continue; }
-  else
-    # INSTALL: internal only, and the capacity handshake is the consent.
-    [ "$rem" = "0" ]            || { say "REFUSED: $dev is removable -- INSTALL targets internal disks; use FLASH for sticks"; continue; }
-    case "${want_cap:-}" in ''|*[!0-9]*) say "REFUSED: INSTALL requires the target's capacity in bytes"; continue ;; esac
-    [ "$want_cap" = "$cap" ]    || { say "REFUSED: capacity mismatch -- request says $want_cap, $dev is $cap. The requester has not looked at this disk."; continue; }
-    say "INSTALL consented: $dev, $cap bytes -- THIS ERASES EVERY OPERATING SYSTEM ON IT"
-  fi
+  # EVERY VERB NAMES ITS OWN RULE. This used to be "if FLASH ... else INSTALL",
+  # and the else caught whatever was not FLASH: STREAM was refused as a
+  # removable "install" (maintenance mode, hardware, 2026-08-21), and once
+  # that was fixed RESTORE-PERSIST -- sent by the flasher right after the
+  # stream VERIFIED -- fell into the same else and the new stick came back
+  # with no persist. FLASH, STREAM and RESTORE-PERSIST are one promise: a
+  # removable stick, never an internal disk. INSTALL is the opposite promise
+  # with its own consent. Anything else is refused by name, not by accident.
+  case "$verb" in
+    FLASH|STREAM|RESTORE-PERSIST)
+      [ "$rem" = "1" ]          || { say "REFUSED: $dev is not removable -- $verb writes sticks, never internal disks. Installing to an internal disk is the INSTALL verb, with its own consent."; continue; }
+      ;;
+    INSTALL)
+      # internal only, and the capacity handshake is the consent.
+      [ "$rem" = "0" ]          || { say "REFUSED: $dev is removable -- INSTALL targets internal disks; use FLASH for sticks"; continue; }
+      case "${want_cap:-}" in ''|*[!0-9]*) say "REFUSED: INSTALL requires the target's capacity in bytes"; continue ;; esac
+      [ "$want_cap" = "$cap" ]  || { say "REFUSED: capacity mismatch -- request says $want_cap, $dev is $cap. The requester has not looked at this disk."; continue; }
+      say "INSTALL consented: $dev, $cap bytes -- THIS ERASES EVERY OPERATING SYSTEM ON IT"
+      ;;
+    *) say "REFUSED: $verb has no disk rule"; continue ;;
+  esac
   if [ "$verb" = "STREAM" ]; then
     case "$zsha$isha" in *[!0-9a-f]*|"") say "REFUSED: STREAM needs both digests"; continue ;; esac
     say "streaming $url onto /dev/$dev -- nothing stored, three digests checked"
