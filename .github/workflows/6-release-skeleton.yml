@@ -52,6 +52,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+      - name: 'KVM -- hardware virtualization when the runner has it; the CPU model stays qemu64 either way'
+        run: |
+          # KVM is speed, not a different machine: every qemu below keeps -cpu
+          # qemu64 (the baseline the image is certified against) and adds
+          # -enable-kvm when /dev/kvm is present. The maintenance gate ran this
+          # way and boots took seconds instead of minutes. CPUID stays masked
+          # to qemu64, so a -march=native artifact still faults here as it would
+          # on the baseline -- which is the point. TCG is the fallback.
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+            echo "VERON_ACCEL=-enable-kvm" >> "$GITHUB_ENV"
+            echo "kvm: on (-enable-kvm -cpu qemu64)"
+          else
+            echo "VERON_ACCEL=" >> "$GITHUB_ENV"
+            echo "kvm: absent -- TCG (-cpu qemu64)"
+          fi
         # PIN TO THE DISPATCH COMMIT, not the branch tip. On workflow_dispatch,
         # checkout@v5 defaults to GITHUB_REF (the branch's current head), which
         # drifts if main advances after the run starts -- so the job would build
@@ -425,7 +441,7 @@ jobs:
               fi
               echo "=== boot attempt: $attach attachment ==="
               timeout 300 qemu-system-x86_64 \
-                -machine q35 -m 2048 -nographic -no-reboot -nic none \
+                -machine q35 $VERON_ACCEL -cpu qemu64 -m 2048 -nographic -no-reboot -nic none \
                 -bios /usr/share/ovmf/OVMF.fd \
                 $DRIVE \
                 -serial file:boot-serial.log >/dev/null 2>&1 || true
@@ -517,7 +533,6 @@ jobs:
             qemu-system-x86 ovmf >/dev/null
           # KVM when the runner has it (GitHub's Linux runners do, behind a
           # root-only node); TCG otherwise. The gate prints which.
-          [ -e /dev/kvm ] && sudo chmod 666 /dev/kvm || true
           mkdir -p out/maintenance-gate
           for img in out/veron-x86_64.raw; do
             [ -e "$img" ] || { echo "no x86_64 image to test"; exit 1; }

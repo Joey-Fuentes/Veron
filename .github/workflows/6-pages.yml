@@ -200,6 +200,16 @@ jobs:
           have_proven = {a for a, r in m["arches"].items()
                          if any(not x["name"].endswith(".NOBOOT.img")
                                 for x in r["assets"])}
+          # ONLY A RELEASE THAT EXISTS IS EVER CITED. A dry run of 6-release
+          # builds and gates but publishes nothing -- no release/<sha7> tag --
+          # yet this page stamped that tag onto the card and the consumer gate
+          # then found dead links (runs 88179606694, 88224812442). The release
+          # listing parsed above is the truth: if this run's tag is not in it,
+          # every arch adopts the published card, as an unbuilt arch already does.
+          _tags = {r.get("tag_name") for r in rels}
+          if f"release/{commit[:7]}" not in _tags:
+              print(f"  release/{commit[:7]} is not published (dry run): every arch adopts the published card")
+              have_proven = set()
           try:
               sp.run(["gh", "release", "download", "6/latest",
                       "-p", "index.json", "-O", "out/published-index.json",

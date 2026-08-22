@@ -45,32 +45,32 @@ if [ -w /proc/sys/kernel/hotplug ]; then
     echo "hotplug: kernel uevent helper -> $H"
     echo "$H" > /proc/sys/kernel/hotplug
 
-    # 1. modules: every modalias present at boot, loaded in one modprobe.
-    #    Sorted unique; modprobe -a -q skips what is built in or loaded.
+    # 1. MODULES, IN ONE modprobe -- the cheap half. Every boot-time modalias,
+    #    sorted unique, handed to a single modprobe -a.
     aliases=$(/bin/busybox find /sys/devices -name modalias -type f 2>/dev/null \
-              | /bin/busybox xargs /bin/busybox cat 2>/dev/null \
-              | /bin/busybox sort -u)
+              | /bin/busybox xargs /bin/busybox cat 2>/dev/null | /bin/busybox sort -u)
     na=$(printf '%s\n' "$aliases" | /bin/busybox grep -c .)
     [ -n "$aliases" ] && printf '%s\n' "$aliases" | /bin/busybox xargs /bin/busybox modprobe -a -q 2>/dev/null
     echo "hotplug: $na modalias entries handed to one modprobe"
 
-    # 2. permissions: re-announce only the subsystems the handler acts on.
-    #    /run/veron-coldplug, present for the duration, tells the handler
-    #    this is the boot replay and not an insertion (no media start).
-    : > /run/veron-coldplug
+    # 2. THE FULL COLDPLUG REPLAY -- every device's own uevent, as the kernel's
+    #    own coldplug does. The narrow version (five classes only) never loaded
+    #    virtio-gpu: it is a PCI device, CONFIG_DRM_VIRTIO_GPU=m, in none of
+    #    input/drm/hidraw/backlight/block, and the batched modprobe above did
+    #    not match its alias either -- so qemu had NO DRM device, labwc exited
+    #    1, and the whole desktop group (labwc, yambar, swaybg, veron-idle)
+    #    tore down and rebuilt on a ten-second loop, the screen flashing each
+    #    time (maintenance gate, run 88229790525: no /dev/dri, no fb0, empty
+    #    /sys/class/drm). Re-announcing every device's uevent re-emits its
+    #    MODALIAS and the handler modprobes it -- virtio-gpu among them. More
+    #    forks than five classes, but it runs once, before the desktop, and a
+    #    working display is not negotiable; the handler is cheap per event
+    #    (modprobe on add+MODALIAS, then a chgrp).
     n=0
-    for c in input drm hidraw backlight block; do
-        for u in /sys/class/$c/*/uevent; do
-            [ -f "$u" ] || continue
-            echo add > "$u" 2>/dev/null && n=$((n+1))
-        done
+    for u in $(/bin/busybox find /sys/devices -name uevent -type f 2>/dev/null); do
+        echo add > "$u" 2>/dev/null && n=$((n + 1))
     done
-    # the helpers the kernel forked for those writes run asynchronously;
-    # give them a moment before the mark goes, so none is mistaken for an
-    # insertion. Then the mark is gone and every later event is real.
-    /bin/busybox sleep 0.2
-    rm -f /run/veron-coldplug
-    echo "hotplug: coldplug replay complete ($n uevents re-announced in input drm hidraw backlight block)"
+    echo "hotplug: coldplug replay complete ($n device uevents re-announced)"
     exit 0
 fi
 echo "VERON-HOTPLUG-NONE  /proc/sys/kernel/hotplug is not writable"

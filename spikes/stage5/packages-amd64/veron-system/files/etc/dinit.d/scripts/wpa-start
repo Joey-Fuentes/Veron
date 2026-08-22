@@ -55,25 +55,26 @@ if ! /bin/busybox grep -q "GROUP=veron" "$CONF" 2>/dev/null; then
 fi
 
 IFACE=
-# FOUND BY WAITING, NOT BY LOOKING ONCE. Under the minimal kernel the
-# driver is built in and the interface predates dinit; under the generic
-# kernel rtw89 loads at coldplug and the NIC registers only after its
-# firmware does -- a single-pass probe looks too early and exits, and the
-# machine boots to "no supplicant" (machine #1, 2026-08-16). Up to 60
-# seconds, one second at a time, same shape as wayland-app's socket wait;
-# a machine with genuinely no wifi still exits 0, after saying it waited.
+# FOUND BY WAITING, NOT BY LOOKING ONCE -- AND FOR AS LONG AS IT TAKES. Under
+# the minimal kernel the driver is built in and the interface predates dinit;
+# under the generic kernel rtw89 loads at coldplug and the NIC registers only
+# after its firmware does -- a single-pass probe looks too early and exits.
+# The next version waited 60s then exited 0 -- and dinit stopped dhcp and
+# chrony (they depend on this), chrony's restart brought the chain back, this
+# exited again: "[ OK ] wpa / [STOPPD] chrony dhcp wpa / [ OK ] wpa dhcp
+# chrony" every ten seconds for the life of the machine, on every box without
+# wifi and in every CI boot. A service that waits for hardware waits. The
+# supplicant starts the moment the interface exists, at boot or when a USB
+# adapter is plugged in later.
 n=0
-while [ "$n" -lt 60 ]; do
+while :; do
     for d in /sys/class/net/*; do
         [ -d "$d/wireless" ] && { IFACE=$(basename "$d"); break 2; }
     done
-    /bin/busybox sleep 1
+    [ "$n" = 30 ] && echo "VERON-WIFI-NO-INTERFACE  no wireless device yet; waiting for one"
+    /bin/busybox sleep 2
     n=$((n + 1))
 done
-[ -n "$IFACE" ] || {
-    echo "VERON-WIFI-NO-INTERFACE  no wireless device present after ${n}s"
-    exit 0
-}
 
 mkdir -p /run/wpa_supplicant
 ip link set "$IFACE" up 2>/dev/null || true

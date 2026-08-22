@@ -88,8 +88,8 @@ note "image before: $before_sha"
 
 ACCEL="-cpu qemu64"
 case "$KVM" in
-    on)   ACCEL="-enable-kvm -cpu host" ;;
-    auto) if [ -w /dev/kvm ]; then ACCEL="-enable-kvm -cpu host"; fi ;;
+    on)   ACCEL="-enable-kvm -cpu qemu64" ;;
+    auto) if [ -w /dev/kvm ]; then ACCEL="-enable-kvm -cpu qemu64"; fi ;;
 esac
 note "accel: $ACCEL"
 

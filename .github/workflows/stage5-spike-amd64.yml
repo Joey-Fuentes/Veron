@@ -180,6 +180,22 @@ jobs:
     # inside the container, and the run says "cancelled" and nothing else.
     steps:
       - uses: actions/checkout@v5
+      - name: 'KVM -- hardware virtualization when the runner has it; the CPU model stays qemu64 either way'
+        run: |
+          # KVM is speed, not a different machine: every qemu below keeps -cpu
+          # qemu64 (the baseline the image is certified against) and adds
+          # -enable-kvm when /dev/kvm is present. The maintenance gate ran this
+          # way and boots took seconds instead of minutes. CPUID stays masked
+          # to qemu64, so a -march=native artifact still faults here as it would
+          # on the baseline -- which is the point. TCG is the fallback.
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+            echo "VERON_ACCEL=-enable-kvm" >> "$GITHUB_ENV"
+            echo "kvm: on (-enable-kvm -cpu qemu64)"
+          else
+            echo "VERON_ACCEL=" >> "$GITHUB_ENV"
+            echo "kvm: absent -- TCG (-cpu qemu64)"
+          fi
 
       - name: 'Airlock deps (tier 2 -- drives the build, touches no artifact byte)'
         run: |
@@ -1293,7 +1309,7 @@ jobs:
           # against, and raising it becomes a decision somebody has to write
           # down rather than a default nobody chose.
           timeout "$HARNESS_TIMEOUT" qemu-system-x86_64 \
-            -cpu qemu64 -smp 4 -m 4096 \
+            $VERON_ACCEL -cpu qemu64 -smp 4 -m 4096 \
             -nographic -no-reboot -nic none \
             -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
             -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
@@ -1406,7 +1422,7 @@ jobs:
             # invocation is now backgrounded rather than run in the foreground.
             set +e
             qemu-system-x86_64 \
-              -cpu qemu64 -smp 4 -m 4096 \
+              $VERON_ACCEL -cpu qemu64 -smp 4 -m 4096 \
               -nographic -no-reboot -nic none \
               -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
               -device virtio-gpu-pci -device virtio-keyboard-pci \
@@ -1720,7 +1736,7 @@ jobs:
 
           set +e
           qemu-system-x86_64 \
-            -cpu qemu64 -smp 4 -m 4096 \
+            $VERON_ACCEL -cpu qemu64 -smp 4 -m 4096 \
             -display none -no-reboot -nic none \
             -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
             -vga none -device virtio-gpu-pci -device virtio-keyboard-pci \
@@ -1994,7 +2010,7 @@ jobs:
           echo "=== VM-A: the DHCP server ==="
           set +e
           qemu-system-x86_64 \
-            -cpu qemu64 -smp 2 -m 2048 \
+            $VERON_ACCEL -cpu qemu64 -smp 2 -m 2048 \
             -nographic -no-reboot \
             -drive file=$O/rootfs-net-a.img,format=raw,if=virtio \
             -netdev socket,id=n0,listen=127.0.0.1:$PORT \
@@ -2036,7 +2052,7 @@ jobs:
           echo "=== VM-B: the DHCP client ==="
           set +e
           timeout 300 qemu-system-x86_64 \
-            -cpu qemu64 -smp 2 -m 2048 \
+            $VERON_ACCEL -cpu qemu64 -smp 2 -m 2048 \
             -nographic -no-reboot \
             -drive file=$O/rootfs-net-b.img,format=raw,if=virtio \
             -netdev socket,id=n0,connect=127.0.0.1:$PORT \
@@ -2256,7 +2272,7 @@ jobs:
           cp "$O/rootfs.img" "$O/rootfs-stripped-boot.img"
           set +e
           timeout 900 qemu-system-x86_64 \
-            -cpu qemu64 -smp 4 -m 4096 \
+            $VERON_ACCEL -cpu qemu64 -smp 4 -m 4096 \
             -nographic -no-reboot -nic none \
             -drive file=$O/rootfs-stripped-boot.img,format=raw,if=virtio \
             -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
