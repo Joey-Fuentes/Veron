@@ -246,7 +246,22 @@ printf '\n' > "$FIFO"; sleep 1
 ask 'touch ~/veron-gate-testy && echo "MG-TESTY-WRITTEN $(ls -ld ~ | cut -c1-10) $(df -P ~ | tail -1 | cut -d" " -f1)"' "20+0" 20
 grep -a "MG-TESTY-WRITTEN" "$SER" | grep -av 'echo "MG-TESTY' | tail -1 | sed 's/^/    /'
 
-pane=$(open_flasher) || { bad "could not open the flasher on the normal desktop"; snapshot 01-flasher-normal.png; tail -30 "$SER"; cleanup; exit 1; }
+# desktop_evidence -- when the desktop is not there, the facts that say why:
+# labwc's own log (veron-readable since device-nodes made it so), the DRM
+# cards and connectors the kernel has, the splash's placement, and dinit's
+# view of the three session services. Read over the serial shell; nothing
+# is changed.
+desktop_evidence() {
+    printf '\n' > "$FIFO"; sleep 1
+    ask 'tail -40 /run/labwc.log 2>&1 | sed s/^/MG-LABWC:/' "30+0" 15
+    ask 'for c in /sys/class/drm/card*; do echo "MG-DRM ${c##*/} driver=$(basename $(readlink $c/device/driver 2>/dev/null) 2>/dev/null) status=$(cat $c/status 2>/dev/null) enabled=$(cat $c/enabled 2>/dev/null)"; done' "31+0" 15
+    ask 'ls -l /dev/dri /dev/fb0 2>&1 | sed s/^/MG-NODES:/' "32+0" 15
+    ask 'cat /run/splash.ini 2>&1 | sed s/^/MG-SPLASH:/; cat /sys/class/graphics/fb0/virtual_size 2>&1 | sed s/^/MG-FB0:/' "33+0" 15
+    ask 'for s in splash labwc yambar swaybg; do echo "MG-DINIT $(dinitctl status $s 2>&1 | head -3 | tr "\n" " ")"; done' "34+0" 15
+    grep -a "MG-LABWC:\|MG-DRM \|MG-NODES:\|MG-SPLASH:\|MG-FB0:\|MG-DINIT " "$SER" | grep -av 'sed s/^/MG-\|echo "MG-' | sed 's/^/    /'
+}
+
+pane=$(open_flasher) || { bad "could not open the flasher on the normal desktop"; snapshot 01-flasher-normal.png; desktop_evidence; tail -30 "$SER"; cleanup; exit 1; }
 snapshot 01-flasher-normal.png
 ok "boot 1: desktop, foot, veron-flasher -- 01-flasher-normal.png"
 
@@ -388,7 +403,7 @@ fi
 # which is the desktop announcing itself on the screen -- the only place a
 # person sees it. A dinit-line wait sat here and twice failed a desktop that
 # was up in seconds (its own baseline was wrong); it is gone.
-pane=$(open_flasher) || { bad "could not open the flasher on the maintenance desktop"; snapshot 03-flasher-maintenance.png; tail -30 "$SER"; cleanup; exit 1; }
+pane=$(open_flasher) || { bad "could not open the flasher on the maintenance desktop"; snapshot 03-flasher-maintenance.png; desktop_evidence; tail -30 "$SER"; cleanup; exit 1; }
 snapshot 03-flasher-maintenance.png
 ok "boot 2: desktop, foot, veron-flasher in MAINTENANCE mode -- 03-flasher-maintenance.png"
 
