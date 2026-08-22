@@ -67,29 +67,52 @@ fi
 # socket in a minute is not starting; exiting lets dinit's rate-limited
 # restart own the retry instead of this script polling forever, and puts a
 # line in the log instead of a helper silently absent.
+# TENTHS, NOT SECONDS, AND THE LIVE SOCKET, NOT THE FIRST NAME. The waits
+# below used `sleep 1`, twice: once for the socket, once for the output. That
+# was one to two seconds of the bare compositor on the panel before the bar
+# and the wallpaper arrived -- the "UI flashing" -- on every boot, for a
+# readiness that is usually there within a tenth. Same 60-second budget,
+# polled at 0.1s. And the socket glob took the FIRST wayland-* it found: if
+# labwc had ever gone down uncleanly, a stale wayland-0 sat beside the live
+# wayland-1, the helper connected to the corpse, died, was restarted into
+# the same corpse, and dinit gave up -- a desktop with no bar and no
+# background, "sometimes". A live compositor holds an flock on its
+# wayland-N.lock; a stale one's lock is free. The held lock is the tell.
+live_socket() {
+    _pick=""
+    for _s in "$XDG_RUNTIME_DIR"/wayland-*; do
+        [ -S "$_s" ] || continue
+        [ -z "$_pick" ] && _pick=$_s
+        if [ -e "$_s.lock" ]; then
+            # flock -n fails (exit 1) when the compositor holds it: live.
+            # An absent flock applet (exit 127) cannot decide; keep _pick.
+            /bin/busybox flock -n "$_s.lock" /bin/busybox true 2>/dev/null
+            [ $? -eq 1 ] && { _pick=$_s; break; }
+        fi
+    done
+    [ -n "$_pick" ] && printf '%s\n' "$_pick"
+}
 n=0
-while [ "$n" -lt 60 ]; do
-    for s in "$XDG_RUNTIME_DIR"/wayland-*; do
-        [ -S "$s" ] || continue
+while [ "$n" -lt 600 ]; do
+    s=$(live_socket)
+    if [ -n "$s" ]; then
         WAYLAND_DISPLAY=${s##*/}
         export WAYLAND_DISPLAY
-        # AN OUTPUT IS PART OF "READY" NOW. The uevent feed means the
-        # socket appears seconds before the first display does (the DRM
-        # connector lands ~28s into machine #1's boot); yambar started in
-        # that window, exited on "no monitors", and dinit's rate limiter
-        # rightly gave up (2026-08-16). Wait for a lit connector inside
-        # the same 60-second budget; if none comes, exec anyway and let
-        # dinit's restart own whatever happens next.
-        while [ "$n" -lt 60 ]; do
+        # AN OUTPUT IS PART OF "READY". The uevent feed means the socket can
+        # appear before the first display does (the DRM connector landed
+        # ~28s into machine #1's boot); yambar started in that window,
+        # exited on "no monitors", and dinit's rate limiter rightly gave up
+        # (2026-08-16). Wait for a lit connector inside the same budget; if
+        # none comes, exec anyway and let dinit's restart own the rest.
+        while [ "$n" -lt 600 ]; do
             /bin/busybox grep -qs '^enabled$' /sys/class/drm/card*/card*/enabled && break
-            /bin/busybox sleep 1
+            /bin/busybox sleep 0.1
             n=$((n + 1))
         done
         exec "$@"
-    done
-    /bin/busybox sleep 1
+    fi
+    /bin/busybox sleep 0.1
     n=$((n + 1))
 done
-
 echo "wayland-app: no wayland socket in $XDG_RUNTIME_DIR after 60s" >&2
 exit 1

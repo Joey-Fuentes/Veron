@@ -99,3 +99,6 @@ depends-on = hotplug
 #                 makes "no factor, no desktop" structural rather than
 #                 a property of any process's lifetime.
 depends-on = session-gate
+# after splash: the wallpaper is already on the panel when labwc takes the
+# DRM device, and swaybg then draws the same image -- no black frame between.
+depends-on = splash

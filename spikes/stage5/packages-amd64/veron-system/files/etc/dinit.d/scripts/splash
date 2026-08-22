@@ -1,18 +1,44 @@
 #!/bin/busybox sh
-# The wallpaper, on the framebuffer, before anything else has a face --
-# and again on the way down. RULED (Joe, 2026-08-18): boot and shutdown
-# show no console chatter on the panel, black screen at worst, and the
-# splash IS the desktop wallpaper so every transition's seam is visible
-# to the eye that tests it: wallpaper (this, on fb0) -> wallpaper
-# (labwc+swaybg, same pixels) -> mouse -> yambar. Serial stays verbose:
-# ttyS0 is where the evidence lives, and the panel's silence is a
-# loglevel decision (fragment v10), not a truncation.
+# splash -- the wallpaper on the framebuffer, BEFORE the compositor and AFTER it.
 #
-# busybox fbsplash, PPM, drawn at the panel's top-left. The image is
-# the shipped wallpaper.png converted once at authoring time -- swaybg
-# reads PNG, fbsplash reads PPM, and shipping both spellings costs 3 MB
-# against a slot with hundreds free.
+# WHEN IT PAINTS DECIDES WHETHER ANYONE SEES IT. The first version ran right
+# after early-filesystems and painted /dev/fb0 -- which at that second is the
+# firmware framebuffer (simpledrm). One second later the coldplug modprobe
+# loaded the real GPU driver, simpledrm was torn down, the panel reset, and
+# the new driver's fb0 came up black. Painted, then erased, then nothing
+# until labwc: the "quiet black screen" since the day it was added. So this
+# service is ordered AFTER hotplug (the final driver is in, fb0 is the one
+# the panel will keep) and labwc is ordered after THIS, so the wallpaper is
+# on the panel from the driver handoff until labwc's first frame -- which,
+# with swaybg, is the same wallpaper. One image, no flash.
+#
+# THE IMAGE IS CENTERED. fbsplash neither scales nor centers; the ppm is
+# 1366x768 and a different panel would show it top-left with black around.
+# The framebuffer's size is read from sysfs and the offsets handed to
+# fbsplash through its -i config. A panel smaller than the image gets the
+# image's top-left, which is what fbsplash does with an offset of 0.
+#
+# `down` repaints it for shutdown, after labwc has stopped; the same fb0, now
+# without a DRM master, shows it until the power goes.
 set -u
-[ -e /dev/fb0 ] || exit 0            # no framebuffer, nothing to paint
-[ "${1:-}" = down ] && exec /bin/busybox fbsplash -s /usr/share/veron/wallpaper.ppm -d /dev/fb0
-exec /bin/busybox fbsplash -s /usr/share/veron/wallpaper.ppm -d /dev/fb0
+IMG=/usr/share/veron/wallpaper.ppm
+[ -e /dev/fb0 ] || exit 0               # no framebuffer, nothing to paint
+[ -s "$IMG" ]   || exit 0
+
+ini=/run/splash.ini
+left=0; top=0
+size=$(/bin/busybox cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)  # "W,H"
+if [ -n "$size" ]; then
+    fw=${size%,*}; fh=${size#*,}
+    # ppm header: "P6\n<w> <h>\n255\n" -- second whitespace-separated token
+    # is the width, third the height
+    set -- $(/bin/busybox head -c 32 "$IMG" | /bin/busybox tr '\n' ' ')
+    iw=${2:-0}; ih=${3:-0}
+    case "$fw$fh$iw$ih" in *[!0-9]*) ;; *)
+        [ "$fw" -gt "$iw" ] && left=$(( (fw - iw) / 2 ))
+        [ "$fh" -gt "$ih" ] && top=$(( (fh - ih) / 2 ))
+    ;; esac
+fi
+printf 'IMG_LEFT=%s\nIMG_TOP=%s\n' "$left" "$top" > "$ini" 2>/dev/null || ini=
+
+exec /bin/busybox fbsplash -s "$IMG" -d /dev/fb0 -c ${ini:+-i "$ini"}

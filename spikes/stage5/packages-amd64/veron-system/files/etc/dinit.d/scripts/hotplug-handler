@@ -107,6 +107,13 @@ block)
         # partitions) all no-op after the first succeeds. Backgrounded:
         # the enumeration wait can hold 12s and hotplug must not.
         [ -S /run/dinitctl ] || exit 0
+        # THE BOOT REPLAY IS NOT AN INSERTION. Before this, every boot re-
+        # announced the root stick's own partitions, media started, found
+        # nothing to mount, and dinit logged "[FAILED] media" on a machine
+        # with nothing plugged in. The kernel spawns this helper with no
+        # environment, so the replay marks itself with a file for its
+        # duration: /run/veron-coldplug exists only while hotplug-start runs.
+        [ -e /run/veron-coldplug ] && exit 0
         DINIT_SOCKET_PATH=/run/dinitctl /usr/bin/dinitctl start media \
             >/dev/null 2>&1 &
         ;;
