@@ -66,12 +66,28 @@ if [ -w /proc/sys/kernel/hotplug ]; then
     #    forks than five classes, but it runs once, before the desktop, and a
     #    working display is not negotiable; the handler is cheap per event
     #    (modprobe on add+MODALIAS, then a chgrp).
-    n=0
-    for u in $(/bin/busybox find /sys/devices -name uevent -type f 2>/dev/null); do
-        echo add > "$u" 2>/dev/null && n=$((n + 1))
-    done
-    echo "hotplug: coldplug replay complete ($n device uevents re-announced)"
+    # EXPERIMENT 1 (reversible): the per-device uevent replay below forks the
+    # handler ~1200 times on real hardware (PID 202->1412, ~10.6s, t=3.4->14.0
+    # in dmesg) and amdgpu only loads at its tail (t=14.8). This SKIPS the
+    # storm to test whether the batch modprobe above already loaded the GPU --
+    # if the display still comes up and boot is ~10s faster, the storm was
+    # waste. To restore: delete this block, un-comment the loop below.
+    /bin/busybox mkdir -p /persist/boot-logs 2>/dev/null || true
+    {
+        echo "EXPERIMENT-1 no-replay boot at uptime=$(/bin/busybox awk '{print $1;exit}' /proc/uptime)s"
+        echo "  DRM cards after batch-only: $(/bin/busybox ls /dev/dri 2>/dev/null | /bin/busybox tr '\n' ' ')"
+        echo "  amdgpu loaded: $(/bin/busybox lsmod 2>/dev/null | /bin/busybox grep -c '^amdgpu')"
+    } >> /persist/boot-logs/experiment1.log 2>/dev/null || true
+    echo "hotplug: EXPERIMENT 1 -- coldplug replay SKIPPED (batch modprobe only)"
     exit 0
+
+    # ---- original replay, disabled for experiment 1 ----
+    # n=0
+    # for u in $(/bin/busybox find /sys/devices -name uevent -type f 2>/dev/null); do
+    #     echo add > "$u" 2>/dev/null && n=$((n + 1))
+    # done
+    # echo "hotplug: coldplug replay complete ($n device uevents re-announced)"
+    # exit 0
 fi
 echo "VERON-HOTPLUG-NONE  /proc/sys/kernel/hotplug is not writable"
 echo "  boot-time devices keep devtmpfs defaults; modules will not"
