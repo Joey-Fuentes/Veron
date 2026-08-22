@@ -1,0 +1,85 @@
+#!/bin/busybox sh
+# boot-capture -- one file per boot, in /persist, that turns "boot is slow /
+# black / no yambar half the time" into evidence. It runs LAST in the boot
+# (waits-for the desktop services), reads the kernel's own uptime for a t=0
+# that is the machine powering on -- not this script starting -- and records:
+#   * how many seconds each desktop service took to reach STARTED
+#   * the current state of every service (so a failed/among-restarts one shows)
+#   * labwc's and yambar's own logs (the compositor and the bar say why)
+#   * the DRM cards/connectors and fb0 (was there a display when labwc started)
+#   * whether the wifi tile ("dominoes") script has produced output yet
+#
+# It writes to /persist/boot-logs/<uptime>-<result>.log and updates a "latest"
+# symlink, keeping the last 10. After a bad boot: hand over
+# /persist/boot-logs/latest. Nothing here changes system state; it only reads.
+set -u
+LOGDIR=/persist/boot-logs
+[ -d /persist ] || exit 0                      # no persist, nowhere to write; not a failure
+/bin/busybox mkdir -p "$LOGDIR" 2>/dev/null || exit 0
+
+now=$(/bin/busybox awk '{print $1; exit}' /proc/uptime 2>/dev/null)
+# result: did the desktop actually come up? yambar STARTED and a DRM card = good.
+ds() { DINIT_SOCKET_PATH=/run/dinitctl /usr/bin/dinitctl status "$1" 2>/dev/null; }
+yambar_state=$(ds yambar | /bin/busybox awk '/State:/{print $2; exit}')
+have_card=no; [ -e /dev/dri/card0 ] && have_card=yes
+result=ok
+[ "$yambar_state" = STARTED ] || result=NO-YAMBAR
+[ "$have_card" = yes ] || result=NO-DRM
+
+f="$LOGDIR/$(printf '%08.1f' "$now" 2>/dev/null || echo "$now")-$result.log"
+{
+    echo "==== VERON BOOT CAPTURE ===="
+    echo "uptime at capture : ${now}s   (t=0 is power-on; this is how long to a settled desktop)"
+    echo "result            : $result"
+    echo "kernel cmdline    : $(/bin/busybox cat /proc/cmdline)"
+    echo
+    echo "---- service states (STARTED = up; anything else at boot's end is a problem) ----"
+    for s in early-filesystems hotplug device-nodes seatd xdg-runtime splash labwc swaybg yambar veron-idle wpa dhcp sound; do
+        echo "  $(printf '%-18s' "$s") $(ds "$s" | /bin/busybox awk '/State:/{print $2} /Activation:/{printf " (%s %s)", $2,$3}')"
+    done
+    echo
+    echo "---- DRM / framebuffer (was there a display for labwc?) ----"
+    for c in /sys/class/drm/card*; do
+        [ -e "$c" ] || continue
+        echo "  ${c##*/}: status=$(/bin/busybox cat $c/status 2>/dev/null) enabled=$(/bin/busybox cat $c/enabled 2>/dev/null) driver=$(/bin/busybox basename $(/bin/busybox readlink $c/device/driver 2>/dev/null) 2>/dev/null)"
+    done
+    echo "  /dev/dri: $(/bin/busybox ls /dev/dri 2>&1)"
+    echo "  /dev/fb0: $(/bin/busybox ls -l /dev/fb0 2>&1)"
+    echo "  fb0 size: $(/bin/busybox cat /sys/class/graphics/fb0/virtual_size 2>&1)"
+    echo
+    echo "---- the wifi tile ('dominoes') data source ----"
+    # DO NOT spawn the live report (yambar owns it). Read the facts it reads,
+    # so a black-boot capture shows whether the tile HAD data: the wireless
+    # interface, its operstate, and whether wpa/dhcp were up when yambar
+    # started. If there is no interface yet at boot's end, the tile has
+    # nothing to show and stays on its grey default until wifi-report's next
+    # 5s tick -- which is the "no dominoes until I restart yambar" report.
+    _wif=""
+    for _n in /sys/class/net/*; do [ -d "$_n/wireless" ] && { _wif=${_n##*/}; break; }; done
+    if [ -n "$_wif" ]; then
+        echo "  wireless iface   : $_wif  operstate=$(/bin/busybox cat /sys/class/net/$_wif/operstate 2>/dev/null)"
+        echo "  wpa/dhcp state   : wpa=$(ds wpa | /bin/busybox awk '/State:/{print $2}') dhcp=$(ds dhcp | /bin/busybox awk '/State:/{print $2}')"
+    else
+        echo "  wireless iface   : NONE present at boot's end -- the wifi tile has no data to show yet"
+    fi
+    echo
+    echo "---- /run/labwc.log (compositor) ----"
+    /bin/busybox tail -40 /run/labwc.log 2>&1 | /bin/busybox sed 's/^/  /'
+    echo
+    echo "---- /run/yambar.log (bar; 'tag not found' spam or a real error shows here) ----"
+    /bin/busybox tail -40 /run/yambar.log 2>&1 | /bin/busybox sed 's/^/  /'
+    echo
+    echo "---- last kernel messages ----"
+    /bin/busybox dmesg 2>/dev/null | /bin/busybox tail -25 | /bin/busybox sed 's/^/  /'
+    echo "==== END ===="
+} > "$f" 2>&1
+
+/bin/busybox ln -sf "$(/bin/busybox basename "$f")" "$LOGDIR/latest" 2>/dev/null
+# keep the last 10 captures
+n=0
+for old in $(/bin/busybox ls -1t "$LOGDIR"/*.log 2>/dev/null); do
+    n=$((n + 1))
+    [ "$n" -gt 10 ] && /bin/busybox rm -f "$old" 2>/dev/null
+done
+echo "boot-capture: wrote $f (result=$result, ${now}s to settled desktop)"
+exit 0

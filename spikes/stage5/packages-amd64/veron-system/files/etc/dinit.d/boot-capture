@@ -1,0 +1,11 @@
+# boot-capture -- writes /persist/boot-logs/<uptime>-<result>.log at the end of
+# every boot: per-service timing, labwc+yambar logs, DRM state, wifi-tile data.
+# Diagnostic only, reads nothing it should not; runs after the desktop so the
+# snapshot reflects a settled (or failed-to-settle) session. Handed a bad boot,
+# /persist/boot-logs/latest says which service was slow, which raced, and why.
+type = scripted
+command = /bin/busybox sh /etc/dinit.d/scripts/boot-capture
+restart = false
+depends-on = yambar
+depends-on = swaybg
+waits-for = veron-idle
