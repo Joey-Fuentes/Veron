@@ -73,7 +73,8 @@ OUT=$(cd "$OUT" && pwd)
 SER="$OUT/maintenance-serial.log"
 SOCK="$OUT/maint-mon.sock"
 FIFO="$OUT/maint-console.in"
-rm -f "$SER" "$SOCK" "$FIFO" "$OUT"/0?-*.png "$OUT"/probe.ppm "$OUT"/shot.ppm
+rm -f "$SER" "$SER.timed" "$SOCK" "$FIFO" "$OUT"/0?-*.png "$OUT"/probe.ppm "$OUT"/shot.ppm "$OUT"/qemu.pid
+qpid=0
 mkfifo "$FIFO"
 
 fail=0
@@ -112,20 +113,29 @@ qemu-system-x86_64 \
     -drive if=none,id=d0,format=raw,file="$IMG",snapshot=on \
     -vga none -device virtio-gpu-pci \
     -device virtio-keyboard-pci -device virtio-tablet-pci \
-    -serial stdio \
+    -serial stdio -pidfile "$OUT/qemu.pid" \
     -monitor unix:"$SOCK",server,nowait \
-    < "$FIFO" > "$SER" 2>&1 &
-qpid=$!
+    < "$FIFO" 2>&1 | tee "$SER" | python3 -u -c '
+# EVERY SERIAL LINE, STAMPED WITH WALL SECONDS SINCE QEMU STARTED. dinit does
+# not timestamp its lines and the kernel only stamps its own; a boot is judged
+# by WHEN the desktop parts arrived, not in what order.
+import sys, time
+t0 = time.monotonic()
+for line in sys.stdin:
+    sys.stdout.write("[%8.3f] %s" % (time.monotonic() - t0, line))
+' > "$SER.timed" &
+pipe=$!
 
 cleanup() {
-    kill "$qpid" "$holder" 2>/dev/null; sleep 1
-    kill -9 "$qpid" "$holder" 2>/dev/null
-    wait "$qpid" 2>/dev/null
-    rm -f "$SOCK" "$FIFO" "$OUT"/probe.ppm "$OUT"/shot.ppm
+    [ "${qpid:-0}" != 0 ] && kill "$qpid" 2>/dev/null; kill "$holder" 2>/dev/null; sleep 1
+    [ "${qpid:-0}" != 0 ] && kill -9 "$qpid" 2>/dev/null; kill -9 "$holder" 2>/dev/null
+    wait "$pipe" 2>/dev/null
+    rm -f "$SOCK" "$FIFO" "$OUT"/probe.ppm "$OUT"/shot.ppm "$OUT"/qemu.pid
 }
 
-for _ in $(seq 1 30); do [ -S "$SOCK" ] && break; sleep 1; done
-[ -S "$SOCK" ] || { bad "qemu never opened its monitor socket"; tail -20 "$SER"; cleanup; exit 1; }
+for _ in $(seq 1 30); do [ -S "$SOCK" ] && [ -s "$OUT/qemu.pid" ] && break; sleep 1; done
+qpid=$(cat "$OUT/qemu.pid" 2>/dev/null || echo 0)
+[ -S "$SOCK" ] && [ "$qpid" != 0 ] || { bad "qemu never opened its monitor socket"; tail -20 "$SER"; cleanup; exit 1; }
 
 alive() { kill -0 "$qpid" 2>/dev/null; }
 mon()   { python3 "$MON" "$SOCK" "$@" 2>/dev/null; }
@@ -422,6 +432,39 @@ grep -aq "MG-LOG:.*running from RAM" "$SER" \
     || bad "the maintenance log is missing from /run (hidden by a later tmpfs mount?)"
 
 cleanup
+
+# ---- the boot timelines -----------------------------------------------------
+# Seconds from the kernel's handoff to init until each desktop part reported,
+# per boot. This is the number "the boot feels slow" turns into.
+echo "=== boot timelines (seconds after the kernel started init) ==="
+python3 - "$SER.timed" <<'PY'
+import re, sys
+lines = open(sys.argv[1], errors="replace").read().splitlines()
+marks = [("init",  r"Run /usr/bin/veron-(maintenance-)?init as init process"),
+         ("early-filesystems", r"OK  \] early-filesystems"),
+         ("hotplug", r"OK  \] hotplug"),
+         ("labwc",   r"OK  \] labwc"),
+         ("yambar",  r"OK  \] yambar"),
+         ("swaybg",  r"OK  \] swaybg"),
+         ("boot complete", r"OK  \] boot")]
+boots, cur = [], None
+for l in lines:
+    m = re.match(r"\[\s*([0-9.]+)\] (.*)", l)
+    if not m: continue
+    t, body = float(m.group(1)), m.group(2)
+    if re.search(marks[0][1], body):
+        cur = {"init": t}; boots.append(cur); continue
+    if cur is None: continue
+    for name, pat in marks[1:]:
+        if name not in cur and re.search(pat, body): cur[name] = t
+for i, b in enumerate(boots, 1):
+    t0 = b["init"]
+    print("  boot %d:" % i, "  ".join("%s +%.1fs" % (n, b[n]-t0) for n, _ in marks[1:] if n in b))
+    missing = [n for n, _ in marks[1:] if n not in b]
+    if missing: print("  boot %d: never reported: %s" % (i, ", ".join(missing)))
+PY
+grep -a "restarting too quickly\|\[FAILED\]\|No such file or directory\|wayland-app:" "$SER" | sort | uniq -c | sort -rn | head -10 | sed 's/^/  noise: /'
+
 after_sha=$(sha256sum "$IMG" | cut -d' ' -f1)
 note "image after:  $after_sha"
 [ "$before_sha" = "$after_sha" ] \
