@@ -4190,7 +4190,7 @@ package llvm 22.1.8
 package qemu 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   4ea8fc62c31af55bf783ec69afc23534c433c602a7047c0b9ffe70efb839a5ab
+  recipe-sha   43e85934e5a509300baff7607b903e39bb09a30cc8de6eb29384b02df9e18878
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4210,6 +4210,7 @@ package qemu 11.0.3
          argv ["tar", "-xf", "dl/qemu-11.0.3.tar.xz", "-C", "build/qemu-11.0.3"]
     [02] configure
          cwd  build/qemu-11.0.3/qemu-11.0.3
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
          argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-vnc --disable-gtk --disable-sdl --disable-opengl --audio-drv-list="]
     [03] build
          cwd  build/qemu-11.0.3/qemu-11.0.3
@@ -4225,7 +4226,7 @@ package qemu 11.0.3
 package qemu-user 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   9a377b3feec2ed1ee15cfcd8d1204489d9d6dabd98ce255ff3f597da01d98ea7
+  recipe-sha   3d338ded51c9497c5f6b4dc8c1134f758b357ea0f98fed2dc66a9b2740ec9f8b
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4245,6 +4246,7 @@ package qemu-user 11.0.3
          argv ["tar", "-xf", "dl/qemu-11.0.3.tar.xz", "-C", "build/qemu-user-11.0.3"]
     [02] configure
          cwd  build/qemu-user-11.0.3/qemu-user-11.0.3
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
          argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-linux-user --disable-system --disable-tools --disable-docs --disable-werror --disable-guest-agent --disable-rust"]
     [03] build
          cwd  build/qemu-user-11.0.3/qemu-user-11.0.3

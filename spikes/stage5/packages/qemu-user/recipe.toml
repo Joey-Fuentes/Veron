@@ -53,6 +53,16 @@ run  = [["tar", "-xf", "$DL/qemu-11.0.3.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "configure"
 cwd  = "$S"
+# CMAKE IS SET HERE BECAUSE THE POLICY CANNOT REACH THIS STEP, AND THE
+# SECOND CONFIGURE FAILURE (run 88492797957) IS THE MEASUREMENT. policy
+# [tool_env.meson] keys on argv[0], and this step's argv[0] is sh: qemu
+# runs meson from inside its own configure, one exec away from where the
+# policy looks. Undefined $CMAKE let meson find the staged cmake 4.2.3
+# and die parsing its trace output at meson.build:1818 -- the exact
+# crash the policy exists to prevent, one wrapper deeper. The value is
+# the policy's own, stated per the defaults.toml rule that a recipe
+# declaring a name outright wins.
+env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend" }
 run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-linux-user --disable-system --disable-tools --disable-docs --disable-werror --disable-guest-agent --disable-rust"]]
 
 [[steps]]
