@@ -69,6 +69,21 @@ for cmd in cmds:
                 time.sleep(0.03)
         continue
 
+    # --moves=dx:dy,dx:dy,... SENDS ONE mouse_move PER PACKET WITH A REAL
+    # GAP, mirroring --keys. The gap is what makes PS/2 motion deterministic:
+    # libinput's adaptive profile accelerates by VELOCITY (filter.c:
+    # DEFAULT_THRESHOLD 0.4 units/ms, gain 1.0 below it, up to 2.0 above), so
+    # a 200px delta in one event is near-infinite speed and lands at ~1.85x,
+    # which is exactly what run 16 measured. 8px every 30ms is 267px/s, under
+    # the 400px/s threshold with margin: 1:1, every packet, no curve to guess.
+    if cmd.startswith("--moves="):
+        for mv in cmd.split("=", 1)[1].split(","):
+            if mv:
+                dx, dy = mv.split(":")
+                s.sendall(("mouse_move " + dx + " " + dy + "\n").encode())
+                time.sleep(0.03)
+        continue
+
     s.sendall((cmd + "\n").encode())
     if wait:
         time.sleep(wait)

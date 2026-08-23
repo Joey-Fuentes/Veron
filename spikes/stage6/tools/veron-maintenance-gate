@@ -200,9 +200,17 @@ prompt() {
 # 15.0s, a quarter-second before the answer landed. A legitimate "not found"
 # was reported as a host TIMEOUT every try. The guest decides; the host only
 # has to still be listening when it does: its ceiling is the guest's plus 5s.
+# THE SUCCESS CHECK IS SCOPED TO THIS ATTEMPT. The serial log is cumulative
+# across both boots, and run 16 showed boot 2's probe for foot running its
+# full 15s ceiling -- foot never launched on the maintenance desktop, the
+# frame is empty -- yet wait_proc returned success because its grep found
+# boot 1's MG-PROC-foot-UP further up the same log. The miss was reported as
+# a hit and the real failure was hidden. Now the log is marked before the
+# probe is typed and only lines after the mark count.
 wait_proc() {
+    _pm=$(mark)
     ask "n=0; while [ \$n -lt $(($2 * 10)) ]; do for c in /proc/[0-9]*/comm; do [ \"\$(cat \$c 2>/dev/null)\" = $1 ] && { echo MG-PROC-$1-UP; break 2; }; done; n=\$((n+1)); sleep 0.1; done" "$3" "$(($2 + 5))" \
-        && grep -aq "MG-PROC-$1-UP" "$SER"
+        && tail -n "+$_pm" "$SER" | grep -aq "MG-PROC-$1-UP"
 }
 
 # follow_until REGEX SECONDS [COUNT] [fromnow] -- THE ONE STREAM PRIMITIVE.
@@ -302,6 +310,20 @@ type_line() {
 # open_flasher -- Super+Return until foot shows, then `veron-flasher`, then
 # wait for its white log pane. Prints the pane's "x y w h rows".
 open_flasher() {
+    # THE COMPOSITOR MUST BE ACCEPTING INPUT BEFORE A KEY IS SENT. The retry
+    # loop below exists because, as its own comment says, "a press before
+    # the compositor is up lands on an empty VT and does nothing" -- retries
+    # were papering over a missing wait. Run 16 showed it plainly: on boot 2
+    # Super+Return went out 0.3s after [ OK ] labwc, before the compositor
+    # served clients, and foot never launched; boot 1 only passed because
+    # unrelated probes gave labwc seconds to settle first. The real event:
+    # a yambar PROCESS exists. yambar is launched through wayland-app, which
+    # blocks until the Wayland socket is live and connectable, so yambar
+    # running means a client has connected and the compositor is serving.
+    # ([ OK ] yambar is NOT that event -- dinit prints it 1ms after labwc,
+    # when the wrapper has merely started.) Same primitive as the foot and
+    # flasher waits, no sleep, both boots correct by construction.
+    wait_proc yambar 30 "39+0" || { note "yambar never came up -- the compositor is not serving clients"; return 1; }
     _foot=""
     # Super+Return is repeated because the desktop's readiness is not on the
     # serial line (labwc logs to /run/labwc.log); a press before the
@@ -421,19 +443,27 @@ prompt
 
 # ROUTE 1: THE POINTER. Motion in a few steps (libinput wants to see the
 # device move before it believes a button), then press, then release.
-# move_by DX DY -- relative motion in steps no larger than 255 per axis. A
-# PS/2 packet carries a signed 9-bit delta per axis; qemu's ps2 emulation
-# clamps a larger delta to that range per packet, so one `mouse_move 417 157`
-# can deliver 255 pixels of x and silently lose the rest. Stepping keeps
-# every packet inside the protocol, whatever qemu does with the excess.
+# move_by DX DY -- relative motion as a stream of SMALL packets with a real
+# gap, in one monitor call. Two things make PS/2 motion deterministic and
+# both are here. (1) Packet size: a PS/2 packet carries a signed 9-bit delta,
+# so nothing larger than 255 can ever be sent; qemu clamps. (2) Velocity:
+# libinput's adaptive profile (the image's default) accelerates by speed --
+# filter.c DEFAULT_THRESHOLD is 0.4 units/ms, gain 1.0 below, rising to 2.0
+# above -- and a 200px delta in one event is effectively infinite speed,
+# which is why run 16 landed at 1.85x and overshot off-screen. 8px every
+# 30ms is 267px/s, under the 400px/s threshold with margin, so every packet
+# is delivered 1:1. The packets go in ONE --moves call so the 30ms gap is a
+# real wall-clock gap that libinput's velocity trackers see, not a process
+# spawn per pixel.
 move_by() {
-    _dx=$1; _dy=$2
+    _dx=$1; _dy=$2; _list=""
     while [ "$_dx" -ne 0 ] || [ "$_dy" -ne 0 ]; do
-        _sx=$_dx; [ "$_sx" -gt 200 ] && _sx=200; [ "$_sx" -lt -200 ] && _sx=-200
-        _sy=$_dy; [ "$_sy" -gt 200 ] && _sy=200; [ "$_sy" -lt -200 ] && _sy=-200
-        mon "mouse_move $_sx $_sy" >/dev/null
+        _sx=$_dx; [ "$_sx" -gt 8 ] && _sx=8; [ "$_sx" -lt -8 ] && _sx=-8
+        _sy=$_dy; [ "$_sy" -gt 8 ] && _sy=8; [ "$_sy" -lt -8 ] && _sy=-8
+        _list="$_list,$_sx:$_sy"
         _dx=$((_dx - _sx)); _dy=$((_dy - _sy))
     done
+    mon "--moves=${_list#,}" >/dev/null
 }
 
 # THE MOUSE IS PS/2 AND SPEAKS RELATIVE DELTAS, not tablet absolutes. The
@@ -445,7 +475,11 @@ move_by() {
 # then moving by exactly the button's pixel offset. Motion in steps so
 # libinput sees the device move before it believes a button.
 mon "info mice" | sed 's/^/    mice: /'
-move_by -4000 -4000
+# THE PIN IS FAST ON PURPOSE. It only has to reach the corner; acceleration
+# is irrelevant when the cursor saturates at the screen edge, and 8px
+# packets would take 15s to travel 4000. Large packets, clamped by the PS/2
+# protocol to 255 each, get there in a few dozen events.
+mon "--moves=-200:-200,-200:-200,-200:-200,-200:-200,-200:-200,-200:-200,-200:-200,-200:-200,-200:-200,-200:-200" >/dev/null
 # A FRAME PER STEP. Run 15 showed the cursor at (0,0) after the whole
 # sequence: the pin landed, the two positive moves contributed nothing. Two
 # mechanisms fit and cannot be told apart from the final frame alone -- the
