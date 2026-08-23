@@ -133,13 +133,6 @@ cleanup() {
     rm -f "$SOCK" "$FIFO" "$OUT"/probe.ppm "$OUT"/shot.ppm "$OUT"/qemu.pid
 }
 
-await_file "$OUT/qemu.pid" 30
-qpid=$(cat "$OUT/qemu.pid" 2>/dev/null || echo 0)
-[ -S "$SOCK" ] && [ "$qpid" != 0 ] || { bad "qemu never opened its monitor socket"; tail -20 "$SER"; cleanup; exit 1; }
-
-alive() { kill -0 "$qpid" 2>/dev/null; }
-mon()   { python3 "$MON" "$SOCK" "$@" 2>/dev/null; }
-
 # await_file PATH SECONDS -- wait for PATH to exist and be non-empty. This is
 # a kernel event (inotify) when inotifywait is installed, which the workflow
 # does. The poll branch exists only so the tool still runs on a machine
@@ -153,6 +146,24 @@ await_file() {
     _i=0; while [ ! -s "$1" ] && [ "$_i" -lt "$(($2 * 10))" ]; do _i=$((_i + 1)); /bin/sleep 0.1; done
     [ -s "$1" ]
 }
+
+# BOTH the pidfile and the monitor socket: qemu creates them at different
+# moments, and the original loop waited for both. await_file covers the
+# pidfile; the socket is a second inotify wait on the same directory (it is
+# a socket inode, so -s does not apply -- test -S).
+await_file "$OUT/qemu.pid" 30
+_i=0; while [ ! -S "$SOCK" ] && [ "$_i" -lt 30 ]; do
+    command -v inotifywait >/dev/null 2>&1 \
+        && timeout 1 inotifywait -q -e create "$OUT" >/dev/null 2>&1 \
+        || /bin/sleep 0.1
+    _i=$((_i + 1))
+done
+qpid=$(cat "$OUT/qemu.pid" 2>/dev/null || echo 0)
+[ -S "$SOCK" ] && [ "$qpid" != 0 ] || { bad "qemu never opened its monitor socket"; tail -20 "$SER"; cleanup; exit 1; }
+
+alive() { kill -0 "$qpid" 2>/dev/null; }
+mon()   { python3 "$MON" "$SOCK" "$@" 2>/dev/null; }
+
 
 # prompt -- nudge the serial shell with a newline and wait for its prompt to
 # come back, rather than sleeping a guessed second and hoping it has.
