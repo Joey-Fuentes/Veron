@@ -1,0 +1,92 @@
+name    = "qemu"
+version = "11.0.3"
+group   = "system"
+license = "GPL-2.0-only"
+
+# THE TARGET LIST IS THE TRUST DECISION, so it is stated here rather than
+# discovered from a flag: aarch64-softmmu ONLY, and --disable-install-blobs.
+#
+# The -M virt machine boots a kernel from -kernel/-initrd with NO firmware
+# at all, so this target can be shipped with zero borrowed bytes today.
+# x86_64-softmmu is DELIBERATELY ABSENT: the pc machine loads SeaBIOS even
+# for direct -kernel boots, the tarball's pc-bios/*.bin are prebuilt
+# binaries, and building SeaBIOS from the vendored roms/seabios source
+# needs a compiler that can emit 32-bit x86 -- which a non-multilib
+# stage-4 gcc must be MEASURED to do, not assumed. When that probe passes,
+# x86_64-softmmu plus a seabios-from-source step is a one-recipe change;
+# until then, absence is honest and --disable-install-blobs makes the
+# no-borrowed-bytes claim structural rather than a promise.
+#
+# WHAT THIS BUYS NOW: the amd64 machine can boot and gate the aarch64
+# arm's images -- full-system, blob-free -- which is the half of
+# self-hosting that does not need firmware.
+#
+# sha256 measured from the maintainer-supplied tarball. The mirror-upload
+# run is the crosscheck: it fetches this URL from upstream and refuses a
+# tarball that hashes differently.
+
+[source]
+url       = "https://download.qemu.org/qemu-11.0.3.tar.xz"
+sha256    = "da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523"
+signature = "none -- download.qemu.org publishes digests, not detached signatures"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "python", "bash", "pkgconf", "glib", "pixman", "zlib", "pcre2", "dtc"]
+link         = ["glib", "pixman", "zlib", "dtc"]
+runtime      = ["glib", "pixman", "zlib", "dtc"]
+# EVERY auto FEATURE THAT COULD SILENTLY ATTACH IS NAMED OFF. qemu's
+# configure probes the world; in a sandbox the world is small today and
+# larger tomorrow, and glib's libelf lesson says a package added twenty
+# rungs later must not change what qemu is.
+optional_off = ["rust", "docs", "guest-agent", "slirp", "vnc", "gtk", "sdl", "opengl", "alsa", "pa", "curl", "libssh", "gnutls", "nettle", "gcrypt", "auth-pam", "kvm-x86-note: kvm is host-arch; an aarch64 guest on x86_64 uses tcg"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--target-list=aarch64-softmmu", "--disable-install-blobs", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust", "--disable-vnc", "--disable-gtk", "--disable-sdl", "--disable-opengl", "--audio-drv-list="]
+packaged_as     = ["qemu-system-aarch64", "qemu-base"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed, and qemu is large. The surface is cut instead: one \
+target, serial console, no display backends, no network slirp, no crypto \
+libraries, no installed firmware. qemu-img ships (--enable-tools default) \
+because image surgery is the other half of what the gates do. The vendored \
+subprojects/packagecache holds Rust crates only; --disable-rust means the \
+sandbox never opens it."""
+
+[installs]
+prefixes = ["usr/bin", "usr/share/qemu"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/qemu-11.0.3.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+# OUT-OF-TREE IS ENFORCED BY UPSTREAM: configure refuses to run in the
+# source root, so the shape matches meson packages' _b convention.
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-vnc --disable-gtk --disable-sdl --disable-opengl --audio-drv-list="]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-C", "_b", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "-C", "_b", "DESTDIR=$D", "install"]]
+
+[[steps]]
+name = "no-borrowed-bytes"
+cwd  = "$S"
+# THE CLAIM, CHECKED WHERE IT IS MADE: nothing under usr/share/qemu may be
+# a prebuilt firmware image. --disable-install-blobs should leave only
+# keymaps and descriptors; this step is what notices if an upstream
+# release quietly widens what "blobs" excludes.
+run  = [["sh", "-c", "! find $D/usr/share/qemu -name '*.bin' -o -name '*.rom' -o -name '*.img' -o -name '*.fd' 2>/dev/null | grep -q . || { echo 'VERON-QEMU-BLOB-LEAK'; find $D/usr/share/qemu -name '*.bin' -o -name '*.rom' -o -name '*.img' -o -name '*.fd'; exit 1; }"]]
+[guest]
+test   = [["sh", "-c", "/usr/bin/qemu-system-aarch64 --version | head -1"]]
+expect = ["QEMU emulator version 11.0.3"]

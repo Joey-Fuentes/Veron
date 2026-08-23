@@ -1,0 +1,68 @@
+# OVERLAY, AND THE DELTA IS --disable-static BECOMING --enable-static.
+# glib-2.0.pc lists libpcre2-8 in Requires.private, so a --static link of
+# qemu-user resolves through pkgconf to -lpcre2-8 and needs the archive;
+# the base recipe deliberately ships none. Everything else, including the
+# 16- and 32-bit libraries glib needs, is the base recipe reproduced
+# whole; selftest holds version, url and sha256 equal.
+name    = "pcre2"
+version = "10.47"
+group   = "build-substrate"
+license = "BSD-3-Clause-with-exception"
+
+# Version, digest, licence and build system all measured by `probe url`,
+# from the URL the LFS book records. The book supplies a route; the pin is
+# ours.
+
+[source]
+url       = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.bz2"
+sha256    = "47fe8c99461250d42f89e6e8fdaeba9da057855d06eb7fc08d9ca03fd08d7bc7"
+signature = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.bz2.sig"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = ["readline", "bzip2", "zlib", "valgrind"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--enable-static", "--enable-unicode", "--enable-jit", "--enable-pcre2-16", "--enable-pcre2-32"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed; the base recipe's readline/bzip2/zlib reasoning \
+applies unchanged. The archives add files to usr/lib and change nothing \
+already installed -- the re-seeded install digest is what proves that."""
+
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/doc", "usr/share/man"]
+files    = 239
+digest   = "UNSEEDED FOR THIS OVERLAY -- base digest e540ecb0 describes the archive-less build; first seed_installs run measures this one"
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/pcre2-10.47.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--enable-static",
+         "--enable-unicode", "--enable-jit",
+         "--enable-pcre2-16", "--enable-pcre2-32"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[[steps]]
+name = "archives-present"
+cwd  = "$S"
+run  = [["sh", "-c", "ls $D/usr/lib/libpcre2-8.a >/dev/null || { echo 'VERON-PCRE2-NO-ARCHIVE'; ls $D/usr/lib/ | head -40; exit 1; }"]]
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libpcre2-8"]]
+expect = ["10.47"]

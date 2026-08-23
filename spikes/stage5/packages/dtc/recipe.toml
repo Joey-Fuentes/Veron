@@ -1,0 +1,68 @@
+name    = "dtc"
+version = "1.8.1"
+group   = "build-substrate"
+license = "GPL-2.0-or-later OR BSD-2-Clause"
+
+# EXISTS FOR ONE CONSUMER: qemu needs libfdt for aarch64 system emulation,
+# and qemu's tarball carries dtc only as a meson wrap -- a DOWNLOAD at
+# configure time, which the network-less sandbox rightly cannot perform. So
+# the library is a package, pinned like everything else.
+#
+# Pin taken from kernel.org's PGP-signed sha256sums.asc (2026-05-28), not
+# from a mirror of a mirror. The .tar.sign covers the uncompressed tar, per
+# kernel.org convention.
+
+[source]
+url       = "https://www.kernel.org/pub/software/utils/dtc/dtc-1.8.1.tar.xz"
+sha256    = "23526015a6f1550e0541a53fe7acea1b5a11e3697cdf3a3bdc076abc38f6045d"
+signature = "https://www.kernel.org/pub/software/utils/dtc/dtc-1.8.1.tar.sign"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf"]
+link         = []
+runtime      = []
+# -Dtools=false IS WHAT KEEPS flex AND bison OUT OF THE SET. The dtc
+# compiler binary needs both; libfdt -- the only thing qemu links -- needs
+# neither. bison has no recipe here, and this flag is the reason it does
+# not need one.
+optional_off = ["tools", "python", "yaml", "valgrind", "tests"]
+
+[declared]
+configure_flags = ["-Dtools=false", "-Dpython=disabled", "-Dyaml=disabled", "-Dvalgrind=disabled", "-Dtests=false", "-Ddefault_library=both"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. libfdt only: flattened device tree read/write, \
+consumed by qemu-system-aarch64 to build the virt machine's DTB. \
+-Ddefault_library=both ships libfdt.a beside the .so so a later static \
+qemu does not need this recipe touched again."""
+
+[installs]
+prefixes = ["usr/include", "usr/lib", "usr/lib/pkgconfig"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/dtc-1.8.1.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dtools=false", "-Dpython=disabled", "-Dyaml=disabled",
+         "-Dvalgrind=disabled", "-Dtests=false", "-Ddefault_library=both"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libfdt"]]
+expect = ["1.8.1"]

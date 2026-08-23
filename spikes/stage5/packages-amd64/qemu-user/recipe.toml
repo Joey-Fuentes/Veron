@@ -1,0 +1,82 @@
+name    = "qemu-user"
+version = "11.0.3"
+group   = "system"
+license = "GPL-2.0-only"
+
+# THE OVERLAY THAT EXISTS TO REPLACE ONE WORD: --static. This is the
+# provenance closer -- spikes/toolbox/README.md's qemu-aarch64-static is
+# "copied from /usr/bin", the one measured-but-not-built link in the chain,
+# and this recipe is what replaces it with a binary the pipeline made.
+# Static because the hermetic stage 0-4 sysroots are aarch64-only: no
+# x86_64 loader, no host libc to lean on. Static against glibc carries the
+# known NSS caveat (dlopen of libnss_* at runtime); qemu-user does not
+# walk those paths -- guest binaries bring their own libc -- which is why
+# every distro ships exactly this shape.
+#
+# Needs the OVERLAY glib and pcre2 (default_library=both / --enable-static)
+# -- the base copies ship no archives, which is also why the BASE
+# qemu-user is dynamic: it has to build on the arm that has none.
+#
+# [source] is byte-equal to the base recipe's; selftest enforces that.
+
+[source]
+url       = "https://download.qemu.org/qemu-11.0.3.tar.xz"
+sha256    = "da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523"
+signature = "none -- download.qemu.org publishes digests, not detached signatures"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "python", "bash", "pkgconf", "glib", "zlib", "pcre2"]
+link         = ["glib", "zlib", "pcre2"]
+runtime      = []
+optional_off = ["rust", "docs", "guest-agent", "system", "tools", "pixman"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--static", "--target-list=aarch64-linux-user", "--disable-system", "--disable-tools", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust"]
+packaged_as     = ["qemu-user-static"]
+verification    = "no-DT_NEEDED asserted by the static-or-die step below"
+deferral        = """
+Internals not reviewed. Identical target and cuts to the base recipe; the \
+deltas are --static, the -static suffix on the installed name (matching \
+what stage 0-4 workflows and the toolbox README already invoke), and \
+runtime deps emptied because a static binary carries its closure."""
+
+[installs]
+prefixes = ["usr/bin"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/qemu-11.0.3.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-linux-user --disable-system --disable-tools --disable-docs --disable-werror --disable-guest-agent --disable-rust"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-C", "_b", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "-C", "_b", "DESTDIR=$D", "install"]]
+
+[[steps]]
+name = "static-suffix"
+cwd  = "$S"
+run  = [["mv", "$D/usr/bin/qemu-aarch64", "$D/usr/bin/qemu-aarch64-static"]]
+
+[[steps]]
+name = "static-or-die"
+cwd  = "$S"
+# THE PROPERTY THE NAME PROMISES, CHECKED WHERE IT IS MADE. A dynamic
+# binary called -static would fail exactly where it matters most: inside
+# a sysroot with no loader, far from this log.
+run  = [["sh", "-c", "! readelf -d $D/usr/bin/qemu-aarch64-static 2>/dev/null | grep -q NEEDED || { echo 'VERON-QEMU-NOT-STATIC'; readelf -d $D/usr/bin/qemu-aarch64-static | grep NEEDED; exit 1; }"]]
+[guest]
+test   = [["sh", "-c", "/usr/bin/qemu-aarch64-static --version | head -1"]]
+expect = ["qemu-aarch64 version 11.0.3"]

@@ -417,6 +417,35 @@ jobs:
           echo "  an amd64 recipe must name whichever triple appears above;"
           echo "  gmp currently names aarch64-veron-linux-gnu -- AMD64.md."
 
+      # REPORTS, NEVER GATES -- same rule as the step above. THE MEASUREMENT
+      # THAT UNBLOCKS x86_64-softmmu: packages/qemu ships aarch64-softmmu
+      # only, because the pc machine loads SeaBIOS even for -kernel boots
+      # and building SeaBIOS from the tarball's vendored roms/seabios needs
+      # a compiler that can EMIT 32-bit x86. SeaBIOS is -ffreestanding
+      # -nostdlib, so no 32-bit libc or crt is required -- codegen is the
+      # whole question, which is why the probe compiles and does not link.
+      # VERON-M32-YES in this log is the licence to add x86_64-softmmu and
+      # a seabios build step to the qemu recipe; VERON-M32-NO means the
+      # options are a multilib stage-4 gcc or an i386-elf cross package,
+      # and the qemu recipe's header stays true either way.
+      - name: 'Can the sysroot gcc emit 32-bit x86 (SeaBIOS question)'
+        run: |
+          set -eu
+          cd spikes/stage5
+          printf 'int main(void){return 0;}\n' > /tmp/m32-probe.c
+          if bwrap --unshare-all --die-with-parent \
+              --bind sysroot / \
+              --ro-bind /tmp/m32-probe.c /tmp/m32-probe.c \
+              --proc /proc --dev /dev --tmpfs /build \
+              --setenv PATH /usr/bin:/usr/sbin:/bin \
+              /usr/bin/gcc -m32 -ffreestanding -c /tmp/m32-probe.c \
+                -o /build/m32-probe.o 2> /tmp/m32-probe.err; then
+            echo "VERON-M32-YES  the sysroot gcc can emit 32-bit x86"
+          else
+            echo "VERON-M32-NO  the sysroot gcc cannot emit 32-bit x86:"
+            sed 's/^/    /' /tmp/m32-probe.err | head -5
+          fi
+
       # AIRLOCK. Network lives here and nowhere else. Fetch goes through the
       # mirror so a dead upstream costs a fallback rather than the run.
       - name: 'Fetch pinned sources through the mirror'
@@ -2766,6 +2795,52 @@ jobs:
               echo "the repository at this commit."
             } > PROVENANCE
             sed 's/^/    /' PROVENANCE
+            # ---- TOOLS: THE PIPELINE'S OWN QEMU, PUBLISHED BESIDE THE ----
+            # ---- IMAGE, INSIDE THE SAME TWO-PHASE VERIFY ----
+            # RULED (Joe, 2026-08-23): the local toolbox retires into the
+            # stage-5 release. qemu-aarch64-static is built by
+            # packages-amd64/qemu-user -- static, so it runs on any x86_64
+            # Linux host regardless of libc: this runner, an Ubuntu
+            # workstation, the hermetic aarch64-only sysroots of stages 0-4.
+            # Publishing it HERE rather than a toolbox tag means it rides
+            # the INCOMPLETE marker, the delete-then-upload discipline and
+            # the name-presence verify below, none of which a side tag gets.
+            # Guarded on existence: a run whose plan stopped short of
+            # qemu-user publishes an image and simply no tools bundle.
+            #
+            # GPL-2.0-only BINARY, AND THE SOURCE OFFER IS STRUCTURAL: the
+            # WHENCE names the exact tarball sha, its mirror route in
+            # sources/MIRRORS.tsv, and the recipe at this commit -- the
+            # corresponding source is one pinned download away, which is
+            # the offer, in writing, beside the bytes.
+            if [ -x ../dest/qemu-user/usr/bin/qemu-aarch64-static ]; then
+              tdir=$(mktemp -d)
+              mkdir "$tdir/veron-tools"
+              cp ../dest/qemu-user/usr/bin/qemu-aarch64-static "$tdir/veron-tools/"
+              qsha=$(sha256sum "$tdir/veron-tools/qemu-aarch64-static" | cut -d' ' -f1)
+              {
+                echo "veron-tools (x86_64 host binaries)"
+                echo
+                echo "qemu-aarch64-static  $qsha"
+                echo "  built by packages-amd64/qemu-user at commit ${GITHUB_SHA}"
+                echo "  run ${GITHUB_RUN_ID}; static, no DT_NEEDED (asserted"
+                echo "  by the recipe's static-or-die step)."
+                echo "  licence GPL-2.0-only; source is qemu-11.0.3.tar.xz,"
+                echo "  sha256 in the recipe's [source], mirrored per"
+                echo "  sources/MIRRORS.tsv at this commit."
+                echo "  Replaces spikes/toolbox/qemu-aarch64-static, whose"
+                echo "  provenance was 'copied from /usr/bin' -- this one is"
+                echo "  made, not borrowed."
+              } > "$tdir/veron-tools/WHENCE"
+              sed 's/^/    /' "$tdir/veron-tools/WHENCE"
+              tar -C "$tdir" -cf - veron-tools | zstd -19 -T0 -q \
+                > tools-x86_64.tar.zst
+              sha256sum tools-x86_64.tar.zst > TOOLS-SHA256
+              rm -rf "$tdir"
+              assets="$assets tools-x86_64.tar.zst TOOLS-SHA256"
+            else
+              echo "  no dest/qemu-user static binary -- tools bundle skipped, stated not silent"
+            fi
             assets="$assets PROVENANCE"
             echo "  uploading (delete-then-upload, per asset): $assets"
             # REPRODUCIBILITY INSTRUMENTATION: log the FULL identity -- path,

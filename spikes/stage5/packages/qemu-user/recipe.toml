@@ -1,0 +1,64 @@
+name    = "qemu-user"
+version = "11.0.3"
+group   = "system"
+license = "GPL-2.0-only"
+
+# WHY THIS IS DYNAMIC WHEN THE POINT IS A STATIC BINARY: the overlay cannot
+# introduce a package -- a name absent from the base tree is refused -- so
+# the name must exist here, and the base recipe must BUILD on the aarch64
+# arm, whose glib ships no static archives. So the base builds the dynamic
+# qemu-aarch64 (works everywhere, links the glib every arm already has) and
+# packages-amd64/qemu-user REPLACES it with the --static build against the
+# overlay's static glib and pcre2. Read that recipe for the published
+# toolbox binary; read this one for what the aarch64 arm gets.
+#
+# Same tarball as qemu; the mirror dedupes by sha, so the source is stored
+# once and pinned twice, and selftest holds the two [source] tables equal.
+
+[source]
+url       = "https://download.qemu.org/qemu-11.0.3.tar.xz"
+sha256    = "da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523"
+signature = "none -- download.qemu.org publishes digests, not detached signatures"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "python", "bash", "pkgconf", "glib", "zlib", "pcre2"]
+link         = ["glib", "zlib"]
+runtime      = ["glib", "zlib"]
+optional_off = ["rust", "docs", "guest-agent", "system", "tools", "pixman"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--target-list=aarch64-linux-user", "--disable-system", "--disable-tools", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust"]
+packaged_as     = ["qemu-user"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. One linux-user target: aarch64, because the trust \
+chain's stage 0-4 lineage is aarch64 and this is the binary that lets any \
+host walk it. pixman is not linked: linux-user has no display."""
+
+[installs]
+prefixes = ["usr/bin"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/qemu-11.0.3.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-linux-user --disable-system --disable-tools --disable-docs --disable-werror --disable-guest-agent --disable-rust"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-C", "_b", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "-C", "_b", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["sh", "-c", "/usr/bin/qemu-aarch64 --version | head -1"]]
+expect = ["qemu-aarch64 version 11.0.3"]

@@ -103,72 +103,75 @@ between this file and the recipes fails the run.
   81. bubblewrap
   82. cmake
   83. dav1d
-  84. fribidi
-  85. glib
-  86. libdisplay-info
-  87. libdrm
-  88. libevdev
-  89. libpsl
-  90. libsfdo
-  91. libxkbcommon
-  92. mako
-  93. opus
-  94. orc
-  95. p11-kit
-  96. pcsc-lite
-  97. pixman
-  98. seatd
-  99. tllist
-  100. wayland
-  101. wayland-protocols
-  102. xkeyboard-config
-  103. brotli
-  104. ccid
-  105. ffmpeg
-  106. gnutls
-  107. graphene
-  108. graphite2
-  109. gstreamer
-  110. json-c
-  111. libinput
-  112. libjpeg-turbo
-  113. llvm
-  114. shared-mime-info
-  115. utf8proc
-  116. wl-clipboard
-  117. chrony
-  118. glib-networking
-  119. gnupg
-  120. harfbuzz
-  121. libwebp
-  122. mesa
-  123. freetype
-  124. libepoxy
-  125. libsoup
-  126. wlroots
-  127. fontconfig
-  128. cairo
-  129. fcft
-  130. foot
-  131. fuzzel
-  132. pango
-  133. swaybg
-  134. veron-auth
-  135. yambar
-  136. fltk
-  137. gst-plugins-base
-  138. labwc
-  139. gst-libav
-  140. gst-plugins-bad
-  141. gst-plugins-good
-  142. veron-about
-  143. veron-edit
-  144. veron-filechooser
-  145. veron-flasher
-  146. veron-pinentry
-  147. wpewebkit
-  148. wpe-platform-veron
-  149. veron-browser
+  84. dtc
+  85. fribidi
+  86. glib
+  87. libdisplay-info
+  88. libdrm
+  89. libevdev
+  90. libpsl
+  91. libsfdo
+  92. libxkbcommon
+  93. mako
+  94. opus
+  95. orc
+  96. p11-kit
+  97. pcsc-lite
+  98. pixman
+  99. seatd
+  100. tllist
+  101. wayland
+  102. wayland-protocols
+  103. xkeyboard-config
+  104. brotli
+  105. ccid
+  106. ffmpeg
+  107. gnutls
+  108. graphene
+  109. graphite2
+  110. gstreamer
+  111. json-c
+  112. libinput
+  113. libjpeg-turbo
+  114. llvm
+  115. qemu
+  116. qemu-user
+  117. shared-mime-info
+  118. utf8proc
+  119. wl-clipboard
+  120. chrony
+  121. glib-networking
+  122. gnupg
+  123. harfbuzz
+  124. libwebp
+  125. mesa
+  126. freetype
+  127. libepoxy
+  128. libsoup
+  129. wlroots
+  130. fontconfig
+  131. cairo
+  132. fcft
+  133. foot
+  134. fuzzel
+  135. pango
+  136. swaybg
+  137. veron-auth
+  138. yambar
+  139. fltk
+  140. gst-plugins-base
+  141. labwc
+  142. gst-libav
+  143. gst-plugins-bad
+  144. gst-plugins-good
+  145. veron-about
+  146. veron-edit
+  147. veron-filechooser
+  148. veron-flasher
+  149. veron-pinentry
+  150. wpewebkit
+  151. wpe-platform-veron
+  152. veron-browser
 
 ======================================================================
 package bzip2 1.0.8
@@ -664,7 +667,7 @@ package pass 1.7.4
 package pcre2 10.47
   group        build-substrate
   license      BSD-3-Clause-with-exception
-  recipe-sha   41c2594b2819d78af4bdc0d0db7764882cd15b5bfba712aff5b6c0c78be0bf2b
+  recipe-sha   7d5390c0110b39c3a952b17c01349360ead2cc5ea530f626bae9706725976e5e
 
   source
     url        https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.bz2
@@ -684,13 +687,16 @@ package pcre2 10.47
          argv ["tar", "-xf", "dl/pcre2-10.47.tar.bz2", "-C", "build/pcre2-10.47"]
     [02] configure
          cwd  build/pcre2-10.47/pcre2-10.47
-         argv ["./configure", "--prefix=/usr", "--disable-static", "--enable-unicode", "--enable-jit", "--enable-pcre2-16", "--enable-pcre2-32"]
+         argv ["./configure", "--prefix=/usr", "--enable-static", "--enable-unicode", "--enable-jit", "--enable-pcre2-16", "--enable-pcre2-32"]
     [03] build
          cwd  build/pcre2-10.47/pcre2-10.47
          argv ["make", "-j1"]
     [04] install
          cwd  build/pcre2-10.47/pcre2-10.47
          argv ["make", "DESTDIR=dest/pcre2", "install"]
+    [05] archives-present
+         cwd  build/pcre2-10.47/pcre2-10.47
+         argv ["sh", "-c", "ls dest/pcre2/usr/lib/libpcre2-8.a >/dev/null || { echo 'VERON-PCRE2-NO-ARCHIVE'; ls dest/pcre2/usr/lib/ | head -40; exit 1; }"]
 
 ======================================================================
 package perl 5.44.0
@@ -3068,6 +3074,40 @@ package dav1d 1.5.4
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package dtc 1.8.1
+  group        build-substrate
+  license      GPL-2.0-or-later OR BSD-2-Clause
+  recipe-sha   081276a8940ded3d575e61f345047bf1bca258c58d177e433da609cd4822955a
+
+  source
+    url        https://www.kernel.org/pub/software/utils/dtc/dtc-1.8.1.tar.xz
+    sha256     23526015a6f1550e0541a53fe7acea1b5a11e3697cdf3a3bdc076abc38f6045d
+    signature  https://www.kernel.org/pub/software/utils/dtc/dtc-1.8.1.tar.sign
+    correspond none
+
+  deps
+    build        meson, ninja, pkgconf
+    link         -
+    runtime      -
+    optional_off python, tests, tools, valgrind, yaml
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/dtc-1.8.1
+         argv ["tar", "-xf", "dl/dtc-1.8.1.tar.xz", "-C", "build/dtc-1.8.1"]
+    [02] setup
+         cwd  build/dtc-1.8.1/dtc-1.8.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dtools=false", "-Dpython=disabled", "-Dyaml=disabled", "-Dvalgrind=disabled", "-Dtests=false", "-Ddefault_library=both"]
+    [03] build
+         cwd  build/dtc-1.8.1/dtc-1.8.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/dtc-1.8.1/dtc-1.8.1
+         env  DESTDIR=dest/dtc
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package fribidi 1.0.16
   group        text-rendering
   license      LGPL-2.1-or-later
@@ -3105,7 +3145,7 @@ package fribidi 1.0.16
 package glib 2.86.4
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   8c896bea85588238a1d51718dc3e7d470a119d453997de1d8a9759a00ef6263c
+  recipe-sha   0a3ac911180223b4f861cd84e7b6941f2abcd710b38da2f4dadf2d0e53937fc2
 
   source
     url        https://download.gnome.org/sources/glib/2.86/glib-2.86.4.tar.xz
@@ -3129,7 +3169,7 @@ package glib 2.86.4
     [02] setup
          cwd  build/glib-2.86.4/glib-2.86.4
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled", "-Dlibelf=disabled"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled", "-Dlibelf=disabled", "-Ddefault_library=both"]
     [03] build
          cwd  build/glib-2.86.4/glib-2.86.4
          argv ["ninja", "-C", "_b"]
@@ -3137,6 +3177,9 @@ package glib 2.86.4
          cwd  build/glib-2.86.4/glib-2.86.4
          env  DESTDIR=dest/glib
          argv ["ninja", "-C", "_b", "install"]
+    [05] archives-present
+         cwd  build/glib-2.86.4/glib-2.86.4
+         argv ["sh", "-c", "ls dest/glib/usr/lib/libglib-2.0.a >/dev/null || { echo 'VERON-GLIB-NO-ARCHIVE'; ls dest/glib/usr/lib/ | head -40; exit 1; }"]
 
 ======================================================================
 package libdisplay-info 0.4.0
@@ -4088,6 +4131,79 @@ package llvm 22.1.8
          cwd  build/llvm-22.1.8/llvm-project-22.1.8.src
          env  DESTDIR=dest/llvm
          argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package qemu 11.0.3
+  group        system
+  license      GPL-2.0-only
+  recipe-sha   43dfc6653270e842ec5f62d5ee7065c0117f701159af74a27dfc1bb3397489a3
+
+  source
+    url        https://download.qemu.org/qemu-11.0.3.tar.xz
+    sha256     da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523
+    signature  none -- download.qemu.org publishes digests, not detached signatures
+    correspond none
+
+  deps
+    build        bash, dtc, glib, meson, ninja, pcre2, pixman, pkgconf, python, zlib
+    link         dtc, glib, pixman, zlib
+    runtime      dtc, glib, pixman, zlib
+    optional_off alsa, auth-pam, curl, docs, gcrypt, gnutls, gtk, guest-agent, kvm-x86-note: kvm is host-arch; an aarch64 guest on x86_64 uses tcg, libssh, nettle, opengl, pa, rust, sdl, slirp, vnc
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/qemu-11.0.3
+         argv ["tar", "-xf", "dl/qemu-11.0.3.tar.xz", "-C", "build/qemu-11.0.3"]
+    [02] configure
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-vnc --disable-gtk --disable-sdl --disable-opengl --audio-drv-list="]
+    [03] build
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["make", "-C", "_b", "-j1"]
+    [04] install
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["make", "-C", "_b", "DESTDIR=dest/qemu", "install"]
+    [05] no-borrowed-bytes
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "! find dest/qemu/usr/share/qemu -name '*.bin' -o -name '*.rom' -o -name '*.img' -o -name '*.fd' 2>/dev/null | grep -q . || { echo 'VERON-QEMU-BLOB-LEAK'; find dest/qemu/usr/share/qemu -name '*.bin' -o -name '*.rom' -o -name '*.img' -o -name '*.fd'; exit 1; }"]
+
+======================================================================
+package qemu-user 11.0.3
+  group        system
+  license      GPL-2.0-only
+  recipe-sha   91bdb8e76378c6ad4800dbabaab0180aaaac0788513350dbad24e9e884ac2114
+
+  source
+    url        https://download.qemu.org/qemu-11.0.3.tar.xz
+    sha256     da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523
+    signature  none -- download.qemu.org publishes digests, not detached signatures
+    correspond none
+
+  deps
+    build        bash, glib, meson, ninja, pcre2, pkgconf, python, zlib
+    link         glib, pcre2, zlib
+    runtime      -
+    optional_off docs, guest-agent, pixman, rust, system, tools
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/qemu-user-11.0.3
+         argv ["tar", "-xf", "dl/qemu-11.0.3.tar.xz", "-C", "build/qemu-user-11.0.3"]
+    [02] configure
+         cwd  build/qemu-user-11.0.3/qemu-user-11.0.3
+         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-linux-user --disable-system --disable-tools --disable-docs --disable-werror --disable-guest-agent --disable-rust"]
+    [03] build
+         cwd  build/qemu-user-11.0.3/qemu-user-11.0.3
+         argv ["make", "-C", "_b", "-j1"]
+    [04] install
+         cwd  build/qemu-user-11.0.3/qemu-user-11.0.3
+         argv ["make", "-C", "_b", "DESTDIR=dest/qemu-user", "install"]
+    [05] static-suffix
+         cwd  build/qemu-user-11.0.3/qemu-user-11.0.3
+         argv ["mv", "dest/qemu-user/usr/bin/qemu-aarch64", "dest/qemu-user/usr/bin/qemu-aarch64-static"]
+    [06] static-or-die
+         cwd  build/qemu-user-11.0.3/qemu-user-11.0.3
+         argv ["sh", "-c", "! readelf -d dest/qemu-user/usr/bin/qemu-aarch64-static 2>/dev/null | grep -q NEEDED || { echo 'VERON-QEMU-NOT-STATIC'; readelf -d dest/qemu-user/usr/bin/qemu-aarch64-static | grep NEEDED; exit 1; }"]
 
 ======================================================================
 package shared-mime-info 2.5.1
