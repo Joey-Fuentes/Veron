@@ -1,0 +1,61 @@
+name    = "python-setuptools"
+version = "84.0.0"
+group   = "build-substrate"
+license = "MIT"
+
+# EXISTS BECAUSE qemu's CONFIGURE SAYS SO, AND THE PYTHON RULING SAYS HOW.
+# qemu builds a NON-ISOLATED venv and its pythondeps.toml [tooling] group
+# expects setuptools "guaranteed via configure from system packages, or
+# python packages we vendor" -- qemu vendors qemu.qmp but not setuptools,
+# and this set's python recipe (rightly) ships no pip and no ensurepip
+# installs. Run 88488793190 is the measurement: mkvenv walked to pypi.org,
+# the sandbox has no network, VERON-BUILD-FAIL qemu configure rc=1.
+#
+# THE RULING IS HONOURED, NOT WORKED AROUND. What that recipe forbids is
+# pip fetching unpinned code and wheels HIDDEN inside another artifact.
+# This wheel is neither: a first-class pinned source with its own sha256,
+# mirrored like every tarball, and installed by python's stdlib zipfile --
+# a wheel IS a zip of .py files plus dist-info, auditable by unzipping.
+# No pip runs in this recipe and none is installed to the system.
+#
+# WHY A WHEEL AND NOT THE sdist: installing the sdist requires a build
+# backend, and setuptools' backend is setuptools -- the bootstrap circle
+# every distro breaks exactly this way. The dist-info the wheel carries is
+# load-bearing: importlib.metadata is how qemu's mkvenv checks the version.
+
+[source]
+url       = "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl"
+sha256    = "51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670"
+signature = "none -- pypi publishes per-file sha256; digest read from pypi.org/project/setuptools/#files"
+crosschecked_against = []
+
+[deps]
+build        = ["python"]
+link         = []
+runtime      = ["python"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "install-time import against $D asserts the version importlib.metadata reports"
+deferral        = """
+Internals not reviewed; pure python, no compiled code, no scripts \
+installed -- import surface only, which is all qemu's venv consults \
+through --system-site-packages."""
+
+[installs]
+prefixes = ["usr/lib/python3.14/site-packages"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+[[steps]]
+name = "install"
+cwd  = "$B"
+run  = [["sh", "-c", "mkdir -p $D/usr/lib/python3.14/site-packages && python3 -m zipfile -e $DL/setuptools-84.0.0-py3-none-any.whl $D/usr/lib/python3.14/site-packages/"]]
+
+[[steps]]
+name = "importable-or-die"
+cwd  = "$B"
+run  = [["sh", "-c", "PYTHONPATH=$D/usr/lib/python3.14/site-packages python3 -c 'import importlib.metadata as m; v=m.version(\"setuptools\"); assert v==\"84.0.0\", v; import setuptools; print(\"setuptools\", v)'"]]
+[guest]
+test   = [["python3", "-c", "import importlib.metadata as m; print(m.version('setuptools'))"]]
+expect = ["84.0.0"]

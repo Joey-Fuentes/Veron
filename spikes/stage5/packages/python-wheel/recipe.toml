@@ -1,0 +1,52 @@
+name    = "python-wheel"
+version = "0.48.0"
+group   = "build-substrate"
+license = "MIT"
+
+# THE SMALLER TWIN OF python-setuptools; read that recipe for the whole
+# argument. One extra irony worth recording: setuptools >= 70.1 no longer
+# needs this package at all (upstream wheel's own README says install it
+# "only if you intend to use the wheel command line tool"), but qemu's
+# pythondeps.toml [tooling] group checks for the DISTRIBUTION by name with
+# accepted >= 0.34.2, so its absence fails configure regardless of whether
+# any code path imports it. 33 KB buys the check.
+#
+# The .whl is published via PyPI trusted publishing with a sigstore
+# attestation (transparency entry 2426854769); the sha below matches the
+# attested subject digest.
+
+[source]
+url       = "https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl"
+sha256    = "3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab"
+signature = "sigstore -- attested subject digest, transparency entry 2426854769 (pypi.org/project/wheel/#files)"
+crosschecked_against = []
+
+[deps]
+build        = ["python"]
+link         = []
+runtime      = ["python"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "install-time import against $D asserts the version importlib.metadata reports"
+deferral        = """
+Internals not reviewed; pure python. The wheel CLI entry point is not \
+installed -- import surface only, which is all the [tooling] check reads."""
+
+[installs]
+prefixes = ["usr/lib/python3.14/site-packages"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+[[steps]]
+name = "install"
+cwd  = "$B"
+run  = [["sh", "-c", "mkdir -p $D/usr/lib/python3.14/site-packages && python3 -m zipfile -e $DL/wheel-0.48.0-py3-none-any.whl $D/usr/lib/python3.14/site-packages/"]]
+
+[[steps]]
+name = "importable-or-die"
+cwd  = "$B"
+run  = [["sh", "-c", "PYTHONPATH=$D/usr/lib/python3.14/site-packages python3 -c 'import importlib.metadata as m; v=m.version(\"wheel\"); assert v==\"0.48.0\", v; import wheel; print(\"wheel\", v)'"]]
+[guest]
+test   = [["python3", "-c", "import importlib.metadata as m; print(m.version('wheel'))"]]
+expect = ["0.48.0"]

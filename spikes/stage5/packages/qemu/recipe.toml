@@ -32,7 +32,12 @@ signature = "none -- download.qemu.org publishes digests, not detached signature
 crosschecked_against = []
 
 [deps]
-build        = ["meson", "ninja", "python", "bash", "pkgconf", "glib", "pixman", "zlib", "pcre2", "dtc"]
+# python-setuptools AND python-wheel ARE CONFIGURE DEPENDENCIES, FOUND BY
+# BUILDING (run 88488793190): qemu's mkvenv builds a non-isolated venv and
+# its [tooling] group expects both from SYSTEM site-packages; absent, pip
+# walked to pypi.org and the network-less sandbox failed the step. The
+# venv then installs only qemu's own vendored wheels, offline.
+build        = ["meson", "ninja", "python", "bash", "pkgconf", "python-setuptools", "python-wheel", "glib", "pixman", "zlib", "pcre2", "dtc"]
 link         = ["glib", "pixman", "zlib", "dtc"]
 runtime      = ["glib", "pixman", "zlib", "dtc"]
 # EVERY auto FEATURE THAT COULD SILENTLY ATTACH IS NAMED OFF. qemu's

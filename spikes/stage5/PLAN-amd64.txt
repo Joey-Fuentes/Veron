@@ -98,80 +98,82 @@ between this file and the recipes fails the run.
   76. meson
   77. ninja
   78. packaging
-  79. pyyaml
-  80. veron-cursors
-  81. bubblewrap
-  82. cmake
-  83. dav1d
-  84. dtc
-  85. fribidi
-  86. glib
-  87. libdisplay-info
-  88. libdrm
-  89. libevdev
-  90. libpsl
-  91. libsfdo
-  92. libxkbcommon
-  93. mako
-  94. opus
-  95. orc
-  96. p11-kit
-  97. pcsc-lite
-  98. pixman
-  99. seatd
-  100. tllist
-  101. wayland
-  102. wayland-protocols
-  103. xkeyboard-config
-  104. brotli
-  105. ccid
-  106. ffmpeg
-  107. gnutls
-  108. graphene
-  109. graphite2
-  110. gstreamer
-  111. json-c
-  112. libinput
-  113. libjpeg-turbo
-  114. llvm
-  115. qemu
-  116. qemu-user
-  117. shared-mime-info
-  118. utf8proc
-  119. wl-clipboard
-  120. chrony
-  121. glib-networking
-  122. gnupg
-  123. harfbuzz
-  124. libwebp
-  125. mesa
-  126. freetype
-  127. libepoxy
-  128. libsoup
-  129. wlroots
-  130. fontconfig
-  131. cairo
-  132. fcft
-  133. foot
-  134. fuzzel
-  135. pango
-  136. swaybg
-  137. veron-auth
-  138. yambar
-  139. fltk
-  140. gst-plugins-base
-  141. labwc
-  142. gst-libav
-  143. gst-plugins-bad
-  144. gst-plugins-good
-  145. veron-about
-  146. veron-edit
-  147. veron-filechooser
-  148. veron-flasher
-  149. veron-pinentry
-  150. wpewebkit
-  151. wpe-platform-veron
-  152. veron-browser
+  79. python-setuptools
+  80. python-wheel
+  81. pyyaml
+  82. veron-cursors
+  83. bubblewrap
+  84. cmake
+  85. dav1d
+  86. dtc
+  87. fribidi
+  88. glib
+  89. libdisplay-info
+  90. libdrm
+  91. libevdev
+  92. libpsl
+  93. libsfdo
+  94. libxkbcommon
+  95. mako
+  96. opus
+  97. orc
+  98. p11-kit
+  99. pcsc-lite
+  100. pixman
+  101. seatd
+  102. tllist
+  103. wayland
+  104. wayland-protocols
+  105. xkeyboard-config
+  106. brotli
+  107. ccid
+  108. ffmpeg
+  109. gnutls
+  110. graphene
+  111. graphite2
+  112. gstreamer
+  113. json-c
+  114. libinput
+  115. libjpeg-turbo
+  116. llvm
+  117. qemu
+  118. qemu-user
+  119. shared-mime-info
+  120. utf8proc
+  121. wl-clipboard
+  122. chrony
+  123. glib-networking
+  124. gnupg
+  125. harfbuzz
+  126. libwebp
+  127. mesa
+  128. freetype
+  129. libepoxy
+  130. libsoup
+  131. wlroots
+  132. fontconfig
+  133. cairo
+  134. fcft
+  135. foot
+  136. fuzzel
+  137. pango
+  138. swaybg
+  139. veron-auth
+  140. yambar
+  141. fltk
+  142. gst-plugins-base
+  143. labwc
+  144. gst-libav
+  145. gst-plugins-bad
+  146. gst-plugins-good
+  147. veron-about
+  148. veron-edit
+  149. veron-filechooser
+  150. veron-flasher
+  151. veron-pinentry
+  152. wpewebkit
+  153. wpe-platform-veron
+  154. veron-browser
 
 ======================================================================
 package bzip2 1.0.8
@@ -2848,6 +2850,58 @@ package packaging 26.3
          | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); PYTHONPATH="dest/packaging$SITE" python3 -c 'import packaging; print("  packaging from", packaging.__file__, packaging.__version__)'; PYTHONPATH="dest/packaging$SITE" python3 -c 'from packaging.version import Version; print("  mesa-style compare:", Version("1.4.0") >= Version("0.8.0"))'
 
 ======================================================================
+package python-setuptools 84.0.0
+  group        build-substrate
+  license      MIT
+  recipe-sha   6f0fc2425c5b73ad2f04778563516b79a8e276d459778d17d6005aefba7e9da1
+
+  source
+    url        https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl
+    sha256     51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670
+    signature  none -- pypi publishes per-file sha256; digest read from pypi.org/project/setuptools/#files
+    correspond none
+
+  deps
+    build        python
+    link         -
+    runtime      python
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] install
+         cwd  build/python-setuptools-84.0.0
+         argv ["sh", "-c", "mkdir -p dest/python-setuptools/usr/lib/python3.14/site-packages && python3 -m zipfile -e dl/setuptools-84.0.0-py3-none-any.whl dest/python-setuptools/usr/lib/python3.14/site-packages/"]
+    [02] importable-or-die
+         cwd  build/python-setuptools-84.0.0
+         argv ["sh", "-c", "PYTHONPATH=dest/python-setuptools/usr/lib/python3.14/site-packages python3 -c 'import importlib.metadata as m; v=m.version(\"setuptools\"); assert v==\"84.0.0\", v; import setuptools; print(\"setuptools\", v)'"]
+
+======================================================================
+package python-wheel 0.48.0
+  group        build-substrate
+  license      MIT
+  recipe-sha   897a47e75f2976a9af7945f722b625f514a81002f9ceb9c0208f6c67e2660b1e
+
+  source
+    url        https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl
+    sha256     3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab
+    signature  sigstore -- attested subject digest, transparency entry 2426854769 (pypi.org/project/wheel/#files)
+    correspond none
+
+  deps
+    build        python
+    link         -
+    runtime      python
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] install
+         cwd  build/python-wheel-0.48.0
+         argv ["sh", "-c", "mkdir -p dest/python-wheel/usr/lib/python3.14/site-packages && python3 -m zipfile -e dl/wheel-0.48.0-py3-none-any.whl dest/python-wheel/usr/lib/python3.14/site-packages/"]
+    [02] importable-or-die
+         cwd  build/python-wheel-0.48.0
+         argv ["sh", "-c", "PYTHONPATH=dest/python-wheel/usr/lib/python3.14/site-packages python3 -c 'import importlib.metadata as m; v=m.version(\"wheel\"); assert v==\"0.48.0\", v; import wheel; print(\"wheel\", v)'"]
+
+======================================================================
 package pyyaml 6.0.3
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
@@ -4136,7 +4190,7 @@ package llvm 22.1.8
 package qemu 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   43dfc6653270e842ec5f62d5ee7065c0117f701159af74a27dfc1bb3397489a3
+  recipe-sha   4ea8fc62c31af55bf783ec69afc23534c433c602a7047c0b9ffe70efb839a5ab
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4145,7 +4199,7 @@ package qemu 11.0.3
     correspond none
 
   deps
-    build        bash, dtc, glib, meson, ninja, pcre2, pixman, pkgconf, python, zlib
+    build        bash, dtc, glib, meson, ninja, pcre2, pixman, pkgconf, python, python-setuptools, python-wheel, zlib
     link         dtc, glib, pixman, zlib
     runtime      dtc, glib, pixman, zlib
     optional_off alsa, auth-pam, curl, docs, gcrypt, gnutls, gtk, guest-agent, kvm-x86-note: kvm is host-arch; an aarch64 guest on x86_64 uses tcg, libssh, nettle, opengl, pa, rust, sdl, slirp, vnc
@@ -4171,7 +4225,7 @@ package qemu 11.0.3
 package qemu-user 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   91bdb8e76378c6ad4800dbabaab0180aaaac0788513350dbad24e9e884ac2114
+  recipe-sha   9a377b3feec2ed1ee15cfcd8d1204489d9d6dabd98ce255ff3f597da01d98ea7
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4180,7 +4234,7 @@ package qemu-user 11.0.3
     correspond none
 
   deps
-    build        bash, glib, meson, ninja, pcre2, pkgconf, python, zlib
+    build        bash, glib, meson, ninja, pcre2, pkgconf, python, python-setuptools, python-wheel, zlib
     link         glib, pcre2, zlib
     runtime      -
     optional_off docs, guest-agent, pixman, rust, system, tools
