@@ -3023,7 +3023,7 @@ sits in the committed plan rather than beside it.
 package edk2-firmware stable202608
   group        system
   license      BSD-2-Clause-Patent
-  recipe-sha   0026ffedf484fe8308931e25a7e2ae3e279a9dce39ab9bb49f2ba4418ec56ad9
+  recipe-sha   d4d4e0e9ac8d0963d72c4a899539819b100f71ece7c894de56f273de71938e55
 
   source
     url        https://github.com/tianocore/edk2/archive/refs/tags/edk2-stable202608.tar.gz
@@ -3043,7 +3043,7 @@ package edk2-firmware stable202608
          argv ["tar", "-xf", "dl/edk2-stable202608.tar.gz", "-C", "build/edk2-firmware-stable202608"]
     [02] plant-submodules
          cwd  build/edk2-firmware-stable202608/edk2-edk2-stable202608
-         argv ["sh", "-c", "tar -xzf /usr/src/edk2/openssl.tar.gz --strip-components=1 -C CryptoPkg/Library/OpensslLib/openssl && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C BaseTools/Source/C/BrotliCompress/brotli && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 && tar -xzf /usr/src/edk2/mipisyst.tar.gz --strip-components=1 -C MdePkg/Library/MipiSysTLib/mipisyst && tar -xzf /usr/src/edk2/mbedtls.tar.gz --strip-components=1 -C CryptoPkg/Library/MbedTlsLib/mbedtls && tar -xzf /usr/src/edk2/libspdm.tar.gz --strip-components=1 -C SecurityPkg/DeviceSecurity/SpdmLib/libspdm"]
+         argv ["sh", "-c", "tar -xzf /usr/src/edk2/openssl.tar.gz --strip-components=1 -C CryptoPkg/Library/OpensslLib/openssl && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C BaseTools/Source/C/BrotliCompress/brotli && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C MdeModulePkg/Library/BrotliCustomDecompressLib/brotli && tar -xzf /usr/src/edk2/mipisyst.tar.gz --strip-components=1 -C MdePkg/Library/MipiSysTLib/mipisyst && tar -xzf /usr/src/edk2/mbedtls.tar.gz --strip-components=1 -C CryptoPkg/Library/MbedTlsLib/mbedtls && tar -xzf /usr/src/edk2/libspdm.tar.gz --strip-components=1 -C SecurityPkg/DeviceSecurity/SpdmLib/libspdm"]
     [03] basetools
          cwd  build/edk2-firmware-stable202608/edk2-edk2-stable202608
          argv ["make", "-C", "BaseTools", "-j1"]

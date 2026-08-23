@@ -44,6 +44,13 @@ crosschecked_against = []
 # is a different set from compile-required; both are now pinned, and a
 # container rebuild with exactly this set (seven others emptied) passed
 # metadata to the identical compile frontier.
+#
+# THE SECOND BROTLI EXTRACTION LOST ITS -C ONCE (run 88514828878): the
+# edit that appended the three dec-couriers consumed the target clause,
+# brotli unpacked into the TREE ROOT, MdeModulePkg's directory stayed
+# empty, and the parser said so -- while the run before that edit had
+# passed the same check. Every extraction below names its destination;
+# a tar without -C in this chain is wrong by construction.
 [deps]
 build        = ["python", "bash", "edk2-src-openssl", "edk2-src-brotli", "edk2-src-mipisyst", "edk2-src-mbedtls", "edk2-src-libspdm"]
 link         = []
@@ -73,7 +80,7 @@ run  = [["tar", "-xf", "$DL/edk2-stable202608.tar.gz", "-C", "$B"]]
 [[steps]]
 name = "plant-submodules"
 cwd  = "$S"
-run  = [["sh", "-c", "tar -xzf /usr/src/edk2/openssl.tar.gz --strip-components=1 -C CryptoPkg/Library/OpensslLib/openssl && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C BaseTools/Source/C/BrotliCompress/brotli && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 && tar -xzf /usr/src/edk2/mipisyst.tar.gz --strip-components=1 -C MdePkg/Library/MipiSysTLib/mipisyst && tar -xzf /usr/src/edk2/mbedtls.tar.gz --strip-components=1 -C CryptoPkg/Library/MbedTlsLib/mbedtls && tar -xzf /usr/src/edk2/libspdm.tar.gz --strip-components=1 -C SecurityPkg/DeviceSecurity/SpdmLib/libspdm"]]
+run  = [["sh", "-c", "tar -xzf /usr/src/edk2/openssl.tar.gz --strip-components=1 -C CryptoPkg/Library/OpensslLib/openssl && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C BaseTools/Source/C/BrotliCompress/brotli && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C MdeModulePkg/Library/BrotliCustomDecompressLib/brotli && tar -xzf /usr/src/edk2/mipisyst.tar.gz --strip-components=1 -C MdePkg/Library/MipiSysTLib/mipisyst && tar -xzf /usr/src/edk2/mbedtls.tar.gz --strip-components=1 -C CryptoPkg/Library/MbedTlsLib/mbedtls && tar -xzf /usr/src/edk2/libspdm.tar.gz --strip-components=1 -C SecurityPkg/DeviceSecurity/SpdmLib/libspdm"]]
 
 [[steps]]
 name = "basetools"
