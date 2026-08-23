@@ -37,8 +37,15 @@ sha256    = "bac40812213576c3025cf780c33d882f9e087a44201b1cd28a07f6d1eb54b76a"
 signature = "none published by upstream; sha pinned at first trusted fetch, run 88505453858"
 crosschecked_against = []
 
+# THE COURIER LIST GREW BY MEASUREMENT: run 88511513325 died in metadata
+# because .dec files DECLARE paths inside submodules no module compiles,
+# and build.py stats every one -- mipisyst (MdePkg.dec:33), mbedtls
+# (CryptoPkg.dec:34-36), libspdm (SecurityPkg.dec:26). Directory-required
+# is a different set from compile-required; both are now pinned, and a
+# container rebuild with exactly this set (seven others emptied) passed
+# metadata to the identical compile frontier.
 [deps]
-build        = ["python", "bash", "edk2-src-openssl", "edk2-src-brotli"]
+build        = ["python", "bash", "edk2-src-openssl", "edk2-src-brotli", "edk2-src-mipisyst", "edk2-src-mbedtls", "edk2-src-libspdm"]
 link         = []
 runtime      = []
 optional_off = ["secure-boot", "tpm", "network"]
@@ -66,7 +73,7 @@ run  = [["tar", "-xf", "$DL/edk2-stable202608.tar.gz", "-C", "$B"]]
 [[steps]]
 name = "plant-submodules"
 cwd  = "$S"
-run  = [["sh", "-c", "tar -xzf /usr/src/edk2/openssl.tar.gz --strip-components=1 -C CryptoPkg/Library/OpensslLib/openssl && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C BaseTools/Source/C/BrotliCompress/brotli && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C MdeModulePkg/Library/BrotliCustomDecompressLib/brotli"]]
+run  = [["sh", "-c", "tar -xzf /usr/src/edk2/openssl.tar.gz --strip-components=1 -C CryptoPkg/Library/OpensslLib/openssl && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C BaseTools/Source/C/BrotliCompress/brotli && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 && tar -xzf /usr/src/edk2/mipisyst.tar.gz --strip-components=1 -C MdePkg/Library/MipiSysTLib/mipisyst && tar -xzf /usr/src/edk2/mbedtls.tar.gz --strip-components=1 -C CryptoPkg/Library/MbedTlsLib/mbedtls && tar -xzf /usr/src/edk2/libspdm.tar.gz --strip-components=1 -C SecurityPkg/DeviceSecurity/SpdmLib/libspdm"]]
 
 [[steps]]
 name = "basetools"

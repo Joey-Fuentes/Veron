@@ -1,0 +1,46 @@
+name       = "edk2-src-libspdm"
+version    = "f55cf6d4"
+group      = "build-substrate"
+license    = "BSD-3-Clause"
+build_only = true
+
+# A SOURCE COURIER FOR A DIRECTORY THE PARSER DEMANDS, NOT CODE A BUILD
+# COMPILES. Run 88511513325 measured the distinction the consumed-objects
+# trial missed: SecurityPkg.dec:26 declares an include path inside this submodule,
+# and edk2's build.py validates every declared path EXISTS before any
+# module compiles -- absent, the build dies in metadata at 2 seconds
+# ("error 000E: File/directory not found"). A container rebuild with only
+# the dec-declared set planted and seven other submodules emptied passed
+# metadata and reached the identical compile frontier, which is the
+# sufficiency proof. Pin from run 88505453858; $DL name computed by
+# mirror.artifact_name itself (BARE, like brotli's: a sha beginning with a letter slips the starts-with-a-digit version heuristic).
+
+[source]
+url       = "https://github.com/DMTF/libspdm/archive/f55cf6d48ec69b4ac60a63903e9c6a2cb0fd155d.tar.gz"
+sha256    = "a815aa38874d2c82255f379a7ee1eb07cccbb439a7788ff14316fce52d61a516"
+signature = "none -- archive-by-commit; the commit is the pin, measured at run 88505453858"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "edk2-firmware's metadata pass with this planted is the test"
+deferral        = "Vendored third-party source; reviewed by edk2 upstream at submodule-bump time, not here."
+
+[installs]
+prefixes = ["usr/src/edk2"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+
+[[steps]]
+name = "stage"
+cwd  = "$B"
+run  = [["sh", "-c", "install -D -m644 $DL/f55cf6d48ec69b4ac60a63903e9c6a2cb0fd155d.tar.gz $D/usr/src/edk2/libspdm.tar.gz"]]
+
+[guest]
+# build_only bytes-courier; edk2-firmware consuming it is the test.
