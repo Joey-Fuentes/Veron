@@ -246,9 +246,9 @@ mark() { echo $(( $(wc -l < "$SER" 2>/dev/null || echo 0) + 1 )); }
 # line. --pid ends the wait if qemu dies first. (Before: grep -c the whole
 # file every 0.1s, which is a poll dressed up as an event.)
 wait_serial() {
-    _re=$1; _max=$2; _n=${3:-1}
+    _re=$1; _max=$2; _n=${3:-1}; _from=${4:-1}
     _t0=$(date +%s.%N)
-    if follow_until "$_re" "$_max" "$_n" >/dev/null; then
+    if follow_until "$_re" "$_max" "$_n" "$_from" >/dev/null; then
         note "'$_re' (x$_n) after $(echo "$(date +%s.%N) - $_t0" | bc)s"
         return 0
     fi
@@ -346,9 +346,17 @@ open_flasher() {
 # ask "shell line" MARKER SECONDS -- type a line into the serial shell and wait
 # for MARKER in its OUTPUT. The marker is produced by arithmetic the typed
 # text does not contain, so the echo of the command cannot satisfy the wait.
+# THE MARKER WAIT IS SCOPED TOO. The serial log is cumulative across both
+# boots and marker numbers are reused, so on boot 2 a wait for VERON-MG-39
+# was satisfied in 7ms by boot 1's VERON-MG-39 further up the log -- before
+# the guest had even received the typed line (run 88391826537). The result
+# check was already scoped (wait_proc); this scopes the wait for the answer
+# itself: mark the log, type, follow from the mark. Every caller of ask is
+# fixed at once.
 ask() {
+    _am=$(mark)
     printf '%s; echo VERON-MG-$((%s))\n' "$1" "$2" > "$FIFO"
-    wait_serial "VERON-MG-$(( $2 ))" "$3" >/dev/null
+    wait_serial "VERON-MG-$(( $2 ))" "$3" 1 "$_am" >/dev/null
 }
 
 # =========================== BOOT 1: normal ================================
