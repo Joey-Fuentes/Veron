@@ -174,7 +174,8 @@ prompt() {
     # still seen.
     _m=$(mark)
     printf '\n' > "$FIFO"
-    follow_until 'veron\$' 5 1 "$_m" >/dev/null
+    # best-effort: a missed prompt must not abort the gate under set -e
+    follow_until 'veron\$' 5 1 "$_m" >/dev/null || true
 }
 
 # wait_serial REGEX SECONDS [COUNT] -- until the serial log matches, or the
@@ -222,7 +223,7 @@ follow_until() {
     tail -n "+$_from" -f "$SER" --pid="$qpid" > "$_p" 2>/dev/null &
     _tail=$!
     _hit=$(timeout "$_max" grep -aE -m "$_n" "$_re" < "$_p")
-    kill "$_tail" 2>/dev/null; wait "$_tail" 2>/dev/null; rm -f "$_p"
+    kill "$_tail" 2>/dev/null || true; wait "$_tail" 2>/dev/null || true; rm -f "$_p"
     [ -n "$_hit" ] && { printf '%s\n' "$_hit"; return 0; }
     return 1
 }
@@ -420,6 +421,21 @@ prompt
 
 # ROUTE 1: THE POINTER. Motion in a few steps (libinput wants to see the
 # device move before it believes a button), then press, then release.
+# move_by DX DY -- relative motion in steps no larger than 255 per axis. A
+# PS/2 packet carries a signed 9-bit delta per axis; qemu's ps2 emulation
+# clamps a larger delta to that range per packet, so one `mouse_move 417 157`
+# can deliver 255 pixels of x and silently lose the rest. Stepping keeps
+# every packet inside the protocol, whatever qemu does with the excess.
+move_by() {
+    _dx=$1; _dy=$2
+    while [ "$_dx" -ne 0 ] || [ "$_dy" -ne 0 ]; do
+        _sx=$_dx; [ "$_sx" -gt 200 ] && _sx=200; [ "$_sx" -lt -200 ] && _sx=-200
+        _sy=$_dy; [ "$_sy" -gt 200 ] && _sy=200; [ "$_sy" -lt -200 ] && _sy=-200
+        mon "mouse_move $_sx $_sy" >/dev/null
+        _dx=$((_dx - _sx)); _dy=$((_dy - _sy))
+    done
+}
+
 # THE MOUSE IS PS/2 AND SPEAKS RELATIVE DELTAS, not tablet absolutes. The
 # tablet never moved the cursor at all (both screenshots in run 88364882265
 # show it parked at the same spot before and after the click), so every run
@@ -429,10 +445,17 @@ prompt
 # then moving by exactly the button's pixel offset. Motion in steps so
 # libinput sees the device move before it believes a button.
 mon "info mice" | sed 's/^/    mice: /'
-mon "mouse_move -4000 -4000" >/dev/null
-mon "mouse_move -4000 -4000" >/dev/null
-mon "mouse_move $((bx / 2)) $((by / 2))" >/dev/null
-mon "mouse_move $((bx - bx / 2)) $((by - by / 2))" >/dev/null
+move_by -4000 -4000
+# A FRAME PER STEP. Run 15 showed the cursor at (0,0) after the whole
+# sequence: the pin landed, the two positive moves contributed nothing. Two
+# mechanisms fit and cannot be told apart from the final frame alone -- the
+# PS/2 packet delta clamp (+-255 per packet) or the moves not registering --
+# so the cursor is photographed after the pin and after the half-move. The
+# next artifact answers it instead of the next theory.
+snapshot 02m1-after-pin.png
+move_by $((bx / 2)) $((by / 2))
+snapshot 02m2-after-half.png
+move_by $((bx - bx / 2)) $((by - by / 2))
 # THE FRAME BEFORE THE CLICK: did the cursor arrive on the button? Taken with
 # no click in the picture, so it answers that one question on its own.
 snapshot 02a-flasher-pre-click.png
@@ -519,16 +542,28 @@ wait_serial "VERON-MAINTENANCE: entering maintenance mode" 30 \
 # FOLLOW THE PIVOT AS IT NARRATES. Each VERON-MAINTENANCE: line is printed
 # the instant it lands; the wait ends on the terminal line (running from
 # RAM, or ABORTED). One stream read, no tick, no re-scan. 120s watchdog.
+# The follower is killed by pid the moment the terminal line lands. A bare
+# `tail | grep | while read` with a `break` only leaves the read loop: tail
+# keeps running until its watchdog, and the pipeline -- and the gate -- sit
+# there for the full 120s after an 11s pivot (run 88384277299: terminal line
+# at 11.6s, gate released at 120s). Same lesson as follow_until. Every kill,
+# wait and the pipeline carry || true: under set -e a kill of an exited pid,
+# a wait on a killed pid, or grep's status dying with tail would each abort
+# the gate on a SUCCESSFUL pivot.
 _t0=$(date +%s.%N)
-timeout 120 tail -n +1 -f "$SER" --pid="$qpid" 2>/dev/null \
-  | grep -a --line-buffered "VERON-MAINTENANCE:" \
+_pp=$(mktemp -u); mkfifo "$_pp"
+tail -n +1 -f "$SER" --pid="$qpid" 2>/dev/null > "$_pp" &
+_ptail=$!
+timeout 120 grep -a --line-buffered "VERON-MAINTENANCE:" < "$_pp" \
   | while IFS= read -r _now; do
         note "$(echo "$(date +%s.%N) - $_t0" | bc)s  $_now"
-        case "$_now" in *"running from RAM"*|*ABORTED*) break ;; esac
-    done
+        case "$_now" in *"running from RAM"*|*ABORTED*) kill "$_ptail" 2>/dev/null || true; break ;; esac
+    done || true
+kill "$_ptail" 2>/dev/null || true; wait "$_ptail" 2>/dev/null || true; rm -f "$_pp"
+_pivot_s=$(echo "$(date +%s.%N) - $_t0" | bc)
 alive || note "qemu exited during the pivot"
 if grep -aq "VERON-MAINTENANCE: running from RAM; the boot disk is released" "$SER"; then
-    ok "the pivot completed and the stick was verified released (${_t}s)"
+    ok "the pivot completed and the stick was verified released (${_pivot_s}s)"
 else
     bad "the pivot did not complete -- veron-maintenance-init said:"
     grep -a "VERON-MAINTENANCE" "$SER" | tail -20 | sed 's/^/    /'
