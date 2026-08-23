@@ -611,6 +611,20 @@ else
     grep -a "VERON-MAINTENANCE" "$SER" | tail -20 | sed 's/^/    /'
 fi
 [ "$fail" = 0 ] || { cleanup; exit 1; }
+
+# THE SERIAL SHELL MUST EXIST BEFORE ANYTHING IS TYPED INTO IT. The pivot's
+# last line is "starting dinit." -- at that instant the console getty does
+# not exist yet ([ OK ] console lands ~0.5s later), so a probe typed here
+# goes into a serial port with no reader and is lost: run 88393240371
+# waited 35s for an answer that was never going to come, while the very
+# next asks (after desktop_evidence's prompt had settled the shell) answered
+# in 15ms. Boot 1 never hit this only because its first ask came after other
+# waits. The event is [ OK ] console on this boot -- a fresh occurrence,
+# followed from a mark so boot 1's line cannot satisfy it -- then a prompt.
+_cm=$(mark)
+wait_serial "\[  OK  \] console" 30 1 "$_cm" || bad "boot 2: the console getty never started"
+[ "$fail" = 0 ] || { cleanup; exit 1; }
+prompt
 # NO WAIT FOR THE DESKTOP HERE. The pivot's own last line is the event that
 # matters; after it, open_flasher presses Super+Return until foot appears,
 # which is the desktop announcing itself on the screen -- the only place a
