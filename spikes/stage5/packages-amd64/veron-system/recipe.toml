@@ -6,7 +6,17 @@
 # WHAT DIFFERS FROM THE BASE RECIPE:
 #   files/etc/dinit.d/console      -- runs a wrapper instead of naming a tty
 #   files/etc/dinit.d/scripts/console-getty  -- NEW; the wrapper
-#   Every other file under files/ is byte-identical to the base.
+#   files/etc/dinit.d/scripts/wayland-app    -- exports LANG=C.UTF-8; the
+#       rebuilt session environment omitted it, so every dinit-started
+#       helper ran in the C locale and non-ASCII text (the wifi domino
+#       tiles) failed multibyte conversion before reaching a font. Arch-
+#       neutral, belongs in the base, same deferral as console-getty.
+#   files/etc/xdg/yambar/config.yml          -- weight=book on the wifi
+#       tile's font spec (2026-08-23), not yet mirrored to base.
+#   The "byte-identical" claim above no longer holds for those two files;
+#   moving them to the base moves veron-system's bytes on the green
+#   aarch64 arm and needs its own dispatch and re-seed. AMD64.md records
+#   the shape of that debt.
 #
 # THE BASE NAMES A TTY AND THE NAME IS WRONG TWICE. The console service ended:
 #

@@ -38,6 +38,25 @@ export XDG_RUNTIME_DIR=/run/user/1000
 export XDG_CONFIG_DIRS=${XDG_CONFIG_DIRS:-/etc/xdg}
 export HOME=/home/veron
 export XDG_STATE_HOME=${XDG_STATE_HOME:-$HOME/.local/state}
+# LANG, FOR THE SAME REASON labwc-session EXPORTS IT: dinit does not source
+# /etc/profile, so a service gets PID 1's environment and runs in the C
+# locale. yambar converts tag text to char32_t through locale-dependent
+# multibyte conversion BEFORE fcft ever sees it, and in the C locale the
+# four-byte U+1F0xx domino sequences fail that conversion -- so the wifi
+# tile rendered empty beside a perfectly rendered ASCII SSID, on every
+# dinit-started bar, while a bar restarted by hand from a terminal (which
+# inherits labwc-session's LANG) rendered them fine. That launch-path
+# difference is what made the empty tile look like nondeterministic font
+# matching. No font spec can fix a glyph that is dropped before
+# rasterization.
+#
+# AND THE CHILDREN NEED IT TOO: a foot spawned from the bar's Terminal
+# label inherits THIS environment, not labwc-session's, so without this
+# line a bar-launched terminal is back to "'C' is not a UTF-8 locale" --
+# the exact failure the locale step in veron-system's recipe was added to
+# end. The two spawn paths must be one world, same as XDG_DATA_DIRS and
+# DINIT_SOCKET_PATH above.
+export LANG=C.UTF-8
 # THE SAME TWO LINES labwc-session CARRIES, AND FOR THE SAME REASONS: a
 # helper's CHILDREN inherit this environment -- the bar's launcher click
 # spawns fuzzel, its terminal click spawns foot -- and without these the
