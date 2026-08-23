@@ -4182,7 +4182,7 @@ package llvm 22.1.8
 package qemu 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   43e85934e5a509300baff7607b903e39bb09a30cc8de6eb29384b02df9e18878
+  recipe-sha   324070bab9bd9d453d6b65d354463238708e3236c97e328eaee8503ce075ee7d
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4194,7 +4194,7 @@ package qemu 11.0.3
     build        bash, dtc, glib, meson, ninja, pcre2, pixman, pkgconf, python, python-setuptools, python-wheel, zlib
     link         dtc, glib, pixman, zlib
     runtime      dtc, glib, pixman, zlib
-    optional_off alsa, auth-pam, curl, docs, gcrypt, gnutls, gtk, guest-agent, kvm-x86-note: kvm is host-arch; an aarch64 guest on x86_64 uses tcg, libssh, nettle, opengl, pa, rust, sdl, slirp, vnc
+    optional_off alsa, auth-pam, curl, docs, gcrypt, gnutls, gtk, guest-agent, kvm-x86-note: kvm is host-arch; an aarch64 guest on x86_64 uses tcg, libssh, nettle, opengl, pa, rust, sdl, slirp, vnc, xkbcommon
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -4203,7 +4203,7 @@ package qemu 11.0.3
     [02] configure
          cwd  build/qemu-11.0.3/qemu-11.0.3
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-vnc --disable-gtk --disable-sdl --disable-opengl --audio-drv-list="]
+         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --audio-drv-list="]
     [03] build
          cwd  build/qemu-11.0.3/qemu-11.0.3
          argv ["make", "-C", "_b", "-j1"]

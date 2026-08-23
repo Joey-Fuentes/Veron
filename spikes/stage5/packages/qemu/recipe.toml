@@ -44,10 +44,16 @@ runtime      = ["glib", "pixman", "zlib", "dtc"]
 # configure probes the world; in a sandbox the world is small today and
 # larger tomorrow, and glib's libelf lesson says a package added twenty
 # rungs later must not change what qemu is.
-optional_off = ["rust", "docs", "guest-agent", "slirp", "vnc", "gtk", "sdl", "opengl", "alsa", "pa", "curl", "libssh", "gnutls", "nettle", "gcrypt", "auth-pam", "kvm-x86-note: kvm is host-arch; an aarch64 guest on x86_64 uses tcg"]
+# xkbcommon IS OFF BY MEASUREMENT (run 88493588431): the desktop stack
+# ships libxkbcommon, meson found it, auto-enabled qemu-keymap, and the
+# generator died at 96% needing xkeyboard-config data (/usr/share/X11/xkb
+# rules/evdev) that nothing in this set provides. Keymaps translate input
+# for VNC/GTK/SDL -- all disabled above -- so the feature had no consumer
+# and one missing dependency.
+optional_off = ["rust", "docs", "guest-agent", "slirp", "xkbcommon", "vnc", "gtk", "sdl", "opengl", "alsa", "pa", "curl", "libssh", "gnutls", "nettle", "gcrypt", "auth-pam", "kvm-x86-note: kvm is host-arch; an aarch64 guest on x86_64 uses tcg"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--target-list=aarch64-softmmu", "--disable-install-blobs", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust", "--disable-vnc", "--disable-gtk", "--disable-sdl", "--disable-opengl", "--audio-drv-list="]
+configure_flags = ["--prefix=/usr", "--target-list=aarch64-softmmu", "--disable-install-blobs", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust", "--disable-xkbcommon", "--disable-vnc", "--disable-gtk", "--disable-sdl", "--disable-opengl", "--audio-drv-list="]
 packaged_as     = ["qemu-system-aarch64", "qemu-base"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
@@ -82,7 +88,7 @@ cwd  = "$S"
 env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend" }
 # OUT-OF-TREE IS ENFORCED BY UPSTREAM: configure refuses to run in the
 # source root, so the shape matches meson packages' _b convention.
-run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-vnc --disable-gtk --disable-sdl --disable-opengl --audio-drv-list="]]
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --audio-drv-list="]]
 
 [[steps]]
 name = "build"

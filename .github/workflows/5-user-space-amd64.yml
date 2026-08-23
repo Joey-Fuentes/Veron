@@ -2831,13 +2831,26 @@ jobs:
                 echo "  Replaces spikes/toolbox/qemu-aarch64-static, whose"
                 echo "  provenance was 'copied from /usr/bin' -- this one is"
                 echo "  made, not borrowed."
-              } > "$tdir/veron-tools/WHENCE"
-              sed 's/^/    /' "$tdir/veron-tools/WHENCE"
-              tar -C "$tdir" -cf - veron-tools | zstd -19 -T0 -q \
-                > tools-x86_64.tar.zst
+              } > TOOLS-WHENCE
+              sed 's/^/    /' TOOLS-WHENCE
+              # RUN-VARYING DATA GOES BESIDE THE ARTIFACT, NOT INSIDE IT --
+              # the 2483bbb7 lesson, applied here before it recurs: the
+              # WHENCE carries run id and so lives as its own asset, like
+              # PROVENANCE beside the image, so the bundle's bytes are a
+              # function of the commit alone. And the tar is normalized for
+              # the same reason the policy pins jobs=1 instead of nproc:
+              # un-sorted names, runner uids and build-time mtimes are the
+              # runner leaking into the bytes, and zstd -T0 was the nproc
+              # mistake verbatim -- multithreaded framing varies with the
+              # core count the run landed on. Single-threaded, sorted,
+              # epoch-zero, numeric root ownership: rebuild the same commit,
+              # get the same tools-x86_64.tar.zst.
+              tar --sort=name --mtime='@0' --owner=0 --group=0 \
+                  --numeric-owner -C "$tdir" -cf - veron-tools \
+                | zstd -19 -q > tools-x86_64.tar.zst
               sha256sum tools-x86_64.tar.zst > TOOLS-SHA256
               rm -rf "$tdir"
-              assets="$assets tools-x86_64.tar.zst TOOLS-SHA256"
+              assets="$assets tools-x86_64.tar.zst TOOLS-SHA256 TOOLS-WHENCE"
             else
               echo "  no dest/qemu-user static binary -- tools bundle skipped, stated not silent"
             fi
