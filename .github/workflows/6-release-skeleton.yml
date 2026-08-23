@@ -417,7 +417,18 @@ jobs:
           # GPT, built-in ext4 mounts the slot, and the kernel execs
           # /usr/bin/dinit. The serial log must show each link BY NAME.
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf inotify-tools >/dev/null
+            inotify-tools >/dev/null
+          # qemu-system-x86 AND ovmf ARE GONE, RETIRED TOGETHER: the boot
+          # gate runs the qemu this pipeline built and boots the OVMF this
+          # pipeline built, both taken from the very rootfs under test --
+          # the image hosts its own verification. The rdump tree at
+          # work/x86_64/rootfs is bound as /, so the binary, its libraries
+          # and the firmware all come from the image's own bytes.
+          {
+            echo '#!/bin/sh'
+            echo "exec bwrap --bind $GITHUB_WORKSPACE/work/x86_64/rootfs / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
+          } | sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null
+          sudo chmod +x /usr/local/bin/qemu-system-x86_64
           for img in out/veron-x86_64.raw; do
             [ -e "$img" ] || continue
             # REPRODUCIBILITY GUARD (part 1 of 2): record the image's identity
@@ -453,7 +464,7 @@ jobs:
               : > boot-serial.log
               timeout 300 qemu-system-x86_64 \
                 -machine q35 $VERON_ACCEL -cpu qemu64 -m 2048 -nographic -no-reboot -nic none \
-                -bios /usr/share/ovmf/OVMF.fd \
+                -bios /usr/share/qemu/OVMF.fd \
                 $DRIVE \
                 -serial file:boot-serial.log >/dev/null 2>&1 &
               qpid=$!
@@ -552,7 +563,18 @@ jobs:
           # USB attachment, a bigger RAM budget for the pivot, and a VM that is
           # ALLOWED to reboot -- four things the boot gate deliberately has not.
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf inotify-tools >/dev/null
+            inotify-tools >/dev/null
+          # qemu-system-x86 AND ovmf ARE GONE, RETIRED TOGETHER: the boot
+          # gate runs the qemu this pipeline built and boots the OVMF this
+          # pipeline built, both taken from the very rootfs under test --
+          # the image hosts its own verification. The rdump tree at
+          # work/x86_64/rootfs is bound as /, so the binary, its libraries
+          # and the firmware all come from the image's own bytes.
+          {
+            echo '#!/bin/sh'
+            echo "exec bwrap --bind $GITHUB_WORKSPACE/work/x86_64/rootfs / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
+          } | sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null
+          sudo chmod +x /usr/local/bin/qemu-system-x86_64
           # KVM when the runner has it (GitHub's Linux runners do, behind a
           # root-only node); TCG otherwise. The gate prints which.
           mkdir -p out/maintenance-gate

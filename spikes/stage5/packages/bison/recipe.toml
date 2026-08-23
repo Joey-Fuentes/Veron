@@ -1,0 +1,59 @@
+name       = "bison"
+version    = "3.8.2"
+group      = "build-substrate"
+license    = "GPL-3.0-or-later"
+srcdir     = "bison-3.8.2"
+build_only = true
+
+# EXISTS BECAUSE iasl SAYS SO: acpica's Makefile.config line 288 states
+# YACC=bison outright (byacc sits commented beside it), and the plan had
+# flex but no bison -- half a parser generator. bison execs m4 while
+# generating, so m4 is a runtime dep of a build_only tool: the sandbox
+# that runs bison must stage m4, which deps.runtime is how you say.
+# The tarball has sat in the src mirror since the stage-4 era; this
+# recipe finally gives it a MIRRORS.tsv row of its own.
+
+[source]
+url       = "https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.xz"
+sha256    = "9bba0214ccf7f1079c5d59210045227bcf619519840ebfa80cd3849cff5a5bf2"
+signature = "https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.xz.sig -- GNU detached PGP, key 0DDCAA3278D5264E"
+crosschecked_against = []
+
+[deps]
+build        = ["m4"]
+link         = []
+runtime      = ["m4"]
+optional_off = ["nls"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-nls"]
+verification    = "iasl generating its parsers is the assertion"
+deferral        = ""
+
+[installs]
+prefixes = ["usr/bin", "usr/lib", "usr/share"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/bison-3.8.2.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-nls"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+# build_only, SO THIS NEVER RUNS. acpica consumes it; that build is the test.

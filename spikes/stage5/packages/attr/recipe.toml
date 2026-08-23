@@ -1,0 +1,59 @@
+name    = "attr"
+version = "2.6.0"
+group   = "system"
+license = "LGPL-2.1-or-later (library), GPL-2.0-or-later (tools)"
+srcdir  = "attr-2.6.0"
+
+# EXTENDED ATTRIBUTES, BECAUSE virtfs SAYS SO: qemu's 9p local backend --
+# the -fsdev local mounts every stage-5 boot gate uses to hand the guest
+# its sysroot -- requires libattr, and the DT_NEEDED sweep proved the
+# feature silently absent from the first qemu build because nothing in
+# the plan provided it. Trial-built from this tarball before the recipe
+# existed: configure, make, DESTDIR install, getfattr answering exactly
+# "getfattr 2.6.0" -- which is the guest test below, verbatim.
+
+[source]
+url       = "https://download.savannah.gnu.org/releases/attr/attr-2.6.0.tar.gz"
+sha256    = "d42fa374513180bb48cb11a46696f488240e5124ff1e6ad88b0abff706985612"
+signature = "https://download.savannah.gnu.org/releases/attr/attr-2.6.0.tar.gz.sig -- detached PGP, issuer fpr 259B3792B3D6D319212CC4DCD5BF9FEB0313653A, sig dated 2026-06-29"
+crosschecked_against = ["https://download-mirror.savannah.gnu.org/releases/attr/attr-2.6.0.tar.gz"]
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = ["nls", "static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--disable-nls"]
+verification    = "install-time getfattr run below; qemu's virtfs link is the consumer-side proof"
+deferral        = ""
+
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/share"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/attr-2.6.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--disable-nls"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["getfattr", "--version"]]
+expect = ["getfattr 2.6.0"]

@@ -1,0 +1,76 @@
+name    = "edk2-firmware"
+version = "stable202608"
+group   = "system"
+srcdir  = "edk2-edk2-stable202608"
+license = "BSD-2-Clause-Patent"
+
+# THE amd64 ARM'S HALF: OvmfPkgX64, replacing the base recipe's
+# ArmVirtQemu -- read that recipe for the pin-set provenance (run
+# 88505453858), the GCC-not-GCC5 correction, and the split's rationale.
+# What is DIFFERENT here is measured on this architecture: a trial build
+# on the assembled pinned tree ran to the first ASL compile and stopped
+# at exactly "iasl: not found" (RamDiskDxe/RamDisk.asl), which is why
+# acpica and nasm sit in deps.build below; BaseTools' C tools and 657
+# openssl objects compiled clean before that boundary. The three FV
+# outputs land beside qemu's firmware in /usr/share/qemu -- the default
+# -L path -- so the stage-6 gate's -bios flag needs a path, not a mount.
+
+[source]
+url       = "https://github.com/tianocore/edk2/archive/refs/tags/edk2-stable202608.tar.gz"
+sha256    = "bac40812213576c3025cf780c33d882f9e087a44201b1cd28a07f6d1eb54b76a"
+signature = "none published by upstream; sha pinned at first trusted fetch, run 88505453858"
+crosschecked_against = []
+
+[deps]
+build        = ["python", "bash", "nasm", "acpica", "edk2-src-openssl", "edk2-src-brotli"]
+link         = []
+runtime      = []
+optional_off = ["secure-boot", "tpm", "network"]
+
+[declared]
+configure_flags = ["-a", "X64", "-t", "GCC", "-p", "OvmfPkg/OvmfPkgX64.dsc", "-b", "RELEASE"]
+verification    = "fv-present step asserts all three .fd outputs exist, sha256-logged with sizes"
+deferral        = """
+GenFv embeds timestamps and edk2 has no single SOURCE_DATE_EPOCH switch; \
+byte-determinism is MEASURED by the install-digest pin across consecutive \
+runs rather than asserted. If the digest moves between identical inputs, \
+the timestamp hazard is the first suspect and gets its own commit."""
+
+[installs]
+prefixes = ["usr/share/qemu"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/edk2-stable202608.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "plant-submodules"
+cwd  = "$S"
+run  = [["sh", "-c", "tar -xzf /usr/src/edk2/openssl.tar.gz --strip-components=1 -C CryptoPkg/Library/OpensslLib/openssl && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C BaseTools/Source/C/BrotliCompress/brotli && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C MdeModulePkg/Library/BrotliCustomDecompressLib/brotli"]]
+
+[[steps]]
+name = "basetools"
+cwd  = "$S"
+run  = [["make", "-C", "BaseTools", "-j$J"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["sh", "-c", "export WORKSPACE=$S && . ./edksetup.sh && build -a X64 -t GCC -p OvmfPkg/OvmfPkgX64.dsc -b RELEASE -n $J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["sh", "-c", "for f in OVMF.fd OVMF_CODE.fd OVMF_VARS.fd; do install -D -m644 Build/OvmfX64/RELEASE_GCC/FV/$f $D/usr/share/qemu/$f || exit 1; done"]]
+
+[[steps]]
+name = "fv-present"
+cwd  = "$S"
+run  = [["sh", "-c", "cd $D/usr/share/qemu && for f in OVMF.fd OVMF_CODE.fd OVMF_VARS.fd; do test -s $f || { echo VERON-OVMF-MISSING $f; exit 1; }; done && sha256sum OVMF*.fd && wc -c OVMF*.fd"]]
+
+[guest]
+test   = [["sh", "-c", "test -s /usr/share/qemu/OVMF.fd && echo VERON-UEFI-FIRMWARE-PRESENT"]]
+expect = ["VERON-UEFI-FIRMWARE-PRESENT"]

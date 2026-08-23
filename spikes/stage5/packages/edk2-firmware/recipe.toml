@@ -1,0 +1,93 @@
+name    = "edk2-firmware"
+version = "stable202608"
+group   = "system"
+srcdir  = "edk2-edk2-stable202608"
+license = "BSD-2-Clause-Patent"
+
+# UEFI FIRMWARE FROM SOURCE, EACH ARM BUILDING ITS OWN ARCHITECTURE'S.
+# The base recipe is the aarch64 arm's: ArmVirtQemu, compiled natively --
+# QEMU_EFI.fd, the firmware an aarch64 -M virt UEFI guest boots. The
+# amd64 overlay REPLACES this recipe with OvmfPkgX64 for the same reason
+# in mirror image: firmware follows the arm whose compiler speaks its
+# instruction set, and neither arm grows a cross-toolchain.
+#
+# THE PIN SET IS A MEASUREMENT, NOT A CLONE. edk2's stable releases ship
+# submodule directories empty and publish no checksums; run 88505453858
+# read every gitlink at the tag from the official host, hashed every
+# archive, and carried the bytes out as an artifact. This recipe and the
+# two edk2-src couriers restate that log. Of thirteen submodules, a trial
+# OvmfPkgX64 build consumed two (openssl: 657 objects; BaseTools brotli:
+# the BrotliCompress host tool); the other eleven stay unpinned until a
+# build proves a need.
+#
+# TOOLCHAIN TAG IS GCC, NOT GCC5: tools_def at this tag has zero GCC5
+# occurrences and 112 GCC ones -- read from the tree, correcting stale
+# lore. GCCNOLTO exists beside it as the recorded fallback should this
+# sysroot's gcc 10.2.0 ever misbehave under LTO.
+#
+# UNTESTED ON THIS ARM, AND SAID SO: no aarch64 workbench existed to
+# trial ArmVirtQemu, and this arm has not dispatched since before the
+# qemu work. The recipe is reading-based (ArmVirtQemu.dsc wants no iasl,
+# no nasm; BaseTools C builds with make and gcc, proven on x86_64); its
+# first build IS its trial, gated stop_after like everything else.
+
+[source]
+url       = "https://github.com/tianocore/edk2/archive/refs/tags/edk2-stable202608.tar.gz"
+sha256    = "bac40812213576c3025cf780c33d882f9e087a44201b1cd28a07f6d1eb54b76a"
+signature = "none published by upstream; sha pinned at first trusted fetch, run 88505453858"
+crosschecked_against = []
+
+[deps]
+build        = ["python", "bash", "edk2-src-openssl", "edk2-src-brotli"]
+link         = []
+runtime      = []
+optional_off = ["secure-boot", "tpm", "network"]
+
+[declared]
+configure_flags = ["-a", "AARCH64", "-t", "GCC", "-p", "ArmVirtPkg/ArmVirtQemu.dsc", "-b", "RELEASE"]
+verification    = "fv-present step asserts QEMU_EFI.fd exists and logs its sha256 and size"
+deferral        = """
+GenFv embeds timestamps and edk2 has no single SOURCE_DATE_EPOCH switch; \
+whether the firmware is byte-deterministic is MEASURED by this pipeline's \
+own install-digest pin across consecutive runs rather than asserted here. \
+If the digest moves between identical inputs, the timestamp hazard is the \
+first suspect and gets its own commit."""
+
+[installs]
+prefixes = ["usr/share/qemu"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/edk2-stable202608.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "plant-submodules"
+cwd  = "$S"
+run  = [["sh", "-c", "tar -xzf /usr/src/edk2/openssl.tar.gz --strip-components=1 -C CryptoPkg/Library/OpensslLib/openssl && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C BaseTools/Source/C/BrotliCompress/brotli && tar -xzf /usr/src/edk2/brotli.tar.gz --strip-components=1 -C MdeModulePkg/Library/BrotliCustomDecompressLib/brotli"]]
+
+[[steps]]
+name = "basetools"
+cwd  = "$S"
+run  = [["make", "-C", "BaseTools", "-j$J"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["sh", "-c", "export WORKSPACE=$S && . ./edksetup.sh && build -a AARCH64 -t GCC -p ArmVirtPkg/ArmVirtQemu.dsc -b RELEASE -n $J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["sh", "-c", "install -D -m644 Build/ArmVirtQemu-AARCH64/RELEASE_GCC/FV/QEMU_EFI.fd $D/usr/share/qemu/QEMU_EFI.fd"]]
+
+[[steps]]
+name = "fv-present"
+cwd  = "$S"
+run  = [["sh", "-c", "test -s $D/usr/share/qemu/QEMU_EFI.fd && sha256sum $D/usr/share/qemu/QEMU_EFI.fd && wc -c $D/usr/share/qemu/QEMU_EFI.fd"]]
+
+[guest]
+test   = [["sh", "-c", "test -s /usr/share/qemu/QEMU_EFI.fd && echo VERON-UEFI-FIRMWARE-PRESENT"]]
+expect = ["VERON-UEFI-FIRMWARE-PRESENT"]

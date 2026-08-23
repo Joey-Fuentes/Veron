@@ -1,0 +1,59 @@
+name       = "nasm"
+version    = "3.02"
+group      = "build-substrate"
+license    = "BSD-2-Clause"
+srcdir     = "nasm-3.02"
+build_only = true
+
+# THE x86 ASSEMBLER EDK2 REQUIRES (BaseTools pins >= 2.15.05). Trial-built
+# from this exact tarball before the recipe existed: cc and make suffice,
+# configure finds no asciidoc/xmlto and skips docs on its own, and the one
+# embedded date -- nasmlib/ver.c's __DATE__ -- compiles to "Jan  1 1970"
+# under SOURCE_DATE_EPOCH=0, measured, so the banner is deterministic
+# under this pipeline's constructed env without a patch.
+
+[source]
+url       = "https://www.nasm.us/pub/nasm/releasebuilds/3.02/nasm-3.02.tar.xz"
+sha256    = "87336eba53b4acfe917424ab5d500d2b0054d9f5148d35c2273ccf2cfb712f0d"
+signature = "none published for the tarball; sha pinned from the bytes in hand"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = ["docs"]
+
+[declared]
+configure_flags = ["--prefix=/usr"]
+verification    = "version banner asserts itself deterministic: Jan  1 1970 under SOURCE_DATE_EPOCH=0"
+deferral        = ""
+
+[installs]
+prefixes = ["usr/bin", "usr/share/man"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/nasm-3.02.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+# build_only, SO THIS NEVER RUNS. nasm is asserted by edk2-firmware
+# building at all, which is the only thing that consumes it.

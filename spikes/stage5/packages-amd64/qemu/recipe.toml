@@ -1,3 +1,16 @@
+# THE amd64 OVERLAY'S QEMU: the base recipe plus the x86 half. The
+# target list gains x86_64-softmmu, and the firmware an x86 pc machine
+# demands -- SeaBIOS and SeaVGABIOS -- is built from the source qemu
+# itself vendors in roms/, on the strength of three VERON-M32-YES probe
+# verdicts and a trial that compiled the full bios/vgabios set from this
+# very tarball with -m32 codegen and bare ld -melf_i386, no multilib, no
+# libgcc. --disable-install-blobs STAYS: upstream's prebuilts remain
+# barred, and the no-borrowed-bytes gate INVERTS -- from "no firmware
+# present" to "EXACTLY our firmware present", the built set enumerated
+# and sha256-logged, anything more or less fatal. The devices-present
+# step runs the freshly built binary (the sandbox IS the sysroot, so a
+# Veron ELF executes here) and asserts the virtio set every boot gate
+# depends on: 9p, gpu, keyboard.
 name    = "qemu"
 version = "11.0.3"
 group   = "system"
@@ -71,7 +84,7 @@ runtime      = ["glib", "pixman", "zlib", "dtc"]
 optional_off = ["rust", "docs", "guest-agent", "slirp", "xkbcommon", "vnc", "gtk", "sdl", "opengl", "alsa", "pa", "curl", "libssh", "gnutls", "nettle", "gcrypt", "auth-pam", "kvm-x86-note: kvm is host-arch; an aarch64 guest on x86_64 uses tcg"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--target-list=aarch64-softmmu", "--enable-virtfs", "--disable-install-blobs", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust", "--disable-xkbcommon", "--disable-vnc", "--disable-gtk", "--disable-sdl", "--disable-opengl", "--disable-alsa", "--disable-curl", "--disable-gnutls", "--disable-libusb", "--disable-seccomp", "--disable-curses", "--disable-png", "--disable-bzip2", "--disable-zstd", "--disable-libdw", "--disable-libudev", "--audio-drv-list="]
+configure_flags = ["--prefix=/usr", "--target-list=aarch64-softmmu,x86_64-softmmu", "--enable-virtfs", "--disable-install-blobs", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust", "--disable-xkbcommon", "--disable-vnc", "--disable-gtk", "--disable-sdl", "--disable-opengl", "--disable-alsa", "--disable-curl", "--disable-gnutls", "--disable-libusb", "--disable-seccomp", "--disable-curses", "--disable-png", "--disable-bzip2", "--disable-zstd", "--disable-libdw", "--disable-libudev", "--audio-drv-list="]
 packaged_as     = ["qemu-system-aarch64", "qemu-base"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
@@ -106,7 +119,7 @@ cwd  = "$S"
 env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend" }
 # OUT-OF-TREE IS ENFORCED BY UPSTREAM: configure refuses to run in the
 # source root, so the shape matches meson packages' _b convention.
-run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu --enable-virtfs --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --disable-alsa --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev --audio-drv-list="]]
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu,x86_64-softmmu --enable-virtfs --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --disable-alsa --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev --audio-drv-list="]]
 
 [[steps]]
 name = "build"
@@ -119,13 +132,29 @@ cwd  = "$S"
 run  = [["make", "-C", "_b", "DESTDIR=$D", "install"]]
 
 [[steps]]
-name = "no-borrowed-bytes"
+name = "seabios"
 cwd  = "$S"
-# THE CLAIM, CHECKED WHERE IT IS MADE: nothing under usr/share/qemu may be
-# a prebuilt firmware image. --disable-install-blobs should leave only
-# keymaps and descriptors; this step is what notices if an upstream
-# release quietly widens what "blobs" excludes.
-run  = [["sh", "-c", "! find $D/usr/share/qemu -name '*.bin' -o -name '*.rom' -o -name '*.img' -o -name '*.fd' 2>/dev/null | grep -q . || { echo 'VERON-QEMU-BLOB-LEAK'; find $D/usr/share/qemu -name '*.bin' -o -name '*.rom' -o -name '*.img' -o -name '*.fd'; exit 1; }"]]
+run  = [["sh", "-c", "mkdir -p pc-bios && make -C roms bios vgabios -j$J"]]
+
+[[steps]]
+name = "install-our-firmware"
+cwd  = "$S"
+run  = [["sh", "-c", "mkdir -p $D/usr/share/qemu && for f in bios.bin bios-256k.bin bios-microvm.bin vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-vmware.bin vgabios-ramfb.bin vgabios-bochs-display.bin vgabios-ati.bin; do install -m644 pc-bios/$f $D/usr/share/qemu/$f || exit 1; done && sha256sum $D/usr/share/qemu/*.bin"]]
+
+[[steps]]
+name = "only-our-firmware"
+cwd  = "$S"
+# THE INVERTED GATE: the aarch64-only recipe asserted zero firmware; this
+# one asserts the twelve files above and NOT ONE BYTE MORE. Borrowed
+# prebuilts, stray .fd decompressions, an upstream default-shuffle that
+# starts installing something new -- all land here as a fatal diff.
+run  = [["sh", "-c", "cd $D/usr/share/qemu && ls -1 | LC_ALL=C sort > /tmp/have && for f in bios-256k.bin bios-microvm.bin bios.bin vgabios-ati.bin vgabios-bochs-display.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-ramfb.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-vmware.bin vgabios.bin; do echo $f; done | LC_ALL=C sort > /tmp/want && diff -u /tmp/want /tmp/have || { echo VERON-QEMU-FIRMWARE-SET-DRIFT; exit 1; }"]]
+
+[[steps]]
+name = "devices-present"
+cwd  = "$S"
+run  = [["sh", "-c", "for d in virtio-9p-pci virtio-gpu-pci virtio-keyboard-pci virtio-blk-pci; do $D/usr/bin/qemu-system-x86_64 -device help | grep -q \"name \\\"$d\\\"\" || { echo VERON-QEMU-DEVICE-MISSING $d; exit 1; }; done && echo VERON-QEMU-DEVICES-PRESENT"]]
+
 [guest]
 test   = [["sh", "-c", "/usr/bin/qemu-system-aarch64 --version | head -1"]]
 expect = ["QEMU emulator version 11.0.3"]

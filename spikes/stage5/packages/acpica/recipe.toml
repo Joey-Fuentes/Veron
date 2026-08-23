@@ -1,0 +1,65 @@
+name       = "acpica"
+version    = "20260408"
+group      = "build-substrate"
+license    = "Intel ACPICA (GPL-2.0 / BSD dual)"
+srcdir     = "acpica-unix2-20260408"
+build_only = true
+
+# iasl, THE ACPI SOURCE-LANGUAGE COMPILER, AND NOTHING ELSE. OVMF compiles
+# its ACPI tables from ASL at build time -- measured at the exact boundary:
+# a trial OvmfPkgX64 build on the assembled pinned tree ran 2m28s deep and
+# stopped at RamDiskDxe's RamDisk.asl with "iasl: not found", the first
+# and only missing tool. SeaBIOS 1.17.0 dropped its iasl dependency, so
+# this package serves edk2-firmware alone. The generators are bison and
+# flex per Makefile.config (YACC=bison line 288, LEX=flex line 294).
+#
+# THE SHA BELOW IS THE RELEASE'S OWN: the open-acpica GitHub release
+# publishes sha256 per asset and GPG-signs the release; the pinned value
+# matched the downloaded bytes before this recipe was written.
+
+[source]
+url       = "https://github.com/open-acpica/acpica/releases/download/20260408/acpica-unix2-20260408.tar.gz"
+sha256    = "5fcef9f0d00ffaffaaa82aa49c5ea9687986e8a7bd60929e298cc99a6741ae24"
+signature = "sha256 published on the GPG-signed GitHub release (open-acpica/acpica, tag 20260408)"
+crosschecked_against = []
+
+[deps]
+build        = ["flex", "bison"]
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "edk2-firmware's ASL steps compiling is the assertion"
+deferral        = """
+Only the iasl binary is built and installed; the suite's other tools \
+(acpiexec, acpidump and friends) have no consumer here and stay unbuilt."""
+
+[installs]
+prefixes = ["usr/bin"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/acpica-unix2-20260408.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J", "iasl"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["sh", "-c", "install -D -m755 generate/unix/bin/iasl $D/usr/bin/iasl"]]
+
+[[steps]]
+name = "iasl-or-die"
+cwd  = "$S"
+run  = [["sh", "-c", "$D/usr/bin/iasl -v 2>&1 | grep -q 20260408 || { echo VERON-IASL-WRONG-VERSION; $D/usr/bin/iasl -v; exit 1; }"]]
+
+[guest]
+# build_only, SO THIS NEVER RUNS. OVMF's AcpiTables are the test.

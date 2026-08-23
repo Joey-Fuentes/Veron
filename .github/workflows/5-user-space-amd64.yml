@@ -242,7 +242,22 @@ jobs:
           # qemu-system-x86, NOT qemu-system-arm. Same package set otherwise:
           # bubblewrap is the sandbox and e2fsprogs supplies mke2fs and
           # debugfs, neither of which is architecture-specific.
-          sudo apt-get install -y bubblewrap qemu-system-x86 e2fsprogs
+          sudo apt-get install -y bubblewrap e2fsprogs
+          # qemu-system-x86 IS GONE FROM THIS LINE, RETIRED BY THE GATE FLIP:
+          # every boot below runs the qemu THIS PIPELINE BUILT, executed from
+          # the staged sysroot under bwrap. Written here, before the sysroot
+          # exists, because the wrapper resolves paths at exec time; the
+          # sysroot lands long before the first boot. /dev rides in for
+          # /dev/kvm; /home/runner and /tmp keep the invocations' host-side
+          # paths (images, logs, sockets, 9p exports) resolving unchanged;
+          # and / inside the sandbox IS the sysroot, so -L's default
+          # /usr/share/qemu finds the firmware this pipeline built and
+          # nothing else.
+          {
+            echo '#!/bin/sh'
+            echo "exec bwrap --bind $GITHUB_WORKSPACE/spikes/stage5/sysroot / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
+          } | sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null
+          sudo chmod +x /usr/local/bin/qemu-system-x86_64
           # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor and
           # bwrap then fails on loopback setup. hermetic-gcc10/15/16 and
           # float-probe already carry this; stage5-entry lost a run to its

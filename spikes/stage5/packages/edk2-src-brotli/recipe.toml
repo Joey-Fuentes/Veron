@@ -1,0 +1,46 @@
+name       = "edk2-src-brotli"
+version    = "e230f474"
+group      = "build-substrate"
+license    = "MIT"
+build_only = true
+
+# A SOURCE COURIER, NOT A BUILD. edk2's stable releases vendor nothing:
+# the tag tarball ships every submodule directory EMPTY, and this driver
+# speaks one [source] per recipe -- so each submodule edk2-firmware needs
+# arrives as its own pinned, mirrored artifact, staged as bytes for the
+# consumer to unpack. The pin is not guessed: run 88505453858 read the
+# gitlink for this path from the official tag via the GitHub API and
+# hashed the archive it names; this recipe restates that log.
+# Of thirteen submodules at the tag, a trial OvmfPkgX64 build consumed
+# exactly two -- openssl (657 objects) and BaseTools' brotli (the
+# BrotliCompress host tool) -- so exactly two couriers exist.
+
+[source]
+url       = "https://github.com/google/brotli/archive/e230f474b87134e8c6c85b630084c612057f253e.tar.gz"
+sha256    = "a9ba3940267de5dd73581a47c2e81b3eb1e1df6a704138c599020d66f3677a92"
+signature = "none -- archive-by-commit; the commit is the pin, measured at run 88505453858"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "edk2-firmware unpacks this into BaseTools/Source/C/BrotliCompress/brotli and builds; that is the test"
+deferral        = "Vendored third-party source; reviewed by edk2 upstream at submodule-bump time, not here."
+
+[installs]
+prefixes = ["usr/src/edk2"]
+files    = 0
+digest   = "UNSEEDED -- first seed_installs run measures this"
+
+[[steps]]
+name = "stage"
+cwd  = "$B"
+run  = [["sh", "-c", "install -D -m644 $DL/e230f474b87134e8c6c85b630084c612057f253e.tar.gz $D/usr/src/edk2/brotli.tar.gz"]]
+
+[guest]
+# build_only bytes-courier; edk2-firmware consuming it is the test.
