@@ -1,0 +1,84 @@
+# MEASURES THE EDK2 PIN SET; CHANGES NOTHING. The edk2-stable releases ship
+# no submodule-bundled asset and no checksums -- the release page's two
+# "Source code" archives are git exports with every submodule directory
+# EMPTY. A from-source OVMF therefore needs each submodule pinned
+# separately, and the pins have to come from somewhere official rather
+# than from a git clone run on somebody's hardware. This probe is that
+# somewhere: it downloads the official tag tarball, reads .gitmodules out
+# of it, asks the GitHub API for the gitlink commit each submodule is
+# pinned to AT THE TAG, turns each into a URL-addressable archive, and
+# sha256s every byte it touched -- all recorded in this run's log, which
+# is the provenance. The tarballs ride out as a run artifact so the same
+# audited bytes can seed trial builds. Report-only, like the m32 probe:
+# no publishing, no commits, no recipes -- those are written FROM this
+# log, citing this run.
+name: edk2-pin-probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 'MEASURE -- tag tarball, gitlinks, submodule archives, every sha256'
+        env:
+          TAG: edk2-stable202608
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p pins
+          TARBALL_URL="https://github.com/tianocore/edk2/archive/refs/tags/${TAG}.tar.gz"
+
+          echo "== the official tag tarball, hashed at the moment of first trusted fetch =="
+          curl -fsSL -o "pins/edk2-${TAG}.tar.gz" "$TARBALL_URL"
+          sha=$(sha256sum "pins/edk2-${TAG}.tar.gz" | cut -d' ' -f1)
+          echo "VERON-EDK2-TARBALL  ${sha}  ${TARBALL_URL}"
+
+          echo "== .gitmodules, read from the tarball itself -- paths and URLs =="
+          tar -xzf "pins/edk2-${TAG}.tar.gz" "edk2-${TAG}/.gitmodules"
+          git config -f "edk2-${TAG}/.gitmodules" --get-regexp 'submodule\..*\.path' \
+            | sed 's/^submodule\.//; s/\.path / /' > modpaths.txt
+          cat modpaths.txt | sed 's/^/    /'
+
+          echo "== the gitlink each path is pinned to AT THE TAG, per the GitHub API =="
+          # api.github.com/repos/.../contents/<path>?ref=<tag> answers with
+          # type=submodule, sha=<the pinned commit>, submodule_git_url=<where>.
+          # That is the same fact `git ls-tree <tag> <path>` would state, read
+          # from the official host instead of a local clone.
+          n=0
+          while read -r name path; do
+            resp=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+              "https://api.github.com/repos/tianocore/edk2/contents/${path}?ref=${TAG}")
+            typ=$(echo "$resp" | jq -r .type)
+            commit=$(echo "$resp" | jq -r .sha)
+            url=$(echo "$resp" | jq -r .submodule_git_url)
+            [ "$typ" = "submodule" ] || { echo "VERON-EDK2-PIN-FAIL  ${path} is ${typ}, not a submodule"; exit 1; }
+            case "$url" in
+              https://github.com/*)
+                repo=${url#https://github.com/}; repo=${repo%.git}
+                arch="https://github.com/${repo}/archive/${commit}.tar.gz"
+                base=$(basename "$repo")
+                curl -fsSL -o "pins/${base}-${commit}.tar.gz" "$arch"
+                ssha=$(sha256sum "pins/${base}-${commit}.tar.gz" | cut -d' ' -f1)
+                echo "VERON-EDK2-SUBMODULE  ${path}  ${commit}  ${ssha}  ${arch}"
+                ;;
+              *)
+                # A non-GitHub home has no archive-by-commit convention to
+                # lean on; name it loudly so the pin gets designed, not assumed.
+                echo "VERON-EDK2-SUBMODULE-FOREIGN  ${path}  ${commit}  ${url}"
+                ;;
+            esac
+            n=$((n+1))
+          done < modpaths.txt
+          echo "VERON-EDK2-PIN-OK  ${n} submodules measured at ${TAG}"
+
+          echo "== artifact manifest =="
+          (cd pins && sha256sum *) | sed 's/^/    /'
+
+      - name: 'CARRY THE AUDITED BYTES OUT'
+        uses: actions/upload-artifact@v4
+        with:
+          name: edk2-pins
+          path: pins/
+          retention-days: 14
