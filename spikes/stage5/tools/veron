@@ -5467,6 +5467,22 @@ def cmd_selftest(a):
         # from memory of what this repository happens to use today.
         "waits-for.d", "before.d", "after.d", "depends-on.d", "depends-ms.d",
         "log-type", "log-buffer-size", "max-restarts", "nice", "rlimit-nofile",
+        # THE logfile-* FAMILY AND THE REST OF dinit-service(5) FOR 0.22.1,
+        # taken from the man page source (doc/manpages/dinit-service.5.m4)
+        # rather than from memory. logfile-permissions was the one that
+        # tripped: it is the only way to make a service log readable by a
+        # non-root reader, because dinit opens logs 0600 and resets the mode
+        # on every start, and it was not on this list. The rest of the family
+        # and the other documented settings are added in the same pass so the
+        # list matches the dinit actually built (packages/dinit: 0.22.1).
+        "logfile-permissions", "logfile-uid", "logfile-gid",
+        "always-chain", "kill-all-on-stop", "oom-score-adj", "ioprio",
+        "capabilities", "secure-bits", "securebits", "no-new-privs",
+        "no-setuid-fixup", "pass-cs-fd", "prepared-by", "run-in-cgroup",
+        "runs-on-console", "shares-console", "starts-on-console",
+        "signal-process-only", "skippable", "start-interruptible",
+        "starts-log", "starts-rwfs", "unmask-intr",
+        "rlimit-addrspace", "rlimit-core", "rlimit-data",
     }
     _restart_ok = {"yes", "true", "no", "false", "on-failure"}
     # SETTINGS WHOSE VALUE IS A NUMBER. dinit takes integers or decimal
