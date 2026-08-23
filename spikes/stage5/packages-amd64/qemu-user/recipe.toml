@@ -1,5 +1,9 @@
 name    = "qemu-user"
 version = "11.0.3"
+# THE TARBALL UNPACKS TO qemu-11.0.3, NOT qemu-user-11.0.3 -- two
+# recipes share one source, and $S defaults to the package slug. The
+# driver said exactly this at run 88497577805 and named the cure.
+srcdir  = "qemu-11.0.3"
 group   = "system"
 license = "GPL-2.0-only"
 

@@ -44,6 +44,17 @@ runtime      = ["glib", "pixman", "zlib", "dtc"]
 # configure probes the world; in a sandbox the world is small today and
 # larger tomorrow, and glib's libelf lesson says a package added twenty
 # rungs later must not change what qemu is.
+# ELEVEN FEATURES GO FROM NAMED TO FLAGGED, BY MEASUREMENT (run
+# 88497577805): the DT_NEEDED sweep reported qemu linking alsa-lib, bzip2,
+# curl, elfutils(libdw), gnutls, libpng, libseccomp, libudev, libusb,
+# ncurses and zstd -- ALL UNDECLARED. optional_off listed several of them
+# with no flag behind the words, which is pcre2's recipe-sin verbatim: a
+# declaration true about the flag and false about the binary. meson found
+# each library in the cumulative build root, so what qemu WAS depended on
+# build order -- the glib/libelf incident, eleven times over. Disabled
+# rather than declared: the gates boot over serial with -kernel; none of
+# these has a consumer here, and zstd/qcow2 compression can return later
+# as a DECLARED dependency the day something uses it.
 # xkbcommon IS OFF BY MEASUREMENT (run 88493588431): the desktop stack
 # ships libxkbcommon, meson found it, auto-enabled qemu-keymap, and the
 # generator died at 96% needing xkeyboard-config data (/usr/share/X11/xkb
@@ -53,7 +64,7 @@ runtime      = ["glib", "pixman", "zlib", "dtc"]
 optional_off = ["rust", "docs", "guest-agent", "slirp", "xkbcommon", "vnc", "gtk", "sdl", "opengl", "alsa", "pa", "curl", "libssh", "gnutls", "nettle", "gcrypt", "auth-pam", "kvm-x86-note: kvm is host-arch; an aarch64 guest on x86_64 uses tcg"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--target-list=aarch64-softmmu", "--disable-install-blobs", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust", "--disable-xkbcommon", "--disable-vnc", "--disable-gtk", "--disable-sdl", "--disable-opengl", "--audio-drv-list="]
+configure_flags = ["--prefix=/usr", "--target-list=aarch64-softmmu", "--disable-install-blobs", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust", "--disable-xkbcommon", "--disable-vnc", "--disable-gtk", "--disable-sdl", "--disable-opengl", "--disable-alsa", "--disable-curl", "--disable-gnutls", "--disable-libusb", "--disable-seccomp", "--disable-curses", "--disable-png", "--disable-bzip2", "--disable-zstd", "--disable-libdw", "--disable-libudev", "--audio-drv-list="]
 packaged_as     = ["qemu-system-aarch64", "qemu-base"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
@@ -88,7 +99,7 @@ cwd  = "$S"
 env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend" }
 # OUT-OF-TREE IS ENFORCED BY UPSTREAM: configure refuses to run in the
 # source root, so the shape matches meson packages' _b convention.
-run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --audio-drv-list="]]
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --disable-alsa --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev --audio-drv-list="]]
 
 [[steps]]
 name = "build"
