@@ -320,17 +320,30 @@ bar:
               # yambar-particles(5) allows `font` per string, so the tile is a
               # separate particle from the SSID rather than one string at one
               # size.
+              #
+              # THE WEIGHT IS NAMED, AND THAT IS THE WHOLE FIX. A per-particle
+              # font is its own fontconfig match (config.c: conf_to_font ->
+              # fcft_from_name) at yambar's start, separate from the bar's.
+              # The bare spec "DejaVu Sans" has several faces that answer to
+              # that family, and DejaVuSans-ExtraLight.ttf -- which carries
+              # NO Domino Tiles glyphs -- is one of them. When the match
+              # landed there, fcft_rasterize_char_utf32 returned NULL for the
+              # domino and string.c skips a NULL glyph silently (no log line:
+              # /run/yambar.log on hardware 2026-08-23 showed nothing), so
+              # the tile rendered empty beside a perfectly rendered SSID, and
+              # a restart -- a second match, warm cache -- could land on Book
+              # and "fix" it. weight=book pins the face that has the glyphs.
               state == up:
-                - string: {text: "{icon}", font: "DejaVu Sans:pixelsize=17", margin: 4}
+                - string: {text: "{icon}", font: "DejaVu Sans:weight=book:pixelsize=17", margin: 4}
                 - string: {text: "{ssid}", right-margin: 6}
               state == busy:
-                - string: {text: "{icon}", font: "DejaVu Sans:pixelsize=17", foreground: d0d0a0ff, margin: 4}
+                - string: {text: "{icon}", font: "DejaVu Sans:weight=book:pixelsize=17", foreground: d0d0a0ff, margin: 4}
                 - string: {text: "{ssid}", foreground: d0d0a0ff, right-margin: 6}
               state == idle:
-                - string: {text: "{icon}", font: "DejaVu Sans:pixelsize=17", foreground: 909090ff, margin: 4}
+                - string: {text: "{icon}", font: "DejaVu Sans:weight=book:pixelsize=17", foreground: 909090ff, margin: 4}
                 - string: {text: "{ssid}", foreground: 909090ff, right-margin: 6}
               state == down:
-                - string: {text: "{icon}", font: "DejaVu Sans:pixelsize=17", foreground: 707070ff, margin: 4}
+                - string: {text: "{icon}", font: "DejaVu Sans:weight=book:pixelsize=17", foreground: 707070ff, margin: 4}
                 - string: {text: "{ssid}", foreground: 707070ff, right-margin: 6}
 
     - script:
