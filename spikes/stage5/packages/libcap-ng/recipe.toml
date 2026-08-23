@@ -11,6 +11,12 @@ srcdir  = "libcap-ng-0.9.5"
 # automake, libtool and m4 this plan already carries. Python bindings are
 # off by flag: they would drag swig and a python -dev surface in for
 # nothing qemu consumes.
+#
+# THE $DL NAME IS THE MIRROR'S artifact_name, NOT THE URL BASENAME -- the
+# labwc 0.9.1 incident, avoided this time by reading sources/MIRRORS.tsv
+# before the build could reproduce it: the fetcher stores this tarball as
+# libcap-ng-v0.9.5.tar.gz because forge archive URLs end in the tag and a
+# bare v0.9.5.tar.gz names no project.
 
 [source]
 url       = "https://github.com/stevegrubb/libcap-ng/archive/refs/tags/v0.9.5.tar.gz"
@@ -37,7 +43,7 @@ digest   = "UNSEEDED -- first seed_installs run measures this"
 [[steps]]
 name = "unpack"
 cwd  = "$B"
-run  = [["tar", "-xf", "$DL/v0.9.5.tar.gz", "-C", "$B"]]
+run  = [["tar", "-xf", "$DL/libcap-ng-v0.9.5.tar.gz", "-C", "$B"]]
 
 [[steps]]
 name = "autogen"

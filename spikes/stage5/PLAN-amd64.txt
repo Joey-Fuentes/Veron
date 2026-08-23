@@ -347,7 +347,7 @@ package edk2-src-openssl 8cf17aae
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
   license      Apache-2.0
-  recipe-sha   c5ac5ed42c61e31bd09db8e6720e8f12adeb16d3ffa9a46bae85f68c02c579ca
+  recipe-sha   f7148b9ba6d02916fabdb8fd0cd210d966b20510842b26804ddeea698d1b22eb
 
   source
     url        https://github.com/openssl/openssl/archive/8cf17aaeb4599f8af87fefd810b5b5fee90fe69e.tar.gz
@@ -364,7 +364,7 @@ package edk2-src-openssl 8cf17aae
   commands (literal; this is exactly what runs)
     [01] stage
          cwd  build/edk2-src-openssl-8cf17aae
-         argv ["sh", "-c", "install -D -m644 dl/8cf17aaeb4599f8af87fefd810b5b5fee90fe69e.tar.gz dest/edk2-src-openssl/usr/src/edk2/openssl.tar.gz"]
+         argv ["sh", "-c", "install -D -m644 dl/openssl-8cf17aaeb4599f8af87fefd810b5b5fee90fe69e.tar.gz dest/edk2-src-openssl/usr/src/edk2/openssl.tar.gz"]
 
 ======================================================================
 package expat 2.7.4
@@ -2749,7 +2749,7 @@ package libcap 2.76
 package libcap-ng 0.9.5
   group        system
   license      LGPL-2.1-or-later (library), GPL-2.0-or-later (tools)
-  recipe-sha   1b0fbf468575944b643bcd1d43bda84c71bdbd17dffb89552624cf77827ddf46
+  recipe-sha   2c1b05da94a16bdd2f9cdf8e4807bcf93d0e938dce2a7e7df00628ba7c1cfe07
 
   source
     url        https://github.com/stevegrubb/libcap-ng/archive/refs/tags/v0.9.5.tar.gz
@@ -2766,7 +2766,7 @@ package libcap-ng 0.9.5
   commands (literal; this is exactly what runs)
     [01] unpack
          cwd  build/libcap-ng-0.9.5
-         argv ["tar", "-xf", "dl/v0.9.5.tar.gz", "-C", "build/libcap-ng-0.9.5"]
+         argv ["tar", "-xf", "dl/libcap-ng-v0.9.5.tar.gz", "-C", "build/libcap-ng-0.9.5"]
     [02] autogen
          cwd  build/libcap-ng-0.9.5/libcap-ng-0.9.5
          argv ["./autogen.sh"]

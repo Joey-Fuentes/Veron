@@ -11,6 +11,9 @@ build_only = true
 # consumer to unpack. The pin is not guessed: run 88505453858 read the
 # gitlink for this path from the official tag via the GitHub API and
 # hashed the archive it names; this recipe restates that log.
+# The $DL name carries the mirror's project prefix (openssl-<commit>) per
+# mirror.artifact_name; brotli's stayed bare -- both read from the TSV the
+# mirror run committed, not guessed from the URL.
 # Of thirteen submodules at the tag, a trial OvmfPkgX64 build consumed
 # exactly two -- openssl (657 objects) and BaseTools' brotli (the
 # BrotliCompress host tool) -- so exactly two couriers exist.
@@ -40,7 +43,7 @@ digest   = "UNSEEDED -- first seed_installs run measures this"
 [[steps]]
 name = "stage"
 cwd  = "$B"
-run  = [["sh", "-c", "install -D -m644 $DL/8cf17aaeb4599f8af87fefd810b5b5fee90fe69e.tar.gz $D/usr/src/edk2/openssl.tar.gz"]]
+run  = [["sh", "-c", "install -D -m644 $DL/openssl-8cf17aaeb4599f8af87fefd810b5b5fee90fe69e.tar.gz $D/usr/src/edk2/openssl.tar.gz"]]
 
 [guest]
 # build_only bytes-courier; edk2-firmware consuming it is the test.
