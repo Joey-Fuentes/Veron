@@ -117,6 +117,17 @@ run  = [["make", "-C", "_b", "-j$J"]]
 name = "install"
 cwd  = "$S"
 run  = [["make", "-C", "_b", "DESTDIR=$D", "install"]]
+[[steps]]
+name = "no-borrowed-directories"
+cwd  = "$S"
+# A CONVICTION FROM THE OVERLAY'S EXACT-MANIFEST GATE (run 88519731500):
+# this recipe's .bin/.rom/.img/.fd sweep never looked at DIRECTORIES, so
+# prebuilt PowerPC dtbs and pregenerated keymaps from the dist tarball
+# rode make install into every image since the first green build.
+# Purged here as their own named step; the sweep below still guards the
+# file classes, and the overlay's manifest guards the rest on the arm
+# that has one.
+run  = [["sh", "-c", "rm -rf $D/usr/share/qemu/dtb $D/usr/share/qemu/keymaps"]]
 
 [[steps]]
 name = "no-borrowed-bytes"

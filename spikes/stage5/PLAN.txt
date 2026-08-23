@@ -4517,7 +4517,7 @@ package llvm 22.1.8
 package qemu 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   60c08031fedacd437444c11057d92c6e6b97487c4be21ef2226acf892a9df886
+  recipe-sha   cc8ac3a0cb8051374e255d09c517ec1ff04cea4f0f21c69770965b6e65038a2b
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4545,7 +4545,10 @@ package qemu 11.0.3
     [04] install
          cwd  build/qemu-11.0.3/qemu-11.0.3
          argv ["make", "-C", "_b", "DESTDIR=dest/qemu", "install"]
-    [05] no-borrowed-bytes
+    [05] no-borrowed-directories
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "rm -rf dest/qemu/usr/share/qemu/dtb dest/qemu/usr/share/qemu/keymaps"]
+    [06] no-borrowed-bytes
          cwd  build/qemu-11.0.3/qemu-11.0.3
          argv ["sh", "-c", "! find dest/qemu/usr/share/qemu -name '*.bin' -o -name '*.rom' -o -name '*.img' -o -name '*.fd' 2>/dev/null | grep -q . || { echo 'VERON-QEMU-BLOB-LEAK'; find dest/qemu/usr/share/qemu -name '*.bin' -o -name '*.rom' -o -name '*.img' -o -name '*.fd'; exit 1; }"]
 
