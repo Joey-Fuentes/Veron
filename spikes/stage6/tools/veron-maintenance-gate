@@ -112,7 +112,7 @@ qemu-system-x86_64 \
     -device qemu-xhci -device usb-storage,drive=d0,removable=on \
     -drive if=none,id=d0,format=raw,file="$IMG",snapshot=on \
     -vga none -device virtio-gpu-pci \
-    -device virtio-keyboard-pci -device virtio-tablet-pci \
+    -device virtio-keyboard-pci \
     -serial stdio -pidfile "$OUT/qemu.pid" \
     -monitor unix:"$SOCK",server,nowait \
     < "$FIFO" 2>&1 | tee "$SER" | python3 -u -c '
@@ -288,19 +288,30 @@ set -- $dims
 sw=$1; sh=$2
 wx=$((px - 12)); wy=$((py + ph - 1 - 447))
 bx=$((wx + 535)); by=$((wy + 119))
-ax=$((bx * 32767 / sw)); ay=$((by * 32767 / sh))
 note "screen ${sw}x${sh}; pane bottom at y=$((py + ph - 1)); window client origin ($wx,$wy); button centre ($bx,$by)"
 # arm_wait SECONDS -- poll flashd's status through the serial shell for ARMED.
 # (world-readable; the flasher tails it, so can the serial shell.) The echo of
 # the typed line carries "MG-ARM-/", never "MG-ARM-<digit>".
+# SUCCESS IS ALSO THE REBOOT ITSELF. flashd writes ARMED and then the flasher
+# asks powerd to reboot, so the ARMED line is in a file that exists for a
+# blink before the machine goes down -- a 3s poll can sample on either side
+# of it every time even when the arm worked. Run 88364882265 did exactly
+# that: every poll MG-ARM-0, the gate said FAIL, then `reboot: Restarting
+# system` at t=75.8 and the loader took the one-shot marker. The kernel's
+# reboot line and the loader's "maintenance command line armed" are proof the
+# arm happened that cannot be missed by timing, so either counts as success.
 arm_wait() {
     _t=0
     while [ "$_t" -lt "$1" ]; do
+        grep -aq "reboot: Restarting system\|veron-boot: maintenance command line armed" "$SER" && return 0
         printf 'grep -c ARMED /run/veron-flash/status | sed s/^/MG-ARM-/; echo VERON-MG-$((9+0))\n' > "$FIFO"
         sleep 3; _t=$((_t + 3))
         grep -aq "MG-ARM-[1-9]" "$SER" && return 0
+        grep -aq "reboot: Restarting system\|veron-boot: maintenance command line armed" "$SER" && return 0
         grep -aq "REFUSED" "$SER" && return 1
-        alive || return 1
+        # alive() is false once the guest has rebooted -- which is success
+        # here, so only treat a dead guest as failure if it never armed.
+        alive || { grep -aq "reboot: Restarting system\|veron-boot: maintenance command line armed" "$SER" && return 0; return 1; }
     done
     return 1
 }
@@ -308,11 +319,20 @@ printf '\n' > "$FIFO"; sleep 1
 
 # ROUTE 1: THE POINTER. Motion in a few steps (libinput wants to see the
 # device move before it believes a button), then press, then release.
+# THE MOUSE IS PS/2 AND SPEAKS RELATIVE DELTAS, not tablet absolutes. The
+# tablet never moved the cursor at all (both screenshots in run 88364882265
+# show it parked at the same spot before and after the click), so every run
+# silently fell through to the keyboard route. With a relative device the
+# position is made deterministic by pinning the cursor to the top-left
+# corner first -- a delta far larger than the screen clamps at (0,0) -- and
+# then moving by exactly the button's pixel offset. Motion in steps so
+# libinput sees the device move before it believes a button.
 mon "info mice" | sed 's/^/    mice: /'
-mon "mouse_move $((ax - 2000)) $((ay - 2000))" >/dev/null; sleep 0.3
-mon "mouse_move $((ax - 500)) $((ay - 500))" >/dev/null; sleep 0.3
-mon "mouse_move $ax $ay" >/dev/null; sleep 0.5
-mon "mouse_move $ax $ay" "mouse_button 1" >/dev/null
+mon "mouse_move -4000 -4000" >/dev/null; sleep 0.3
+mon "mouse_move -4000 -4000" >/dev/null; sleep 0.3
+mon "mouse_move $((bx / 2)) $((by / 2))" >/dev/null; sleep 0.3
+mon "mouse_move $((bx - bx / 2)) $((by - by / 2))" >/dev/null; sleep 0.5
+mon "mouse_button 1" >/dev/null
 sleep 0.3
 mon "mouse_button 0" >/dev/null
 sleep 2
