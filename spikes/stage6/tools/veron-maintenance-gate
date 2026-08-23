@@ -185,8 +185,22 @@ prompt() {
 # does one event-driven wait for that marker. Replaces polling screendumps
 # for "did the window appear" -- the process existing is the event the
 # pixels were a proxy for, and it is observable without a frame at all.
+# The process is found by reading /proc/*/comm directly, not pgrep: busybox
+# pgrep's option set is not pinned in this tree, and run 14 showed six foot
+# windows open (Super+Return works every time) while `pgrep -x foot` matched
+# nothing. /proc/*/comm is the kernel's own name for every process (the
+# basename of the exec'd binary; rc.xml execs /usr/bin/foot, so `foot`) and
+# needs no applet at all. The loop runs INSIDE the guest so the host waits
+# once.
+#
+# THE HOST WAITS LONGER THAN THE GUEST LOOPS. In that same run the in-guest
+# loop ran its full 15s on the miss and printed its marker at 15.25s -- and
+# the host's wait for the marker had the SAME 15s ceiling and gave up at
+# 15.0s, a quarter-second before the answer landed. A legitimate "not found"
+# was reported as a host TIMEOUT every try. The guest decides; the host only
+# has to still be listening when it does: its ceiling is the guest's plus 5s.
 wait_proc() {
-    ask "n=0; while ! pgrep -x $1 >/dev/null && [ \$n -lt $(($2 * 10)) ]; do n=\$((n+1)); sleep 0.1; done; pgrep -x $1 >/dev/null && echo MG-PROC-$1-UP" "$3" "$2" \
+    ask "n=0; while [ \$n -lt $(($2 * 10)) ]; do for c in /proc/[0-9]*/comm; do [ \"\$(cat \$c 2>/dev/null)\" = $1 ] && { echo MG-PROC-$1-UP; break 2; }; done; n=\$((n+1)); sleep 0.1; done" "$3" "$(($2 + 5))" \
         && grep -aq "MG-PROC-$1-UP" "$SER"
 }
 
