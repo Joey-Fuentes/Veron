@@ -134,7 +134,14 @@ run  = [["make", "-C", "_b", "DESTDIR=$D", "install"]]
 [[steps]]
 name = "seabios"
 cwd  = "$S"
-run  = [["sh", "-c", "mkdir -p pc-bios && make -C roms bios vgabios -j$J"]]
+# PYTHON=python3, STATED ON THE COMMAND LINE, BECAUSE SEABIOS SAYS
+# `python` AND THIS SYSTEM ONLY HAS python3 (run 88516368382: every
+# 32-bit object compiled, then "Building ld scripts" died on
+# "/bin/sh: python: not found"). Command-line variable overrides
+# propagate through make's sub-invocations, which a trial with the
+# runner's bare-python alias REMOVED confirmed end to end: rc=0,
+# bios-256k.bin at its exact 262144 bytes.
+run  = [["sh", "-c", "mkdir -p pc-bios && make -C roms bios vgabios PYTHON=python3 -j$J"]]
 
 [[steps]]
 name = "install-our-firmware"
