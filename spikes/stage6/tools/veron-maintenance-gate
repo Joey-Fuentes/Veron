@@ -133,37 +133,92 @@ cleanup() {
     rm -f "$SOCK" "$FIFO" "$OUT"/probe.ppm "$OUT"/shot.ppm "$OUT"/qemu.pid
 }
 
-_i=0; while [ "$_i" -lt 300 ]; do [ -S "$SOCK" ] && [ -s "$OUT/qemu.pid" ] && break; _i=$((_i + 1)); /bin/sleep 0.1; done
+await_file "$OUT/qemu.pid" 30
 qpid=$(cat "$OUT/qemu.pid" 2>/dev/null || echo 0)
 [ -S "$SOCK" ] && [ "$qpid" != 0 ] || { bad "qemu never opened its monitor socket"; tail -20 "$SER"; cleanup; exit 1; }
 
 alive() { kill -0 "$qpid" 2>/dev/null; }
 mon()   { python3 "$MON" "$SOCK" "$@" 2>/dev/null; }
 
+# await_file PATH SECONDS -- wait for PATH to exist and be non-empty. This is
+# a kernel event (inotify) when inotifywait is installed, which the workflow
+# does. The poll branch exists only so the tool still runs on a machine
+# without inotify-tools; it is not the path CI takes.
+await_file() {
+    [ -s "$1" ] && return 0
+    if command -v inotifywait >/dev/null 2>&1; then
+        timeout "$2" inotifywait -q -e close_write -e moved_to "$(dirname "$1")" >/dev/null 2>&1 || true
+        [ -s "$1" ] && return 0
+    fi
+    _i=0; while [ ! -s "$1" ] && [ "$_i" -lt "$(($2 * 10))" ]; do _i=$((_i + 1)); /bin/sleep 0.1; done
+    [ -s "$1" ]
+}
+
 # prompt -- nudge the serial shell with a newline and wait for its prompt to
 # come back, rather than sleeping a guessed second and hoping it has.
 prompt() {
-    _pc=$(grep -ac 'veron\$' "$SER" 2>/dev/null); _pc=${_pc:-0}
+    # a newline makes the shell print a fresh prompt. Mark the log BEFORE
+    # sending it, then follow from that mark: a prompt already in the log
+    # cannot satisfy it, and one that lands before the follower starts is
+    # still seen.
+    _m=$(mark)
     printf '\n' > "$FIFO"
-    _i=0; while [ "$_i" -lt 100 ]; do
-        _nc=$(grep -ac 'veron\$' "$SER" 2>/dev/null); _nc=${_nc:-0}
-        [ "$_nc" -gt "$_pc" ] && return 0
-        _i=$((_i + 1)); /bin/sleep 0.05
-    done
-    return 1
+    follow_until 'veron\$' 5 1 "$_m" >/dev/null
 }
 
 # wait_serial REGEX SECONDS [COUNT] -- until the serial log matches, or the
 # ceiling. COUNT lets the same line be awaited for the SECOND boot.
+# wait_proc NAME SECONDS -- the guest-side event "process NAME exists". A
+# single command is typed that loops INSIDE the guest (busybox pgrep, which
+# returns the moment the process is there) and then prints a marker; the host
+# does one event-driven wait for that marker. Replaces polling screendumps
+# for "did the window appear" -- the process existing is the event the
+# pixels were a proxy for, and it is observable without a frame at all.
+wait_proc() {
+    ask "n=0; while ! pgrep -x $1 >/dev/null && [ \$n -lt $(($2 * 10)) ]; do n=\$((n+1)); sleep 0.1; done; pgrep -x $1 >/dev/null && echo MG-PROC-$1-UP" "$3" "$2" \
+        && grep -aq "MG-PROC-$1-UP" "$SER"
+}
+
+# follow_until REGEX SECONDS [COUNT] [fromnow] -- THE ONE STREAM PRIMITIVE.
+# tail -f follows the live serial log (from the start, or from now), grep -m
+# COUNT reads it and exits on the match. tail is then killed EXPLICITLY: a
+# tail whose reader has gone only dies on SIGPIPE at its next write, so a
+# guest that falls silent right after the event would otherwise hold the
+# caller until the watchdog -- measured: a 3s scenario took 36s before this
+# kill was added. The matched line is printed; exit 0 on match, 1 on the
+# watchdog or a dead guest.
+follow_until() {
+    # FROM is a line number: follow from that line onward, so an event that
+    # landed between "the action" and "the follower starting" is not missed.
+    # Callers snapshot the count with `mark` BEFORE acting. No "from now":
+    # that raced the guest and lost the reboot line (measured, 30s stall).
+    _re=$1; _max=$2; _n=${3:-1}; _from=${4:-1}
+    _p=$(mktemp -u); mkfifo "$_p"
+    tail -n "+$_from" -f "$SER" --pid="$qpid" > "$_p" 2>/dev/null &
+    _tail=$!
+    _hit=$(timeout "$_max" grep -aE -m "$_n" "$_re" < "$_p")
+    kill "$_tail" 2>/dev/null; wait "$_tail" 2>/dev/null; rm -f "$_p"
+    [ -n "$_hit" ] && { printf '%s\n' "$_hit"; return 0; }
+    return 1
+}
+# mark -- the line to follow from: the log's length now, plus one.
+mark() { echo $(( $(wc -l < "$SER" 2>/dev/null || echo 0) + 1 )); }
+
+# EVENT-DRIVEN. The serial log is a live file tee writes as the guest speaks,
+# so it is FOLLOWED, not re-scanned: tail -f blocks in the kernel until bytes
+# land, grep -m N exits on the N-th match, and the closed pipe ends tail. No
+# sleep, no tick, no ceiling counted in iterations. `timeout` on the tail is
+# the only clock, and it only ever fires for a guest that never says the
+# line. --pid ends the wait if qemu dies first. (Before: grep -c the whole
+# file every 0.1s, which is a poll dressed up as an event.)
 wait_serial() {
-    _re=$1; _max=$2; _n=${3:-1}; _t=0
-    _max10=$((_max * 10))
-    while [ "$_t" -lt "$_max10" ]; do
-        _c=$(grep -acE "$_re" "$SER" 2>/dev/null); _c=${_c:-0}
-        [ "$_c" -ge "$_n" ] && { note "'$_re' (x$_n) after $((_t / 10)).$((_t % 10))s"; return 0; }
-        alive || { note "qemu exited while waiting for '$_re'"; return 1; }
-        /bin/sleep 0.1; _t=$((_t + 1))
-    done
+    _re=$1; _max=$2; _n=${3:-1}
+    _t0=$(date +%s.%N)
+    if follow_until "$_re" "$_max" "$_n" >/dev/null; then
+        note "'$_re' (x$_n) after $(echo "$(date +%s.%N) - $_t0" | bc)s"
+        return 0
+    fi
+    alive || { note "qemu exited while waiting for '$_re'"; return 1; }
     note "TIMEOUT ${_max}s waiting for '$_re' (x$_n)"
     return 1
 }
@@ -176,21 +231,27 @@ screen_block() {
     python3 "$FIND" "$OUT/probe.ppm" "$1" --min-run "$2"
 }
 # wait_block COLOUR MINRUN SECONDS -- poll the frame until the block shows
-wait_block() {
-    _t=0; _max10=$(($3 * 10))
-    while [ "$_t" -lt "$_max10" ]; do
-        _r=$(screen_block "$1" "$2") && { echo "$_r"; return 0; }
-        alive || return 1
-        /bin/sleep 0.1; _t=$((_t + 1))
-    done
-    return 1
-}
+# THE CEILING IS WALL-CLOCK, NOT AN ITERATION COUNT. screen_block is not
+# free: a full screendump plus a Python frame-find over a 1280x800 frame,
+# one to two seconds each. Counting sleeps as time here was the bug that
+# turned a 2-minute gate into a 10-minute one (main, 2026-08-22): with the
+# tick cut to 0.1s the body ran back-to-back, and a "30s" ceiling became 300
+# iterations of ~2s. The loop now reads the clock, so the ceiling means what
+# the caller said regardless of how long each probe takes, and it runs the
+# probe as often as the probe allows -- no sleep, because the body is the
+# rate limit.
+# wait_block is gone. It polled screendumps -- a full frame plus a Python
+# frame-find per iteration -- to learn whether a window had appeared, and
+# with a fast tick that became a tight loop whose "30s" ceiling was 300
+# iterations of ~2s: the 10-minute gate (main, 2026-08-22). The window
+# appearing has a guest-side event, the process existing, and that is what
+# is waited on now (wait_proc). The screendump is taken ONCE after that
+# event, for the pane coordinates the click needs and for the evidence PNG.
 # snapshot NAME -- a full frame to PNG
 snapshot() {
     rm -f "$OUT/shot.ppm"
     mon "screendump $OUT/shot.ppm" >/dev/null
-    # wait for the dump to actually land, not for a guessed interval
-    _i=0; while [ ! -s "$OUT/shot.ppm" ] && [ "$_i" -lt 100 ]; do _i=$((_i + 1)); /bin/sleep 0.05; done
+    await_file "$OUT/shot.ppm" 5
     [ -s "$OUT/shot.ppm" ] || { note "(no frame for $1)"; return 1; }
     python3 "$PNG" "$OUT/shot.ppm" "$OUT/$1" | sed 's/^/    /'
     rm -f "$OUT/shot.ppm"
@@ -223,12 +284,14 @@ open_flasher() {
     # patience for a TCG boot.
     for _try in 1 2 3 4 5 6; do
         mon "sendkey meta_l-ret" >/dev/null
-        _foot=$(wait_block 242424 300 15) && break
+        wait_proc foot 15 "40+$_try" && { _foot=yes; break; }
     done
-    [ -n "$_foot" ] || { note "foot never appeared (no #242424 block after 6 tries)"; return 1; }
-    note "foot is up at [$_foot]"
+    [ -n "$_foot" ] || { note "foot never appeared (no foot process after 6 tries)"; return 1; }
+    note "foot is up"
     type_line "veron-flasher"
-    _pane=$(wait_block ffffff 500 30) || { note "the flasher's log pane (white, >=500px) never appeared"; return 1; }
+    wait_proc veron-flasher 30 "50+0" || { note "veron-flasher never started"; return 1; }
+    # the process is up; ONE frame now, for the pane geometry the click needs
+    _pane=$(screen_block ffffff 500) || { note "veron-flasher is running but its log pane (white, >=500px) is not on screen"; return 1; }
     note "flasher pane at [$_pane]"
     echo "$_pane"
 }
@@ -313,19 +376,19 @@ note "screen ${sw}x${sh}; pane bottom at y=$((py + ph - 1)); window client origi
 # reboot line and the loader's "maintenance command line armed" are proof the
 # arm happened that cannot be missed by timing, so either counts as success.
 arm_wait() {
-    _t=0; _max10=$(($1 * 10))
-    while [ "$_t" -lt "$_max10" ]; do
-        # the cheap checks, every 0.1s: the serial log already has the answer
-        grep -aq "reboot: Restarting system\|veron-boot: maintenance command line armed" "$SER" && return 0
-        grep -aq "MG-ARM-[1-9]" "$SER" && return 0
-        grep -aq "REFUSED" "$SER" && return 1
-        # alive() is false once the guest has rebooted -- which is success
-        # here, so only treat a dead guest as failure if it never armed.
-        alive || { grep -aq "reboot: Restarting system\|veron-boot: maintenance command line armed" "$SER" && return 0; return 1; }
-        # the typed probe, every 2s: a command into the guest shell is not free
-        [ $((_t % 20)) -eq 0 ] && printf 'grep -c ARMED /run/veron-flash/status | sed s/^/MG-ARM-/; echo VERON-MG-$((9+0))\n' > "$FIFO"
-        /bin/sleep 0.1; _t=$((_t + 1))
-    done
+    # ONE EVENT. The arm shows up on the serial stream as one of: the kernel
+    # rebooting, the loader taking the one-shot marker, or flashd refusing.
+    # Follow the stream from now and return on whichever lands first. No
+    # typed status probe: the reboot line is the proof and it cannot be
+    # missed, where the ARMED line in a file lived for a blink and was.
+    _hit=$(follow_until "reboot: Restarting system|veron-boot: maintenance command line armed|REFUSED" "$1" 1 "$2")
+    case "$_hit" in
+        *REFUSED*) return 1 ;;
+        *reboot*|*armed*) return 0 ;;
+    esac
+    # nothing arrived: the guest may have already rebooted before we started
+    # following, which is success -- check the full log once, not in a loop
+    grep -aq "reboot: Restarting system\|veron-boot: maintenance command line armed" "$SER" && return 0
     return 1
 }
 prompt
@@ -348,10 +411,11 @@ mon "mouse_move $((bx - bx / 2)) $((by - by / 2))" >/dev/null
 # THE FRAME BEFORE THE CLICK: did the cursor arrive on the button? Taken with
 # no click in the picture, so it answers that one question on its own.
 snapshot 02a-flasher-pre-click.png
+_m=$(mark)
 mon "mouse_button 1" >/dev/null
 mon "mouse_button 0" >/dev/null
 snapshot 02-flasher-armed.png
-if arm_wait 30; then
+if arm_wait 30 "$_m"; then
     ok "clicked 'Reflash this boot device...' -- flashd reports ARMED (02-flasher-armed.png)"
 else
     # THE POINTER DID NOT REACH THE BUTTON. Say what the machine knows about
@@ -374,16 +438,19 @@ else
     # Space corrects it -- the only other things those can land on are the
     # empty confirm box (a typed space) and the text pane (nothing).
     note "trying the keyboard route: Tab x9 to the button, Space"
+    _m=$(mark)
     mon "--keys=tab,tab,tab,tab,tab,tab,tab,tab,tab,spc" >/dev/null
-    if arm_wait 20; then
+    if arm_wait 20 "$_m"; then
         ok "keyboard route armed maintenance mode (Tab x9, Space) -- the pointer route is the defect to fix"
     else
+        _m=$(mark)
         mon "--keys=shift-tab,spc" >/dev/null
-        if arm_wait 15; then
+        if arm_wait 15 "$_m"; then
             ok "keyboard route armed maintenance mode (Tab x8) -- the pointer route is the defect to fix"
         else
+            _m=$(mark)
             mon "--keys=tab,tab,spc" >/dev/null
-            if arm_wait 15; then
+            if arm_wait 15 "$_m"; then
                 ok "keyboard route armed maintenance mode (Tab x10) -- the pointer route is the defect to fix"
             else
                 bad "neither the pointer nor the keyboard armed maintenance mode"
@@ -424,14 +491,17 @@ wait_serial "VERON-MAINTENANCE: entering maintenance mode" 30 \
 # on KVM; two minutes is already generous. init's fatal() prints "ABORTED"
 # the moment it gives up, and that ends the wait at once. While waiting,
 # init's latest line is echoed so a stall is visible as the step it stalled on.
-_t=0; _last=""
-while [ "$_t" -lt 1200 ]; do   # 120s, counted in tenths
-    grep -aqE "VERON-MAINTENANCE: (running from RAM|ABORTED)" "$SER" && break
-    alive || { note "qemu exited during the pivot"; break; }
-    _now=$(grep -a "VERON-MAINTENANCE:" "$SER" | tail -1)
-    [ "$_now" != "$_last" ] && { note "$((_t / 10)).$((_t % 10))s  $_now"; _last=$_now; }
-    /bin/sleep 0.1; _t=$((_t + 1))
-done
+# FOLLOW THE PIVOT AS IT NARRATES. Each VERON-MAINTENANCE: line is printed
+# the instant it lands; the wait ends on the terminal line (running from
+# RAM, or ABORTED). One stream read, no tick, no re-scan. 120s watchdog.
+_t0=$(date +%s.%N)
+timeout 120 tail -n +1 -f "$SER" --pid="$qpid" 2>/dev/null \
+  | grep -a --line-buffered "VERON-MAINTENANCE:" \
+  | while IFS= read -r _now; do
+        note "$(echo "$(date +%s.%N) - $_t0" | bc)s  $_now"
+        case "$_now" in *"running from RAM"*|*ABORTED*) break ;; esac
+    done
+alive || note "qemu exited during the pivot"
 if grep -aq "VERON-MAINTENANCE: running from RAM; the boot disk is released" "$SER"; then
     ok "the pivot completed and the stick was verified released (${_t}s)"
 else

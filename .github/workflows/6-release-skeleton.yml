@@ -417,7 +417,7 @@ jobs:
           # GPT, built-in ext4 mounts the slot, and the kernel execs
           # /usr/bin/dinit. The serial log must show each link BY NAME.
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf >/dev/null
+            qemu-system-x86 ovmf inotify-tools >/dev/null
           for img in out/veron-x86_64.raw; do
             [ -e "$img" ] || continue
             # REPRODUCIBILITY GUARD (part 1 of 2): record the image's identity
@@ -441,11 +441,32 @@ jobs:
                 DRIVE="-drive format=raw,file=$img,snapshot=on"
               fi
               echo "=== boot attempt: $attach attachment ==="
+              # EVENT-DRIVEN, NOT A FIXED WAIT. This used to be `timeout 300 qemu`
+              # and then read the log: the guest boots to [ OK ] boot in ~2s and
+              # sits on a desktop, qemu never exits on its own, so every attempt
+              # was a flat 300s until the timeout killed it -- two attachments,
+              # ten minutes, for four seconds of work (run 88364882265: boot
+              # complete at 23:48:24, not read until 23:53:22). Now the serial
+              # stream is read LIVE and qemu is killed the instant the line that
+              # means "booted" arrives. timeout is only the watchdog for a guest
+              # that genuinely never gets there.
+              : > boot-serial.log
               timeout 300 qemu-system-x86_64 \
                 -machine q35 $VERON_ACCEL -cpu qemu64 -m 2048 -nographic -no-reboot -nic none \
                 -bios /usr/share/ovmf/OVMF.fd \
                 $DRIVE \
-                -serial file:boot-serial.log >/dev/null 2>&1 || true
+                -serial file:boot-serial.log >/dev/null 2>&1 &
+              qpid=$!
+              # tail -f follows the file as qemu writes it; grep -m1 exits on the
+              # first match, which closes the pipe and ends tail. No polling, no
+              # sleep: the kernel wakes tail when bytes land.
+              if tail -n +1 -f boot-serial.log --pid="$qpid" 2>/dev/null \
+                | grep -m1 -q "\[  OK  \] boot"; then
+                echo "  booted: [  OK  ] boot seen; stopping qemu"
+              else
+                echo "  qemu ended before [  OK  ] boot (watchdog or crash)"
+              fi
+              kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null || true
             echo "--- serial (tail) ---"; tail -60 boot-serial.log || true
             # THE ONE LINE THAT ADJUDICATES: the kernel's verbatim cmdline
             # echo. Run 87012288217 booted to a login prompt while the
@@ -531,7 +552,7 @@ jobs:
           # USB attachment, a bigger RAM budget for the pivot, and a VM that is
           # ALLOWED to reboot -- four things the boot gate deliberately has not.
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf >/dev/null
+            qemu-system-x86 ovmf inotify-tools >/dev/null
           # KVM when the runner has it (GitHub's Linux runners do, behind a
           # root-only node); TCG otherwise. The gate prints which.
           mkdir -p out/maintenance-gate
