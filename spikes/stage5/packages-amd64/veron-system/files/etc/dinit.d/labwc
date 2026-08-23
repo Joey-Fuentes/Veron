@@ -90,6 +90,15 @@ restart = true
 # its stderr went into the same serial stream as everything else and did not
 # survive. With this the reason lands in a file the desktop test can read back.
 logfile = /run/labwc.log
+# logfile-permissions = 644, BECAUSE dinit FORCES 0600 OTHERWISE. dinit opens
+# the log S_IRUSR|S_IWUSR (run-child-proc.cc) and, per dinit-service(5),
+# resets an existing file's mode to this setting every time the service
+# starts -- so the chmod 0644 device-nodes does at boot was undone the moment
+# the service launched. The maintenance gate and boot-capture read this log
+# as the unprivileged veron shell and got "Permission denied" on every run,
+# which is why neither could report what libinput/the compositor did. This
+# is dinit's own mechanism for making a service log readable; it holds.
+logfile-permissions = 644
 depends-on = seatd
 depends-on = xdg-runtime
 depends-on = early-filesystems

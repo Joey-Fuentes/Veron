@@ -133,22 +133,36 @@ cleanup() {
     rm -f "$SOCK" "$FIFO" "$OUT"/probe.ppm "$OUT"/shot.ppm "$OUT"/qemu.pid
 }
 
-for _ in $(seq 1 30); do [ -S "$SOCK" ] && [ -s "$OUT/qemu.pid" ] && break; sleep 1; done
+_i=0; while [ "$_i" -lt 300 ]; do [ -S "$SOCK" ] && [ -s "$OUT/qemu.pid" ] && break; _i=$((_i + 1)); /bin/sleep 0.1; done
 qpid=$(cat "$OUT/qemu.pid" 2>/dev/null || echo 0)
 [ -S "$SOCK" ] && [ "$qpid" != 0 ] || { bad "qemu never opened its monitor socket"; tail -20 "$SER"; cleanup; exit 1; }
 
 alive() { kill -0 "$qpid" 2>/dev/null; }
 mon()   { python3 "$MON" "$SOCK" "$@" 2>/dev/null; }
 
+# prompt -- nudge the serial shell with a newline and wait for its prompt to
+# come back, rather than sleeping a guessed second and hoping it has.
+prompt() {
+    _pc=$(grep -ac 'veron\$' "$SER" 2>/dev/null); _pc=${_pc:-0}
+    printf '\n' > "$FIFO"
+    _i=0; while [ "$_i" -lt 100 ]; do
+        _nc=$(grep -ac 'veron\$' "$SER" 2>/dev/null); _nc=${_nc:-0}
+        [ "$_nc" -gt "$_pc" ] && return 0
+        _i=$((_i + 1)); /bin/sleep 0.05
+    done
+    return 1
+}
+
 # wait_serial REGEX SECONDS [COUNT] -- until the serial log matches, or the
 # ceiling. COUNT lets the same line be awaited for the SECOND boot.
 wait_serial() {
     _re=$1; _max=$2; _n=${3:-1}; _t=0
-    while [ "$_t" -lt "$_max" ]; do
+    _max10=$((_max * 10))
+    while [ "$_t" -lt "$_max10" ]; do
         _c=$(grep -acE "$_re" "$SER" 2>/dev/null); _c=${_c:-0}
-        [ "$_c" -ge "$_n" ] && { note "'$_re' (x$_n) after ${_t}s"; return 0; }
+        [ "$_c" -ge "$_n" ] && { note "'$_re' (x$_n) after $((_t / 10)).$((_t % 10))s"; return 0; }
         alive || { note "qemu exited while waiting for '$_re'"; return 1; }
-        sleep 2; _t=$((_t + 2))
+        /bin/sleep 0.1; _t=$((_t + 1))
     done
     note "TIMEOUT ${_max}s waiting for '$_re' (x$_n)"
     return 1
@@ -163,19 +177,20 @@ screen_block() {
 }
 # wait_block COLOUR MINRUN SECONDS -- poll the frame until the block shows
 wait_block() {
-    _t=0
-    while [ "$_t" -lt "$3" ]; do
+    _t=0; _max10=$(($3 * 10))
+    while [ "$_t" -lt "$_max10" ]; do
         _r=$(screen_block "$1" "$2") && { echo "$_r"; return 0; }
         alive || return 1
-        sleep 2; _t=$((_t + 2))
+        /bin/sleep 0.1; _t=$((_t + 1))
     done
     return 1
 }
 # snapshot NAME -- a full frame to PNG
 snapshot() {
     rm -f "$OUT/shot.ppm"
-    mon --wait=0.6 "screendump $OUT/shot.ppm" >/dev/null
-    sleep 2
+    mon "screendump $OUT/shot.ppm" >/dev/null
+    # wait for the dump to actually land, not for a guessed interval
+    _i=0; while [ ! -s "$OUT/shot.ppm" ] && [ "$_i" -lt 100 ]; do _i=$((_i + 1)); /bin/sleep 0.05; done
     [ -s "$OUT/shot.ppm" ] || { note "(no frame for $1)"; return 1; }
     python3 "$PNG" "$OUT/shot.ppm" "$OUT/$1" | sed 's/^/    /'
     rm -f "$OUT/shot.ppm"
@@ -212,11 +227,9 @@ open_flasher() {
     done
     [ -n "$_foot" ] || { note "foot never appeared (no #242424 block after 6 tries)"; return 1; }
     note "foot is up at [$_foot]"
-    sleep 2
     type_line "veron-flasher"
     _pane=$(wait_block ffffff 500 30) || { note "the flasher's log pane (white, >=500px) never appeared"; return 1; }
     note "flasher pane at [$_pane]"
-    sleep 2
     echo "$_pane"
 }
 # ask "shell line" MARKER SECONDS -- type a line into the serial shell and wait
@@ -235,14 +248,13 @@ wait_serial "as init process" 60 || { bad "the kernel never started init on boot
 # word that the desktop is being started (its readiness is polled visually).
 wait_serial "labwc" 120 || { bad "labwc never started on boot 1"; }
 [ "$fail" = 0 ] || { tail -40 "$SER"; cleanup; exit 1; }
-sleep 5
 
 # A FILE IN THE USER'S HOME, BEFORE ANYTHING ELSE. This is the user's own
 # test (hardware, 2026-08-21: `touch ~/testy`, reboot into maintenance, `ls`
 # -- gone). The serial shell is the same veron account as the desktop, and
 # /home/veron is the persist-backed home on a normal boot, so the file lands
 # on the stick's persist partition; boot 2 must show it from the RAM bank.
-printf '\n' > "$FIFO"; sleep 1
+prompt
 ask 'touch ~/veron-gate-testy && echo "MG-TESTY-WRITTEN $(ls -ld ~ | cut -c1-10) $(df -P ~ | tail -1 | cut -d" " -f1)"' "20+0" 20
 grep -a "MG-TESTY-WRITTEN" "$SER" | grep -av 'echo "MG-TESTY' | tail -1 | sed 's/^/    /'
 
@@ -252,7 +264,7 @@ grep -a "MG-TESTY-WRITTEN" "$SER" | grep -av 'echo "MG-TESTY' | tail -1 | sed 's
 # view of the three session services. Read over the serial shell; nothing
 # is changed.
 desktop_evidence() {
-    printf '\n' > "$FIFO"; sleep 1
+    prompt
     ask 'tail -40 /run/labwc.log 2>&1 | sed s/^/MG-LABWC:/' "30+0" 15
     ask 'for c in /sys/class/drm/card*; do echo "MG-DRM ${c##*/} driver=$(basename $(readlink $c/device/driver 2>/dev/null) 2>/dev/null) status=$(cat $c/status 2>/dev/null) enabled=$(cat $c/enabled 2>/dev/null)"; done' "31+0" 15
     ask 'ls -l /dev/dri /dev/fb0 2>&1 | sed s/^/MG-NODES:/' "32+0" 15
@@ -301,21 +313,22 @@ note "screen ${sw}x${sh}; pane bottom at y=$((py + ph - 1)); window client origi
 # reboot line and the loader's "maintenance command line armed" are proof the
 # arm happened that cannot be missed by timing, so either counts as success.
 arm_wait() {
-    _t=0
-    while [ "$_t" -lt "$1" ]; do
+    _t=0; _max10=$(($1 * 10))
+    while [ "$_t" -lt "$_max10" ]; do
+        # the cheap checks, every 0.1s: the serial log already has the answer
         grep -aq "reboot: Restarting system\|veron-boot: maintenance command line armed" "$SER" && return 0
-        printf 'grep -c ARMED /run/veron-flash/status | sed s/^/MG-ARM-/; echo VERON-MG-$((9+0))\n' > "$FIFO"
-        sleep 3; _t=$((_t + 3))
         grep -aq "MG-ARM-[1-9]" "$SER" && return 0
-        grep -aq "reboot: Restarting system\|veron-boot: maintenance command line armed" "$SER" && return 0
         grep -aq "REFUSED" "$SER" && return 1
         # alive() is false once the guest has rebooted -- which is success
         # here, so only treat a dead guest as failure if it never armed.
         alive || { grep -aq "reboot: Restarting system\|veron-boot: maintenance command line armed" "$SER" && return 0; return 1; }
+        # the typed probe, every 2s: a command into the guest shell is not free
+        [ $((_t % 20)) -eq 0 ] && printf 'grep -c ARMED /run/veron-flash/status | sed s/^/MG-ARM-/; echo VERON-MG-$((9+0))\n' > "$FIFO"
+        /bin/sleep 0.1; _t=$((_t + 1))
     done
     return 1
 }
-printf '\n' > "$FIFO"; sleep 1
+prompt
 
 # ROUTE 1: THE POINTER. Motion in a few steps (libinput wants to see the
 # device move before it believes a button), then press, then release.
@@ -328,14 +341,15 @@ printf '\n' > "$FIFO"; sleep 1
 # then moving by exactly the button's pixel offset. Motion in steps so
 # libinput sees the device move before it believes a button.
 mon "info mice" | sed 's/^/    mice: /'
-mon "mouse_move -4000 -4000" >/dev/null; sleep 0.3
-mon "mouse_move -4000 -4000" >/dev/null; sleep 0.3
-mon "mouse_move $((bx / 2)) $((by / 2))" >/dev/null; sleep 0.3
-mon "mouse_move $((bx - bx / 2)) $((by - by / 2))" >/dev/null; sleep 0.5
+mon "mouse_move -4000 -4000" >/dev/null
+mon "mouse_move -4000 -4000" >/dev/null
+mon "mouse_move $((bx / 2)) $((by / 2))" >/dev/null
+mon "mouse_move $((bx - bx / 2)) $((by - by / 2))" >/dev/null
+# THE FRAME BEFORE THE CLICK: did the cursor arrive on the button? Taken with
+# no click in the picture, so it answers that one question on its own.
+snapshot 02a-flasher-pre-click.png
 mon "mouse_button 1" >/dev/null
-sleep 0.3
 mon "mouse_button 0" >/dev/null
-sleep 2
 snapshot 02-flasher-armed.png
 if arm_wait 30; then
     ok "clicked 'Reflash this boot device...' -- flashd reports ARMED (02-flasher-armed.png)"
@@ -381,7 +395,14 @@ else
             fi
         fi
     fi
-    snapshot 02-flasher-armed.png
+    # A DIFFERENT NAME, ON PURPOSE. This used to overwrite 02-flasher-armed.png,
+    # which was taken right after the pointer click and is the only frame that
+    # shows where the cursor actually went. By the time the keyboard route has
+    # won, the machine has rebooted, so the overwrite replaced the cursor
+    # evidence with a black "Display output is not active" frame -- on every
+    # run, since the keyboard route wins every run. Runs 88364882265 and the
+    # one after both lost the pointer answer to this.
+    snapshot 02c-flasher-keyboard-armed.png
 fi
 
 # ======================= BOOT 2: maintenance ===============================
@@ -404,12 +425,12 @@ wait_serial "VERON-MAINTENANCE: entering maintenance mode" 30 \
 # the moment it gives up, and that ends the wait at once. While waiting,
 # init's latest line is echoed so a stall is visible as the step it stalled on.
 _t=0; _last=""
-while [ "$_t" -lt 120 ]; do
+while [ "$_t" -lt 1200 ]; do   # 120s, counted in tenths
     grep -aqE "VERON-MAINTENANCE: (running from RAM|ABORTED)" "$SER" && break
     alive || { note "qemu exited during the pivot"; break; }
     _now=$(grep -a "VERON-MAINTENANCE:" "$SER" | tail -1)
-    [ "$_now" != "$_last" ] && { note "${_t}s  $_now"; _last=$_now; }
-    sleep 2; _t=$((_t + 2))
+    [ "$_now" != "$_last" ] && { note "$((_t / 10)).$((_t % 10))s  $_now"; _last=$_now; }
+    /bin/sleep 0.1; _t=$((_t + 1))
 done
 if grep -aq "VERON-MAINTENANCE: running from RAM; the boot disk is released" "$SER"; then
     ok "the pivot completed and the stick was verified released (${_t}s)"
@@ -429,7 +450,7 @@ ok "boot 2: desktop, foot, veron-flasher in MAINTENANCE mode -- 03-flasher-maint
 
 # ---- the facts behind the frame ------------------------------------------
 echo "=== the facts the third frame shows, read from the same machine ==="
-printf '\n' > "$FIFO"; sleep 1
+prompt
 ask 'echo "MG-CMDLINE $(cat /proc/cmdline)"' "1+0" 20
 ask 'echo "MG-ROOT $(awk '"'"'$2=="/"{print $3}'"'"' /proc/mounts)"' "2+0" 20
 ask 'echo "MG-OLDROOT $(grep -c oldroot /proc/mounts)"' "3+0" 20
@@ -438,7 +459,6 @@ ask 'echo "MG-PERSIST $(grep " /persist " /proc/mounts | grep -c "^/dev/") $(gre
 ask 'echo "MG-HOME $(grep " /home/veron " /proc/mounts | cut -d" " -f1,3 | head -1) testy=$([ -e ~/veron-gate-testy ] && echo present || echo MISSING)"' "13+0" 20
 ask 'cat /run/veron-flash/status | sed s/^/MG-FLASHD:/' "6+0" 20
 ask 'cat /run/veron-maintenance.log | sed s/^/MG-LOG:/' "7+0" 20
-sleep 1
 grep -a "MG-" "$SER" | grep -av 'echo "MG-\|sed s/^/MG-\|VERON-MG-' | sed 's/^/    /'
 
 grep -aq "MG-CMDLINE .*veron.maintenance=1" "$SER" \
