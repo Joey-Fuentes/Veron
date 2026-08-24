@@ -646,7 +646,7 @@ package icu 78.2
 package libffi 3.5.2
   group        build-substrate
   license      MIT
-  recipe-sha   df1eacca7f08e6b9b371b420deceb8ed0ff024ceffcf0b06860c312a27f86d90
+  recipe-sha   4207535ab467a2e8cf4ca95b1f961de5b3db414cf9e76949933ed671256c8532
 
   source
     url        https://github.com/libffi/libffi/releases/download/v3.5.2/libffi-3.5.2.tar.gz
@@ -666,13 +666,16 @@ package libffi 3.5.2
          argv ["tar", "-xf", "dl/libffi-3.5.2.tar.gz", "-C", "build/libffi-3.5.2"]
     [02] configure
          cwd  build/libffi-3.5.2/libffi-3.5.2
-         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-gcc-arch=x86-64", "--disable-exec-static-tramp"]
+         argv ["./configure", "--prefix=/usr", "--enable-static", "--with-gcc-arch=x86-64", "--disable-exec-static-tramp"]
     [03] build
          cwd  build/libffi-3.5.2/libffi-3.5.2
          argv ["make", "-j1"]
     [04] install
          cwd  build/libffi-3.5.2/libffi-3.5.2
          argv ["make", "DESTDIR=dest/libffi", "install"]
+    [05] archive-present
+         cwd  build/libffi-3.5.2/libffi-3.5.2
+         argv ["sh", "-c", "test -f dest/libffi/usr/lib/libffi.a || { echo VERON-LIBFFI-NO-ARCHIVE; ls -la dest/libffi/usr/lib; exit 1; }"]
 
 ======================================================================
 package libudev-zero 1.0.3
@@ -5063,7 +5066,7 @@ package mesa 26.1.6
 package swtpm 0.10.1
   group        system
   license      BSD-3-Clause
-  recipe-sha   a1de49168d8616f2ba07dd43810db8ce2ccde2bb1a431806c128d74a03b9fa73
+  recipe-sha   a2b24ec954fc1e037c30ed34fb3f2114bff11fd88ba802ebfee939d7e50840db
 
   source
     url        https://github.com/stefanberger/swtpm/archive/refs/tags/v0.10.1.tar.gz
@@ -5072,8 +5075,8 @@ package swtpm 0.10.1
     correspond none
 
   deps
-    build        autoconf, automake, bash, glib, json-glib, libtasn1, libtool, libtpms, m4, openssl, pcre2, pkgconf, python
-    link         glib, json-glib, libtasn1, libtpms, openssl, pcre2
+    build        autoconf, automake, bash, glib, json-glib, libffi, libtasn1, libtool, libtpms, m4, openssl, pcre2, pkgconf, python, zlib
+    link         glib, json-glib, libffi, libtpms, openssl, pcre2, zlib
     runtime      -
     optional_off cuse, gnutls, seccomp, selinux, tests
 
@@ -5089,11 +5092,10 @@ package swtpm 0.10.1
          argv ["autoreconf", "--verbose", "--force", "--install"]
     [03] configure
          cwd  build/swtpm-0.10.1/swtpm-0.10.1
-         env  PKG_CONFIG=pkgconf --static
          argv ["./configure", "--prefix=/usr", "--with-openssl", "--without-gnutls", "--without-seccomp", "--without-cuse", "--without-selinux", "--disable-tests"]
     [04] build
          cwd  build/swtpm-0.10.1/swtpm-0.10.1
-         argv ["make", "-j1", "LDFLAGS=-all-static"]
+         argv ["sh", "-c", "make -j1 LDFLAGS=-all-static \"GLIB_LIBS=$(pkgconf --static --libs glib-2.0)\" \"JSON_GLIB_LIBS=$(pkgconf --static --libs json-glib-1.0)\" \"LIBCRYPTO_LIBS=$(pkgconf --static --libs libcrypto)\" \"LIBTPMS_LIBS=$(pkgconf --static --libs libtpms)\""]
     [05] install
          cwd  build/swtpm-0.10.1/swtpm-0.10.1
          argv ["make", "install", "DESTDIR=dest/swtpm"]

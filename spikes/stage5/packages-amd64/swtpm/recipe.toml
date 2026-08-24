@@ -4,17 +4,26 @@
 # foreign host with no libtpms, no json-glib and no matching glib can
 # still hand a Windows 11 installer its TPM.
 #
-# TWO FLAG DELTAS AND NOTHING ELSE:
-#   PKG_CONFIG="pkgconf --static" on configure, so every
-#     PKG_CHECK_MODULES expands Requires.private -- without it glib's
-#     -lpcre2-8 and openssl's -ldl -lpthread never reach a link that
-#     -static forbids from resolving through a .so.
-#   LDFLAGS=-all-static on the MAKE line, not configure: -all-static is
-#     libtool's spelling, and gcc does not know it, so configure's own
-#     "can the compiler create executables" probe would die on it.
-#     Every link in swtpm's automake tree goes through libtool.
-# Needs the OVERLAY glib and pcre2 archives, and the base openssl,
-# libtpms and json-glib archives, all of which exist by construction.
+# THE DELTAS, AND WHY THEY ARE ON THE MAKE LINE (run 88783305126, this
+# overlay's first link): swtpm's configure.ac resolves glib, json-glib,
+# libtasn1 and libcrypto by calling `pkg-config --libs` BY NAME
+# (configure.ac:161,175,235,251) -- not $PKG_CONFIG, not
+# PKG_CHECK_MODULES -- so a PKG_CONFIG="pkgconf --static" environment
+# reached nothing, glib's Requires.private never expanded, and the link
+# died on every pcre2 symbol in libglib-2.0.a(gregex.c.o). The
+# resolved values are AC_SUBST'd, which makes them make variables, and
+# make variables given on the command line win: each is re-resolved
+# with pkgconf --static at make time. LDFLAGS=-all-static is libtool's
+# spelling and stays on the make line for the reason it always did --
+# gcc does not know it, so configure's own link probe would die on it.
+# Every link in swtpm's automake tree goes through libtool.
+#
+# THE ARCHIVES THIS PULLS, all built by this plan: libtpms.a, libcrypto.a
+# (openssl, build_only), libglib/gobject/gio-2.0.a (glib overlay),
+# libpcre2-8.a (pcre2 overlay), libjson-glib-1.0.a, libffi.a (libffi
+# overlay, --enable-static since this run), libz.a. libtasn1 is checked
+# by configure and linked by nothing this recipe builds (only swtpm_cert,
+# which --without-gnutls leaves out), so no libtasn1.a is needed.
 #
 # [source] is byte-equal to the base recipe's; selftest enforces that.
 #
@@ -77,8 +86,8 @@ signature = "none detached; the v0.10.1 TAG is GPG-signed by Stefan Berger (key 
 crosschecked_against = []
 
 [deps]
-build        = ["autoconf", "automake", "libtool", "m4", "pkgconf", "bash", "python", "glib", "pcre2", "json-glib", "libtasn1", "libtpms", "openssl"]
-link         = ["glib", "json-glib", "libtasn1", "pcre2", "libtpms", "openssl"]
+build        = ["autoconf", "automake", "libtool", "m4", "pkgconf", "bash", "python", "glib", "pcre2", "libffi", "zlib", "json-glib", "libtasn1", "libtpms", "openssl"]
+link         = ["glib", "json-glib", "pcre2", "libffi", "zlib", "libtpms", "openssl"]
 runtime      = []
 optional_off = ["gnutls", "seccomp", "cuse", "selinux", "tests"]
 
@@ -108,13 +117,12 @@ run  = [["autoreconf", "--verbose", "--force", "--install"]]
 [[steps]]
 name = "configure"
 cwd  = "$S"
-env  = { PKG_CONFIG = "pkgconf --static" }
 run  = [["./configure", "--prefix=/usr", "--with-openssl", "--without-gnutls", "--without-seccomp", "--without-cuse", "--without-selinux", "--disable-tests"]]
 
 [[steps]]
 name = "build"
 cwd  = "$S"
-run  = [["make", "-j$J", "LDFLAGS=-all-static"]]
+run  = [["sh", "-c", "make -j$J LDFLAGS=-all-static \"GLIB_LIBS=$(pkgconf --static --libs glib-2.0)\" \"JSON_GLIB_LIBS=$(pkgconf --static --libs json-glib-1.0)\" \"LIBCRYPTO_LIBS=$(pkgconf --static --libs libcrypto)\" \"LIBTPMS_LIBS=$(pkgconf --static --libs libtpms)\""]]
 
 [[steps]]
 name = "install"

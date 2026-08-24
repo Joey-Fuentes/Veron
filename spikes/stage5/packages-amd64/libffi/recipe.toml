@@ -5,6 +5,13 @@
 #
 # WHAT DIFFERS FROM THE BASE RECIPE:
 #   --with-gcc-arch=native -> --with-gcc-arch=x86-64.
+#   --disable-static       -> --enable-static, MEASURED (run 88783305126):
+#                             the amd64 swtpm is -all-static and links
+#                             json-glib, whose gobject-2.0 is glib's
+#                             libffi consumer -- so libffi.a must exist
+#                             beside the .so, the pcre2 overlay's move.
+#                             The .so stays for python's ctypes and every
+#                             dynamic gobject user in this image.
 #
 # THE BASE RECIPE PREDICTED THIS AND FILED IT UNDER THE WRONG HEADING. Its
 # deferral note says:
@@ -80,7 +87,7 @@ runtime      = []
 optional_off = ["exec-static-tramp"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--disable-static", "--with-gcc-arch=x86-64", "--disable-exec-static-tramp"]
+configure_flags = ["--prefix=/usr", "--enable-static", "--with-gcc-arch=x86-64", "--disable-exec-static-tramp"]
 # TESTS ARE NOT RUN, BY POLICY. Suites in series do not scale past a handful
 # of packages and the set is heading for 150+. Evidence comes from the guest
 # sanity test below, against the booted image.
@@ -94,8 +101,6 @@ disagrees across machines, this flag is the first thing to remove."""
 
 [installs]
 prefixes = ["usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/info", "usr/share/man"]
-files    = 12
-digest   = "a5872888e24603b799d02343dabeb532ff2087cd0501d7f1a854815159fb7caa"
 [[steps]]
 name = "unpack"
 cwd  = "$B"
@@ -107,7 +112,7 @@ cwd  = "$S"
 # --disable-exec-static-tramp: static trampolines need a writable+executable
 # mapping, which is exactly what a hardened kernel refuses. Off by choice
 # rather than by whatever the build host's kernel happened to allow.
-run  = [["./configure", "--prefix=/usr", "--disable-static",
+run  = [["./configure", "--prefix=/usr", "--enable-static",
          "--with-gcc-arch=x86-64", "--disable-exec-static-tramp"]]
 
 [[steps]]
@@ -119,6 +124,11 @@ run  = [["make", "-j$J"]]
 name = "install"
 cwd  = "$S"
 run  = [["make", "DESTDIR=$D", "install"]]
+[[steps]]
+name = "archive-present"
+cwd  = "$S"
+run  = [["sh", "-c", "test -f $D/usr/lib/libffi.a || { echo VERON-LIBFFI-NO-ARCHIVE; ls -la $D/usr/lib; exit 1; }"]]
+
 [guest]
 test   = [["/usr/bin/pkgconf", "--modversion", "libffi"]]
 expect = ["3.5.2"]
