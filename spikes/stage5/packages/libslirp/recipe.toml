@@ -1,0 +1,83 @@
+name    = "libslirp"
+version = "4.9.3"
+group   = "network"
+license = "BSD-3-Clause"
+srcdir  = "libslirp-v4.9.3"
+
+# THE NETWORK A GUEST GETS WITHOUT ROOT. -netdev user is qemu's
+# unprivileged NAT: no TAP device, no bridge, no CAP_NET_ADMIN, which is
+# the only networking a desktop user on this image can have (the kernel
+# ledger records no /dev/net/tun) and the only one an Ubuntu or Windows
+# installer needs to reach a mirror. qemu 7.2 dropped its in-tree slirp;
+# since then --enable-slirp means THIS library, found by pkg-config.
+#
+# BOTH LIBRARY KINDS. The .a is what the amd64 overlay's --static qemu
+# links; the .so is what a dynamic consumer on the aarch64 arm would
+# want. Nothing on that arm consumes it today, so there it is built and
+# shipped and reached by nothing -- the same standing every library has
+# the run before its first consumer.
+#
+# A GITLAB ARCHIVE, PINNED BY DIGEST, WITH PRECEDENT: libdrm, libevdev
+# and libidn2 in this set are pinned the same way. libslirp publishes
+# tags and no release assets. The pin is PENDING for the reason every
+# new recipe in this batch says: no network reached the tarball when
+# this was written. gap3-urls.txt carries the URL for the mirror run.
+# 4.9.3 is the tag Arch and current BLFS build from as of 2026-08-24.
+#
+# UNBUILT AS WRITTEN. default_library is meson's own option; libslirp
+# declares nothing optional of its own. The sha256 is the one
+# unmeasured fact.
+
+[source]
+url       = "https://gitlab.freedesktop.org/slirp/libslirp/-/archive/v4.9.3/libslirp-v4.9.3.tar.gz"
+sha256    = "PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here"
+signature = "none -- GitLab tag archive; the digest is ours, measured at first fetch"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "glib"]
+link         = ["glib"]
+runtime      = ["glib"]
+optional_off = []
+
+[declared]
+configure_flags = ["--libdir=lib", "-Ddefault_library=both"]
+verification    = "archive-present step asserts libslirp.a and slirp.pc exist; qemu's --enable-slirp is the consumer-side proof"
+packaged_as     = ["libslirp"]
+deferral        = """
+Internals not reviewed. A user-space TCP/IP stack; its one consumer here \
+is qemu -netdev user. It has no optional features to decline: glib is its \
+only dependency and this set already carries it."""
+
+[installs]
+prefixes = ["usr/include/slirp", "usr/lib"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libslirp-v4.9.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--libdir=lib", "--buildtype=release",
+         "-Ddefault_library=both"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[[steps]]
+name = "archive-present"
+cwd  = "$S"
+run  = [["sh", "-c", "test -f $D/usr/lib/libslirp.a && test -f $D/usr/lib/pkgconfig/slirp.pc || { echo VERON-LIBSLIRP-NO-ARCHIVE; ls -la $D/usr/lib; exit 1; }"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "slirp"]]
+expect = ["4.9.3"]

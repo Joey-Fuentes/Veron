@@ -1,0 +1,161 @@
+#!/bin/sh
+# veron-vm -- boot an ISO or a disk in the emulator this pipeline built.
+#
+# ONE INVOCATION, WRITTEN DOWN, INSTEAD OF SIX FLAGS FROM MEMORY. The
+# qemu here is capable of a full Ubuntu or Windows 11 installer; what a
+# person usually gets wrong is the plumbing around it -- pflash for UEFI,
+# a swtpm process behind -tpmdev, a NIC and a disk controller Windows
+# has an inbox driver for. This script is that plumbing and nothing more:
+# every flag it passes is printed before qemu starts, so it can be copied
+# and edited by hand.
+#
+# Runs from two places and finds its parts relative to itself:
+#   /usr/bin/veron-vm on the image      -> /usr/bin/qemu-system-x86_64,
+#                                          /usr/share/qemu, /usr/bin/swtpm
+#   veron-tools/veron-vm from the bundle -> ./qemu-system-x86_64,
+#                                          ./share/qemu, ./swtpm
+#
+# Usage:
+#   veron-vm [options] <iso-or-disk> [more drives...]
+#     --uefi          boot through OVMF (default when --windows)
+#     --tpm           start a swtpm and attach a TPM 2.0 (default when --windows)
+#     --windows       UEFI + TPM + SATA disk + e1000 NIC: what Windows 11 needs
+#     --disk FILE     a qcow2 to install onto; created (--size) if missing
+#     --size SIZE     size for a disk that does not exist yet (default 64G)
+#     --mem SIZE      guest RAM (default 4G)
+#     --cpus N        guest CPUs (default: half the host's, at least 2)
+#     --headless      -display none, serial on stdio (no window, no audio)
+#     --dry-run       print the command and exit
+#   Anything after -- is passed to qemu verbatim.
+#
+# KVM is used when /dev/kvm is writable and left out when it is not; the
+# banner says which. Without KVM a Windows installer takes hours: that
+# is the kernel's KVM_INTEL/KVM_AMD and the device node's permissions,
+# not this script.
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+if [ -x "$here/qemu-system-x86_64" ]; then
+  QEMU="$here/qemu-system-x86_64"; QIMG="$here/qemu-img"
+  FW="$here/share/qemu"; SWTPM="$here/swtpm"
+else
+  QEMU="${QEMU:-qemu-system-x86_64}"; QIMG="${QIMG:-qemu-img}"
+  FW="${FW:-/usr/share/qemu}"; SWTPM="${SWTPM:-swtpm}"
+fi
+
+uefi=no tpm=no windows=no headless=no dry=no
+disk="" size=64G mem=4G cpus=""
+extra=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --uefi) uefi=yes ;;
+    --tpm) tpm=yes ;;
+    --windows) windows=yes; uefi=yes; tpm=yes ;;
+    --disk) disk=$2; shift ;;
+    --size) size=$2; shift ;;
+    --mem) mem=$2; shift ;;
+    --cpus) cpus=$2; shift ;;
+    --headless) headless=yes ;;
+    --dry-run) dry=yes ;;
+    --help|-h) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --) shift; extra="$*"; break ;;
+    -*) echo "veron-vm: unknown option $1 (use -- to pass flags to qemu)" >&2; exit 2 ;;
+    *) break ;;
+  esac
+  shift
+done
+[ $# -gt 0 ] || [ -n "$disk" ] || { echo "veron-vm: nothing to boot (an ISO, a disk, or --disk FILE)" >&2; exit 2; }
+
+if [ -z "$cpus" ]; then
+  n=$(nproc 2>/dev/null || echo 2); cpus=$((n / 2)); [ "$cpus" -ge 2 ] || cpus=2
+fi
+
+# ---- accelerator ----
+if [ -w /dev/kvm ]; then accel="-cpu host"; acc=kvm
+else accel="-cpu max"; acc="tcg (no writable /dev/kvm -- slow)"; fi
+
+# ---- state directory: pflash vars copy, tpm state, sockets ----
+state="${XDG_STATE_HOME:-$HOME/.local/state}/veron-vm"
+mkdir -p "$state"
+
+# ---- machine, memory, input ----
+args="-machine q35,accel=$( [ "$acc" = kvm ] && echo kvm || echo tcg ) $accel -smp $cpus -m $mem"
+args="$args -device qemu-xhci,id=xhci -device usb-tablet -device usb-kbd"
+
+# ---- display and audio ----
+if [ "$headless" = yes ]; then
+  args="$args -display none -serial mon:stdio"
+else
+  # Windows has no inbox virtio-gpu driver; its basic display driver
+  # handles std VGA at full resolution. Linux guests get virtio-vga.
+  if [ "$windows" = yes ]; then args="$args -display sdl -device VGA"
+  else args="$args -display sdl -device virtio-vga"; fi
+  args="$args -audiodev sdl,id=snd0 -device intel-hda -device hda-duplex,audiodev=snd0"
+fi
+
+# ---- firmware ----
+if [ "$uefi" = yes ]; then
+  [ -s "$FW/OVMF_CODE.fd" ] || { echo "veron-vm: no $FW/OVMF_CODE.fd (edk2-firmware not installed?)" >&2; exit 1; }
+  vars="$state/OVMF_VARS-$(basename "${disk:-$1}").fd"
+  [ -s "$vars" ] || cp "$FW/OVMF_VARS.fd" "$vars"
+  args="$args -drive if=pflash,format=raw,readonly=on,file=$FW/OVMF_CODE.fd"
+  args="$args -drive if=pflash,format=raw,file=$vars"
+fi
+args="$args -L $FW"
+
+# ---- TPM 2.0 through swtpm ----
+tpmpid=""
+if [ "$tpm" = yes ]; then
+  tdir="$state/tpm-$(basename "${disk:-$1}")"; mkdir -p "$tdir"
+  sock="$tdir/swtpm.sock"
+  if [ "$dry" = no ]; then
+    rm -f "$sock"
+    "$SWTPM" socket --tpm2 --tpmstate dir="$tdir" \
+      --ctrl type=unixio,path="$sock" --log level=1 --daemon --pid file="$tdir/swtpm.pid" \
+      || { echo "veron-vm: swtpm failed to start" >&2; exit 1; }
+    tpmpid=$(cat "$tdir/swtpm.pid" 2>/dev/null || true)
+  fi
+  args="$args -chardev socket,id=chrtpm,path=$sock -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0"
+fi
+
+# ---- network ----
+if [ "$windows" = yes ]; then args="$args -netdev user,id=n0 -device e1000,netdev=n0"
+else args="$args -netdev user,id=n0 -device virtio-net-pci,netdev=n0"; fi
+
+# ---- storage ----
+# q35 carries an ICH9 AHCI of its own with SATA buses ide.0 .. ide.5, and
+# Windows has an inbox driver for it; Linux guests get virtio-blk, which
+# Windows would need a driver ISO for. ISOs always ride SATA. bootindex
+# puts the disk first once it has something on it and the ISO next, so an
+# installed guest stops booting its installer without editing anything.
+i=1
+if [ -n "$disk" ]; then
+  if [ ! -e "$disk" ]; then
+    echo "veron-vm: creating $disk ($size)"
+    [ "$dry" = yes ] || "$QIMG" create -f qcow2 "$disk" "$size" >/dev/null
+  fi
+  if [ "$windows" = yes ]; then
+    args="$args -drive if=none,id=hd0,file=$disk,format=qcow2,discard=unmap -device ide-hd,drive=hd0,bus=ide.0,bootindex=1"
+  else
+    args="$args -drive if=none,id=hd0,file=$disk,format=qcow2,discard=unmap -device virtio-blk-pci,drive=hd0,bootindex=1"
+  fi
+fi
+for f in "$@"; do
+  case "$f" in
+    *.iso|*.ISO)
+      args="$args -drive if=none,id=cd$i,file=$f,format=raw,media=cdrom,readonly=on -device ide-cd,drive=cd$i,bus=ide.$i,bootindex=$((i + 1))" ;;
+    *)
+      fmt=$("$QIMG" info --output=json "$f" 2>/dev/null | sed -n 's/.*"format": *"\([a-z0-9]*\)".*/\1/p' | head -1)
+      args="$args -drive if=none,id=x$i,file=$f,format=${fmt:-raw} -device virtio-blk-pci,drive=x$i,bootindex=$((i + 1))" ;;
+  esac
+  i=$((i + 1))
+done
+
+echo "veron-vm: $QEMU"
+echo "veron-vm: accel=$acc  cpus=$cpus  mem=$mem  uefi=$uefi  tpm=$tpm  display=$( [ "$headless" = yes ] && echo none || echo sdl )"
+echo "veron-vm: $QEMU $args $extra"
+[ "$dry" = no ] || { [ -n "$tpmpid" ] && kill "$tpmpid" 2>/dev/null; exit 0; }
+# shellcheck disable=SC2086
+"$QEMU" $args $extra; rc=$?
+[ -n "$tpmpid" ] && kill "$tpmpid" 2>/dev/null
+exit $rc

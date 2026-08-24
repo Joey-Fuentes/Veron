@@ -2865,47 +2865,84 @@ jobs:
             # sources/MIRRORS.tsv, and the recipe at this commit -- the
             # corresponding source is one pinned download away, which is
             # the offer, in writing, beside the bytes.
-            if [ -x ../dest/qemu-user/usr/bin/qemu-aarch64-static ]; then
-              tdir=$(mktemp -d)
-              mkdir "$tdir/veron-tools"
-              cp ../dest/qemu-user/usr/bin/qemu-aarch64-static "$tdir/veron-tools/"
-              qsha=$(sha256sum "$tdir/veron-tools/qemu-aarch64-static" | cut -d' ' -f1)
-              {
-                echo "veron-tools (x86_64 host binaries)"
-                echo
-                echo "qemu-aarch64-static  $qsha"
-                echo "  built by packages-amd64/qemu-user at commit ${GITHUB_SHA}"
-                echo "  run ${GITHUB_RUN_ID}; static, no DT_NEEDED (asserted"
-                echo "  by the recipe's static-or-die step)."
-                echo "  licence GPL-2.0-only; source is qemu-11.0.3.tar.xz,"
-                echo "  sha256 in the recipe's [source], mirrored per"
-                echo "  sources/MIRRORS.tsv at this commit."
-                echo "  Replaces spikes/toolbox/qemu-aarch64-static, whose"
-                echo "  provenance was 'copied from /usr/bin' -- this one is"
-                echo "  made, not borrowed."
-              } > TOOLS-WHENCE
-              sed 's/^/    /' TOOLS-WHENCE
+            # THE BUNDLE GREW FROM ONE BINARY TO THE EMULATOR (2026-08-24):
+            # the static qemu-system-x86_64 and -aarch64, qemu-img, the
+            # firmware they load (SeaBIOS, option ROMs, OVMF with TPM 2.0
+            # and Secure Boot), a static swtpm, and veron-vm, the launcher
+            # that turns "an Ubuntu or Windows 11 ISO" into a command line.
+            # Same discipline as before, extended: every binary is checked
+            # for zero DT_NEEDED HERE, at bundling, so a bundle claiming
+            # static can never carry a dynamic file; a run whose plan
+            # stopped short of a package skips that PART and says so.
+            # NOTHING IN THE BUNDLE IS BORROWED: every byte came out of
+            # dest/, built by a recipe at this commit.
+            tdir=$(mktemp -d)
+            mkdir -p "$tdir/veron-tools/share/qemu"
+            static_or_die() {   # $1 = file; a dynamic file in a static bundle is a lie
+              if readelf -d "$1" 2>/dev/null | grep -q NEEDED; then
+                echo "  NOT STATIC: $1"; readelf -d "$1" | grep NEEDED; exit 1
+              fi
+            }
+            bundled=""
+            {
+              echo "veron-tools (x86_64 host binaries)"
+              echo
+              echo "built by the recipes at commit ${GITHUB_SHA}, run ${GITHUB_RUN_ID};"
+              echo "every ELF below is static (no DT_NEEDED, asserted at bundling)."
+              echo "licence GPL-2.0-only for qemu (source qemu-11.0.3.tar.xz, sha256"
+              echo "in packages-amd64/qemu/recipe.toml), BSD-2-Clause-Patent for OVMF,"
+              echo "BSD-3-Clause for swtpm; every source is mirrored per"
+              echo "sources/MIRRORS.tsv at this commit -- the corresponding source is"
+              echo "one pinned download away, which is the offer, in writing."
+              echo
+            } > TOOLS-WHENCE
+            for b in qemu-user/usr/bin/qemu-aarch64-static \
+                     qemu/usr/bin/qemu-system-x86_64 qemu/usr/bin/qemu-system-aarch64 \
+                     qemu/usr/bin/qemu-img swtpm/usr/bin/swtpm swtpm/usr/bin/swtpm_ioctl; do
+              if [ -x "../dest/$b" ]; then
+                static_or_die "../dest/$b"
+                cp "../dest/$b" "$tdir/veron-tools/"
+                echo "$(basename "$b")  $(sha256sum "../dest/$b" | cut -d' ' -f1)  (packages-amd64/${b%%/*})" >> TOOLS-WHENCE
+                bundled="$bundled $(basename "$b")"
+              else
+                echo "  no dest/$b -- not bundled, stated not silent"
+                echo "$(basename "$b")  ABSENT in this run (plan stopped before ${b%%/*})" >> TOOLS-WHENCE
+              fi
+            done
+            # THE FIRMWARE IS WHAT MAKES THE EMULATOR RUN ANYTHING: the
+            # 16 SeaBIOS/option-ROM files qemu's inverted gate pinned, and
+            # the three OVMF volumes. -L share/qemu is how veron-vm and the
+            # gates point a static binary at them.
+            for d in qemu edk2-firmware; do
+              if [ -d "../dest/$d/usr/share/qemu" ]; then
+                cp ../dest/$d/usr/share/qemu/* "$tdir/veron-tools/share/qemu/"
+              else
+                echo "  no dest/$d/usr/share/qemu -- firmware from $d not bundled"
+              fi
+            done
+            ( cd "$tdir/veron-tools/share/qemu" && sha256sum * ) | sed 's/^/firmware  /' >> TOOLS-WHENCE
+            if [ -x ../packages-amd64/veron-system/files/usr/bin/veron-vm ]; then
+              cp ../packages-amd64/veron-system/files/usr/bin/veron-vm "$tdir/veron-tools/"
+              echo "veron-vm  $(sha256sum ../packages-amd64/veron-system/files/usr/bin/veron-vm | cut -d' ' -f1)  (launcher; POSIX sh)" >> TOOLS-WHENCE
+            fi
+            sed 's/^/    /' TOOLS-WHENCE
+            if [ -n "$bundled" ]; then
               # RUN-VARYING DATA GOES BESIDE THE ARTIFACT, NOT INSIDE IT --
-              # the 2483bbb7 lesson, applied here before it recurs: the
-              # WHENCE carries run id and so lives as its own asset, like
-              # PROVENANCE beside the image, so the bundle's bytes are a
-              # function of the commit alone. And the tar is normalized for
-              # the same reason the policy pins jobs=1 instead of nproc:
-              # un-sorted names, runner uids and build-time mtimes are the
-              # runner leaking into the bytes, and zstd -T0 was the nproc
-              # mistake verbatim -- multithreaded framing varies with the
-              # core count the run landed on. Single-threaded, sorted,
-              # epoch-zero, numeric root ownership: rebuild the same commit,
+              # the 2483bbb7 lesson: the WHENCE carries run id and so lives
+              # as its own asset, so the bundle's bytes are a function of
+              # the commit alone. Sorted, epoch-zero, numeric root
+              # ownership, single-threaded zstd: rebuild the same commit,
               # get the same tools-x86_64.tar.zst.
               tar --sort=name --mtime='@0' --owner=0 --group=0 \
                   --numeric-owner -C "$tdir" -cf - veron-tools \
                 | zstd -19 -q > tools-x86_64.tar.zst
               sha256sum tools-x86_64.tar.zst > TOOLS-SHA256
-              rm -rf "$tdir"
+              echo "  tools-x86_64.tar.zst: $(du -h tools-x86_64.tar.zst | cut -f1) carrying:$bundled"
               assets="$assets tools-x86_64.tar.zst TOOLS-SHA256 TOOLS-WHENCE"
             else
-              echo "  no dest/qemu-user static binary -- tools bundle skipped, stated not silent"
+              echo "  no static binary in dest/ at all -- tools bundle skipped, stated not silent"
             fi
+            rm -rf "$tdir"
             assets="$assets PROVENANCE"
             echo "  uploading (delete-then-upload, per asset): $assets"
             # REPRODUCIBILITY INSTRUMENTATION: log the FULL identity -- path,

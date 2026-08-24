@@ -1,0 +1,84 @@
+name    = "json-glib"
+version = "1.10.8"
+group   = "system"
+license = "LGPL-2.1-or-later"
+srcdir  = "json-glib-1.10.8"
+
+# HERE BECAUSE swtpm REQUIRES IT AND FOR NO OTHER REASON. swtpm 0.7 and
+# later parse their profiles and swtpm_setup's configuration with
+# json-glib; PKG_CHECK_MODULES(json-glib-1.0) is a hard requirement of
+# its configure, not an option. One consumer, one small GLib-shaped
+# library.
+#
+# BOTH LIBRARY KINDS, for the reason libslirp gives: the amd64 overlay's
+# swtpm links the .a with -all-static; the aarch64 arm's dynamic swtpm
+# links the .so. Introspection, tests and translations are off by name:
+# gobject-introspection is not in this set, and swtpm reads JSON in
+# English.
+#
+# OPTIONS READ FROM meson_options.txt at 1.10: introspection (feature),
+# documentation (feature, replaces the deprecated gtk_doc; needs
+# gi-docgen, default off), man (needs rst2man, default off), tests,
+# installed_tests, nls (needs xgettext). Only the three whose defaults
+# would reach for something this set lacks are passed; the rest default
+# off. gobject-introspection, gi-docgen and gettext are all absent here
+# and all optional.
+#
+# 1.10.8 is what Arch, Debian and current BLFS ship as of 2026-08-24;
+# download.gnome.org publishes a .sha256sum beside the tarball -- compare
+# the mirror run's digest against it before pinning.
+#
+# UNBUILT AS WRITTEN; pin PENDING, URL in gap3-urls.txt.
+
+[source]
+url       = "https://download.gnome.org/sources/json-glib/1.10/json-glib-1.10.8.tar.xz"
+sha256    = "PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here"
+signature = "none -- GNOME publishes sha256sum files beside the tarball, not detached signatures; the mirror run's digest is compared against that file by hand before pinning"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "glib"]
+link         = ["glib"]
+runtime      = ["glib"]
+optional_off = ["introspection", "tests", "nls"]
+
+[declared]
+configure_flags = ["--libdir=lib", "-Dintrospection=disabled", "-Dtests=false", "-Dnls=disabled", "-Ddefault_library=both"]
+verification    = "archive-present step asserts libjson-glib-1.0.a and its .pc exist"
+packaged_as     = ["json-glib"]
+deferral        = """
+Internals not reviewed. A JSON parser and generator over GObject; swtpm \
+is its only consumer here."""
+
+[installs]
+prefixes = ["usr/include/json-glib-1.0", "usr/lib"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/json-glib-1.10.8.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--libdir=lib", "--buildtype=release",
+         "-Dintrospection=disabled", "-Dtests=false", "-Dnls=disabled", "-Ddefault_library=both"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[[steps]]
+name = "archive-present"
+cwd  = "$S"
+run  = [["sh", "-c", "test -f $D/usr/lib/libjson-glib-1.0.a && test -f $D/usr/lib/pkgconfig/json-glib-1.0.pc || { echo VERON-JSON-GLIB-NO-ARCHIVE; ls -la $D/usr/lib; exit 1; }"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "json-glib-1.0"]]
+expect = ["1.10.8"]

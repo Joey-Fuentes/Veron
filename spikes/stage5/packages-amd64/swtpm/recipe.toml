@@ -1,0 +1,121 @@
+# THE amd64 OVERLAY: THE BASE swtpm RECIPE MADE -all-static, for the
+# same reason and by the same two moves as qemu-user's overlay. The
+# stage-5 tools bundle carries a swtpm beside the static qemu so a
+# foreign host with no libtpms, no json-glib and no matching glib can
+# still hand a Windows 11 installer its TPM.
+#
+# TWO FLAG DELTAS AND NOTHING ELSE:
+#   PKG_CONFIG="pkgconf --static" on configure, so every
+#     PKG_CHECK_MODULES expands Requires.private -- without it glib's
+#     -lpcre2-8 and openssl's -ldl -lpthread never reach a link that
+#     -static forbids from resolving through a .so.
+#   LDFLAGS=-all-static on the MAKE line, not configure: -all-static is
+#     libtool's spelling, and gcc does not know it, so configure's own
+#     "can the compiler create executables" probe would die on it.
+#     Every link in swtpm's automake tree goes through libtool.
+# Needs the OVERLAY glib and pcre2 archives, and the base openssl,
+# libtpms and json-glib archives, all of which exist by construction.
+#
+# [source] is byte-equal to the base recipe's; selftest enforces that.
+#
+name    = "swtpm"
+version = "0.10.1"
+group   = "system"
+license = "BSD-3-Clause"
+srcdir  = "swtpm-0.10.1"
+
+# THE OTHER HALF OF A WINDOWS 11 GUEST. qemu's -tpmdev emulator speaks a
+# socket to a TPM process; this is that process. `swtpm socket --tpm2
+# --tpmstate dir=... --ctrl type=unixio,path=...` starts a fresh TPM 2.0
+# in an empty state directory with no setup step -- swtpm_setup is only
+# needed to pre-provision endorsement certificates, which Windows does
+# not require -- so the bare swtpm binary is the deliverable and the
+# rest ships because make installs it.
+#
+# gnutls, seccomp, cuse AND selinux ARE OFF BY NAME. gnutls exists only
+# to build swtpm_cert, a certificate tool for the EK-provisioning path
+# nothing here walks, and it would drag nettle, gmp, p11-kit and
+# libtasn1 into a link that the amd64 overlay makes -all-static. seccomp
+# is a sandbox for a daemon libvirt runs as a system service; here swtpm
+# is a per-VM child of the launcher, killed with it. cuse wants libfuse,
+# not in this set. selinux likewise.
+#
+# THE RELEASE ASSET, NOT THE TAG ARCHIVE, as libtpms: a `make dist`
+# tarball with a generated configure, no autoreconf. 0.10.1 is the
+# newest release as of 2026-08-24 and requires libtpms >= 0.10.
+#
+# READ FROM configure.ac, NOT RECALLED: --with-openssl is REQUIRED and
+# must match libtpms's backend (configure errors either way if they
+# disagree); --with-gnutls/--with-seccomp/--with-cuse/--with-selinux are
+# the spellings and each defaults to check; --disable-tests exists and
+# is what keeps expect, socat and gawk (test-suite tools, not in this
+# set) off the build path; libtasn1 is checked UNCONDITIONALLY and is
+# in this set; json-glib is unconditional too. Its CFLAGS carry -Werror
+# (Gentoo patches it out); if this gcc trips it, the fix is a patch in
+# patches/, not a sed.
+#
+# UNBUILT AS WRITTEN; pin PENDING, URL in gap3-urls.txt. If the mirror
+# run says FETCH FAILED on the asset name, the fallback is the tag
+# archive with an autoreconf step.
+
+[source]
+url       = "https://github.com/stefanberger/swtpm/releases/download/v0.10.1/swtpm-0.10.1.tar.gz"
+sha256    = "PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here"
+signature = "none detached; the v0.10.1 TAG is GPG-signed by Stefan Berger (key 75AD65802A0B4211) -- verify the tag, then pin the asset's digest"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "glib", "pcre2", "json-glib", "libtasn1", "libtpms", "openssl"]
+link         = ["glib", "json-glib", "libtasn1", "pcre2", "libtpms", "openssl"]
+runtime      = []
+optional_off = ["gnutls", "seccomp", "cuse", "selinux", "tests"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--with-openssl", "--without-gnutls", "--without-seccomp", "--without-cuse", "--without-selinux", "--disable-tests"]
+verification    = "static-or-die asserts no DT_NEEDED on every installed binary; the Windows 11 setup screen on bare metal is the consumer-side proof"
+packaged_as     = ["swtpm-static"]
+deferral        = """
+Internals not reviewed. A TPM emulator daemon over libtpms; its consumer \
+is qemu -tpmdev emulator and the guest behind it. The default tss user and \
+group it names in its configuration files are for swtpm_setup's certificate \
+path, which nothing here uses; the daemon itself runs as whoever launches \
+the VM."""
+
+[installs]
+prefixes = ["usr/bin", "usr/lib", "usr/libexec", "usr/share", "etc"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/swtpm-0.10.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+env  = { PKG_CONFIG = "pkgconf --static" }
+run  = [["./configure", "--prefix=/usr", "--with-openssl", "--without-gnutls", "--without-seccomp", "--without-cuse", "--without-selinux", "--disable-tests"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J", "LDFLAGS=-all-static"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[[steps]]
+name = "binaries-present"
+cwd  = "$S"
+run  = [["sh", "-c", "for b in swtpm swtpm_ioctl swtpm_bios; do test -x $D/usr/bin/$b || { echo VERON-SWTPM-MISSING $b; exit 1; }; done && echo VERON-SWTPM-BINARIES-PRESENT"]]
+
+[[steps]]
+name = "static-or-die"
+cwd  = "$S"
+# THE PROPERTY THE BUNDLE PROMISES, CHECKED WHERE IT IS MADE. A dynamic
+# swtpm would fail on the foreign host, far from this log.
+run  = [["sh", "-c", "for b in $D/usr/bin/swtpm $D/usr/bin/swtpm_ioctl $D/usr/bin/swtpm_bios $D/usr/bin/swtpm_setup; do [ -x $b ] || continue; ! readelf -d $b 2>/dev/null | grep -q NEEDED || { echo VERON-SWTPM-NOT-STATIC $b; readelf -d $b | grep NEEDED; exit 1; }; done && echo VERON-SWTPM-STATIC"]]
+
+[guest]
+test   = [["sh", "-c", "/usr/bin/swtpm --version | head -1"]]
+expect = ["TPM emulator version 0.10.1"]

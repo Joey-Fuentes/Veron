@@ -1,0 +1,78 @@
+# OVERLAY, AND THE DELTA IS --disable-static BECOMING --enable-static,
+# for the same consumer as the attr overlay: qemu's virtfs links
+# libcap-ng, the amd64 qemu is --static, so libcap-ng.a must exist.
+#
+# [source] is byte-equal to the base recipe's; selftest enforces that.
+#
+name    = "libcap-ng"
+version = "0.9.5"
+group   = "system"
+license = "LGPL-2.1-or-later (library), GPL-2.0-or-later (tools)"
+srcdir  = "libcap-ng-0.9.5"
+
+# THE OTHER HALF OF virtfs: qemu's 9p local backend requires libcap-ng
+# beside libattr, and the plan had neither. THE TARBALL IS A TAG ARCHIVE,
+# NOT A DIST TARBALL -- autogen.sh and configure.ac ship, a generated
+# configure does not -- so autoreconf runs first, against the autoconf,
+# automake, libtool and m4 this plan already carries. Python bindings are
+# off by flag: they would drag swig and a python -dev surface in for
+# nothing qemu consumes.
+#
+# THE $DL NAME IS THE MIRROR'S artifact_name, NOT THE URL BASENAME -- the
+# labwc 0.9.1 incident, avoided this time by reading sources/MIRRORS.tsv
+# before the build could reproduce it: the fetcher stores this tarball as
+# libcap-ng-v0.9.5.tar.gz because forge archive URLs end in the tag and a
+# bare v0.9.5.tar.gz names no project.
+
+[source]
+url       = "https://github.com/stevegrubb/libcap-ng/archive/refs/tags/v0.9.5.tar.gz"
+sha256    = "a2b4211f59b231d607c61ea2a13e9ecb38f446fe769b44e12da939d5af6d978a"
+signature = "none -- GitHub tag archive; sha pinned from the bytes in hand"
+crosschecked_against = []
+
+[deps]
+build        = ["autoconf", "automake", "libtool", "m4"]
+link         = []
+runtime      = []
+optional_off = ["python"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--enable-static", "--without-python3"]
+verification    = "library-present check below; qemu's virtfs link is the consumer-side proof"
+deferral        = ""
+
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/bash-completion", "usr/share/man"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libcap-ng-v0.9.5.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "autogen"
+cwd  = "$S"
+run  = [["./autogen.sh"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--enable-static", "--without-python3"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[[steps]]
+name = "archive-present"
+cwd  = "$S"
+run  = [["sh", "-c", "test -f $D/usr/lib/libcap-ng.a || { echo VERON-LIBCAPNG-NO-ARCHIVE; ls -la $D/usr/lib; exit 1; }"]]
+
+[guest]
+test   = [["sh", "-c", "test -e /usr/lib/libcap-ng.so.0 && echo VERON-LIBCAPNG-PRESENT"]]
+expect = ["VERON-LIBCAPNG-PRESENT"]

@@ -1,0 +1,71 @@
+# OVERLAY, AND THE DELTA IS ONE MESON FLAG: -Ddefault_library=both, the
+# glib overlay's move applied to pixman. qemu's display path (every ui/
+# backend, the sdl one included) is pixman, and the amd64 qemu is
+# --static, so libpixman-1.a must exist beside the .so or meson's
+# prefer_static lookup finds nothing to link. The .so stays: cairo and
+# wlroots link it dynamically in this same image.
+#
+# [source] is byte-equal to the base recipe's; selftest enforces that.
+#
+name    = "pixman"
+version = "0.46.4"
+group   = "text-rendering"
+license = "MIT"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://www.cairographics.org/releases/pixman-0.46.4.tar.gz"
+sha256    = "d09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c"
+signature = "none -- cairographics.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja"]
+# libpng WAS DECLARED AND IS NOT LINKED. -Dlibpng=enabled was passed, and
+# pixman uses libpng ONLY in its tests and demos -- both of which this recipe
+# disables. So the option enabled a feature whose every consumer was off, and
+# the declaration was true about the flag and false about the binary.
+link         = []
+runtime      = []
+optional_off = ["tests", "demos", "gtk", "openmp", "libpng"]
+
+[declared]
+configure_flags = ["-Dtests=disabled", "-Ddemos=disabled", "-Dgtk=disabled", "-Dlibpng=disabled", "-Ddefault_library=both"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. Pixel manipulation for cairo, and wlroots uses it for \
+its software renderer. -Dgtk=disabled matters: pixman's demos would otherwise \
+pull GTK in, and GTK leads to librsvg and therefore Rust."""
+
+[installs]
+prefixes = ["usr/include/pixman-1", "usr/lib", "usr/lib/pkgconfig"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/pixman-0.46.4.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dtests=disabled", "-Ddemos=disabled", "-Dgtk=disabled", "-Dlibpng=disabled", "-Ddefault_library=both"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+[[steps]]
+name = "archive-present"
+cwd  = "$S"
+run  = [["sh", "-c", "test -f $D/usr/lib/libpixman-1.a || { echo VERON-PIXMAN-NO-ARCHIVE; ls -la $D/usr/lib; exit 1; }"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "pixman-1"]]
+expect = ["0.46.4"]

@@ -1,0 +1,94 @@
+name       = "openssl"
+version    = "8cf17aae"
+group      = "build-substrate"
+license    = "Apache-2.0"
+srcdir     = "openssl-8cf17aaeb4599f8af87fefd810b5b5fee90fe69e"
+build_only = true
+
+# A STATIC libcrypto FOR EXACTLY TWO CONSUMERS, AND IT SHIPS NOTHING.
+# libtpms implements the TPM 2.0 command set on top of libcrypto, and
+# swtpm's state encryption is libcrypto too; neither offers a gnutls or
+# nettle path, so the TLS library this system already carries (gnutls)
+# cannot serve them. Rather than admit a second TLS stack into the
+# image, this builds libcrypto and libssl as archives only (no-shared)
+# and stays build_only: the two consumers link it in, and no .so, no
+# openssl(1) and no /etc/ssl reaches an image. gnutls remains the
+# system's TLS.
+#
+# THE SAME BYTES edk2-src-openssl PINS, BUILT INSTEAD OF COURIERED.
+# Ruled (Joe, 2026-08-24): the openssl in src/ is the one this set
+# uses; no second openssl tarball enters the mirror. That artifact is
+# the commit edk2-stable202608 vendors, fetched and hashed at run
+# 88505453858 -- a snapshot of upstream's 3.x line, not a numbered
+# release, which is why this recipe's version is the commit prefix
+# like the courier's. Two recipes, one [source]: the qemu/qemu-user
+# precedent, and selftest checks the pins agree with the mirror row.
+#
+# ./config, NOT ./Configure <target>: config detects the target, so the
+# same recipe builds on the aarch64 arm and the amd64 overlay without
+# naming linux-aarch64 in one and linux-x86_64 in the other. perl drives
+# configure and the build (in this set already).
+#
+# install_sw AND install_ssldirs, NOT install: the full target renders
+# every manual page through pod2man, minutes of perl for text no
+# consumer reads and build_only would discard anyway.
+#
+# UNBUILT AS WRITTEN. Two things a run measures: that this snapshot's
+# Configure knows no-docs and no-apps (both are 3.x options; a snapshot
+# of the 3.x line should carry them), and that libtpms and swtpm
+# compile against this snapshot's headers, which track the 3.x API.
+
+[source]
+url       = "https://github.com/openssl/openssl/archive/8cf17aaeb4599f8af87fefd810b5b5fee90fe69e.tar.gz"
+sha256    = "03154360ff8808ac38da7530cd69d211e105683e077e9835e48161493c3d0050"
+signature = "none -- archive-by-commit; the commit is the pin, measured at run 88505453858"
+crosschecked_against = []
+
+[deps]
+build        = ["perl"]
+link         = []
+runtime      = []
+optional_off = ["shared", "module", "tests", "docs", "apps"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--libdir=lib", "--openssldir=/etc/ssl", "no-shared", "no-module", "no-tests", "no-docs", "no-apps"]
+verification    = "archive-present step asserts libcrypto.a, libssl.a and both .pc files exist"
+deferral        = """
+Internals not reviewed, and the surface is cut to what libtpms and swtpm \
+need: two archives and two .pc files. no-shared alone still builds the \
+dynamically loaded provider modules, so no-module is stated beside it \
+(INSTALL.md says so in as many words). no-apps means no openssl(1) is \
+built -- swtpm shells out to nothing, it links libcrypto -- and no-docs \
+means no pod2man pass. Neither consumer is a TLS endpoint; libcrypto's \
+hashing, RSA/EC and AES are what a TPM needs."""
+
+[installs]
+prefixes = ["usr/include/openssl", "usr/lib", "etc/ssl"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/openssl-8cf17aaeb4599f8af87fefd810b5b5fee90fe69e.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./config", "--prefix=/usr", "--libdir=lib", "--openssldir=/etc/ssl", "no-shared", "no-module", "no-tests", "no-docs", "no-apps"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install_sw", "install_ssldirs"]]
+
+[[steps]]
+name = "archive-present"
+cwd  = "$S"
+run  = [["sh", "-c", "for f in usr/lib/libcrypto.a usr/lib/libssl.a usr/lib/pkgconfig/libcrypto.pc usr/lib/pkgconfig/libssl.pc; do test -f $D/$f || { echo VERON-OPENSSL-MISSING $f; exit 1; }; done && ! ls $D/usr/lib/libcrypto*.so* 2>/dev/null | grep -q . || { echo VERON-OPENSSL-SHIPPED-SHARED; exit 1; }"]]
+
+[guest]
+# build_only, SO THIS NEVER RUNS. libtpms and swtpm linking libcrypto.a
+# is the test.

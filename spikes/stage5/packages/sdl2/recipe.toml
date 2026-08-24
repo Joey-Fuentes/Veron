@@ -1,0 +1,165 @@
+name    = "sdl2"
+version = "2.32.10"
+group   = "system"
+license = "Zlib"
+srcdir  = "SDL2-2.32.10"
+
+# THE DISPLAY qemu OPENS ON BARE METAL. qemu has no Wayland display of
+# its own: its GUI backends are sdl, gtk, vnc, spice and dbus, and of
+# those only SDL2 can be built from this package set (GTK would bring
+# the whole GTK stack, and this system declines it). SDL2's Wayland
+# video driver is what puts a qemu window on labwc.
+#
+# ONE STATIC ARCHIVE, AND ITS PLATFORM LIBRARIES BY dlopen. SDL_SHARED
+# is OFF and SDL_STATIC is ON because the consumer is a --static qemu.
+# SDL_WAYLAND_SHARED and SDL_ALSA_SHARED stay ON (their defaults, stated):
+# SDL then loads libwayland-client, libwayland-cursor, libxkbcommon and
+# libasound at RUNTIME with dlopen, exactly as every distro's SDL2 does,
+# and the archive itself needs no libwayland.a, libxkbcommon.a, libEGL.a
+# or libasound.a -- none of which this set builds, and the last of which
+# mesa cannot build at all. The price is stated where it is paid: a
+# static binary that dlopens needs the host's shared libraries to be
+# from the glibc it was linked against. On this image that is true by
+# construction (one sysroot, one glibc). On a foreign host it is not
+# promised; there the GUI may or may not open, and headless use
+# (-display none, the gates' whole diet) never dlopens anything.
+#
+# WHY mesa IS A BUILD DEPENDENCY OF A PACKAGE THAT LINKS NO GL: SDL's
+# CMake probes "wayland-client>=1.18 wayland-egl wayland-cursor egl
+# xkbcommon>=0.5.0" through ONE pkg_check_modules (read from
+# cmake/sdlchecks.cmake, and visible verbatim in configure output) and
+# enables the Wayland driver only if all five answer, OpenGL on or off.
+# egl.pc is mesa's. With SDL_OPENGL and SDL_OPENGLES both OFF no EGL
+# symbol is referenced and nothing links libEGL; mesa answers a probe,
+# and this comment is the record so nobody deletes it as "unused".
+# wayland-scanner is found via `pkg-config --variable=wayland_scanner`
+# and the protocol XML via wayland-protocols' pkgdatadir -- SDL vendors
+# neither, so both packages are build dependencies by measurement.
+# X11 and KMSDRM are OFF by name: no X libraries exist in this set, and
+# the compositor is the only thing that should touch KMS.
+#
+# UNBUILT AS WRITTEN. This recipe is written from the SDL2 CMake option
+# set as documented for 2.30-2.32; it has not yet been through a run.
+# The first build measures it, and the two places it is most likely to
+# be wrong are (a) an option name upstream renamed, which CMake reports
+# as an unused-variable warning and NOT an error -- read the configure
+# log for "Manually-specified variables were not used", and (b) the
+# five-module Wayland probe finding something missing, which is
+# reported as SDL_WAYLAND being silently OFF; the wayland-present step
+# below turns that silence into a failure.
+#
+# VERSION AND DIGEST: the version is the newest 2.32 this recipe's
+# author knew of; the pin is PENDING because no network reached this
+# tarball when the recipe was written. The URL is in gap3-urls.txt;
+# stage5-mirror-upload fetches it, measures it, and the measured digest in
+# MIRRORS.tsv is pasted into this file. If upstream has
+# no 2.32.10 the mirror run says FETCH FAILED and this version, url,
+# srcdir and the unpack step's filename move together.
+
+[source]
+url       = "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz"
+sha256    = "PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here"
+signature = "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz.sig -- detached PGP by the SDL release key; verify against the fingerprint on libsdl.org before pinning"
+crosschecked_against = []
+
+[deps]
+# wayland supplies wayland-scanner and the wayland-client/-cursor/-egl
+# headers and .pc files; wayland-protocols the XML the scanner reads;
+# libxkbcommon its header and .pc; mesa egl.pc; alsa-lib the ALSA
+# headers for the dlopen'd audio backend.
+build        = ["cmake", "ninja", "pkgconf", "wayland", "wayland-protocols", "libxkbcommon", "mesa", "alsa-lib"]
+# NOTHING IS LINKED: the archive carries no DT_NEEDED and every platform
+# library is dlopen'd. Declared empty rather than listing the dlopen set,
+# because the DT_NEEDED sweep measures links and would report each as
+# declared-but-absent.
+link         = []
+runtime      = ["wayland", "libxkbcommon", "alsa-lib"]
+optional_off = ["shared", "x11", "kmsdrm", "opengl", "opengles", "vulkan",
+                "libdecor", "pulseaudio", "pipewire", "jack", "sndio",
+                "libudev", "dbus", "ibus", "fcitx", "joystick", "haptic",
+                "hidapi", "sensor", "power", "libsamplerate", "test",
+                "rpath", "ccache"]
+
+[declared]
+configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release",
+                   "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_STATIC_PIC=ON",
+                   "-DSDL_WAYLAND=ON", "-DSDL_WAYLAND_SHARED=ON", "-DSDL_WAYLAND_LIBDECOR=OFF",
+                   "-DSDL_X11=OFF", "-DSDL_KMSDRM=OFF",
+                   "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF",
+                   "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=ON",
+                   "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF",
+                   "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF", "-DSDL_FCITX=OFF",
+                   "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF",
+                   "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF",
+                   "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]
+verification    = "wayland-present and alsa-present steps read the generated SDL_config.h; static-only step asserts no .so shipped"
+packaged_as     = ["sdl2"]
+deferral        = """
+Internals not reviewed. A windowing and audio abstraction; its consumer here \
+is qemu's sdl display and sdl audio backend and nothing else. Everything \
+not on that path -- joysticks, haptics, HIDAPI (which would want libusb), \
+sensors, power, sample-rate conversion -- is named OFF so the archive is \
+the display path and not a game engine's runtime.
+
+The two ON-but-dlopen'd backends are the only place this package reaches \
+beyond its own bytes at runtime, and the header comment states the \
+condition under which that works."""
+
+[installs]
+prefixes = ["usr/bin", "usr/include/SDL2", "usr/lib", "usr/share/aclocal", "usr/share/licenses"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/SDL2-2.32.10.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
+         "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release",
+         "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_STATIC_PIC=ON",
+         "-DSDL_WAYLAND=ON", "-DSDL_WAYLAND_SHARED=ON", "-DSDL_WAYLAND_LIBDECOR=OFF",
+         "-DSDL_X11=OFF", "-DSDL_KMSDRM=OFF",
+         "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF",
+         "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=ON",
+         "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF",
+         "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF", "-DSDL_FCITX=OFF",
+         "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF",
+         "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF",
+         "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]]
+
+[[steps]]
+name = "wayland-present"
+cwd  = "$S"
+# THE PROBE'S SILENCE MADE LOUD. If any of the five Wayland modules was
+# missing, CMake configured happily with the Wayland driver off and the
+# resulting qemu would open no window on bare metal while every headless
+# gate stayed green. The generated config header says what was decided.
+run  = [["sh", "-c", "grep -q '^#define SDL_VIDEO_DRIVER_WAYLAND 1' _b/include/SDL_config.h || { echo VERON-SDL2-NO-WAYLAND-DRIVER; grep -n WAYLAND _b/include/SDL_config.h; exit 1; }"]]
+
+[[steps]]
+name = "alsa-present"
+cwd  = "$S"
+run  = [["sh", "-c", "grep -q '^#define SDL_AUDIO_DRIVER_ALSA 1' _b/include/SDL_config.h || { echo VERON-SDL2-NO-ALSA-DRIVER; grep -n ALSA _b/include/SDL_config.h; exit 1; }"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[[steps]]
+name = "static-only"
+cwd  = "$S"
+# THE PROPERTY THE FLAGS PROMISE, CHECKED WHERE IT IS MADE: an archive,
+# a .pc, and no shared object for qemu's --static link to trip over.
+run  = [["sh", "-c", "test -f $D/usr/lib/libSDL2.a && test -f $D/usr/lib/pkgconfig/sdl2.pc && ! ls $D/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la $D/usr/lib; exit 1; }"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "sdl2"]]
+expect = ["2.32.10"]

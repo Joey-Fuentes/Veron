@@ -1,42 +1,57 @@
-# THE amd64 OVERLAY'S QEMU: the base recipe plus the x86 half. The
-# target list gains x86_64-softmmu, and the firmware an x86 pc machine
-# demands -- SeaBIOS and SeaVGABIOS -- is built from the source qemu
-# itself vendors in roms/, on the strength of three VERON-M32-YES probe
-# verdicts and a trial that compiled the full bios/vgabios set from this
-# very tarball with -m32 codegen and bare ld -melf_i386, no multilib, no
-# libgcc. --disable-install-blobs STAYS: upstream's prebuilts remain
-# barred, and the no-borrowed-bytes gate INVERTS -- from "no firmware
-# present" to "EXACTLY our firmware present", the built set enumerated
-# and sha256-logged, anything more or less fatal. The devices-present
-# step runs the freshly built binary (the sandbox IS the sysroot, so a
-# Veron ELF executes here) and asserts the virtio set every boot gate
-# depends on: 9p, gpu, keyboard.
+# THE amd64 OVERLAY'S QEMU: THE EMULATOR THIS IMAGE RUNS ON BARE METAL,
+# AND THE ONE THE STAGE-5 TOOLS BUNDLE CARRIES. One binary, built once,
+# doing what a distribution's qemu-system does: a window on the desktop
+# (SDL2 on Wayland), user-mode networking (libslirp), KVM, UEFI and a
+# TPM behind it (edk2-firmware, swtpm -- separate packages, same -L
+# directory), virtfs for the gates, qemu-img for image surgery -- and
+# --static, so the tools bundle's copy runs on any x86_64 Linux host
+# with no libc to match, exactly as qemu-aarch64-static already does.
+#
+# THIS REPLACES A RECIPE THAT WAS CUT TO THE GATES' DIET: serial
+# console, no display, no network. That build was correct for CI and
+# wrong for a person: an Ubuntu or Windows 11 ISO booted on the bare
+# metal image had nowhere to draw and no way to reach a mirror. What is
+# ON now is stated in the [deps] comments; what stays OFF is still named
+# off, flag by flag, because qemu's configure probes the world and the
+# glib/libelf lesson says a package added later must not change what
+# qemu is.
+#
+# STATIC, AND HOW THAT WORKS WITH A GUI. --static links pixman, SDL2,
+# libslirp, libfdt, libattr, libcap-ng, glib and pcre2 as archives (the
+# overlays that make those archives exist are named in [deps]). SDL2
+# itself loads its Wayland and ALSA platform libraries by dlopen at
+# runtime, as every distro's SDL2 does, so no libwayland.a, no
+# libxkbcommon.a and no libEGL.a is needed -- which matters because
+# mesa cannot make the last one. The condition is stated in sdl2's
+# recipe and repeated here because this is where it is paid: a static
+# binary's dlopen wants the host's shared libraries from the glibc it
+# was linked against. True on this image by construction. Not promised
+# on a foreign host, where the bundle's qemu is expected to run the
+# gates headless (-display none, no dlopen) and MAY also open a window.
+#
+# OPENGL STAYS OFF, BY DECISION: qemu's sdl display draws through
+# SDL_Renderer, which without GL is a software blit into wl_shm --
+# exactly `-display sdl,gl=off`, the mode distros' users pick when
+# virgl is absent. Guests get std VGA or virtio-vga in 2D; that is what
+# an Ubuntu installer and a Windows 11 installer draw on. virgl would
+# need libEGL statically and is the one thing a static GUI cannot have.
+#
+# SEABIOS, THE OPTION ROMS AND THE INVERTED FIRMWARE GATE ARE UNCHANGED
+# from the recipe this replaces: read those step comments for the m32
+# provenance and the runs that measured them.
+#
+# UNBUILT AS WRITTEN. Every configure flag below is a spelling from
+# qemu's configure --help for 11.x; what has not been through a run is
+# the COMBINATION -- --static with system targets and sdl and slirp all
+# on. The first failure to expect is a link error naming a symbol from
+# a library whose archive is missing or whose Requires.private did not
+# expand; the static-or-die step and the feature-present steps at the
+# end exist so the failure is loud and named rather than a green build
+# with a display that silently disabled itself.
 name    = "qemu"
 version = "11.0.3"
 group   = "system"
 license = "GPL-2.0-only"
-
-# THE TARGET LIST IS THE TRUST DECISION, so it is stated here rather than
-# discovered from a flag: aarch64-softmmu ONLY, and --disable-install-blobs.
-#
-# The -M virt machine boots a kernel from -kernel/-initrd with NO firmware
-# at all, so this target can be shipped with zero borrowed bytes today.
-# x86_64-softmmu is DELIBERATELY ABSENT: the pc machine loads SeaBIOS even
-# for direct -kernel boots, the tarball's pc-bios/*.bin are prebuilt
-# binaries, and building SeaBIOS from the vendored roms/seabios source
-# needs a compiler that can emit 32-bit x86 -- which a non-multilib
-# stage-4 gcc must be MEASURED to do, not assumed. When that probe passes,
-# x86_64-softmmu plus a seabios-from-source step is a one-recipe change;
-# until then, absence is honest and --disable-install-blobs makes the
-# no-borrowed-bytes claim structural rather than a promise.
-#
-# WHAT THIS BUYS NOW: the amd64 machine can boot and gate the aarch64
-# arm's images -- full-system, blob-free -- which is the half of
-# self-hosting that does not need firmware.
-#
-# sha256 measured from the maintainer-supplied tarball. The mirror-upload
-# run is the crosscheck: it fetches this URL from upstream and refuses a
-# tarball that hashes differently.
 
 [source]
 url       = "https://download.qemu.org/qemu-11.0.3.tar.xz"
@@ -44,66 +59,59 @@ sha256    = "da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523"
 signature = "none -- download.qemu.org publishes digests, not detached signatures"
 crosschecked_against = []
 
-# --disable-debug-info IS A SIZE RULING, MEASURED (stage-6 run
-# 88586816206): the first consumer image to carry these emulators blew
-# the ruled DVD-5 ceiling by 128 MiB, and qemu default -g loads every
-# binary with DWARF no gate, guest test or release-image user reads.
-# The debug build stays one recipe line away when a debugger wants it.
 [deps]
-# attr AND libcap-ng ARE HERE FOR virtfs, AND virtfs IS ENABLED BY NAME:
-# every boot gate mounts the sysroot with -fsdev local + virtio-9p-pci,
-# and the gate-flip review found the feature silently absent -- qemu's 9p
-# local backend needs both libraries and the plan carried neither, so
-# meson built no virtfs and -fsdev would have been rejected the day the
-# gates ran on this binary. Enabled-and-declared, not auto-found: the
-# DT_NEEDED sweep holds these two to the same standard as glib.
+# attr AND libcap-ng: virtfs, the 9p local backend every boot gate mounts
+# the sysroot through; the amd64 overlays of both ship the .a this
+# --static link needs. pixman: every display backend; overlay ships the
+# .a. sdl2: the window; static-only by its own recipe. libslirp: -netdev
+# user; ships both kinds. glib and pcre2: the overlays that ship archives,
+# the same two qemu-user already needs. dtc: libfdt.a, already both.
+# zlib: libz.a, which zlib's configure builds by default.
 # python-setuptools AND python-wheel ARE CONFIGURE DEPENDENCIES, FOUND BY
 # BUILDING (run 88488793190): qemu's mkvenv builds a non-isolated venv and
-# its [tooling] group expects both from SYSTEM site-packages; absent, pip
-# walked to pypi.org and the network-less sandbox failed the step. The
-# venv then installs only qemu's own vendored wheels, offline.
-build        = ["meson", "ninja", "python", "bash", "pkgconf", "python-setuptools", "python-wheel", "glib", "pixman", "zlib", "pcre2", "dtc", "attr", "libcap-ng"]
-link         = ["glib", "pixman", "zlib", "dtc"]
-runtime      = ["glib", "pixman", "zlib", "dtc"]
-# EVERY auto FEATURE THAT COULD SILENTLY ATTACH IS NAMED OFF. qemu's
-# configure probes the world; in a sandbox the world is small today and
-# larger tomorrow, and glib's libelf lesson says a package added twenty
-# rungs later must not change what qemu is.
-# ELEVEN FEATURES GO FROM NAMED TO FLAGGED, BY MEASUREMENT (run
-# 88497577805): the DT_NEEDED sweep reported qemu linking alsa-lib, bzip2,
-# curl, elfutils(libdw), gnutls, libpng, libseccomp, libudev, libusb,
-# ncurses and zstd -- ALL UNDECLARED. optional_off listed several of them
-# with no flag behind the words, which is pcre2's recipe-sin verbatim: a
-# declaration true about the flag and false about the binary. meson found
-# each library in the cumulative build root, so what qemu WAS depended on
-# build order -- the glib/libelf incident, eleven times over. Disabled
-# rather than declared: the gates boot over serial with -kernel; none of
-# these has a consumer here, and zstd/qcow2 compression can return later
-# as a DECLARED dependency the day something uses it.
-# xkbcommon IS OFF BY MEASUREMENT (run 88493588431): the desktop stack
-# ships libxkbcommon, meson found it, auto-enabled qemu-keymap, and the
-# generator died at 96% needing xkeyboard-config data (/usr/share/X11/xkb
-# rules/evdev) that nothing in this set provides. Keymaps translate input
-# for VNC/GTK/SDL -- all disabled above -- so the feature had no consumer
-# and one missing dependency.
-optional_off = ["rust", "docs", "guest-agent", "slirp", "xkbcommon", "vnc", "gtk", "sdl", "opengl", "alsa", "pa", "curl", "libssh", "gnutls", "nettle", "gcrypt", "auth-pam", "kvm-x86-note: kvm is host-arch; an aarch64 guest on x86_64 uses tcg"]
+# its [tooling] group expects both from SYSTEM site-packages.
+build        = ["meson", "ninja", "python", "bash", "pkgconf", "python-setuptools", "python-wheel", "glib", "pcre2", "pixman", "zlib", "dtc", "attr", "libcap-ng", "sdl2", "libslirp"]
+link         = ["glib", "pcre2", "pixman", "zlib", "dtc", "attr", "libcap-ng", "sdl2", "libslirp"]
+# RUNTIME IS EMPTY BECAUSE THE BINARY IS STATIC -- and then not quite:
+# sdl2's dlopen set (wayland, libxkbcommon, alsa-lib) is what the GUI
+# reaches for on this image. Declared on sdl2, where the dlopen is.
+runtime      = ["sdl2"]
+# EVERYTHING THAT COULD SILENTLY ATTACH IS NAMED OFF, BY MEASUREMENT (run
+# 88497577805 saw eleven of these auto-enable from the cumulative build
+# root). The ones that were OFF because "the gates boot over serial" and
+# are ON now: sdl, slirp, kvm (was auto; stated), tools (was default;
+# stated), pixman (was auto; stated). gtk, vnc, opengl, curses stay off:
+# no GTK stack, no VNC consumer, no static EGL, no static ncurses.
+# alsa stays off because SDL owns audio (--audio-drv-list=sdl): qemu's
+# own alsa backend would link libasound.a, which this set does not make.
+# xkbcommon stays off (run 88493588431): it only feeds qemu-keymap, which
+# needs xkeyboard-config data at build time; SDL translates keys itself.
+# modules is off because a static binary cannot dlopen its own plugins.
+optional_off = ["rust", "docs", "guest-agent", "modules", "xkbcommon", "vnc", "gtk", "sdl-image", "opengl", "alsa", "pa", "pipewire", "curl", "libssh", "gnutls", "nettle", "gcrypt", "auth-pam", "libusb", "seccomp", "curses", "png", "bzip2", "zstd", "libdw", "libudev", "debug-info", "install-blobs", "werror"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--target-list=aarch64-softmmu,x86_64-softmmu", "--enable-virtfs", "--disable-debug-info", "--disable-install-blobs", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust", "--disable-xkbcommon", "--disable-vnc", "--disable-gtk", "--disable-sdl", "--disable-opengl", "--disable-alsa", "--disable-curl", "--disable-gnutls", "--disable-libusb", "--disable-seccomp", "--disable-curses", "--disable-png", "--disable-bzip2", "--disable-zstd", "--disable-libdw", "--disable-libudev", "--audio-drv-list="]
-packaged_as     = ["qemu-system-aarch64", "qemu-base"]
-verification    = "none -- upstream suites are not run"
+configure_flags = ["--prefix=/usr", "--static", "--target-list=aarch64-softmmu,x86_64-softmmu",
+                   "--enable-kvm", "--enable-sdl", "--enable-slirp", "--enable-virtfs", "--enable-pixman", "--enable-tools", "--enable-fdt=system",
+                   "--audio-drv-list=sdl",
+                   "--disable-modules", "--disable-debug-info", "--disable-install-blobs", "--disable-docs", "--disable-werror",
+                   "--disable-guest-agent", "--disable-rust", "--disable-xkbcommon", "--disable-vnc", "--disable-gtk", "--disable-sdl-image",
+                   "--disable-opengl", "--disable-alsa", "--disable-pa", "--disable-pipewire", "--disable-curl", "--disable-gnutls",
+                   "--disable-libusb", "--disable-seccomp", "--disable-curses", "--disable-png", "--disable-bzip2", "--disable-zstd",
+                   "--disable-libdw", "--disable-libudev"]
+packaged_as     = ["qemu-system-x86_64", "qemu-system-aarch64", "qemu-img", "qemu-static"]
+verification    = "static-or-die (no DT_NEEDED on every usr/bin ELF), display-present (sdl in -display help), netdev-present (user in -netdev help), accel-present (kvm in -accel help), tpmdev-present (emulator in -tpmdev help), devices-present (the virtio set the gates mount), only-our-firmware (the 16-file SeaBIOS/option-ROM set, exact)"
 deferral        = """
-Internals not reviewed, and qemu is large. The surface is cut instead: one \
-target, serial console, no display backends, no network slirp, no crypto \
-libraries, no installed firmware. qemu-img ships (--enable-tools default) \
-because image surgery is the other half of what the gates do. The vendored \
-subprojects/packagecache holds Rust crates only; --disable-rust means the \
-sandbox never opens it."""
+Internals not reviewed, and qemu is large. The surface is now the one a \
+person uses rather than the one a gate uses: two system targets, one \
+display (sdl, 2D), one network backend (user), KVM, virtfs, tools. \
+Nothing cryptographic is linked (no gnutls, nettle, gcrypt): -spice, \
+-vnc tls and encrypted qcow2 are not features of this binary. The \
+vendored subprojects/packagecache holds Rust crates only; --disable-rust \
+means the sandbox never opens it. OpenGL is a decision, not a gap -- see \
+the header."""
 
 [installs]
 prefixes = ["usr/bin", "usr/include", "usr/libexec", "usr/share/applications", "usr/share/icons", "usr/share/qemu"]
-files    = 39
-digest   = "917f43c92436da96adbe281f97c5bf0bf09fab94daa7786597a12ee7b972e707"
 [[steps]]
 name = "unpack"
 cwd  = "$B"
@@ -112,19 +120,20 @@ run  = [["tar", "-xf", "$DL/qemu-11.0.3.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "configure"
 cwd  = "$S"
-# CMAKE IS SET HERE BECAUSE THE POLICY CANNOT REACH THIS STEP, AND THE
-# SECOND CONFIGURE FAILURE (run 88492797957) IS THE MEASUREMENT. policy
-# [tool_env.meson] keys on argv[0], and this step's argv[0] is sh: qemu
-# runs meson from inside its own configure, one exec away from where the
-# policy looks. Undefined $CMAKE let meson find the staged cmake 4.2.3
-# and die parsing its trace output at meson.build:1818 -- the exact
-# crash the policy exists to prevent, one wrapper deeper. The value is
-# the policy's own, stated per the defaults.toml rule that a recipe
-# declaring a name outright wins.
+# CMAKE IS SET HERE BECAUSE THE POLICY CANNOT REACH THIS STEP (run
+# 88492797957): policy [tool_env.meson] keys on argv[0], and this step's
+# argv[0] is sh -- qemu runs meson from inside its own configure. The
+# value is the policy's own. PKG_CONFIG IS DELIBERATELY NOT SET TO
+# "pkgconf --static" HERE, unlike swtpm's overlay: qemu's configure
+# runs `type` on the value and would refuse a string with a space, and
+# it does not need the trick -- --static sets meson's prefer_static,
+# and meson itself asks pkg-config for --static libs, expanding every
+# Requires.private (glib -> pcre2, slirp -> glib, sdl2 -> its private
+# libs) for a link that cannot resolve through a .so.
 env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend" }
 # OUT-OF-TREE IS ENFORCED BY UPSTREAM: configure refuses to run in the
 # source root, so the shape matches meson packages' _b convention.
-run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu,x86_64-softmmu --enable-virtfs --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --disable-alsa --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev --audio-drv-list="]]
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-softmmu,x86_64-softmmu --enable-kvm --enable-sdl --enable-slirp --enable-virtfs --enable-pixman --enable-tools --enable-fdt=system --audio-drv-list=sdl --disable-modules --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl-image --disable-opengl --disable-alsa --disable-pa --disable-pipewire --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev"]]
 
 [[steps]]
 name = "build"
@@ -140,68 +149,50 @@ run  = [["make", "-C", "_b", "DESTDIR=$D", "install"]]
 name = "seabios"
 cwd  = "$S"
 # PYTHON=python3, STATED ON THE COMMAND LINE, BECAUSE SEABIOS SAYS
-# `python` AND THIS SYSTEM ONLY HAS python3 (run 88516368382: every
-# 32-bit object compiled, then "Building ld scripts" died on
-# "/bin/sh: python: not found"). Command-line variable overrides
-# propagate through make's sub-invocations, which a trial with the
-# runner's bare-python alias REMOVED confirmed end to end: rc=0,
-# bios-256k.bin at its exact 262144 bytes.
+# `python` AND THIS SYSTEM ONLY HAS python3 (run 88516368382).
 run  = [["sh", "-c", "mkdir -p pc-bios && make -C roms bios vgabios PYTHON=python3 -j$J"]]
 
 [[steps]]
 name = "optionroms"
 cwd  = "$S"
 # BUILT BY HAND-WRITTEN config.mak, BECAUSE configure'S GATE IS A CROSS
-# PROBE, NOT AN m32 PROBE (run 88555002740): configure line 1711 adds
-# pc-bios/optionrom only when probe_target_compiler i386-softmmu finds
-# a cross toolchain, which this sandbox rightly lacks -- so meson never
-# built the ROMs and _b/pc-bios/optionrom did not exist. The Makefile
-# itself needs only TOPSRC_DIR and five tool names; driven directly, the
-# host gcc's -m32 does the rest, same as SeaBIOS. Trial-proven from this
-# tarball: all four ROMs, deterministic sizes 1024-9216 bytes. The rm -f
-# first is load-bearing honesty: if the build ever fails to produce a
-# ROM, install must fail loudly on absence rather than quietly shipping
-# whatever sat in the tree.
+# PROBE, NOT AN m32 PROBE (run 88555002740). The rm -f first is
+# load-bearing: a ROM the build fails to produce must fail install
+# loudly, never ship whatever sat in the tree.
 run  = [["sh", "-c", "cd pc-bios/optionrom && rm -f *.bin && printf 'TOPSRC_DIR=%s\\nCC=gcc\\nLD=ld\\nOBJCOPY=objcopy\\nPYTHON=python3\\n' \"$S\" > config.mak && make && ls -la *.bin"]]
 
 [[steps]]
 name = "install-our-firmware"
 cwd  = "$S"
-# TWO BORROWED SETS GO OUT BEFORE THE MANIFEST LOOKS (run 88519731500,
-# the inverted gate's first execution and first catch): make install
-# ships dtb/ -- PREBUILT PowerPC device trees straight from the tarball,
-# blobs by any name, for boards no target here has -- and keymaps/,
-# PREGENERATED from xkeyboard-config in the dist tarball, the very data
-# whose generator this recipe disables. trace-events-all stays: text our
-# own build generated from source, and the manifest now names it.
-#
-# THE FOUR OPTION ROMS ARE LOAD-BEARING AND OURS (run 88528-era boot 1,
-# rc=124): on the pc machine, -kernel does not hand the kernel to
-# SeaBIOS -- qemu loads the linuxboot option ROM and SeaBIOS executes it
-# to fetch the kernel over fw_cfg. --disable-install-blobs suppressed
-# them along with the genuine blobs, SeaBIOS honestly reported "No
-# bootable device", and the boot idled to its timeout. They are built
-# from .S and .c in pc-bios/optionrom by this very build (the m32
-# probe's third beneficiary, after SeaBIOS and vgabios), land in
-# _b/pc-bios/optionrom, and the manifest names all four. The SeaBIOS
-# banner reading "-prebuilt.qemu.org" in that log is OUR binary wearing
-# the tarball .version file's stamp -- branding, not provenance.
+# dtb/ AND keymaps/ GO OUT (run 88519731500: prebuilt PowerPC device
+# trees and pregenerated keymaps from the dist tarball). The four option
+# ROMs are load-bearing and ours (linuxboot_dma is how -kernel reaches
+# SeaBIOS on the pc machine). trace-events-all stays: our build's text.
 run  = [["sh", "-c", "mkdir -p $D/usr/share/qemu && for f in bios.bin bios-256k.bin bios-microvm.bin vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-vmware.bin vgabios-ramfb.bin vgabios-bochs-display.bin vgabios-ati.bin; do install -m644 pc-bios/$f $D/usr/share/qemu/$f || exit 1; done && for f in linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin; do install -m644 pc-bios/optionrom/$f $D/usr/share/qemu/$f || exit 1; done && rm -rf $D/usr/share/qemu/dtb $D/usr/share/qemu/keymaps && sha256sum $D/usr/share/qemu/*.bin"]]
 
 [[steps]]
 name = "only-our-firmware"
 cwd  = "$S"
-# THE INVERTED GATE: the aarch64-only recipe asserted zero firmware; this
-# one asserts the twelve files above and NOT ONE BYTE MORE. Borrowed
-# prebuilts, stray .fd decompressions, an upstream default-shuffle that
-# starts installing something new -- all land here as a fatal diff.
+# THE INVERTED GATE: exactly these seventeen names and not one byte more.
 run  = [["sh", "-c", "cd $D/usr/share/qemu && ls -1 | LC_ALL=C sort > /tmp/have && for f in trace-events-all linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin bios-256k.bin bios-microvm.bin bios.bin vgabios-ati.bin vgabios-bochs-display.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-ramfb.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-vmware.bin vgabios.bin; do echo $f; done | LC_ALL=C sort > /tmp/want && diff -u /tmp/want /tmp/have || { echo VERON-QEMU-FIRMWARE-SET-DRIFT; exit 1; }"]]
 
 [[steps]]
-name = "devices-present"
+name = "static-or-die"
 cwd  = "$S"
-run  = [["sh", "-c", "for d in virtio-9p-pci virtio-gpu-pci virtio-keyboard-pci virtio-blk-pci; do $D/usr/bin/qemu-system-x86_64 -device help | grep -q \"name \\\"$d\\\"\" || { echo VERON-QEMU-DEVICE-MISSING $d; exit 1; }; done && echo VERON-QEMU-DEVICES-PRESENT"]]
+# THE PROPERTY THE BUNDLE PROMISES, CHECKED WHERE IT IS MADE: every ELF
+# in usr/bin and usr/libexec carries no DT_NEEDED. A dynamic emulator
+# called static would fail on the foreign host, far from this log.
+run  = [["sh", "-c", "bad=0; for b in $D/usr/bin/* $D/usr/libexec/*; do [ -f \"$b\" ] || continue; head -c4 \"$b\" | grep -q ELF || continue; if readelf -d \"$b\" 2>/dev/null | grep -q NEEDED; then echo VERON-QEMU-NOT-STATIC \"$b\"; readelf -d \"$b\" | grep NEEDED; bad=1; fi; done; [ $bad = 0 ] && echo VERON-QEMU-STATIC"]]
+
+[[steps]]
+name = "features-present"
+cwd  = "$S"
+# THE SANDBOX IS THE SYSROOT, so the freshly built binary executes here.
+# Each feature this recipe exists for is asked of the binary rather than
+# of the build log: a display backend that configured itself out would
+# not be in -display help, and that is a green build with no window.
+run  = [["sh", "-c", "Q=$D/usr/bin/qemu-system-x86_64; $Q -display help | grep -qx sdl || { echo VERON-QEMU-NO-SDL-DISPLAY; $Q -display help; exit 1; }; $Q -netdev help | grep -qx user || { echo VERON-QEMU-NO-USER-NETDEV; $Q -netdev help; exit 1; }; $Q -accel help | grep -qx kvm || { echo VERON-QEMU-NO-KVM-ACCEL; $Q -accel help; exit 1; }; $Q -tpmdev help 2>&1 | grep -q emulator || { echo VERON-QEMU-NO-TPM-EMULATOR; $Q -tpmdev help; exit 1; }; $Q -audio-help 2>&1 | grep -qi sdl || $Q -audiodev help 2>&1 | grep -qi sdl || { echo VERON-QEMU-NO-SDL-AUDIO; $Q -audiodev help; exit 1; }; for d in virtio-9p-pci virtio-gpu-pci virtio-keyboard-pci virtio-blk-pci virtio-net-pci tpm-tis tpm-crb usb-tablet ich9-ahci; do $Q -device help | grep -q \"name \\\"$d\\\"\" || { echo VERON-QEMU-DEVICE-MISSING $d; exit 1; }; done && $D/usr/bin/qemu-img --version | head -1 && echo VERON-QEMU-FEATURES-PRESENT"]]
 
 [guest]
-test   = [["sh", "-c", "/usr/bin/qemu-system-aarch64 --version | head -1"]]
-expect = ["QEMU emulator version 11.0.3"]
+test   = [["sh", "-c", "/usr/bin/qemu-system-x86_64 --version | head -1 && /usr/bin/qemu-system-x86_64 -display help | grep -x sdl"]]
+expect = ["QEMU emulator version 11.0.3", "sdl"]

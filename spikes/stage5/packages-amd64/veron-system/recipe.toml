@@ -266,9 +266,7 @@ run  = [["sh", "-c", "mkdir -p \"$D\" && cp -a /packages-amd64/veron-system/file
         ["sh", "-c", "mkdir -p \"$D/var/lib/chrony\""]]
 
 [installs]
-prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts", "etc/xdg/labwc", "etc/xdg/labwc-greeter", "etc/xdg/yambar", "sbin", "usr/lib/locale", "usr/share/veron", "var"]
-files    = 113
-digest   = "67e1d4d35089d5feda3c564253e0af6b97c6824918d3216d989e8caa4903f5f5"
+prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts", "etc/xdg/labwc", "etc/xdg/labwc-greeter", "etc/xdg/yambar", "sbin", "usr/bin", "usr/lib/locale", "usr/share/veron", "var"]
 [guest]
 test   = [["/bin/sh", "-c", "cat /etc/os-release | grep -c veron"]]
 expect = ["1"]

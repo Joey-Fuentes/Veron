@@ -1,0 +1,98 @@
+name    = "swtpm"
+version = "0.10.1"
+group   = "system"
+license = "BSD-3-Clause"
+srcdir  = "swtpm-0.10.1"
+
+# THE OTHER HALF OF A WINDOWS 11 GUEST. qemu's -tpmdev emulator speaks a
+# socket to a TPM process; this is that process. `swtpm socket --tpm2
+# --tpmstate dir=... --ctrl type=unixio,path=...` starts a fresh TPM 2.0
+# in an empty state directory with no setup step -- swtpm_setup is only
+# needed to pre-provision endorsement certificates, which Windows does
+# not require -- so the bare swtpm binary is the deliverable and the
+# rest ships because make installs it.
+#
+# gnutls, seccomp, cuse AND selinux ARE OFF BY NAME. gnutls exists only
+# to build swtpm_cert, a certificate tool for the EK-provisioning path
+# nothing here walks, and it would drag nettle, gmp, p11-kit and
+# libtasn1 into a link that the amd64 overlay makes -all-static. seccomp
+# is a sandbox for a daemon libvirt runs as a system service; here swtpm
+# is a per-VM child of the launcher, killed with it. cuse wants libfuse,
+# not in this set. selinux likewise.
+#
+# THIS BASE RECIPE IS DYNAMIC, exactly as base qemu-user is: the aarch64
+# arm's glib ships no archive to link against. The amd64 overlay is the
+# same recipe with -all-static on the make line and pkgconf --static on
+# configure, per the qemu-user precedent.
+#
+# THE RELEASE ASSET, NOT THE TAG ARCHIVE, as libtpms: a `make dist`
+# tarball with a generated configure, no autoreconf. 0.10.1 is the
+# newest release as of 2026-08-24 and requires libtpms >= 0.10.
+#
+# READ FROM configure.ac, NOT RECALLED: --with-openssl is REQUIRED and
+# must match libtpms's backend (configure errors either way if they
+# disagree); --with-gnutls/--with-seccomp/--with-cuse/--with-selinux are
+# the spellings and each defaults to check; --disable-tests exists and
+# is what keeps expect, socat and gawk (test-suite tools, not in this
+# set) off the build path; libtasn1 is checked UNCONDITIONALLY and is
+# in this set; json-glib is unconditional too. Its CFLAGS carry -Werror
+# (Gentoo patches it out); if this gcc trips it, the fix is a patch in
+# patches/, not a sed.
+#
+# UNBUILT AS WRITTEN; pin PENDING, URL in gap3-urls.txt. If the mirror
+# run says FETCH FAILED on the asset name, the fallback is the tag
+# archive with an autoreconf step.
+
+[source]
+url       = "https://github.com/stefanberger/swtpm/releases/download/v0.10.1/swtpm-0.10.1.tar.gz"
+sha256    = "PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here"
+signature = "none detached; the v0.10.1 TAG is GPG-signed by Stefan Berger (key 75AD65802A0B4211) -- verify the tag, then pin the asset's digest"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "glib", "json-glib", "libtasn1", "libtpms", "openssl"]
+link         = ["glib", "json-glib", "libtasn1"]
+runtime      = ["glib", "json-glib", "libtasn1"]
+optional_off = ["gnutls", "seccomp", "cuse", "selinux", "tests"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--with-openssl", "--without-gnutls", "--without-seccomp", "--without-cuse", "--without-selinux", "--disable-tests"]
+verification    = "binaries-present step runs the installed swtpm --version; the Windows 11 setup screen on bare metal is the consumer-side proof"
+packaged_as     = ["swtpm"]
+deferral        = """
+Internals not reviewed. A TPM emulator daemon over libtpms; its consumer \
+is qemu -tpmdev emulator and the guest behind it. The default tss user and \
+group it names in its configuration files are for swtpm_setup's certificate \
+path, which nothing here uses; the daemon itself runs as whoever launches \
+the VM."""
+
+[installs]
+prefixes = ["usr/bin", "usr/lib", "usr/libexec", "usr/share", "etc"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/swtpm-0.10.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--with-openssl", "--without-gnutls", "--without-seccomp", "--without-cuse", "--without-selinux", "--disable-tests"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[[steps]]
+name = "binaries-present"
+cwd  = "$S"
+run  = [["sh", "-c", "for b in swtpm swtpm_ioctl swtpm_bios; do test -x $D/usr/bin/$b || { echo VERON-SWTPM-MISSING $b; exit 1; }; done && echo VERON-SWTPM-BINARIES-PRESENT"]]
+
+[guest]
+test   = [["sh", "-c", "/usr/bin/swtpm --version | head -1"]]
+expect = ["TPM emulator version 0.10.1"]

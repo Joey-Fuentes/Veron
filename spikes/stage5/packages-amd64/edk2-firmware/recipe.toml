@@ -35,14 +35,31 @@ crosschecked_against = []
 # empty, and the parser said so -- while the run before that edit had
 # passed the same check. Every extraction below names its destination;
 # a tar without -C in this chain is wrong by construction.
+# TPM2_ENABLE AND SECURE_BOOT_ENABLE ARE ON, FOR ONE CONSUMER: a Windows
+# 11 installer run on this image. Its setup check wants a TPM 2.0 the
+# firmware exposes (Tcg2Dxe -- qemu builds the ACPI TPM2 table, but the
+# guest also expects the TCG2 protocol and the measured-boot event log
+# that only the firmware provides) and a UEFI that reports Secure Boot
+# *capable*; with SECURE_BOOT_ENABLE off OVMF reports it unsupported.
+# Capable is not enabled: no keys are enrolled here, and a user who
+# wants Secure Boot on enrolls the Microsoft certificates from the
+# firmware setup menu. SMM_REQUIRE stays off -- it would need q35 with
+# smm=on on every gate command line for a protection nobody here needs.
+# This is the variant every distribution ships as its Win11 firmware
+# (OVMF_CODE.secboot.fd, OVMF_CODE_4M.secboot.fd).
+#
+# UNMEASURED AS WRITTEN: both -D flags are edk2's documented names for
+# OvmfPkgX64.dsc, and both are exercised by upstream CI, but this
+# recipe has not been through a run with them on. The three FV files
+# grow; their digests re-seed from that run.
 [deps]
 build        = ["python", "bash", "nasm", "acpica", "edk2-src-openssl", "edk2-src-brotli", "edk2-src-mipisyst", "edk2-src-mbedtls", "edk2-src-libspdm"]
 link         = []
 runtime      = []
-optional_off = ["secure-boot", "tpm", "network"]
+optional_off = ["network"]
 
 [declared]
-configure_flags = ["-a", "X64", "-t", "GCC", "-p", "OvmfPkg/OvmfPkgX64.dsc", "-b", "RELEASE"]
+configure_flags = ["-a", "X64", "-t", "GCC", "-p", "OvmfPkg/OvmfPkgX64.dsc", "-b", "RELEASE", "-D", "TPM2_ENABLE=TRUE", "-D", "SECURE_BOOT_ENABLE=TRUE"]
 verification    = "fv-present step asserts all three .fd outputs exist, sha256-logged with sizes"
 deferral        = """
 GenFv embeds timestamps and edk2 has no single SOURCE_DATE_EPOCH switch; \
@@ -52,8 +69,6 @@ the timestamp hazard is the first suspect and gets its own commit."""
 
 [installs]
 prefixes = ["usr/share/qemu"]
-files    = 3
-digest   = "07df3d5c61e0ee6bd94e9fe68de08ab78e1eb3d1d4ec96f4d3c4c7daaa1e2841"
 [[steps]]
 name = "unpack"
 cwd  = "$B"
@@ -72,7 +87,7 @@ run  = [["make", "-C", "BaseTools", "-j$J"]]
 [[steps]]
 name = "build"
 cwd  = "$S"
-run  = [["sh", "-c", "export WORKSPACE=$S && . ./edksetup.sh && build -a X64 -t GCC -p OvmfPkg/OvmfPkgX64.dsc -b RELEASE -n $J"]]
+run  = [["sh", "-c", "export WORKSPACE=$S && . ./edksetup.sh && build -a X64 -t GCC -p OvmfPkg/OvmfPkgX64.dsc -b RELEASE -D TPM2_ENABLE=TRUE -D SECURE_BOOT_ENABLE=TRUE -n $J"]]
 
 [[steps]]
 name = "install"

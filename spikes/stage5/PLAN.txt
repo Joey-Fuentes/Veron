@@ -77,114 +77,120 @@ between this file and the recipes fails the run.
   55. libyaml
   56. nghttp2
   57. npth
-  58. readline
-  59. tzdb
-  60. zstd
-  61. acpica
-  62. alsa-utils
-  63. automake
-  64. bash
-  65. curl
-  66. freetype-bootstrap
-  67. iproute2
-  68. libarchive
-  69. libassuan
-  70. libgcrypt
-  71. libksba
-  72. libvorbis
-  73. libxml2
-  74. nettle
-  75. nnn
-  76. ruby
-  77. sqlite
-  78. wpa_supplicant
-  79. git
-  80. libcap
-  81. libcap-ng
-  82. libhyphen
-  83. python
-  84. ca-certificates
-  85. edk2-firmware
-  86. markupsafe
-  87. meson
-  88. ninja
-  89. packaging
-  90. python-setuptools
-  91. python-wheel
-  92. pyyaml
-  93. veron-cursors
-  94. bubblewrap
-  95. cmake
-  96. dav1d
-  97. dtc
-  98. fribidi
-  99. glib
-  100. libdisplay-info
-  101. libdrm
-  102. libevdev
-  103. libpsl
-  104. libsfdo
-  105. libxkbcommon
-  106. mako
-  107. opus
-  108. orc
-  109. p11-kit
-  110. pcsc-lite
-  111. pixman
-  112. seatd
-  113. tllist
-  114. wayland
-  115. wayland-protocols
-  116. xkeyboard-config
-  117. brotli
-  118. ccid
-  119. ffmpeg
-  120. gnutls
-  121. graphene
-  122. graphite2
-  123. gstreamer
-  124. json-c
-  125. libinput
-  126. libjpeg-turbo
-  127. llvm
-  128. qemu
-  129. qemu-user
-  130. shared-mime-info
-  131. utf8proc
-  132. wl-clipboard
-  133. chrony
-  134. glib-networking
-  135. gnupg
-  136. harfbuzz
-  137. libwebp
-  138. mesa
-  139. freetype
-  140. libepoxy
-  141. libsoup
-  142. wlroots
-  143. fontconfig
-  144. cairo
-  145. fcft
-  146. foot
-  147. fuzzel
-  148. pango
-  149. swaybg
-  150. veron-auth
-  151. yambar
-  152. fltk
-  153. gst-plugins-base
-  154. labwc
-  155. gst-libav
-  156. gst-plugins-bad
-  157. gst-plugins-good
-  158. veron-about
-  159. veron-edit
-  160. veron-filechooser
-  161. veron-flasher
-  162. veron-pinentry
-  163. wpewebkit
-  164. wpe-platform-veron
-  165. veron-browser
+  58. openssl
+  59. readline
+  60. tzdb
+  61. zstd
+  62. acpica
+  63. alsa-utils
+  64. automake
+  65. bash
+  66. curl
+  67. freetype-bootstrap
+  68. iproute2
+  69. libarchive
+  70. libassuan
+  71. libgcrypt
+  72. libksba
+  73. libtpms
+  74. libvorbis
+  75. libxml2
+  76. nettle
+  77. nnn
+  78. ruby
+  79. sqlite
+  80. wpa_supplicant
+  81. git
+  82. libcap
+  83. libcap-ng
+  84. libhyphen
+  85. python
+  86. ca-certificates
+  87. edk2-firmware
+  88. markupsafe
+  89. meson
+  90. ninja
+  91. packaging
+  92. python-setuptools
+  93. python-wheel
+  94. pyyaml
+  95. veron-cursors
+  96. bubblewrap
+  97. cmake
+  98. dav1d
+  99. dtc
+  100. fribidi
+  101. glib
+  102. libdisplay-info
+  103. libdrm
+  104. libevdev
+  105. libpsl
+  106. libsfdo
+  107. libxkbcommon
+  108. mako
+  109. opus
+  110. orc
+  111. p11-kit
+  112. pcsc-lite
+  113. pixman
+  114. seatd
+  115. tllist
+  116. wayland
+  117. wayland-protocols
+  118. xkeyboard-config
+  119. brotli
+  120. ccid
+  121. ffmpeg
+  122. gnutls
+  123. graphene
+  124. graphite2
+  125. gstreamer
+  126. json-c
+  127. json-glib
+  128. libinput
+  129. libjpeg-turbo
+  130. libslirp
+  131. llvm
+  132. qemu
+  133. qemu-user
+  134. shared-mime-info
+  135. utf8proc
+  136. wl-clipboard
+  137. chrony
+  138. glib-networking
+  139. gnupg
+  140. harfbuzz
+  141. libwebp
+  142. mesa
+  143. swtpm
+  144. freetype
+  145. libepoxy
+  146. libsoup
+  147. sdl2
+  148. wlroots
+  149. fontconfig
+  150. cairo
+  151. fcft
+  152. foot
+  153. fuzzel
+  154. pango
+  155. swaybg
+  156. veron-auth
+  157. yambar
+  158. fltk
+  159. gst-plugins-base
+  160. labwc
+  161. gst-libav
+  162. gst-plugins-bad
+  163. gst-plugins-good
+  164. veron-about
+  165. veron-edit
+  166. veron-filechooser
+  167. veron-flasher
+  168. veron-pinentry
+  169. wpewebkit
+  170. wpe-platform-veron
+  171. veron-browser
 
 ======================================================================
 package attr 2.6.0
@@ -2035,6 +2041,42 @@ package npth 1.8
          argv ["make", "install", "DESTDIR=dest/npth"]
 
 ======================================================================
+package openssl 8cf17aae
+  group        build-substrate
+  build-only   yes -- staged for later packages, not installed into the image
+  license      Apache-2.0
+  recipe-sha   83b6945cc71851f59e9d03875a8ce1b94db4d7ac2b6ab19cbff6ee930650cf47
+
+  source
+    url        https://github.com/openssl/openssl/archive/8cf17aaeb4599f8af87fefd810b5b5fee90fe69e.tar.gz
+    sha256     03154360ff8808ac38da7530cd69d211e105683e077e9835e48161493c3d0050
+    signature  none -- archive-by-commit; the commit is the pin, measured at run 88505453858
+    correspond none
+
+  deps
+    build        perl
+    link         -
+    runtime      -
+    optional_off apps, docs, module, shared, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/openssl-8cf17aae
+         argv ["tar", "-xf", "dl/openssl-8cf17aaeb4599f8af87fefd810b5b5fee90fe69e.tar.gz", "-C", "build/openssl-8cf17aae"]
+    [02] configure
+         cwd  build/openssl-8cf17aae/openssl-8cf17aaeb4599f8af87fefd810b5b5fee90fe69e
+         argv ["./config", "--prefix=/usr", "--libdir=lib", "--openssldir=/etc/ssl", "no-shared", "no-module", "no-tests", "no-docs", "no-apps"]
+    [03] build
+         cwd  build/openssl-8cf17aae/openssl-8cf17aaeb4599f8af87fefd810b5b5fee90fe69e
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/openssl-8cf17aae/openssl-8cf17aaeb4599f8af87fefd810b5b5fee90fe69e
+         argv ["make", "DESTDIR=dest/openssl", "install_sw", "install_ssldirs"]
+    [05] archive-present
+         cwd  build/openssl-8cf17aae/openssl-8cf17aaeb4599f8af87fefd810b5b5fee90fe69e
+         argv ["sh", "-c", "for f in usr/lib/libcrypto.a usr/lib/libssl.a usr/lib/pkgconfig/libcrypto.pc usr/lib/pkgconfig/libssl.pc; do test -f dest/openssl/$f || { echo VERON-OPENSSL-MISSING $f; exit 1; }; done && ! ls dest/openssl/usr/lib/libcrypto*.so* 2>/dev/null | grep -q . || { echo VERON-OPENSSL-SHIPPED-SHARED; exit 1; }"]
+
+======================================================================
 package readline 8.3
   group        build-substrate
   license      GPL-3.0-or-later
@@ -2500,6 +2542,41 @@ package libksba 1.8.0
     [04] install
          cwd  build/libksba-1.8.0/libksba-1.8.0
          argv ["make", "install", "DESTDIR=dest/libksba"]
+
+======================================================================
+package libtpms 0.10.2
+  group        system
+  license      BSD-3-Clause
+  recipe-sha   b3b7b1fb7825cc01b167d12ee72b2d206152b27a2b0d34ac408bef1e5d6cd9f6
+
+  source
+    url        https://github.com/stefanberger/libtpms/releases/download/v0.10.2/libtpms-0.10.2.tar.gz
+    sha256     PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here
+    signature  none detached; the v0.10.2 TAG is GPG-signed by Stefan Berger (key 75AD65802A0B4211) -- verify the tag, then pin the asset's digest
+    correspond none
+
+  deps
+    build        gmp, openssl, pkgconf
+    link         -
+    runtime      -
+    optional_off shared
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libtpms-0.10.2
+         argv ["tar", "-xf", "dl/libtpms-0.10.2.tar.gz", "-C", "build/libtpms-0.10.2"]
+    [02] configure
+         cwd  build/libtpms-0.10.2/libtpms-0.10.2
+         argv ["./configure", "--prefix=/usr", "--with-openssl", "--with-tpm2", "--enable-static", "--disable-shared"]
+    [03] build
+         cwd  build/libtpms-0.10.2/libtpms-0.10.2
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libtpms-0.10.2/libtpms-0.10.2
+         argv ["make", "install", "DESTDIR=dest/libtpms"]
+    [05] archive-present
+         cwd  build/libtpms-0.10.2/libtpms-0.10.2
+         argv ["sh", "-c", "test -f dest/libtpms/usr/lib/libtpms.a && test -f dest/libtpms/usr/lib/pkgconfig/libtpms.pc || { echo VERON-LIBTPMS-NO-ARCHIVE; ls -la dest/libtpms/usr/lib; exit 1; }"]
 
 ======================================================================
 package libvorbis 1.3.7
@@ -4413,6 +4490,43 @@ package json-c 0.18
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package json-glib 1.10.8
+  group        system
+  license      LGPL-2.1-or-later
+  recipe-sha   5ebe9d83542ec485104c1a440e2cd053ace46a6d071feb15f84299de56705416
+
+  source
+    url        https://download.gnome.org/sources/json-glib/1.10/json-glib-1.10.8.tar.xz
+    sha256     PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here
+    signature  none -- GNOME publishes sha256sum files beside the tarball, not detached signatures; the mirror run's digest is compared against that file by hand before pinning
+    correspond none
+
+  deps
+    build        glib, meson, ninja, pkgconf
+    link         glib
+    runtime      glib
+    optional_off introspection, nls, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/json-glib-1.10.8
+         argv ["tar", "-xf", "dl/json-glib-1.10.8.tar.xz", "-C", "build/json-glib-1.10.8"]
+    [02] setup
+         cwd  build/json-glib-1.10.8/json-glib-1.10.8
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--libdir=lib", "--buildtype=release", "-Dintrospection=disabled", "-Dtests=false", "-Dnls=disabled", "-Ddefault_library=both"]
+    [03] build
+         cwd  build/json-glib-1.10.8/json-glib-1.10.8
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/json-glib-1.10.8/json-glib-1.10.8
+         env  DESTDIR=dest/json-glib
+         argv ["ninja", "-C", "_b", "install"]
+    [05] archive-present
+         cwd  build/json-glib-1.10.8/json-glib-1.10.8
+         argv ["sh", "-c", "test -f dest/json-glib/usr/lib/libjson-glib-1.0.a && test -f dest/json-glib/usr/lib/pkgconfig/json-glib-1.0.pc || { echo VERON-JSON-GLIB-NO-ARCHIVE; ls -la dest/json-glib/usr/lib; exit 1; }"]
+
+======================================================================
 package libinput 1.31.3
   group        input
   license      MIT
@@ -4478,6 +4592,43 @@ package libjpeg-turbo 3.1.3
          cwd  build/libjpeg-turbo-3.1.3/libjpeg-turbo-3.1.3
          env  DESTDIR=dest/libjpeg-turbo
          argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package libslirp 4.9.3
+  group        network
+  license      BSD-3-Clause
+  recipe-sha   340a9b3657e6afc6d913b286c36c4979ded92f70fb57f242991c6bc1593cc1e0
+
+  source
+    url        https://gitlab.freedesktop.org/slirp/libslirp/-/archive/v4.9.3/libslirp-v4.9.3.tar.gz
+    sha256     PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here
+    signature  none -- GitLab tag archive; the digest is ours, measured at first fetch
+    correspond none
+
+  deps
+    build        glib, meson, ninja, pkgconf
+    link         glib
+    runtime      glib
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libslirp-4.9.3
+         argv ["tar", "-xf", "dl/libslirp-v4.9.3.tar.gz", "-C", "build/libslirp-4.9.3"]
+    [02] setup
+         cwd  build/libslirp-4.9.3/libslirp-v4.9.3
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--libdir=lib", "--buildtype=release", "-Ddefault_library=both"]
+    [03] build
+         cwd  build/libslirp-4.9.3/libslirp-v4.9.3
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/libslirp-4.9.3/libslirp-v4.9.3
+         env  DESTDIR=dest/libslirp
+         argv ["ninja", "-C", "_b", "install"]
+    [05] archive-present
+         cwd  build/libslirp-4.9.3/libslirp-v4.9.3
+         argv ["sh", "-c", "test -f dest/libslirp/usr/lib/libslirp.a && test -f dest/libslirp/usr/lib/pkgconfig/slirp.pc || { echo VERON-LIBSLIRP-NO-ARCHIVE; ls -la dest/libslirp/usr/lib; exit 1; }"]
 
 ======================================================================
 package llvm 22.1.8
@@ -4919,6 +5070,41 @@ package mesa 26.1.6
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package swtpm 0.10.1
+  group        system
+  license      BSD-3-Clause
+  recipe-sha   bbd79823b1714cd4df34db2a5f4dc8d9ebcdb6d981b519b8051ebd0326516415
+
+  source
+    url        https://github.com/stefanberger/swtpm/releases/download/v0.10.1/swtpm-0.10.1.tar.gz
+    sha256     PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here
+    signature  none detached; the v0.10.1 TAG is GPG-signed by Stefan Berger (key 75AD65802A0B4211) -- verify the tag, then pin the asset's digest
+    correspond none
+
+  deps
+    build        glib, json-glib, libtasn1, libtpms, openssl, pkgconf
+    link         glib, json-glib, libtasn1
+    runtime      glib, json-glib, libtasn1
+    optional_off cuse, gnutls, seccomp, selinux, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/swtpm-0.10.1
+         argv ["tar", "-xf", "dl/swtpm-0.10.1.tar.gz", "-C", "build/swtpm-0.10.1"]
+    [02] configure
+         cwd  build/swtpm-0.10.1/swtpm-0.10.1
+         argv ["./configure", "--prefix=/usr", "--with-openssl", "--without-gnutls", "--without-seccomp", "--without-cuse", "--without-selinux", "--disable-tests"]
+    [03] build
+         cwd  build/swtpm-0.10.1/swtpm-0.10.1
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/swtpm-0.10.1/swtpm-0.10.1
+         argv ["make", "install", "DESTDIR=dest/swtpm"]
+    [05] binaries-present
+         cwd  build/swtpm-0.10.1/swtpm-0.10.1
+         argv ["sh", "-c", "for b in swtpm swtpm_ioctl swtpm_bios; do test -x dest/swtpm/usr/bin/$b || { echo VERON-SWTPM-MISSING $b; exit 1; }; done && echo VERON-SWTPM-BINARIES-PRESENT"]
+
+======================================================================
 package freetype 2.14.1
   group        text-rendering
   license      FTL-or-GPL-2.0
@@ -5017,6 +5203,48 @@ package libsoup 3.6.5
          cwd  build/libsoup-3.6.5/libsoup-3.6.5
          env  DESTDIR=dest/libsoup
          argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package sdl2 2.32.10
+  group        system
+  license      Zlib
+  recipe-sha   76302ffa81327c36f6853fa3a40a35dade3f00c5921a7c97c90b368df51cc89c
+
+  source
+    url        https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz
+    sha256     PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here
+    signature  https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz.sig -- detached PGP by the SDL release key; verify against the fingerprint on libsdl.org before pinning
+    correspond none
+
+  deps
+    build        alsa-lib, cmake, libxkbcommon, mesa, ninja, pkgconf, wayland, wayland-protocols
+    link         -
+    runtime      alsa-lib, libxkbcommon, wayland
+    optional_off ccache, dbus, fcitx, haptic, hidapi, ibus, jack, joystick, kmsdrm, libdecor, libsamplerate, libudev, opengl, opengles, pipewire, power, pulseaudio, rpath, sensor, shared, sndio, test, vulkan, x11
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/sdl2-2.32.10
+         argv ["tar", "-xf", "dl/SDL2-2.32.10.tar.gz", "-C", "build/sdl2-2.32.10"]
+    [02] configure
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_STATIC_PIC=ON", "-DSDL_WAYLAND=ON", "-DSDL_WAYLAND_SHARED=ON", "-DSDL_WAYLAND_LIBDECOR=OFF", "-DSDL_X11=OFF", "-DSDL_KMSDRM=OFF", "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF", "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=ON", "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF", "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF", "-DSDL_FCITX=OFF", "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF", "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF", "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]
+    [03] wayland-present
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         argv ["sh", "-c", "grep -q '^#define SDL_VIDEO_DRIVER_WAYLAND 1' _b/include/SDL_config.h || { echo VERON-SDL2-NO-WAYLAND-DRIVER; grep -n WAYLAND _b/include/SDL_config.h; exit 1; }"]
+    [04] alsa-present
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         argv ["sh", "-c", "grep -q '^#define SDL_AUDIO_DRIVER_ALSA 1' _b/include/SDL_config.h || { echo VERON-SDL2-NO-ALSA-DRIVER; grep -n ALSA _b/include/SDL_config.h; exit 1; }"]
+    [05] build
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         argv ["ninja", "-C", "_b"]
+    [06] install
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         env  DESTDIR=dest/sdl2
+         argv ["ninja", "-C", "_b", "install"]
+    [07] static-only
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         argv ["sh", "-c", "test -f dest/sdl2/usr/lib/libSDL2.a && test -f dest/sdl2/usr/lib/pkgconfig/sdl2.pc && ! ls dest/sdl2/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la dest/sdl2/usr/lib; exit 1; }"]
 
 ======================================================================
 package wlroots 0.19.1
