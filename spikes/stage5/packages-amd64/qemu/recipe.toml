@@ -153,7 +153,19 @@ cwd  = "$S"
 # PREGENERATED from xkeyboard-config in the dist tarball, the very data
 # whose generator this recipe disables. trace-events-all stays: text our
 # own build generated from source, and the manifest now names it.
-run  = [["sh", "-c", "mkdir -p $D/usr/share/qemu && for f in bios.bin bios-256k.bin bios-microvm.bin vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-vmware.bin vgabios-ramfb.bin vgabios-bochs-display.bin vgabios-ati.bin; do install -m644 pc-bios/$f $D/usr/share/qemu/$f || exit 1; done && rm -rf $D/usr/share/qemu/dtb $D/usr/share/qemu/keymaps && sha256sum $D/usr/share/qemu/*.bin"]]
+#
+# THE FOUR OPTION ROMS ARE LOAD-BEARING AND OURS (run 88528-era boot 1,
+# rc=124): on the pc machine, -kernel does not hand the kernel to
+# SeaBIOS -- qemu loads the linuxboot option ROM and SeaBIOS executes it
+# to fetch the kernel over fw_cfg. --disable-install-blobs suppressed
+# them along with the genuine blobs, SeaBIOS honestly reported "No
+# bootable device", and the boot idled to its timeout. They are built
+# from .S and .c in pc-bios/optionrom by this very build (the m32
+# probe's third beneficiary, after SeaBIOS and vgabios), land in
+# _b/pc-bios/optionrom, and the manifest names all four. The SeaBIOS
+# banner reading "-prebuilt.qemu.org" in that log is OUR binary wearing
+# the tarball .version file's stamp -- branding, not provenance.
+run  = [["sh", "-c", "mkdir -p $D/usr/share/qemu && for f in bios.bin bios-256k.bin bios-microvm.bin vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-vmware.bin vgabios-ramfb.bin vgabios-bochs-display.bin vgabios-ati.bin; do install -m644 pc-bios/$f $D/usr/share/qemu/$f || exit 1; done && for f in linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin; do install -m644 _b/pc-bios/optionrom/$f $D/usr/share/qemu/$f || exit 1; done && rm -rf $D/usr/share/qemu/dtb $D/usr/share/qemu/keymaps && sha256sum $D/usr/share/qemu/*.bin"]]
 
 [[steps]]
 name = "only-our-firmware"
@@ -162,7 +174,7 @@ cwd  = "$S"
 # one asserts the twelve files above and NOT ONE BYTE MORE. Borrowed
 # prebuilts, stray .fd decompressions, an upstream default-shuffle that
 # starts installing something new -- all land here as a fatal diff.
-run  = [["sh", "-c", "cd $D/usr/share/qemu && ls -1 | LC_ALL=C sort > /tmp/have && for f in trace-events-all bios-256k.bin bios-microvm.bin bios.bin vgabios-ati.bin vgabios-bochs-display.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-ramfb.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-vmware.bin vgabios.bin; do echo $f; done | LC_ALL=C sort > /tmp/want && diff -u /tmp/want /tmp/have || { echo VERON-QEMU-FIRMWARE-SET-DRIFT; exit 1; }"]]
+run  = [["sh", "-c", "cd $D/usr/share/qemu && ls -1 | LC_ALL=C sort > /tmp/have && for f in trace-events-all linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin bios-256k.bin bios-microvm.bin bios.bin vgabios-ati.bin vgabios-bochs-display.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-ramfb.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-vmware.bin vgabios.bin; do echo $f; done | LC_ALL=C sort > /tmp/want && diff -u /tmp/want /tmp/have || { echo VERON-QEMU-FIRMWARE-SET-DRIFT; exit 1; }"]]
 
 [[steps]]
 name = "devices-present"
