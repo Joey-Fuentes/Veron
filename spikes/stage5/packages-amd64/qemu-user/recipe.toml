@@ -83,6 +83,20 @@ run  = [["make", "-C", "_b", "-j$J"]]
 name = "install"
 cwd  = "$S"
 run  = [["make", "-C", "_b", "DESTDIR=$D", "install"]]
+[[steps]]
+name = "no-shared-payload"
+cwd  = "$S"
+# EVERYTHING UNDER usr/share/qemu GOES, WHOLESALE (run 88526022859):
+# with system emulation disabled, make install still ships the TARBALL'S
+# PREBUILT firmware -- bios-256k.bin and friends, upstream's binaries,
+# the exact bytes the qemu recipe's gates exist to bar -- plus keymaps
+# and trace data. The amd64 arm caught it as a path collision against
+# the qemu package's self-built firmware set; the conviction reaches
+# further back: this recipe shipped those blobs into every image since
+# it first built, declaring [installs] usr/bin all the while. A
+# user-mode emulator needs none of it -- its install set is the binary
+# in usr/bin and nothing else, and now that is true by construction.
+run  = [["sh", "-c", "rm -rf $D/usr/share/qemu"]]
 
 [[steps]]
 name = "static-suffix"

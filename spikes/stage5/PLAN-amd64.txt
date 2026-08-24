@@ -4570,7 +4570,7 @@ package qemu 11.0.3
 package qemu-user 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   9b3d2f6b579a8093b69051c62166e0124fa61c96124efc26a8cf4326791a0c59
+  recipe-sha   a41a048c19a56085e31134d707bcc44b860767dcb234f4a47d596490bc98b0bb
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4598,10 +4598,13 @@ package qemu-user 11.0.3
     [04] install
          cwd  build/qemu-user-11.0.3/qemu-11.0.3
          argv ["make", "-C", "_b", "DESTDIR=dest/qemu-user", "install"]
-    [05] static-suffix
+    [05] no-shared-payload
+         cwd  build/qemu-user-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "rm -rf dest/qemu-user/usr/share/qemu"]
+    [06] static-suffix
          cwd  build/qemu-user-11.0.3/qemu-11.0.3
          argv ["mv", "dest/qemu-user/usr/bin/qemu-aarch64", "dest/qemu-user/usr/bin/qemu-aarch64-static"]
-    [06] static-or-die
+    [07] static-or-die
          cwd  build/qemu-user-11.0.3/qemu-11.0.3
          argv ["sh", "-c", "! readelf -d dest/qemu-user/usr/bin/qemu-aarch64-static 2>/dev/null | grep -q NEEDED || { echo 'VERON-QEMU-NOT-STATIC'; readelf -d dest/qemu-user/usr/bin/qemu-aarch64-static | grep NEEDED; exit 1; }"]
 

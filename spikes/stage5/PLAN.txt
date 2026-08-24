@@ -4556,7 +4556,7 @@ package qemu 11.0.3
 package qemu-user 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   2a6fdc252fefd6f0b49fea01c45d4b4421083a6532656af4197716c1d60d0315
+  recipe-sha   36d977d972cd245f20ccb6f92c0d42a5f355a7562bd91b41cabb99040aee5a98
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4584,6 +4584,9 @@ package qemu-user 11.0.3
     [04] install
          cwd  build/qemu-user-11.0.3/qemu-11.0.3
          argv ["make", "-C", "_b", "DESTDIR=dest/qemu-user", "install"]
+    [05] no-shared-payload
+         cwd  build/qemu-user-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "rm -rf dest/qemu-user/usr/share/qemu"]
 
 ======================================================================
 package shared-mime-info 2.5.1
