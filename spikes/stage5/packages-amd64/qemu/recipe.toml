@@ -144,6 +144,22 @@ cwd  = "$S"
 run  = [["sh", "-c", "mkdir -p pc-bios && make -C roms bios vgabios PYTHON=python3 -j$J"]]
 
 [[steps]]
+name = "optionroms"
+cwd  = "$S"
+# BUILT BY HAND-WRITTEN config.mak, BECAUSE configure'S GATE IS A CROSS
+# PROBE, NOT AN m32 PROBE (run 88555002740): configure line 1711 adds
+# pc-bios/optionrom only when probe_target_compiler i386-softmmu finds
+# a cross toolchain, which this sandbox rightly lacks -- so meson never
+# built the ROMs and _b/pc-bios/optionrom did not exist. The Makefile
+# itself needs only TOPSRC_DIR and five tool names; driven directly, the
+# host gcc's -m32 does the rest, same as SeaBIOS. Trial-proven from this
+# tarball: all four ROMs, deterministic sizes 1024-9216 bytes. The rm -f
+# first is load-bearing honesty: if the build ever fails to produce a
+# ROM, install must fail loudly on absence rather than quietly shipping
+# whatever sat in the tree.
+run  = [["sh", "-c", "cd pc-bios/optionrom && rm -f *.bin && printf 'TOPSRC_DIR=%s\\nCC=gcc\\nLD=ld\\nOBJCOPY=objcopy\\nPYTHON=python3\\n' \"$S\" > config.mak && make && ls -la *.bin"]]
+
+[[steps]]
 name = "install-our-firmware"
 cwd  = "$S"
 # TWO BORROWED SETS GO OUT BEFORE THE MANIFEST LOOKS (run 88519731500,
@@ -165,7 +181,7 @@ cwd  = "$S"
 # _b/pc-bios/optionrom, and the manifest names all four. The SeaBIOS
 # banner reading "-prebuilt.qemu.org" in that log is OUR binary wearing
 # the tarball .version file's stamp -- branding, not provenance.
-run  = [["sh", "-c", "mkdir -p $D/usr/share/qemu && for f in bios.bin bios-256k.bin bios-microvm.bin vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-vmware.bin vgabios-ramfb.bin vgabios-bochs-display.bin vgabios-ati.bin; do install -m644 pc-bios/$f $D/usr/share/qemu/$f || exit 1; done && for f in linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin; do install -m644 _b/pc-bios/optionrom/$f $D/usr/share/qemu/$f || exit 1; done && rm -rf $D/usr/share/qemu/dtb $D/usr/share/qemu/keymaps && sha256sum $D/usr/share/qemu/*.bin"]]
+run  = [["sh", "-c", "mkdir -p $D/usr/share/qemu && for f in bios.bin bios-256k.bin bios-microvm.bin vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-vmware.bin vgabios-ramfb.bin vgabios-bochs-display.bin vgabios-ati.bin; do install -m644 pc-bios/$f $D/usr/share/qemu/$f || exit 1; done && for f in linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin; do install -m644 pc-bios/optionrom/$f $D/usr/share/qemu/$f || exit 1; done && rm -rf $D/usr/share/qemu/dtb $D/usr/share/qemu/keymaps && sha256sum $D/usr/share/qemu/*.bin"]]
 
 [[steps]]
 name = "only-our-firmware"

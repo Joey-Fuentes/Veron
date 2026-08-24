@@ -4525,7 +4525,7 @@ package llvm 22.1.8
 package qemu 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   2291ed7dd4f322a7f7a99d22f70afc732159f5c77404ad42b11b553fbd836f02
+  recipe-sha   a5904575ba11af442bea988b995cea64afa4c3de1d1317ec84af3dda9430a50e
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4556,13 +4556,16 @@ package qemu 11.0.3
     [05] seabios
          cwd  build/qemu-11.0.3/qemu-11.0.3
          argv ["sh", "-c", "mkdir -p pc-bios && make -C roms bios vgabios PYTHON=python3 -j1"]
-    [06] install-our-firmware
+    [06] optionroms
          cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["sh", "-c", "mkdir -p dest/qemu/usr/share/qemu && for f in bios.bin bios-256k.bin bios-microvm.bin vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-vmware.bin vgabios-ramfb.bin vgabios-bochs-display.bin vgabios-ati.bin; do install -m644 pc-bios/$f dest/qemu/usr/share/qemu/$f || exit 1; done && for f in linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin; do install -m644 _b/pc-bios/optionrom/$f dest/qemu/usr/share/qemu/$f || exit 1; done && rm -rf dest/qemu/usr/share/qemu/dtb dest/qemu/usr/share/qemu/keymaps && sha256sum dest/qemu/usr/share/qemu/*.bin"]
-    [07] only-our-firmware
+         argv ["sh", "-c", "cd pc-bios/optionrom && rm -f *.bin && printf 'TOPSRC_DIR=%s\\nCC=gcc\\nLD=ld\\nOBJCOPY=objcopy\\nPYTHON=python3\\n' \"build/qemu-11.0.3/qemu-11.0.3\" > config.mak && make && ls -la *.bin"]
+    [07] install-our-firmware
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "mkdir -p dest/qemu/usr/share/qemu && for f in bios.bin bios-256k.bin bios-microvm.bin vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-vmware.bin vgabios-ramfb.bin vgabios-bochs-display.bin vgabios-ati.bin; do install -m644 pc-bios/$f dest/qemu/usr/share/qemu/$f || exit 1; done && for f in linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin; do install -m644 pc-bios/optionrom/$f dest/qemu/usr/share/qemu/$f || exit 1; done && rm -rf dest/qemu/usr/share/qemu/dtb dest/qemu/usr/share/qemu/keymaps && sha256sum dest/qemu/usr/share/qemu/*.bin"]
+    [08] only-our-firmware
          cwd  build/qemu-11.0.3/qemu-11.0.3
          argv ["sh", "-c", "cd dest/qemu/usr/share/qemu && ls -1 | LC_ALL=C sort > /tmp/have && for f in trace-events-all linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin bios-256k.bin bios-microvm.bin bios.bin vgabios-ati.bin vgabios-bochs-display.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-ramfb.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-vmware.bin vgabios.bin; do echo $f; done | LC_ALL=C sort > /tmp/want && diff -u /tmp/want /tmp/have || { echo VERON-QEMU-FIRMWARE-SET-DRIFT; exit 1; }"]
-    [08] devices-present
+    [09] devices-present
          cwd  build/qemu-11.0.3/qemu-11.0.3
          argv ["sh", "-c", "for d in virtio-9p-pci virtio-gpu-pci virtio-keyboard-pci virtio-blk-pci; do dest/qemu/usr/bin/qemu-system-x86_64 -device help | grep -q \"name \\\"$d\\\"\" || { echo VERON-QEMU-DEVICE-MISSING $d; exit 1; }; done && echo VERON-QEMU-DEVICES-PRESENT"]
 
