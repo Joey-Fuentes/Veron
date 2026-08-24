@@ -18,6 +18,21 @@
 # gcc does not know it, so configure's own link probe would die on it.
 # Every link in swtpm's automake tree goes through libtool.
 #
+# swtpm_localca IS NOT BUILT HERE, MEASURED (run 88789887776): swtpm,
+# swtpm_bios and swtpm_ioctl linked static; swtpm_localca then died on
+# `attempted static link of dynamic object /usr/lib/libgmp.so` -- it
+# links gmp directly (configure.ac:259-269, GMP_LIBS), and the gmp
+# overlay ships no archive. It is a local CA whose only job is to hand
+# swtpm_setup's --create-ek-cert path to swtpm_cert, which
+# --without-gnutls already leaves out; without swtpm_cert it can sign
+# nothing. Flipping gmp to --enable-static would rebuild nettle, gnutls,
+# curl, git, libsoup and wpewebkit for a program nothing here runs, so
+# the build and install steps name the src/ subdirectories they want
+# (automake's SUBDIRS is a make variable and a command-line value wins)
+# and neither swtpm_localca nor swtpm_cert nor the man pages, samples
+# and /etc templates for the certificate path are made. The base
+# recipe, dynamic, still builds all of it.
+#
 # THE ARCHIVES THIS PULLS, all built by this plan: libtpms.a, libcrypto.a
 # (openssl, build_only), libglib/gobject/gio-2.0.a (glib overlay),
 # libpcre2-8.a (pcre2 overlay), libjson-glib-1.0.a, libffi.a (libffi
@@ -95,6 +110,7 @@ optional_off = ["gnutls", "seccomp", "cuse", "selinux", "tests"]
 configure_flags = ["--prefix=/usr", "--with-openssl", "--without-gnutls", "--without-seccomp", "--without-cuse", "--without-selinux", "--disable-tests"]
 verification    = "static-or-die asserts no DT_NEEDED on every installed binary; the Windows 11 setup screen on bare metal is the consumer-side proof"
 packaged_as     = ["swtpm-static"]
+# swtpm_localca and swtpm_cert absent by decision; see the header.
 deferral        = """
 Internals not reviewed. A TPM emulator daemon over libtpms; its consumer \
 is qemu -tpmdev emulator and the guest behind it. The default tss user and \
@@ -103,7 +119,7 @@ path, which nothing here uses; the daemon itself runs as whoever launches \
 the VM."""
 
 [installs]
-prefixes = ["usr/bin", "usr/lib", "usr/libexec", "usr/share", "etc"]
+prefixes = ["usr/bin", "usr/lib", "usr/libexec", "usr/share"]
 [[steps]]
 name = "unpack"
 cwd  = "$B"
@@ -122,12 +138,12 @@ run  = [["./configure", "--prefix=/usr", "--with-openssl", "--without-gnutls", "
 [[steps]]
 name = "build"
 cwd  = "$S"
-run  = [["sh", "-c", "make -j$J LDFLAGS=-all-static \"GLIB_LIBS=$(pkgconf --static --libs glib-2.0)\" \"JSON_GLIB_LIBS=$(pkgconf --static --libs json-glib-1.0)\" \"LIBCRYPTO_LIBS=$(pkgconf --static --libs libcrypto)\" \"LIBTPMS_LIBS=$(pkgconf --static --libs libtpms)\""]]
+run  = [["sh", "-c", "make -C src -j$J SUBDIRS=\"utils swtpm swtpm_bios swtpm_ioctl swtpm_setup\" LDFLAGS=-all-static \"GLIB_LIBS=$(pkgconf --static --libs glib-2.0)\" \"JSON_GLIB_LIBS=$(pkgconf --static --libs json-glib-1.0)\" \"LIBCRYPTO_LIBS=$(pkgconf --static --libs libcrypto)\" \"LIBTPMS_LIBS=$(pkgconf --static --libs libtpms)\""]]
 
 [[steps]]
 name = "install"
 cwd  = "$S"
-run  = [["make", "install", "DESTDIR=$D"]]
+run  = [["sh", "-c", "make -C src SUBDIRS=\"utils swtpm swtpm_bios swtpm_ioctl swtpm_setup\" LDFLAGS=-all-static \"GLIB_LIBS=$(pkgconf --static --libs glib-2.0)\" \"JSON_GLIB_LIBS=$(pkgconf --static --libs json-glib-1.0)\" \"LIBCRYPTO_LIBS=$(pkgconf --static --libs libcrypto)\" \"LIBTPMS_LIBS=$(pkgconf --static --libs libtpms)\" install DESTDIR=$D"]]
 
 [[steps]]
 name = "binaries-present"

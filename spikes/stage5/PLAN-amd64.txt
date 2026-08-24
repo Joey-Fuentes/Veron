@@ -5066,7 +5066,7 @@ package mesa 26.1.6
 package swtpm 0.10.1
   group        system
   license      BSD-3-Clause
-  recipe-sha   a2b24ec954fc1e037c30ed34fb3f2114bff11fd88ba802ebfee939d7e50840db
+  recipe-sha   ef506131393969bb57e5f2b0449573d057da4447372f1bc12393c9977cec2c48
 
   source
     url        https://github.com/stefanberger/swtpm/archive/refs/tags/v0.10.1.tar.gz
@@ -5095,10 +5095,10 @@ package swtpm 0.10.1
          argv ["./configure", "--prefix=/usr", "--with-openssl", "--without-gnutls", "--without-seccomp", "--without-cuse", "--without-selinux", "--disable-tests"]
     [04] build
          cwd  build/swtpm-0.10.1/swtpm-0.10.1
-         argv ["sh", "-c", "make -j1 LDFLAGS=-all-static \"GLIB_LIBS=$(pkgconf --static --libs glib-2.0)\" \"JSON_GLIB_LIBS=$(pkgconf --static --libs json-glib-1.0)\" \"LIBCRYPTO_LIBS=$(pkgconf --static --libs libcrypto)\" \"LIBTPMS_LIBS=$(pkgconf --static --libs libtpms)\""]
+         argv ["sh", "-c", "make -C src -j1 SUBDIRS=\"utils swtpm swtpm_bios swtpm_ioctl swtpm_setup\" LDFLAGS=-all-static \"GLIB_LIBS=$(pkgconf --static --libs glib-2.0)\" \"JSON_GLIB_LIBS=$(pkgconf --static --libs json-glib-1.0)\" \"LIBCRYPTO_LIBS=$(pkgconf --static --libs libcrypto)\" \"LIBTPMS_LIBS=$(pkgconf --static --libs libtpms)\""]
     [05] install
          cwd  build/swtpm-0.10.1/swtpm-0.10.1
-         argv ["make", "install", "DESTDIR=dest/swtpm"]
+         argv ["sh", "-c", "make -C src SUBDIRS=\"utils swtpm swtpm_bios swtpm_ioctl swtpm_setup\" LDFLAGS=-all-static \"GLIB_LIBS=$(pkgconf --static --libs glib-2.0)\" \"JSON_GLIB_LIBS=$(pkgconf --static --libs json-glib-1.0)\" \"LIBCRYPTO_LIBS=$(pkgconf --static --libs libcrypto)\" \"LIBTPMS_LIBS=$(pkgconf --static --libs libtpms)\" install DESTDIR=dest/swtpm"]
     [06] binaries-present
          cwd  build/swtpm-0.10.1/swtpm-0.10.1
          argv ["sh", "-c", "for b in swtpm swtpm_ioctl swtpm_bios; do test -x dest/swtpm/usr/bin/$b || { echo VERON-SWTPM-MISSING $b; exit 1; }; done && echo VERON-SWTPM-BINARIES-PRESENT"]
