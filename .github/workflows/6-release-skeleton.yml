@@ -417,49 +417,14 @@ jobs:
           # GPT, built-in ext4 mounts the slot, and the kernel execs
           # /usr/bin/dinit. The serial log must show each link BY NAME.
           sudo apt-get install -y --no-install-recommends \
-            inotify-tools >/dev/null
-          # qemu-system-x86 AND ovmf ARE GONE, RETIRED TOGETHER: the boot
-          # gate runs the qemu this pipeline built and boots the OVMF this
-          # pipeline built, both taken from the very rootfs under test --
-          # the image hosts its own verification. The rdump tree at
-          # work/x86_64/rootfs is bound as /, so the binary, its libraries
-          # and the firmware all come from the image's own bytes.
-          # --die-with-parent IS THE KILL SEMANTICS THE GATES ALREADY ASSUME
-          # (run 88559017835): without it, killing the wrapper pid kills the
-          # bwrap supervisor and ORPHANS the qemu inside, which kept holding
-          # the disk's write lock -- the desktop step's next launch found
-          # "Failed to get write lock" and exited in 0s, and the runner's
-          # job-end cleanup was reaping orphan qemus. With it, the payload
-          # carries PDEATHSIG and dies when the wrapper does, which is what
-          # every kill and timeout in these gates meant all along.
-          # TMPDIR IS A DISK-BACKED DIR, AND DELIBERATELY NOT /tmp: qemu's
-          # get_tmp_filename (block.c:857-868, qemu 11.0.3) reads TMPDIR and
-          # then REWRITES a literal /tmp to /var/tmp on purpose -- upstream's
-          # commit 69bef79 keeps huge -snapshot overlays off tmpfs -- so the
-          # first fix here, TMPDIR=/tmp, was received and overridden: the COW
-          # still died on the sandbox's nonexistent /var/tmp (two runs, both
-          # 'Could not open temporary file /var/tmp/vl.*'; the second is what
-          # forced reading the source instead of trusting the mechanism).
-          # /home/runner/qemu-tmp is bound, on the runner's real disk, not
-          # equal to the one string qemu refuses, and the wrapper mkdirs it
-          # before exec. The sysroot's missing /var/tmp stays on
-          # veron-system's FHS ledger separately.
-          {
-            echo '#!/bin/sh'
-            echo 'mkdir -p /home/runner/qemu-tmp'
-            echo "exec bwrap --die-with-parent --setenv TMPDIR /home/runner/qemu-tmp --bind $GITHUB_WORKSPACE/work/x86_64/rootfs / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
-          } | sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null
-                    sudo chmod +x /usr/local/bin/qemu-system-x86_64
-          # TWO PROBES BEFORE ANY BOOT, BECAUSE run 88602591158 DIED IN UNDER A
-          # SECOND WITH AN EMPTY SERIAL LOG AND ITS STDERR IN /dev/null -- the
-          # one place the cause could not be read from. The version line proves
-          # the wrapper can exec the rootfs's qemu at all; the kvm line names
-          # the accelerator's presence instead of letting -enable-kvm fail
-          # silently on a runner without it. And qemu's stderr now lands in
-          # boot-serial.log, which the failure path already tails: the next
-          # instant death arrives with its reason attached.
-          [ -e /dev/kvm ] && echo "  kvm: present" || echo "  kvm: ABSENT -- -enable-kvm will refuse"
-          qemu-system-x86_64 --version | head -1 || echo "  WRAPPER-EXEC-FAIL: the sandboxed qemu did not run"
+            qemu-system-x86 ovmf inotify-tools >/dev/null
+          # HOST QEMU AND HOST OVMF, BY REVERSION (Joe, 2026-08-24): the
+          # wrapper-borne gate flip is withdrawn from this workflow -- it ran
+          # the rootfs's own dynamic qemu under apt bwrap, a borrowed tool
+          # introduced against the stated direction that gates use OUR tools.
+          # The self-hosted gate returns when the tools bundle carries a
+          # static bubblewrap (Rung H); until then the borrowed emulator is
+          # stated here rather than smuggled through an exec shim.
           for img in out/veron-x86_64.raw; do
             [ -e "$img" ] || continue
             # REPRODUCIBILITY GUARD (part 1 of 2): record the image's identity
@@ -495,7 +460,7 @@ jobs:
               : > boot-serial.log
               timeout 300 qemu-system-x86_64 \
                 -machine q35 $VERON_ACCEL -cpu qemu64 -m 2048 -nographic -no-reboot -nic none \
-                -bios /usr/share/qemu/OVMF.fd \
+                -bios /usr/share/ovmf/OVMF.fd \
                 $DRIVE \
                 -serial file:boot-serial.log >/dev/null 2>>boot-serial.log &
               qpid=$!
@@ -594,29 +559,14 @@ jobs:
           # USB attachment, a bigger RAM budget for the pivot, and a VM that is
           # ALLOWED to reboot -- four things the boot gate deliberately has not.
           sudo apt-get install -y --no-install-recommends \
-            inotify-tools >/dev/null
-          # qemu-system-x86 AND ovmf ARE GONE, RETIRED TOGETHER: the boot
-          # gate runs the qemu this pipeline built and boots the OVMF this
-          # pipeline built, both taken from the very rootfs under test --
-          # the image hosts its own verification. The rdump tree at
-          # work/x86_64/rootfs is bound as /, so the binary, its libraries
-          # and the firmware all come from the image's own bytes.
-          {
-            echo '#!/bin/sh'
-            echo 'mkdir -p /home/runner/qemu-tmp'
-            echo "exec bwrap --die-with-parent --setenv TMPDIR /home/runner/qemu-tmp --bind $GITHUB_WORKSPACE/work/x86_64/rootfs / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
-          } | sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null
-                    sudo chmod +x /usr/local/bin/qemu-system-x86_64
-          # TWO PROBES BEFORE ANY BOOT, BECAUSE run 88602591158 DIED IN UNDER A
-          # SECOND WITH AN EMPTY SERIAL LOG AND ITS STDERR IN /dev/null -- the
-          # one place the cause could not be read from. The version line proves
-          # the wrapper can exec the rootfs's qemu at all; the kvm line names
-          # the accelerator's presence instead of letting -enable-kvm fail
-          # silently on a runner without it. And qemu's stderr now lands in
-          # boot-serial.log, which the failure path already tails: the next
-          # instant death arrives with its reason attached.
-          [ -e /dev/kvm ] && echo "  kvm: present" || echo "  kvm: ABSENT -- -enable-kvm will refuse"
-          qemu-system-x86_64 --version | head -1 || echo "  WRAPPER-EXEC-FAIL: the sandboxed qemu did not run"
+            qemu-system-x86 ovmf inotify-tools >/dev/null
+          # HOST QEMU AND HOST OVMF, BY REVERSION (Joe, 2026-08-24): the
+          # wrapper-borne gate flip is withdrawn from this workflow -- it ran
+          # the rootfs's own dynamic qemu under apt bwrap, a borrowed tool
+          # introduced against the stated direction that gates use OUR tools.
+          # The self-hosted gate returns when the tools bundle carries a
+          # static bubblewrap (Rung H); until then the borrowed emulator is
+          # stated here rather than smuggled through an exec shim.
           # KVM when the runner has it (GitHub's Linux runners do, behind a
           # root-only node); TCG otherwise. The gate prints which.
           mkdir -p out/maintenance-gate
