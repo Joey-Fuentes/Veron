@@ -46,7 +46,9 @@ srcdir  = "SDL2-2.32.10"
 # log for "Manually-specified variables were not used", and (b) the
 # five-module Wayland probe finding something missing, which is
 # reported as SDL_WAYLAND being silently OFF; the wayland-present step
-# below turns that silence into a failure.
+# below turns that silence into a failure. (a) was measured in run
+# 88822423552: only SDL_FCITX is not a 2.32 option -- it is auto-detected
+# from ibus -- so it is not passed.
 #
 # VERSION AND DIGEST: the version is the newest 2.32 this recipe's
 # author knew of; the pin is PENDING because no network reached this
@@ -88,7 +90,7 @@ configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", 
                    "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF",
                    "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=ON",
                    "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF",
-                   "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF", "-DSDL_FCITX=OFF",
+                   "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF",
                    "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF",
                    "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF",
                    "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]
@@ -123,7 +125,7 @@ run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
          "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF",
          "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=ON",
          "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF",
-         "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF", "-DSDL_FCITX=OFF",
+         "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF",
          "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF",
          "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF",
          "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]]
@@ -135,12 +137,17 @@ cwd  = "$S"
 # missing, CMake configured happily with the Wayland driver off and the
 # resulting qemu would open no window on bare metal while every headless
 # gate stayed green. The generated config header says what was decided.
-run  = [["sh", "-c", "grep -q '^#define SDL_VIDEO_DRIVER_WAYLAND 1' _b/include/SDL_config.h || { echo VERON-SDL2-NO-WAYLAND-DRIVER; grep -n WAYLAND _b/include/SDL_config.h; exit 1; }"]]
+# WHERE IT IS, MEASURED (run 88822423552): SDL 2.0.18+ writes the
+# generated header under a per-configuration directory,
+# _b/include-config-<lowercase config>/SDL_config.h, not _b/include/.
+# Found by name rather than spelled, and its absence is itself a
+# failure -- a gate that cannot find its evidence must not pass.
+run  = [["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); test -n \"$h\" || { echo VERON-SDL2-NO-GENERATED-CONFIG; find _b -name 'SDL_config*'; exit 1; }; grep -q '^#define SDL_VIDEO_DRIVER_WAYLAND 1' \"$h\" || { echo VERON-SDL2-NO-WAYLAND-DRIVER; grep -n WAYLAND \"$h\"; exit 1; }"]]
 
 [[steps]]
 name = "alsa-present"
 cwd  = "$S"
-run  = [["sh", "-c", "grep -q '^#define SDL_AUDIO_DRIVER_ALSA 1' _b/include/SDL_config.h || { echo VERON-SDL2-NO-ALSA-DRIVER; grep -n ALSA _b/include/SDL_config.h; exit 1; }"]]
+run  = [["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); grep -q '^#define SDL_AUDIO_DRIVER_ALSA 1' \"$h\" || { echo VERON-SDL2-NO-ALSA-DRIVER; grep -n ALSA \"$h\"; exit 1; }"]]
 
 [[steps]]
 name = "build"

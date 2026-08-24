@@ -5210,7 +5210,7 @@ package libsoup 3.6.5
 package sdl2 2.32.10
   group        system
   license      Zlib
-  recipe-sha   945be71149d09dbbb664d1adde2cee32b4deedddffde726c073a664349e847a8
+  recipe-sha   d4c8049fd10ba089ac9c581f76f88f6c2cf2c04d12776274d42fd603afc5f74a
 
   source
     url        https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz
@@ -5230,13 +5230,13 @@ package sdl2 2.32.10
          argv ["tar", "-xf", "dl/SDL2-2.32.10.tar.gz", "-C", "build/sdl2-2.32.10"]
     [02] configure
          cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_STATIC_PIC=ON", "-DSDL_WAYLAND=ON", "-DSDL_WAYLAND_SHARED=ON", "-DSDL_WAYLAND_LIBDECOR=OFF", "-DSDL_X11=OFF", "-DSDL_KMSDRM=OFF", "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF", "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=ON", "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF", "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF", "-DSDL_FCITX=OFF", "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF", "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF", "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_STATIC_PIC=ON", "-DSDL_WAYLAND=ON", "-DSDL_WAYLAND_SHARED=ON", "-DSDL_WAYLAND_LIBDECOR=OFF", "-DSDL_X11=OFF", "-DSDL_KMSDRM=OFF", "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF", "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=ON", "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF", "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF", "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF", "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF", "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]
     [03] wayland-present
          cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["sh", "-c", "grep -q '^#define SDL_VIDEO_DRIVER_WAYLAND 1' _b/include/SDL_config.h || { echo VERON-SDL2-NO-WAYLAND-DRIVER; grep -n WAYLAND _b/include/SDL_config.h; exit 1; }"]
+         argv ["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); test -n \"$h\" || { echo VERON-SDL2-NO-GENERATED-CONFIG; find _b -name 'SDL_config*'; exit 1; }; grep -q '^#define SDL_VIDEO_DRIVER_WAYLAND 1' \"$h\" || { echo VERON-SDL2-NO-WAYLAND-DRIVER; grep -n WAYLAND \"$h\"; exit 1; }"]
     [04] alsa-present
          cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["sh", "-c", "grep -q '^#define SDL_AUDIO_DRIVER_ALSA 1' _b/include/SDL_config.h || { echo VERON-SDL2-NO-ALSA-DRIVER; grep -n ALSA _b/include/SDL_config.h; exit 1; }"]
+         argv ["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); grep -q '^#define SDL_AUDIO_DRIVER_ALSA 1' \"$h\" || { echo VERON-SDL2-NO-ALSA-DRIVER; grep -n ALSA \"$h\"; exit 1; }"]
     [05] build
          cwd  build/sdl2-2.32.10/SDL2-2.32.10
          argv ["ninja", "-C", "_b"]
