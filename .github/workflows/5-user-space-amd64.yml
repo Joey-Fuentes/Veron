@@ -2252,24 +2252,33 @@ jobs:
           # A COPY EACH. Both guests remount nothing, but they share a file if
           # given one, and the published artifact must not be touched by a
           # test at all -- the same reason the boot step copies it.
-          cp "$O/rootfs.img" "$O/rootfs-net-a.img"
-          cp "$O/rootfs.img" "$O/rootfs-net-b.img"
+          # NO COPIES. The step used to cp the multi-GB image twice so two VMs
+          # could each hold a write lock. (An earlier version of this comment
+          # blamed a dying disk and D-state for run 88569211258's hang; that
+          # was WRONG -- the hang was a comment amputating the qemu command,
+          # see above. The cps were merely waste.) snapshot=on gives each VM a private throwaway COW while
+          # the shared base is opened READ-ONLY: no copies, no lock conflict,
+          # and the net test's writes were disposable by design anyway.
 
           PORT=11242
+          # romfile= (EMPTY) ON BOTH NICs IS EXPLICIT SUPPRESSION, NOT ABSENCE
+          # (run 88564664022): virtio-net-pci loads efi-virtio.rom by default,
+          # the prebuilt iPXE NETBOOT blob apt's qemu ships and ours does not;
+          # nothing here PXE-boots. AND THIS COMMENT LIVES ABOVE THE COMMAND
+          # FOR BLOOD-BOUGHT REASONS (run 88569211258): a prior edit placed it
+          # INSIDE the backslash continuation, where the joined line's # ended
+          # the command -- severing -device, -kernel, the log redirect and the
+          # trailing &. The server ran FOREGROUND and kernel-less, SeaBIOS
+          # reported "No bootable device" and idled under -no-reboot, and the
+          # step hung unkillably for 26 minutes. A comment inside a continued
+          # command is not a comment; it is an amputation.
           echo "=== VM-A: the DHCP server ==="
           set +e
           qemu-system-x86_64 \
             $VERON_ACCEL -cpu qemu64 -smp 2 -m 2048 \
             -nographic -no-reboot \
-            -drive file=$O/rootfs-net-a.img,format=raw,if=virtio \
+            -drive file=$O/rootfs.img,format=raw,if=virtio,snapshot=on \
             -netdev socket,id=n0,listen=127.0.0.1:$PORT \
-            # romfile= (EMPTY) IS EXPLICIT SUPPRESSION, NOT ABSENCE (run
-            # 88564664022): virtio-net-pci loads efi-virtio.rom by default --
-            # the prebuilt iPXE NETBOOT blob apt's qemu ships and ours
-            # deliberately does not. Nothing here PXE-boots; both VMs boot
-            # -kernel, so the ROM has no consumer and the device says so. If
-            # netboot ever matters, iPXE builds from vendored source as its
-            # own package, never as a borrowed blob.
             -device virtio-net-pci,netdev=n0,romfile= \
             -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
             -append "console=ttyS0 rdinit=/init panic=1 loglevel=3 veron.net=server" \
@@ -2310,7 +2319,7 @@ jobs:
           timeout 300 qemu-system-x86_64 \
             $VERON_ACCEL -cpu qemu64 -smp 2 -m 2048 \
             -nographic -no-reboot \
-            -drive file=$O/rootfs-net-b.img,format=raw,if=virtio \
+            -drive file=$O/rootfs.img,format=raw,if=virtio,snapshot=on \
             -netdev socket,id=n0,connect=127.0.0.1:$PORT \
             -device virtio-net-pci,netdev=n0,romfile= \
             -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
