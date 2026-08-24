@@ -25,8 +25,10 @@ srcdir  = "swtpm-0.10.1"
 # same recipe with -all-static on the make line and pkgconf --static on
 # configure, per the qemu-user precedent.
 #
-# THE RELEASE ASSET, NOT THE TAG ARCHIVE, as libtpms: a `make dist`
-# tarball with a generated configure, no autoreconf. 0.10.1 is the
+# A GITHUB TAG ARCHIVE, autoreconf'd FIRST (libcap-ng shape), for the
+# reason libtpms's recipe measures: the `make dist` asset the research
+# inferred does not exist (mirror run 88771680471, 404 x4). The $DL name
+# carries the mirror's project prefix (swtpm-v0.10.1). 0.10.1 is the
 # newest release as of 2026-08-24 and requires libtpms >= 0.10.
 #
 # READ FROM configure.ac, NOT RECALLED: --with-openssl is REQUIRED and
@@ -39,18 +41,16 @@ srcdir  = "swtpm-0.10.1"
 # (Gentoo patches it out); if this gcc trips it, the fix is a patch in
 # patches/, not a sed.
 #
-# UNBUILT AS WRITTEN; pin PENDING, URL in gap3-urls.txt. If the mirror
-# run says FETCH FAILED on the asset name, the fallback is the tag
-# archive with an autoreconf step.
+# UNBUILT AS WRITTEN; pin PENDING, URL in gap3-urls.txt.
 
 [source]
-url       = "https://github.com/stefanberger/swtpm/releases/download/v0.10.1/swtpm-0.10.1.tar.gz"
+url       = "https://github.com/stefanberger/swtpm/archive/refs/tags/v0.10.1.tar.gz"
 sha256    = "PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here"
 signature = "none detached; the v0.10.1 TAG is GPG-signed by Stefan Berger (key 75AD65802A0B4211) -- verify the tag, then pin the asset's digest"
 crosschecked_against = []
 
 [deps]
-build        = ["pkgconf", "glib", "json-glib", "libtasn1", "libtpms", "openssl"]
+build        = ["autoconf", "automake", "libtool", "m4", "pkgconf", "glib", "json-glib", "libtasn1", "libtpms", "openssl"]
 link         = ["glib", "json-glib", "libtasn1"]
 runtime      = ["glib", "json-glib", "libtasn1"]
 optional_off = ["gnutls", "seccomp", "cuse", "selinux", "tests"]
@@ -71,7 +71,12 @@ prefixes = ["usr/bin", "usr/lib", "usr/libexec", "usr/share", "etc"]
 [[steps]]
 name = "unpack"
 cwd  = "$B"
-run  = [["tar", "-xf", "$DL/swtpm-0.10.1.tar.gz", "-C", "$B"]]
+run  = [["tar", "-xf", "$DL/swtpm-v0.10.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "autoreconf"
+cwd  = "$S"
+run  = [["autoreconf", "--verbose", "--force", "--install"]]
 
 [[steps]]
 name = "configure"

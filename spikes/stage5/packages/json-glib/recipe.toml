@@ -25,14 +25,15 @@ srcdir  = "json-glib-1.10.8"
 # and all optional.
 #
 # 1.10.8 is what Arch, Debian and current BLFS ship as of 2026-08-24;
-# download.gnome.org publishes a .sha256sum beside the tarball -- compare
-# the mirror run's digest against it before pinning.
+# download.gnome.org publishes a .sha256sum beside the tarball; the pin
+# was MEASURED by stage5-mirror-upload run 88771680471 -- compare it
+# against that file.
 #
-# UNBUILT AS WRITTEN; pin PENDING, URL in gap3-urls.txt.
+# UNBUILT AS WRITTEN.
 
 [source]
 url       = "https://download.gnome.org/sources/json-glib/1.10/json-glib-1.10.8.tar.xz"
-sha256    = "PENDING -- measure with stage5-mirror-upload, then paste the MIRRORS.tsv row here"
+sha256    = "55c5c141a564245b8f8fbe7698663c87a45a7333c2a2c56f06f811ab73b212dd"
 signature = "none -- GNOME publishes sha256sum files beside the tarball, not detached signatures; the mirror run's digest is compared against that file by hand before pinning"
 crosschecked_against = []
 

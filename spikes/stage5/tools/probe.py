@@ -1548,6 +1548,14 @@ def cmd_mirrors(a):
         src = r.get("source", {})
         if src.get("kind") == "git" or "sha256" not in src:
             continue
+        # A PENDING PIN IS NOT A DIGEST AND MUST NOT BECOME A ROW. Run
+        # 88771680471 wrote `PENDING -- measure ...` into MIRRORS.tsv as
+        # json-glib's upstream route, beside the real row the upload step
+        # then measured -- a table entry no fetch can ever match. The
+        # recipe's URL still reaches this run through the gap lists,
+        # which is where an unpinned URL belongs.
+        if str(src["sha256"]).startswith("PENDING"):
+            continue
         # packaged_as IS CARRIED, NOT DROPPED. packager_source needs it to
         # avoid looking a package up under a name that belongs to different
         # software -- `mako` is the case its own comment describes, where
