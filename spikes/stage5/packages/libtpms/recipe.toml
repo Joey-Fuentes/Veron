@@ -27,13 +27,23 @@ srcdir  = "libtpms-0.10.2"
 # project prefix (libtpms-v0.10.2), per mirror.artifact_name. 0.10.2
 # (2 Jan 2026) fixes CVE-2026-21444 and is the newest as of 2026-08-24.
 #
-# UNBUILT AS WRITTEN; pin MEASURED by mirror run 88774599074. Whether its own
-# CFLAGS carry -Werror against this gcc is measured by the first build.
+# -Werror IS OFF BY PATCH, MEASURED (run 88777336449, this package's
+# first build): configure.ac hard-codes -Werror into AM_CFLAGS, and the
+# stage-4 gcc's gnu23 default makes strstr() const-correct, so
+# tpm_library.c:441 died on -Werror=discarded-qualifiers. The patch
+# removes the one word from configure.ac (autoreconf regenerates the
+# rest); the warnings stay in the log. The kernel's WERROR ruling,
+# applied here; Gentoo and Fedora carry the same edit.
+#
+# THE RELEASE PAGE'S THIRD ASSET IS v0.10.2.tar.gz.asc: a detached
+# signature over the tag archive -- so the archive is signed after all,
+# and [source].signature names it. Pin MEASURED by mirror run
+# 88774599074 and re-hashed from a by-hand download.
 
 [source]
 url       = "https://github.com/stefanberger/libtpms/archive/refs/tags/v0.10.2.tar.gz"
 sha256    = "edac03680f8a4a1c5c1d609a10e3f41e1a129e38ff5158f0c8deaedc719fb127"
-signature = "none detached; the v0.10.2 TAG is GPG-signed by Stefan Berger (key 75AD65802A0B4211) -- verify the tag, then pin the asset's digest"
+signature = "https://github.com/stefanberger/libtpms/releases/download/v0.10.2/v0.10.2.tar.gz.asc -- detached PGP over THIS tag archive, keyid 75AD65802A0B4211, sig dated 2026-01-02; the .asc and the archive were fetched by hand and the archive hashed to the pinned digest (2026-08-24); compare the key against the project's published fingerprint before trusting the signature"
 crosschecked_against = []
 
 [deps]

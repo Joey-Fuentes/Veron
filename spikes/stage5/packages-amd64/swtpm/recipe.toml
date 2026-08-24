@@ -46,15 +46,27 @@ srcdir  = "swtpm-0.10.1"
 # carries the mirror's project prefix (swtpm-v0.10.1). 0.10.1 is the
 # newest release as of 2026-08-24 and requires libtpms >= 0.10.
 #
-# READ FROM configure.ac, NOT RECALLED: --with-openssl is REQUIRED and
-# must match libtpms's backend (configure errors either way if they
-# disagree); --with-gnutls/--with-seccomp/--with-cuse/--with-selinux are
-# the spellings and each defaults to check; --disable-tests exists and
-# is what keeps expect, socat and gawk (test-suite tools, not in this
-# set) off the build path; libtasn1 is checked UNCONDITIONALLY and is
-# in this set; json-glib is unconditional too. Its CFLAGS carry -Werror
-# (Gentoo patches it out); if this gcc trips it, the fix is a patch in
-# patches/, not a sed.
+# READ FROM THE PINNED TARBALL'S configure.ac (sha256 f8da11ca...), NOT
+# RECALLED: --with-openssl is REQUIRED and must match libtpms's backend
+# (configure.ac:567-569 errors either way if they disagree);
+# --with-gnutls/--with-cuse/--with-selinux/--with-seccomp are the
+# spellings, gnutls and cuse default to check, and gnutls when found
+# ALSO demands certtool (configure.ac:304-307), which this set does not
+# ship -- so --without-gnutls is a requirement, not a preference;
+# --disable-tests (configure.ac:385) is what keeps expect, gawk, socat,
+# netstat/ss and tcsd off the path AND skips the `id -u tss` check
+# (configure.ac:523-535, only under have_tcsd); libtasn1, json-glib,
+# glib and gthread are unconditional (configure.ac:177-255) and all in
+# this set; bash is required by the PCR-bank regex check at configure
+# time (configure.ac:367) and python >= 3.3 by AM_PATH_PYTHON
+# (configure.ac:443) -- both declared below. swtpm_setup and
+# swtpm_localca are C (src/*/Makefile.am: bin_PROGRAMS), not scripts.
+#
+# -Werror IS OFF BY PATCH, PRE-EMPTIVELY AND FROM THE FILE: configure.ac
+# line 545 appends it unconditionally, the same author's same flag set
+# that killed libtpms in run 88777336449 on this gcc's gnu23 default.
+# Measured on the sibling, applied here before the plan reaches package
+# 142 to learn it again. Gentoo carries the identical edit.
 #
 # UNBUILT AS WRITTEN; pin MEASURED by mirror run 88774599074.
 
@@ -65,7 +77,7 @@ signature = "none detached; the v0.10.1 TAG is GPG-signed by Stefan Berger (key 
 crosschecked_against = []
 
 [deps]
-build        = ["autoconf", "automake", "libtool", "m4", "pkgconf", "glib", "pcre2", "json-glib", "libtasn1", "libtpms", "openssl"]
+build        = ["autoconf", "automake", "libtool", "m4", "pkgconf", "bash", "python", "glib", "pcre2", "json-glib", "libtasn1", "libtpms", "openssl"]
 link         = ["glib", "json-glib", "libtasn1", "pcre2", "libtpms", "openssl"]
 runtime      = []
 optional_off = ["gnutls", "seccomp", "cuse", "selinux", "tests"]

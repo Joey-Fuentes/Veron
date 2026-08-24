@@ -2946,12 +2946,12 @@ no gnulib, so this is a local regeneration with no network and no fetch.
 package libtpms 0.10.2
   group        system
   license      BSD-3-Clause
-  recipe-sha   fba2434194dc34da016e424b8985ab7bfc6a7027fa8cc87673bbc9e9284e1a0f
+  recipe-sha   610ec5a94cc55afb913584fa3652c89552cf495ca7790010f8d9b5ef9cf766fa
 
   source
     url        https://github.com/stefanberger/libtpms/archive/refs/tags/v0.10.2.tar.gz
     sha256     edac03680f8a4a1c5c1d609a10e3f41e1a129e38ff5158f0c8deaedc719fb127
-    signature  none detached; the v0.10.2 TAG is GPG-signed by Stefan Berger (key 75AD65802A0B4211) -- verify the tag, then pin the asset's digest
+    signature  https://github.com/stefanberger/libtpms/releases/download/v0.10.2/v0.10.2.tar.gz.asc -- detached PGP over THIS tag archive, keyid 75AD65802A0B4211, sig dated 2026-01-02; the .asc and the archive were fetched by hand and the archive hashed to the pinned digest (2026-08-24); compare the key against the project's published fingerprint before trusting the signature
     correspond none
 
   deps
@@ -2959,6 +2959,9 @@ package libtpms 0.10.2
     link         -
     runtime      -
     optional_off shared
+
+  patches (applied after unpack, in this order)
+    0001-configure-no-werror.patch
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -5060,7 +5063,7 @@ package mesa 26.1.6
 package swtpm 0.10.1
   group        system
   license      BSD-3-Clause
-  recipe-sha   a19d237f9579b145ad725b1f216be186b02a70a41209759d8bb1cd3aac84a4ec
+  recipe-sha   a1de49168d8616f2ba07dd43810db8ce2ccde2bb1a431806c128d74a03b9fa73
 
   source
     url        https://github.com/stefanberger/swtpm/archive/refs/tags/v0.10.1.tar.gz
@@ -5069,10 +5072,13 @@ package swtpm 0.10.1
     correspond none
 
   deps
-    build        autoconf, automake, glib, json-glib, libtasn1, libtool, libtpms, m4, openssl, pcre2, pkgconf
+    build        autoconf, automake, bash, glib, json-glib, libtasn1, libtool, libtpms, m4, openssl, pcre2, pkgconf, python
     link         glib, json-glib, libtasn1, libtpms, openssl, pcre2
     runtime      -
     optional_off cuse, gnutls, seccomp, selinux, tests
+
+  patches (applied after unpack, in this order)
+    0001-configure-no-werror.patch
 
   commands (literal; this is exactly what runs)
     [01] unpack
