@@ -5324,7 +5324,7 @@ package fontconfig 2.17.1
 package qemu 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   dadfe4b741733404b71e49578a3c5fff14cdc369995da90bc32e3e17c25b450b
+  recipe-sha   e23392f52806ab5f36528d1d83794a662f2273ad2e8bc142ec2939d0cc8d9c53
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -5345,7 +5345,7 @@ package qemu 11.0.3
     [02] configure
          cwd  build/qemu-11.0.3/qemu-11.0.3
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-softmmu,x86_64-softmmu --enable-kvm --enable-sdl --enable-slirp --enable-virtfs --enable-pixman --enable-tools --enable-fdt=system --audio-drv-list=sdl --disable-modules --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl-image --disable-opengl --disable-alsa --disable-pa --disable-pipewire --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev"]
+         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-softmmu,x86_64-softmmu --enable-kvm --enable-sdl --enable-slirp --enable-virtfs --enable-pixman --enable-tools --enable-fdt=system --audio-drv-list=sdl --disable-modules --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl-image --disable-opengl --disable-alsa --disable-pa --disable-pipewire --disable-curl --disable-gnutls --disable-gcrypt --disable-nettle --disable-libssh --disable-auth-pam --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev"]
     [03] build
          cwd  build/qemu-11.0.3/qemu-11.0.3
          argv ["make", "-C", "_b", "-j1"]

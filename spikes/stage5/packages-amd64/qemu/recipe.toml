@@ -87,6 +87,12 @@ runtime      = ["sdl2"]
 # xkbcommon stays off (run 88493588431): it only feeds qemu-keymap, which
 # needs xkeyboard-config data at build time; SDL translates keys itself.
 # modules is off because a static binary cannot dlopen its own plugins.
+# gcrypt AND nettle ARE OFF BY FLAG, MEASURED (run 88824372958): with
+# gnutls declined, configure auto-picked libgcrypt as the crypto backend
+# and the link died on -lgcrypt -lgpg-error, neither of which ships an
+# archive. A name in this list is a decline only if the flag below
+# carries it; that run is the proof, and libssh and auth-pam got their
+# flags in the same edit for the same reason.
 optional_off = ["rust", "docs", "guest-agent", "modules", "xkbcommon", "vnc", "gtk", "sdl-image", "opengl", "alsa", "pa", "pipewire", "curl", "libssh", "gnutls", "nettle", "gcrypt", "auth-pam", "libusb", "seccomp", "curses", "png", "bzip2", "zstd", "libdw", "libudev", "debug-info", "install-blobs", "werror"]
 
 [declared]
@@ -95,7 +101,7 @@ configure_flags = ["--prefix=/usr", "--static", "--target-list=aarch64-softmmu,x
                    "--audio-drv-list=sdl",
                    "--disable-modules", "--disable-debug-info", "--disable-install-blobs", "--disable-docs", "--disable-werror",
                    "--disable-guest-agent", "--disable-rust", "--disable-xkbcommon", "--disable-vnc", "--disable-gtk", "--disable-sdl-image",
-                   "--disable-opengl", "--disable-alsa", "--disable-pa", "--disable-pipewire", "--disable-curl", "--disable-gnutls",
+                   "--disable-opengl", "--disable-alsa", "--disable-pa", "--disable-pipewire", "--disable-curl", "--disable-gnutls", "--disable-gcrypt", "--disable-nettle", "--disable-libssh", "--disable-auth-pam",
                    "--disable-libusb", "--disable-seccomp", "--disable-curses", "--disable-png", "--disable-bzip2", "--disable-zstd",
                    "--disable-libdw", "--disable-libudev"]
 packaged_as     = ["qemu-system-x86_64", "qemu-system-aarch64", "qemu-img", "qemu-static"]
@@ -133,7 +139,7 @@ cwd  = "$S"
 env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend" }
 # OUT-OF-TREE IS ENFORCED BY UPSTREAM: configure refuses to run in the
 # source root, so the shape matches meson packages' _b convention.
-run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-softmmu,x86_64-softmmu --enable-kvm --enable-sdl --enable-slirp --enable-virtfs --enable-pixman --enable-tools --enable-fdt=system --audio-drv-list=sdl --disable-modules --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl-image --disable-opengl --disable-alsa --disable-pa --disable-pipewire --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev"]]
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-softmmu,x86_64-softmmu --enable-kvm --enable-sdl --enable-slirp --enable-virtfs --enable-pixman --enable-tools --enable-fdt=system --audio-drv-list=sdl --disable-modules --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl-image --disable-opengl --disable-alsa --disable-pa --disable-pipewire --disable-curl --disable-gnutls --disable-gcrypt --disable-nettle --disable-libssh --disable-auth-pam --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev"]]
 
 [[steps]]
 name = "build"
