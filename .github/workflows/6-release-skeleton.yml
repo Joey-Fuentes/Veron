@@ -432,16 +432,22 @@ jobs:
           # job-end cleanup was reaping orphan qemus. With it, the payload
           # carries PDEATHSIG and dies when the wrapper does, which is what
           # every kill and timeout in these gates meant all along.
-          # TMPDIR=/tmp BECAUSE /var DOES NOT RIDE INTO THE SANDBOX: qemu's
-          # temp-file fallback is /var/tmp, the sysroot ships no /var/tmp, and
-          # snapshot=on's COW overlay died on exactly that (run at e315b1e4:
-          # "Could not open temporary file '/var/tmp/vl.*'"). /tmp is already
-          # bound, so the overlay lands on host tmp like every other gate
-          # scratch file. The sysroot's missing /var/tmp is also an FHS gap
-          # for veron-system's own ledger, separately.
+          # TMPDIR IS A DISK-BACKED DIR, AND DELIBERATELY NOT /tmp: qemu's
+          # get_tmp_filename (block.c:857-868, qemu 11.0.3) reads TMPDIR and
+          # then REWRITES a literal /tmp to /var/tmp on purpose -- upstream's
+          # commit 69bef79 keeps huge -snapshot overlays off tmpfs -- so the
+          # first fix here, TMPDIR=/tmp, was received and overridden: the COW
+          # still died on the sandbox's nonexistent /var/tmp (two runs, both
+          # 'Could not open temporary file /var/tmp/vl.*'; the second is what
+          # forced reading the source instead of trusting the mechanism).
+          # /home/runner/qemu-tmp is bound, on the runner's real disk, not
+          # equal to the one string qemu refuses, and the wrapper mkdirs it
+          # before exec. The sysroot's missing /var/tmp stays on
+          # veron-system's FHS ledger separately.
           {
             echo '#!/bin/sh'
-            echo "exec bwrap --die-with-parent --setenv TMPDIR /tmp --bind $GITHUB_WORKSPACE/work/x86_64/rootfs / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
+            echo 'mkdir -p /home/runner/qemu-tmp'
+            echo "exec bwrap --die-with-parent --setenv TMPDIR /home/runner/qemu-tmp --bind $GITHUB_WORKSPACE/work/x86_64/rootfs / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
           } | sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null
           sudo chmod +x /usr/local/bin/qemu-system-x86_64
           for img in out/veron-x86_64.raw; do
@@ -587,7 +593,8 @@ jobs:
           # and the firmware all come from the image's own bytes.
           {
             echo '#!/bin/sh'
-            echo "exec bwrap --die-with-parent --setenv TMPDIR /tmp --bind $GITHUB_WORKSPACE/work/x86_64/rootfs / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
+            echo 'mkdir -p /home/runner/qemu-tmp'
+            echo "exec bwrap --die-with-parent --setenv TMPDIR /home/runner/qemu-tmp --bind $GITHUB_WORKSPACE/work/x86_64/rootfs / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
           } | sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null
           sudo chmod +x /usr/local/bin/qemu-system-x86_64
           # KVM when the runner has it (GitHub's Linux runners do, behind a
