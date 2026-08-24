@@ -44,6 +44,11 @@ configure_flags = []
 verification    = "test-encoding.py decodes what the tool emits (an independent decoder); run off-target"
 packaged_as     = ["veron-efiboot"]
 
+[installs]
+prefixes = ["usr/bin"]
+files    = 1
+digest   = "904bb48da21547e2149e4c2a43436250272f3da6abe6110ddd5c98150b8dd15e"
+
 [[steps]]
 name = "build"
 cwd  = "$B"

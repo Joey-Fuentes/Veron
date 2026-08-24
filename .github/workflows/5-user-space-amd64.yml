@@ -253,9 +253,17 @@ jobs:
           # and / inside the sandbox IS the sysroot, so -L's default
           # /usr/share/qemu finds the firmware this pipeline built and
           # nothing else.
+          # --die-with-parent IS THE KILL SEMANTICS THE GATES ALREADY ASSUME
+          # (run 88559017835): without it, killing the wrapper pid kills the
+          # bwrap supervisor and ORPHANS the qemu inside, which kept holding
+          # the disk's write lock -- the desktop step's next launch found
+          # "Failed to get write lock" and exited in 0s, and the runner's
+          # job-end cleanup was reaping orphan qemus. With it, the payload
+          # carries PDEATHSIG and dies when the wrapper does, which is what
+          # every kill and timeout in these gates meant all along.
           {
             echo '#!/bin/sh'
-            echo "exec bwrap --bind $GITHUB_WORKSPACE/spikes/stage5/sysroot / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
+            echo "exec bwrap --die-with-parent --bind $GITHUB_WORKSPACE/spikes/stage5/sysroot / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
           } | sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null
           sudo chmod +x /usr/local/bin/qemu-system-x86_64
           # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor and
