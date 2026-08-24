@@ -2263,7 +2263,14 @@ jobs:
             -nographic -no-reboot \
             -drive file=$O/rootfs-net-a.img,format=raw,if=virtio \
             -netdev socket,id=n0,listen=127.0.0.1:$PORT \
-            -device virtio-net-pci,netdev=n0 \
+            # romfile= (EMPTY) IS EXPLICIT SUPPRESSION, NOT ABSENCE (run
+            # 88564664022): virtio-net-pci loads efi-virtio.rom by default --
+            # the prebuilt iPXE NETBOOT blob apt's qemu ships and ours
+            # deliberately does not. Nothing here PXE-boots; both VMs boot
+            # -kernel, so the ROM has no consumer and the device says so. If
+            # netboot ever matters, iPXE builds from vendored source as its
+            # own package, never as a borrowed blob.
+            -device virtio-net-pci,netdev=n0,romfile= \
             -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
             -append "console=ttyS0 rdinit=/init panic=1 loglevel=3 veron.net=server" \
             > "$O/net-server.log" 2>&1 < /dev/null &
@@ -2305,7 +2312,7 @@ jobs:
             -nographic -no-reboot \
             -drive file=$O/rootfs-net-b.img,format=raw,if=virtio \
             -netdev socket,id=n0,connect=127.0.0.1:$PORT \
-            -device virtio-net-pci,netdev=n0 \
+            -device virtio-net-pci,netdev=n0,romfile= \
             -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
             -append "console=ttyS0 rdinit=/init panic=1 loglevel=3 veron.net=client" \
             > "$O/net-client.log" 2>&1 < /dev/null
