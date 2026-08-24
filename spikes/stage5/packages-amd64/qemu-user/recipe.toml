@@ -29,6 +29,11 @@ sha256    = "da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523"
 signature = "none -- download.qemu.org publishes digests, not detached signatures"
 crosschecked_against = []
 
+# --disable-debug-info IS A SIZE RULING, MEASURED (stage-6 run
+# 88586816206): the first consumer image to carry these emulators blew
+# the ruled DVD-5 ceiling by 128 MiB, and qemu default -g loads every
+# binary with DWARF no gate, guest test or release-image user reads.
+# The debug build stays one recipe line away when a debugger wants it.
 [deps]
 # python-setuptools AND python-wheel ARE CONFIGURE DEPENDENCIES, FOUND BY
 # BUILDING (run 88488793190): qemu's mkvenv builds a non-isolated venv and
@@ -41,7 +46,7 @@ runtime      = []
 optional_off = ["rust", "docs", "guest-agent", "system", "tools", "pixman"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--static", "--target-list=aarch64-linux-user", "--disable-system", "--disable-tools", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust"]
+configure_flags = ["--prefix=/usr", "--static", "--target-list=aarch64-linux-user", "--disable-debug-info", "--disable-system", "--disable-tools", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust"]
 packaged_as     = ["qemu-user-static"]
 verification    = "no-DT_NEEDED asserted by the static-or-die step below"
 deferral        = """
@@ -72,7 +77,7 @@ cwd  = "$S"
 # the policy's own, stated per the defaults.toml rule that a recipe
 # declaring a name outright wins.
 env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend" }
-run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-linux-user --disable-system --disable-tools --disable-docs --disable-werror --disable-guest-agent --disable-rust"]]
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-linux-user --disable-debug-info --disable-system --disable-tools --disable-docs --disable-werror --disable-guest-agent --disable-rust"]]
 
 [[steps]]
 name = "build"

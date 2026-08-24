@@ -4525,7 +4525,7 @@ package llvm 22.1.8
 package qemu 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   a5904575ba11af442bea988b995cea64afa4c3de1d1317ec84af3dda9430a50e
+  recipe-sha   e287bbe034dd30053c59dc8e78009cd371525eed907ea0889fc8a1cdab3dfa79
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4546,7 +4546,7 @@ package qemu 11.0.3
     [02] configure
          cwd  build/qemu-11.0.3/qemu-11.0.3
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu,x86_64-softmmu --enable-virtfs --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --disable-alsa --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev --audio-drv-list="]
+         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu,x86_64-softmmu --enable-virtfs --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --disable-alsa --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev --audio-drv-list="]
     [03] build
          cwd  build/qemu-11.0.3/qemu-11.0.3
          argv ["make", "-C", "_b", "-j1"]
@@ -4573,7 +4573,7 @@ package qemu 11.0.3
 package qemu-user 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   a41a048c19a56085e31134d707bcc44b860767dcb234f4a47d596490bc98b0bb
+  recipe-sha   fa6c238ef0c269eceaa9de7f2f0e1bb020da2838d19b53a9f65d16ec7566fcb1
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4594,7 +4594,7 @@ package qemu-user 11.0.3
     [02] configure
          cwd  build/qemu-user-11.0.3/qemu-11.0.3
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-linux-user --disable-system --disable-tools --disable-docs --disable-werror --disable-guest-agent --disable-rust"]
+         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-linux-user --disable-debug-info --disable-system --disable-tools --disable-docs --disable-werror --disable-guest-agent --disable-rust"]
     [03] build
          cwd  build/qemu-user-11.0.3/qemu-11.0.3
          argv ["make", "-C", "_b", "-j1"]

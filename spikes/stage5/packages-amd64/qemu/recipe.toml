@@ -44,6 +44,11 @@ sha256    = "da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523"
 signature = "none -- download.qemu.org publishes digests, not detached signatures"
 crosschecked_against = []
 
+# --disable-debug-info IS A SIZE RULING, MEASURED (stage-6 run
+# 88586816206): the first consumer image to carry these emulators blew
+# the ruled DVD-5 ceiling by 128 MiB, and qemu default -g loads every
+# binary with DWARF no gate, guest test or release-image user reads.
+# The debug build stays one recipe line away when a debugger wants it.
 [deps]
 # attr AND libcap-ng ARE HERE FOR virtfs, AND virtfs IS ENABLED BY NAME:
 # every boot gate mounts the sysroot with -fsdev local + virtio-9p-pci,
@@ -84,7 +89,7 @@ runtime      = ["glib", "pixman", "zlib", "dtc"]
 optional_off = ["rust", "docs", "guest-agent", "slirp", "xkbcommon", "vnc", "gtk", "sdl", "opengl", "alsa", "pa", "curl", "libssh", "gnutls", "nettle", "gcrypt", "auth-pam", "kvm-x86-note: kvm is host-arch; an aarch64 guest on x86_64 uses tcg"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--target-list=aarch64-softmmu,x86_64-softmmu", "--enable-virtfs", "--disable-install-blobs", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust", "--disable-xkbcommon", "--disable-vnc", "--disable-gtk", "--disable-sdl", "--disable-opengl", "--disable-alsa", "--disable-curl", "--disable-gnutls", "--disable-libusb", "--disable-seccomp", "--disable-curses", "--disable-png", "--disable-bzip2", "--disable-zstd", "--disable-libdw", "--disable-libudev", "--audio-drv-list="]
+configure_flags = ["--prefix=/usr", "--target-list=aarch64-softmmu,x86_64-softmmu", "--enable-virtfs", "--disable-debug-info", "--disable-install-blobs", "--disable-docs", "--disable-werror", "--disable-guest-agent", "--disable-rust", "--disable-xkbcommon", "--disable-vnc", "--disable-gtk", "--disable-sdl", "--disable-opengl", "--disable-alsa", "--disable-curl", "--disable-gnutls", "--disable-libusb", "--disable-seccomp", "--disable-curses", "--disable-png", "--disable-bzip2", "--disable-zstd", "--disable-libdw", "--disable-libudev", "--audio-drv-list="]
 packaged_as     = ["qemu-system-aarch64", "qemu-base"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
@@ -119,7 +124,7 @@ cwd  = "$S"
 env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend" }
 # OUT-OF-TREE IS ENFORCED BY UPSTREAM: configure refuses to run in the
 # source root, so the shape matches meson packages' _b convention.
-run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu,x86_64-softmmu --enable-virtfs --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --disable-alsa --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev --audio-drv-list="]]
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu,x86_64-softmmu --enable-virtfs --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --disable-alsa --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev --audio-drv-list="]]
 
 [[steps]]
 name = "build"
