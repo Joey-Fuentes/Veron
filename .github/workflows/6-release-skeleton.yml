@@ -449,7 +449,17 @@ jobs:
             echo 'mkdir -p /home/runner/qemu-tmp'
             echo "exec bwrap --die-with-parent --setenv TMPDIR /home/runner/qemu-tmp --bind $GITHUB_WORKSPACE/work/x86_64/rootfs / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
           } | sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null
-          sudo chmod +x /usr/local/bin/qemu-system-x86_64
+                    sudo chmod +x /usr/local/bin/qemu-system-x86_64
+          # TWO PROBES BEFORE ANY BOOT, BECAUSE run 88602591158 DIED IN UNDER A
+          # SECOND WITH AN EMPTY SERIAL LOG AND ITS STDERR IN /dev/null -- the
+          # one place the cause could not be read from. The version line proves
+          # the wrapper can exec the rootfs's qemu at all; the kvm line names
+          # the accelerator's presence instead of letting -enable-kvm fail
+          # silently on a runner without it. And qemu's stderr now lands in
+          # boot-serial.log, which the failure path already tails: the next
+          # instant death arrives with its reason attached.
+          [ -e /dev/kvm ] && echo "  kvm: present" || echo "  kvm: ABSENT -- -enable-kvm will refuse"
+          qemu-system-x86_64 --version | head -1 || echo "  WRAPPER-EXEC-FAIL: the sandboxed qemu did not run"
           for img in out/veron-x86_64.raw; do
             [ -e "$img" ] || continue
             # REPRODUCIBILITY GUARD (part 1 of 2): record the image's identity
@@ -487,7 +497,7 @@ jobs:
                 -machine q35 $VERON_ACCEL -cpu qemu64 -m 2048 -nographic -no-reboot -nic none \
                 -bios /usr/share/qemu/OVMF.fd \
                 $DRIVE \
-                -serial file:boot-serial.log >/dev/null 2>&1 &
+                -serial file:boot-serial.log >/dev/null 2>>boot-serial.log &
               qpid=$!
               # tail -f follows the file as qemu writes it; grep -m1 exits on the
               # first match, which closes the pipe and ends tail. No polling, no
@@ -596,7 +606,17 @@ jobs:
             echo 'mkdir -p /home/runner/qemu-tmp'
             echo "exec bwrap --die-with-parent --setenv TMPDIR /home/runner/qemu-tmp --bind $GITHUB_WORKSPACE/work/x86_64/rootfs / --dev-bind /dev /dev --proc /proc --bind /home/runner /home/runner --bind /tmp /tmp /usr/bin/qemu-system-x86_64 \"\$@\""
           } | sudo tee /usr/local/bin/qemu-system-x86_64 > /dev/null
-          sudo chmod +x /usr/local/bin/qemu-system-x86_64
+                    sudo chmod +x /usr/local/bin/qemu-system-x86_64
+          # TWO PROBES BEFORE ANY BOOT, BECAUSE run 88602591158 DIED IN UNDER A
+          # SECOND WITH AN EMPTY SERIAL LOG AND ITS STDERR IN /dev/null -- the
+          # one place the cause could not be read from. The version line proves
+          # the wrapper can exec the rootfs's qemu at all; the kvm line names
+          # the accelerator's presence instead of letting -enable-kvm fail
+          # silently on a runner without it. And qemu's stderr now lands in
+          # boot-serial.log, which the failure path already tails: the next
+          # instant death arrives with its reason attached.
+          [ -e /dev/kvm ] && echo "  kvm: present" || echo "  kvm: ABSENT -- -enable-kvm will refuse"
+          qemu-system-x86_64 --version | head -1 || echo "  WRAPPER-EXEC-FAIL: the sandboxed qemu did not run"
           # KVM when the runner has it (GitHub's Linux runners do, behind a
           # root-only node); TCG otherwise. The gate prints which.
           mkdir -p out/maintenance-gate
