@@ -225,9 +225,20 @@ total_lba=$((end_lba + 2048))          # tail room for the backup GPT
 # standard single-layer DVD-5 -- 4,700,000,000 bytes, 4482 MiB. This is
 # a product requirement, so it fails the build by name rather than being
 # discovered at a burner.
+#
+# LIFTED TO DVD-9, TEMPORARILY, RULED (Joe, 2026-08-24): the image first
+# exceeded DVD-5 by 128 MiB when it took on its own emulation stack --
+# qemu-system for both architectures, qemu-img, SeaBIOS, the vgabios
+# set, the option ROMs and OVMF, all already stripped (the device image
+# always was; --disable-debug-info moved the full image and the tools
+# bundle, not this one). The mass is real content doubled by the
+# two-slot geometry, so the ceiling moves to dual-layer DVD-9 --
+# 8,540,000,000 bytes, 8144 MiB -- until either the maintenance slot's
+# duplication is rethought or a slimmer emulator set is ruled. DVD-5
+# remains the target to return to; this line is the debt marker.
 total_mb=$((total_lba / 2048))
-[ "$total_mb" -le 4482 ] || {
-    echo "veron-mkimage: ${total_mb} MiB exceeds the ruled DVD-5 ceiling (4482 MiB)" >&2
+[ "$total_mb" -le 8144 ] || {
+    echo "veron-mkimage: ${total_mb} MiB exceeds the ruled DVD-9 ceiling (8144 MiB)" >&2
     echo "  shrink the staged world; the slot follows it by construction." >&2
     exit 1; }
 
