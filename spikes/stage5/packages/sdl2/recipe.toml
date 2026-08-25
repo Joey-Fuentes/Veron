@@ -10,6 +10,16 @@ srcdir  = "SDL2-2.32.10"
 # the whole GTK stack, and this system declines it). SDL2's Wayland
 # video driver is what puts a qemu window on labwc.
 #
+# AUDIO IS OFF, MEASURED (run 88903036799): SDL's ALSA backend linked
+# statically needs libasound.a, and alsa-lib's configure refuses to
+# build shared and static from one tree ("do not use --enable-shared=yes
+# with --enable-static=yes") -- the one autotools package in this set
+# that does. A static-only alsa-lib would take libasound.so from
+# alsa-utils, ffmpeg, gstreamer and wpewebkit. So SDL_AUDIO is OFF, qemu
+# is built with no audio backend, and a guest has no sound card until a
+# static-only alsa-lib side package with its own libdir exists for sdl2
+# alone. Declined and dated, not deferred silently.
+#
 # ONE STATIC ARCHIVE, PLATFORM LIBRARIES LINKED IN, NO dlopen ANYWHERE.
 # SDL_SHARED is OFF and SDL_STATIC is ON because the consumer is a
 # --static qemu. SDL_WAYLAND_SHARED and SDL_ALSA_SHARED are OFF too --
@@ -67,13 +77,12 @@ crosschecked_against = []
 [deps]
 # wayland supplies wayland-scanner and the wayland-client/-cursor/-egl
 # headers, .pc files and archives; wayland-protocols the XML the scanner
-# reads; libxkbcommon its header, .pc and archive; alsa-lib the ALSA
-# headers and archive. The archive itself carries no DT_NEEDED (it is an
+# reads; libxkbcommon its header, .pc and archive. The archive itself carries no DT_NEEDED (it is an
 # archive); link names what sdl2.pc's Libs.private hands the consumer.
-build        = ["cmake", "ninja", "pkgconf", "wayland", "wayland-protocols", "libxkbcommon", "alsa-lib"]
-link         = ["wayland", "libxkbcommon", "alsa-lib"]
+build        = ["cmake", "ninja", "pkgconf", "wayland", "wayland-protocols", "libxkbcommon"]
+link         = ["wayland", "libxkbcommon"]
 runtime      = []
-optional_off = ["shared", "wayland-shared", "alsa-shared", "x11", "kmsdrm", "opengl", "opengles", "vulkan",
+optional_off = ["shared", "wayland-shared", "audio", "alsa", "x11", "kmsdrm", "opengl", "opengles", "vulkan",
                 "libdecor", "pulseaudio", "pipewire", "jack", "sndio",
                 "libudev", "dbus", "ibus", "fcitx", "joystick", "haptic",
                 "hidapi", "sensor", "power", "libsamplerate", "test",
@@ -85,13 +94,13 @@ configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", 
                    "-DSDL_WAYLAND=ON", "-DSDL_WAYLAND_SHARED=OFF", "-DSDL_WAYLAND_LIBDECOR=OFF",
                    "-DSDL_X11=OFF", "-DSDL_KMSDRM=OFF",
                    "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF",
-                   "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=OFF",
-                   "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF",
+                   "-DSDL_AUDIO=OFF",
+                   "-DSDL_ALSA=OFF", "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF",
                    "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF",
                    "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF",
                    "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF",
                    "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]
-verification    = "wayland-present, alsa-present and no-dynamic-loading read the generated SDL_config.h; static-only asserts no .so shipped; sdl2.pc names the backends it links"
+verification    = "wayland-present and no-dynamic-loading read the generated SDL_config.h; static-only asserts no .so shipped; sdl2.pc names the Wayland backend it links"
 packaged_as     = ["sdl2"]
 deferral        = """
 Internals not reviewed. A windowing and audio abstraction; its consumer here \
@@ -120,8 +129,8 @@ run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
          "-DSDL_WAYLAND=ON", "-DSDL_WAYLAND_SHARED=OFF", "-DSDL_WAYLAND_LIBDECOR=OFF",
          "-DSDL_X11=OFF", "-DSDL_KMSDRM=OFF",
          "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF",
-         "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=OFF",
-         "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF",
+         "-DSDL_AUDIO=OFF",
+         "-DSDL_ALSA=OFF", "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF",
          "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF",
          "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF",
          "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF",
@@ -142,18 +151,13 @@ cwd  = "$S"
 run  = [["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); test -n \"$h\" || { echo VERON-SDL2-NO-GENERATED-CONFIG; find _b -name 'SDL_config*'; exit 1; }; grep -q '^#define SDL_VIDEO_DRIVER_WAYLAND 1' \"$h\" || { echo VERON-SDL2-NO-WAYLAND-DRIVER; grep -n WAYLAND \"$h\"; exit 1; }"]]
 
 [[steps]]
-name = "alsa-present"
-cwd  = "$S"
-run  = [["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); grep -q '^#define SDL_AUDIO_DRIVER_ALSA 1' \"$h\" || { echo VERON-SDL2-NO-ALSA-DRIVER; grep -n ALSA \"$h\"; exit 1; }"]]
-
-[[steps]]
 name = "no-dynamic-loading"
 cwd  = "$S"
 # THE REVERSAL, HELD: the generated header must NOT name a library to
 # dlopen. SDL_VIDEO_DRIVER_WAYLAND_DYNAMIC and SDL_AUDIO_DRIVER_ALSA_DYNAMIC
 # are what SDL defines when it intends to load at runtime; their absence
 # is what "linked statically" means in this tree.
-run  = [["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); ! grep -E '^#define SDL_(VIDEO_DRIVER_WAYLAND|AUDIO_DRIVER_ALSA)_DYNAMIC' \"$h\" || { echo VERON-SDL2-WOULD-DLOPEN; grep -n DYNAMIC \"$h\"; exit 1; }"]]
+run  = [["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); ! grep -E '^#define SDL_(VIDEO_DRIVER_WAYLAND|AUDIO_DRIVER_[A-Z]+)_DYNAMIC' \"$h\" || { echo VERON-SDL2-WOULD-DLOPEN; grep -n DYNAMIC \"$h\"; exit 1; }"]]
 
 [[steps]]
 name = "build"
@@ -171,7 +175,7 @@ name = "static-only"
 cwd  = "$S"
 # THE PROPERTY THE FLAGS PROMISE, CHECKED WHERE IT IS MADE: an archive,
 # a .pc, and no shared object for qemu's --static link to trip over.
-run  = [["sh", "-c", "test -f $D/usr/lib/libSDL2.a && test -f $D/usr/lib/pkgconfig/sdl2.pc && ! ls $D/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la $D/usr/lib; exit 1; }; grep -E '^Libs.private' $D/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lwayland-client' && grep -E '^Libs.private' $D/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lasound' || { echo VERON-SDL2-PC-LACKS-BACKENDS; grep Libs $D/usr/lib/pkgconfig/sdl2.pc; exit 1; }; ! grep -E '^Libs.private' $D/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lEGL' || { echo VERON-SDL2-PC-LINKS-EGL; exit 1; }"]]
+run  = [["sh", "-c", "test -f $D/usr/lib/libSDL2.a && test -f $D/usr/lib/pkgconfig/sdl2.pc && ! ls $D/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la $D/usr/lib; exit 1; }; grep -E '^Libs.private' $D/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lwayland-client' || { echo VERON-SDL2-PC-LACKS-BACKENDS; grep Libs $D/usr/lib/pkgconfig/sdl2.pc; exit 1; }; ! grep -E '^Libs.private' $D/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lEGL' || { echo VERON-SDL2-PC-LINKS-EGL; exit 1; }"]]
 
 [guest]
 test   = [["/usr/bin/pkgconf", "--modversion", "sdl2"]]

@@ -19,8 +19,9 @@
 # STATIC, ALL THE WAY DOWN, AND WHY THAT IS NOW A RULE. --static links
 # pixman, SDL2, libslirp, libfdt, libattr, libcap-ng, glib and pcre2 as
 # archives -- and, since 2026-08-25, SDL2's own backends too:
-# libwayland-client/-cursor/-egl, libxkbcommon and libasound (the
-# overlays that make those archives exist are named in [deps]). The
+# libwayland-client/-cursor/-egl and libxkbcommon (the overlays that
+# make those archives exist are named in [deps]; libasound is not among
+# them -- see sdl2's recipe for why audio is off). The
 # first version let SDL dlopen those at runtime, as every distro's SDL
 # does, and on this image the result was measured: libasound segfaulted
 # at its first call, and libwayland-client went silent after its first
@@ -85,8 +86,8 @@ crosschecked_against = []
 # python-setuptools AND python-wheel ARE CONFIGURE DEPENDENCIES, FOUND BY
 # BUILDING (run 88488793190): qemu's mkvenv builds a non-isolated venv and
 # its [tooling] group expects both from SYSTEM site-packages.
-build        = ["meson", "ninja", "python", "bash", "pkgconf", "python-setuptools", "python-wheel", "glib", "pcre2", "pixman", "zlib", "dtc", "attr", "libcap-ng", "sdl2", "libslirp", "wayland", "libxkbcommon", "alsa-lib", "libffi"]
-link         = ["glib", "pcre2", "pixman", "zlib", "dtc", "attr", "libcap-ng", "sdl2", "libslirp", "wayland", "libxkbcommon", "alsa-lib", "libffi"]
+build        = ["meson", "ninja", "python", "bash", "pkgconf", "python-setuptools", "python-wheel", "glib", "pcre2", "pixman", "zlib", "dtc", "attr", "libcap-ng", "sdl2", "libslirp", "wayland", "libxkbcommon", "libffi"]
+link         = ["glib", "pcre2", "pixman", "zlib", "dtc", "attr", "libcap-ng", "sdl2", "libslirp", "wayland", "libxkbcommon", "libffi"]
 # RUNTIME IS EMPTY BECAUSE THE BINARY IS STATIC, with no dlopen set any
 # more: the GUI reaches for the compositor's socket and /dev/snd, not
 # for a library.
@@ -97,8 +98,11 @@ runtime      = []
 # are ON now: sdl, slirp, kvm (was auto; stated), tools (was default;
 # stated), pixman (was auto; stated). gtk, vnc, opengl, curses stay off:
 # no GTK stack, no VNC consumer, no static EGL, no static ncurses.
-# alsa stays off because SDL owns audio (--audio-drv-list=sdl): qemu's
-# own alsa backend would link libasound.a, which this set does not make.
+# NO AUDIO BACKEND AT ALL (--audio-drv-list= empty), MEASURED: SDL's
+# ALSA path needs libasound.a and alsa-lib refuses to build shared and
+# static together (run 88903036799); qemu's own alsa backend needs the
+# same archive. Guests get no sound card until a static-only alsa-lib
+# side package exists; sdl2's recipe carries the decision.
 # xkbcommon stays off (run 88493588431): it only feeds qemu-keymap, which
 # needs xkeyboard-config data at build time; SDL translates keys itself.
 # modules is off because a static binary cannot dlopen its own plugins.
@@ -113,7 +117,7 @@ optional_off = ["rust", "docs", "guest-agent", "modules", "xkbcommon", "vnc", "g
 [declared]
 configure_flags = ["--prefix=/usr", "--static", "--target-list=aarch64-softmmu,x86_64-softmmu",
                    "--enable-kvm", "--enable-sdl", "--enable-slirp", "--enable-virtfs", "--enable-pixman", "--enable-tools", "--enable-fdt=system",
-                   "--audio-drv-list=sdl",
+                   "--audio-drv-list=",
                    "--disable-modules", "--disable-debug-info", "--disable-install-blobs", "--disable-docs", "--disable-werror",
                    "--disable-guest-agent", "--disable-rust", "--disable-xkbcommon", "--disable-vnc", "--disable-gtk", "--disable-sdl-image",
                    "--disable-opengl", "--disable-alsa", "--disable-pa", "--disable-pipewire", "--disable-curl", "--disable-gnutls", "--disable-gcrypt", "--disable-nettle", "--disable-libssh", "--disable-auth-pam",
@@ -154,7 +158,7 @@ cwd  = "$S"
 env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend", PYTHONHASHSEED = "0" }
 # OUT-OF-TREE IS ENFORCED BY UPSTREAM: configure refuses to run in the
 # source root, so the shape matches meson packages' _b convention.
-run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-softmmu,x86_64-softmmu --enable-kvm --enable-sdl --enable-slirp --enable-virtfs --enable-pixman --enable-tools --enable-fdt=system --audio-drv-list=sdl --disable-modules --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl-image --disable-opengl --disable-alsa --disable-pa --disable-pipewire --disable-curl --disable-gnutls --disable-gcrypt --disable-nettle --disable-libssh --disable-auth-pam --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev"]]
+run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-softmmu,x86_64-softmmu --enable-kvm --enable-sdl --enable-slirp --enable-virtfs --enable-pixman --enable-tools --enable-fdt=system --audio-drv-list= --disable-modules --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl-image --disable-opengl --disable-alsa --disable-pa --disable-pipewire --disable-curl --disable-gnutls --disable-gcrypt --disable-nettle --disable-libssh --disable-auth-pam --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev"]]
 
 [[steps]]
 name = "build"
@@ -222,7 +226,7 @@ cwd  = "$S"
 # Each feature this recipe exists for is asked of the binary rather than
 # of the build log: a display backend that configured itself out would
 # not be in -display help, and that is a green build with no window.
-run  = [["sh", "-c", "Q=$D/usr/bin/qemu-system-x86_64; $Q -display help | grep -qx sdl || { echo VERON-QEMU-NO-SDL-DISPLAY; $Q -display help; exit 1; }; $Q -netdev help | grep -qx user || { echo VERON-QEMU-NO-USER-NETDEV; $Q -netdev help; exit 1; }; $Q -accel help | grep -qx kvm || { echo VERON-QEMU-NO-KVM-ACCEL; $Q -accel help; exit 1; }; $Q -tpmdev help 2>&1 | grep -q emulator || { echo VERON-QEMU-NO-TPM-EMULATOR; $Q -tpmdev help; exit 1; }; $Q -audio-help 2>&1 | grep -qi sdl || $Q -audiodev help 2>&1 | grep -qi sdl || { echo VERON-QEMU-NO-SDL-AUDIO; $Q -audiodev help; exit 1; }; for d in virtio-9p-pci virtio-gpu-pci virtio-keyboard-pci virtio-blk-pci virtio-net-pci tpm-tis tpm-crb usb-tablet ich9-ahci; do $Q -device help | grep -q \"name \\\"$d\\\"\" || { echo VERON-QEMU-DEVICE-MISSING $d; exit 1; }; done && $D/usr/bin/qemu-img --version | head -1 && echo VERON-QEMU-FEATURES-PRESENT"]]
+run  = [["sh", "-c", "Q=$D/usr/bin/qemu-system-x86_64; $Q -display help | grep -qx sdl || { echo VERON-QEMU-NO-SDL-DISPLAY; $Q -display help; exit 1; }; $Q -netdev help | grep -qx user || { echo VERON-QEMU-NO-USER-NETDEV; $Q -netdev help; exit 1; }; $Q -accel help | grep -qx kvm || { echo VERON-QEMU-NO-KVM-ACCEL; $Q -accel help; exit 1; }; $Q -tpmdev help 2>&1 | grep -q emulator || { echo VERON-QEMU-NO-TPM-EMULATOR; $Q -tpmdev help; exit 1; }; for d in virtio-9p-pci virtio-gpu-pci virtio-keyboard-pci virtio-blk-pci virtio-net-pci tpm-tis tpm-crb usb-tablet ich9-ahci; do $Q -device help | grep -q \"name \\\"$d\\\"\" || { echo VERON-QEMU-DEVICE-MISSING $d; exit 1; }; done && $D/usr/bin/qemu-img --version | head -1 && echo VERON-QEMU-FEATURES-PRESENT"]]
 
 [guest]
 test   = [["sh", "-c", "/usr/bin/qemu-system-x86_64 --version | head -1 && /usr/bin/qemu-system-x86_64 -display help | grep -x sdl"]]

@@ -4753,7 +4753,7 @@ package qemu-user 11.0.3
 package sdl2 2.32.10
   group        system
   license      Zlib
-  recipe-sha   d6cfbb0e971bc4fcdc632e377c8934cc8f59efb5fa0a83456a9a1c4aa9f696fd
+  recipe-sha   d63d6ca658338e8cdb5ed5bd52fdc8a9fd5cf5b87f804d6198399fb5a54f1ff4
 
   source
     url        https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz
@@ -4762,10 +4762,10 @@ package sdl2 2.32.10
     correspond none
 
   deps
-    build        alsa-lib, cmake, libxkbcommon, ninja, pkgconf, wayland, wayland-protocols
-    link         alsa-lib, libxkbcommon, wayland
+    build        cmake, libxkbcommon, ninja, pkgconf, wayland, wayland-protocols
+    link         libxkbcommon, wayland
     runtime      -
-    optional_off alsa-shared, ccache, dbus, fcitx, haptic, hidapi, ibus, jack, joystick, kmsdrm, libdecor, libsamplerate, libudev, opengl, opengles, pipewire, power, pulseaudio, rpath, sensor, shared, sndio, test, vulkan, wayland-shared, x11
+    optional_off alsa, audio, ccache, dbus, fcitx, haptic, hidapi, ibus, jack, joystick, kmsdrm, libdecor, libsamplerate, libudev, opengl, opengles, pipewire, power, pulseaudio, rpath, sensor, shared, sndio, test, vulkan, wayland-shared, x11
 
   patches (applied after unpack, in this order)
     0001-wayland-egl-only-with-gl.patch
@@ -4776,26 +4776,23 @@ package sdl2 2.32.10
          argv ["tar", "-xf", "dl/SDL2-2.32.10.tar.gz", "-C", "build/sdl2-2.32.10"]
     [02] configure
          cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_STATIC_PIC=ON", "-DSDL_WAYLAND=ON", "-DSDL_WAYLAND_SHARED=OFF", "-DSDL_WAYLAND_LIBDECOR=OFF", "-DSDL_X11=OFF", "-DSDL_KMSDRM=OFF", "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF", "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=OFF", "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF", "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF", "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF", "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF", "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_STATIC_PIC=ON", "-DSDL_WAYLAND=ON", "-DSDL_WAYLAND_SHARED=OFF", "-DSDL_WAYLAND_LIBDECOR=OFF", "-DSDL_X11=OFF", "-DSDL_KMSDRM=OFF", "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF", "-DSDL_AUDIO=OFF", "-DSDL_ALSA=OFF", "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF", "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF", "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF", "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF", "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]
     [03] wayland-present
          cwd  build/sdl2-2.32.10/SDL2-2.32.10
          argv ["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); test -n \"$h\" || { echo VERON-SDL2-NO-GENERATED-CONFIG; find _b -name 'SDL_config*'; exit 1; }; grep -q '^#define SDL_VIDEO_DRIVER_WAYLAND 1' \"$h\" || { echo VERON-SDL2-NO-WAYLAND-DRIVER; grep -n WAYLAND \"$h\"; exit 1; }"]
-    [04] alsa-present
+    [04] no-dynamic-loading
          cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); grep -q '^#define SDL_AUDIO_DRIVER_ALSA 1' \"$h\" || { echo VERON-SDL2-NO-ALSA-DRIVER; grep -n ALSA \"$h\"; exit 1; }"]
-    [05] no-dynamic-loading
-         cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); ! grep -E '^#define SDL_(VIDEO_DRIVER_WAYLAND|AUDIO_DRIVER_ALSA)_DYNAMIC' \"$h\" || { echo VERON-SDL2-WOULD-DLOPEN; grep -n DYNAMIC \"$h\"; exit 1; }"]
-    [06] build
+         argv ["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); ! grep -E '^#define SDL_(VIDEO_DRIVER_WAYLAND|AUDIO_DRIVER_[A-Z]+)_DYNAMIC' \"$h\" || { echo VERON-SDL2-WOULD-DLOPEN; grep -n DYNAMIC \"$h\"; exit 1; }"]
+    [05] build
          cwd  build/sdl2-2.32.10/SDL2-2.32.10
          argv ["ninja", "-C", "_b"]
-    [07] install
+    [06] install
          cwd  build/sdl2-2.32.10/SDL2-2.32.10
          env  DESTDIR=dest/sdl2
          argv ["ninja", "-C", "_b", "install"]
-    [08] static-only
+    [07] static-only
          cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["sh", "-c", "test -f dest/sdl2/usr/lib/libSDL2.a && test -f dest/sdl2/usr/lib/pkgconfig/sdl2.pc && ! ls dest/sdl2/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la dest/sdl2/usr/lib; exit 1; }; grep -E '^Libs.private' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lwayland-client' && grep -E '^Libs.private' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lasound' || { echo VERON-SDL2-PC-LACKS-BACKENDS; grep Libs dest/sdl2/usr/lib/pkgconfig/sdl2.pc; exit 1; }; ! grep -E '^Libs.private' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lEGL' || { echo VERON-SDL2-PC-LINKS-EGL; exit 1; }"]
+         argv ["sh", "-c", "test -f dest/sdl2/usr/lib/libSDL2.a && test -f dest/sdl2/usr/lib/pkgconfig/sdl2.pc && ! ls dest/sdl2/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la dest/sdl2/usr/lib; exit 1; }; grep -E '^Libs.private' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lwayland-client' || { echo VERON-SDL2-PC-LACKS-BACKENDS; grep Libs dest/sdl2/usr/lib/pkgconfig/sdl2.pc; exit 1; }; ! grep -E '^Libs.private' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lEGL' || { echo VERON-SDL2-PC-LINKS-EGL; exit 1; }"]
 
 ======================================================================
 package shared-mime-info 2.5.1

@@ -109,7 +109,8 @@ else
   # handles std VGA at full resolution. Linux guests get virtio-vga.
   if [ "$windows" = yes ]; then args="$args -display sdl -device VGA"
   else args="$args -display sdl -device virtio-vga"; fi
-  args="$args -audiodev sdl,id=snd0 -device intel-hda -device hda-duplex,audiodev=snd0"
+  # NO SOUND CARD, for now: this qemu has no audio backend (sdl2's recipe
+  # says why -- alsa-lib will not build a static archive beside its .so).
 fi
 
 # ---- firmware ----
