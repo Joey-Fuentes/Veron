@@ -21,19 +21,22 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
-      - name: Install
+      - name: 'AIRLOCK deps: git, python, curl for the in/ phases; bubblewrap is the wall. No make.'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3 git patch file curl make
-      - name: 'PREREQS: stages 2 and 3 aarch64, rebuilt to their records'
+          sudo apt-get install -y --no-install-recommends python3 git curl bubblewrap build-essential
+          sh tools/airlock-busybox.sh
+      - name: 'PREREQS, IN THE BOX: stages 2 and 3 aarch64, rebuilt to their records'
         run: |
-          ./stages/2-pico-c/verify.sh
+          sh stages/box.sh stages/2-pico-c/verify.sh
           sh stages/3-micro-c/build.sh in
-          sh stages/3-micro-c/build.sh chain
-      - name: 'CROSS in/: the musl source, mirrored, digest-pinned'
+          sh stages/box.sh stages/3-micro-c/build.sh chain
+      - name: 'CROSS in/ (airlock): the musl source, mirrored, digest-pinned'
         run: sh stages/3-micro-c/cross-amd64.sh in
-      - name: 'CROSS chain: rung, cross 1-3, tcc-amd64'
-        run: sh stages/3-micro-c/cross-amd64.sh chain
+      - name: 'CROSS chain, IN THE BOX: rung, cross 1-3, tcc-amd64 -- musl by hand, no make'
+        run: sh stages/box.sh stages/3-micro-c/cross-amd64.sh chain
+      - name: 'BUDGET: what the box held, by hash'
+        run: cat out/box/BUDGET
       - uses: actions/upload-artifact@v4
         with:
           name: stage-3-x86_64

@@ -11,7 +11,8 @@
 # spikes/elf/elf, read-only), which is itself verified on every push by its
 # own workflow. NO host assembler or linker is needed to derive -- more in
 # the project's spirit than the old as+ld path, and it runs anywhere:
-# natively on aarch64, or on any host via spikes/toolbox/qemu-aarch64-static.
+# natively on aarch64, or on any host via qemu-aarch64-static (the tools
+# bundle ships ours; stages/box.sh puts it in the box).
 #
 # The as+ld bounded-diff check (all divergence from a fresh binutils build
 # must be the .bss-referencing adr words) runs ADDITIONALLY when `as` exists
@@ -35,6 +36,21 @@ EW_SRC="$HERE/elf-wrapper-arm64.s"
 XL="$ROOT/tools/s0_selfhost.py"
 BOOT_AS="$ROOT/spikes/stage0-as/stage0-as"   # read-only oracle bootstrap
 BOOT_EW="$ROOT/spikes/elf/elf"
+
+# `airlock` -- host side, python: lint the .s sources, translate them, write
+# the committed .s0 files, stop. Run it when the .s change; CI runs it before
+# the box and refuses a dirty tree, so the committed translation can never
+# lag the source.
+if [ "${1:-}" = airlock ]; then
+  python3 "$XL" lint "$SA_SRC" && python3 "$XL" lint "$EW_SRC"
+  python3 "$XL" xlate "$SA_SRC" "$HERE/self-assembler-arm64.s0" >/dev/null
+  python3 "$XL" xlate "$EW_SRC" "$HERE/elf-wrapper-arm64.s0" >/dev/null
+  for f in self-assembler-arm64.s0 elf-wrapper-arm64.s0; do
+    grep -q '^###' "$HERE/$f" && { echo "FAIL: $f has untranslatable lines"; exit 1; }
+    echo "  $f: $(wc -c < "$HERE/$f") bytes"
+  done
+  exit 0
+fi
 ORACLE_S1="$ROOT/spikes/stage1-as/stage1-as.s0"
 ORACLE_S2="$ROOT/spikes/stage2-pico-c/stage2-pico-c.s1"
 
@@ -47,7 +63,15 @@ ORACLE_S2="$ROOT/spikes/stage2-pico-c/stage2-pico-c.s1"
 #     handles static ELFs; require it there. (pkg install proot)
 #   - anything else: the toolbox qemu
 # VERON_RUNNER overrides all three.
-if [ -n "${VERON_RUNNER:-}" ]; then RUN="$VERON_RUNNER"
+# THE RUNNER, AND THE SEAL. Inside stages/box.sh the box sets VERON_BOX=1 and
+# VERON_RUNNER to the in-box qemu (empty on an aarch64 host); that is the
+# official path, on CI, on Veron and on any Linux alike, and the only tools
+# that resolve are the box's. Run bare, this script still works -- for a
+# quick look, on Termux through proot -- and SAYS SO, because bare means the
+# host's tools are reachable and nothing here is measured against a budget.
+if [ -n "${VERON_BOX:-}" ]; then
+  RUN="${VERON_RUNNER:-}"
+elif [ -n "${VERON_RUNNER:-}" ]; then RUN="$VERON_RUNNER"
 elif [ "$(uname -o 2>/dev/null)" = Android ]; then
   command -v proot >/dev/null 2>&1 || {
     echo "FAIL: Android blocks direct exec of static binaries (linker64"
@@ -55,16 +79,14 @@ elif [ "$(uname -o 2>/dev/null)" = Android ]; then
     echo "      or set VERON_RUNNER to a loader of your choice."; exit 1; }
   RUN=proot
 elif [ "$(uname -m)" = aarch64 ]; then RUN=""
-elif [ -x "$ROOT/spikes/toolbox/qemu-aarch64-static" ]; then
-  RUN="$ROOT/spikes/toolbox/qemu-aarch64-static"
-elif command -v qemu-aarch64-static >/dev/null 2>&1; then
-  RUN="qemu-aarch64-static"
-elif command -v qemu-aarch64 >/dev/null 2>&1; then
-  RUN="qemu-aarch64"
-else
-  echo "FAIL: not aarch64 and no qemu-aarch64 found (toolbox or PATH)."; exit 1
-fi
+elif command -v qemu-aarch64-static >/dev/null 2>&1; then RUN="qemu-aarch64-static"
+elif command -v qemu-aarch64 >/dev/null 2>&1; then RUN="qemu-aarch64"
+else echo "FAIL: need aarch64, or qemu-aarch64-static on PATH (the tools bundle ships one)"; exit 1; fi
+[ -n "${VERON_BOX:-}" ] || echo "UNSEALED: running on the host, not in stages/box.sh -- nothing below is held to a budget"
 run() { ${RUN:+"$RUN"} "$@"; }
+# ELF e_machine without file(1) -- busybox has no file applet. 0xB7 aarch64, 0x3E x86_64.
+elf_machine() { od -An -tx1 -j18 -N1 "$1" 2>/dev/null | tr -d ' \n'; }
+
 
 [ -x "$BOOT_AS" ] && [ -x "$BOOT_EW" ] || {
   echo "FAIL: committed bootstrap pair missing/not executable:"; \
@@ -73,13 +95,28 @@ run() { ${RUN:+"$RUN"} "$@"; }
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 cd "$W"
 
-echo "== 1. lint =="
-python3 "$XL" lint "$SA_SRC"
-python3 "$XL" lint "$EW_SRC"
-
-echo "== 2. mechanical translation =="
-python3 "$XL" xlate "$SA_SRC" sa.s0 >/dev/null
-python3 "$XL" xlate "$EW_SRC" ew.s0 >/dev/null
+# THE TRANSLATION IS COMMITTED, AND THE BOX READS THE COMMITTED FORM. The
+# .s sources are the readable form; the .s0 the bootstrap assembler eats is
+# their mechanical translation by tools/s0_selfhost.py -- python, which the
+# box does not hold and must not, since the translation shapes bytes. So
+# the .s0 files are committed beside the .s, the `airlock` phase (host)
+# lints and regenerates them and refuses a byte of drift, and `verify` (in
+# the box) reads the committed .s0 only. Same move as tccdefs_.h in stage 3.
+echo "== 1+2. lint + mechanical translation: committed .s0, checked =="
+[ -s "$HERE/self-assembler-arm64.s0" ] && [ -s "$HERE/elf-wrapper-arm64.s0" ] \
+  || { echo "FAIL: committed .s0 translations missing -- run: rebaseline.sh airlock"; exit 1; }
+if command -v python3 >/dev/null 2>&1 && [ -z "${VERON_BOX:-}" ]; then
+  python3 "$XL" lint "$SA_SRC"
+  python3 "$XL" lint "$EW_SRC"
+  python3 "$XL" xlate "$SA_SRC" sa.gen.s0 >/dev/null
+  python3 "$XL" xlate "$EW_SRC" ew.gen.s0 >/dev/null
+  cmp -s sa.gen.s0 "$HERE/self-assembler-arm64.s0" && cmp -s ew.gen.s0 "$HERE/elf-wrapper-arm64.s0" \
+    || { echo "FAIL: the committed .s0 files do not match a fresh translation of the .s sources -- review, then commit the regenerated ones"; exit 1; }
+  echo "  translations regenerated and identical to the committed .s0"
+else
+  echo "  (in the box: committed .s0 taken as is; the airlock phase re-proves them)"
+fi
+cp "$HERE/self-assembler-arm64.s0" sa.s0; cp "$HERE/elf-wrapper-arm64.s0" ew.s0
 for f in sa.s0 ew.s0; do
   if grep -q '^###' "$f"; then
     echo "FAIL: $f has untranslatable lines:"; grep '^###' "$f" | sed 's/^/    /'

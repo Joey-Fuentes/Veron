@@ -195,6 +195,32 @@ things this project wrote. Design, including a bare-metal ARM64 image that
 boots under QEMU and on hardware, is in
 [`spikes/builder/DESIGN.md`](spikes/builder/DESIGN.md).
 
+**A CORRECTION, DATED 2026-08-25, ABOUT WHERE THE ABOVE WAS TRUE.** It was
+true of the spike workflows that assembled a box. It was NOT true of the
+numbered stage 1-3 jobs: `1-self-assembly-verify`, `2-pico-c-verify`,
+`3-micro-c-build` and `3-cross-amd64` ran their scripts on the bare runner,
+and the scripts -- extracted from the sealed spike with the seal left
+behind -- leaned on GNU patch (with fuzz), GNU tar, GNU sed, coreutils and,
+for the x86_64 musl, the runner's `make`, none of it enumerated. The first
+host that held the scripts to the stated budget was a Veron image, whose
+`patch` is busybox. The fix is structural, not a list of substitutions:
+`stages/box.sh` runs each stage script INSIDE `bwrap` with `PATH=/box/bin`
+holding busybox and, off-aarch64, `qemu-aarch64-static`, both by hash in
+`out/box/BUDGET`; a script that says `make` now fails "not found". musl is
+built by hand from its Makefile's own rules (relative paths -- the
+make-driven build had written each host's absolute source path into every
+object, three hosts, three `libc.a` digests, one compiler). tcc is the
+pristine pin plus one strict patch plus two files we write or generate and
+re-prove per run; the pre-configured toolbox tarball is gone. Same
+`box.sh`, same scripts, same busybox bytes on CI, on Veron and on any
+Linux: the records are the proof the host did not matter.
+
+Tier 2 is **substitutable, recorded, non-load-bearing**: the artifacts are
+a function of the seed, the pinned sources and the scripts, not of which
+busybox moved the bytes, so a foreign busybox is recorded rather than
+refused -- a different driver reproducing the same records is the claim,
+proven.
+
 **READ THAT LAST SENTENCE CORRECTLY, IN BOTH DIRECTIONS.**
 
 busybox is not a borrowed binary. It is fetched as pinned source, verified

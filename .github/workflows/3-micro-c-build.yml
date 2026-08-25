@@ -33,20 +33,17 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
-      - name: Install (airlock deps for the scripts)
+      - name: 'AIRLOCK deps: git and python for the in/ phase only; nothing here enters the box'
         run: |
           sudo apt-get update
-          # `patch` is gone from this list on purpose (2026-08-25): the build
-          # applies ONE condensed patch by strict git apply. If it ever needs
-          # patch(1) again, that is a stale patch to regenerate with
-          # stages/3-micro-c/tcc/condense.sh, not a package to install.
-          sudo apt-get install -y --no-install-recommends python3 git file
-      - name: 'STAGE 2: rebuild to records (stage 3 consumes out/2)'
-        run: ./stages/2-pico-c/verify.sh
-      - name: 'STAGE 3 in/: materialize inputs (adopted-first; else pin-true fetch)'
+          sudo apt-get install -y --no-install-recommends python3 git bubblewrap build-essential curl
+          sh tools/airlock-busybox.sh
+      - name: 'STAGE 2: rebuild to records, IN THE BOX (stage 3 consumes out/2)'
+        run: sh stages/box.sh stages/2-pico-c/verify.sh
+      - name: 'STAGE 3 in/ (airlock): pinned clone, one strict patch, generated files re-proven'
         run: sh stages/3-micro-c/build.sh in
-      - name: 'STAGE 3 chain: seed-rooted micro-c, M1, hex2, then tcc-arm64'
-        run: sh stages/3-micro-c/build.sh chain
+      - name: 'STAGE 3 chain, IN THE BOX: seed-rooted micro-c, M1, hex2, then tcc-arm64'
+        run: sh stages/box.sh stages/3-micro-c/build.sh chain
       - name: 'THE NUMBERS: every artifact, exact size, sha, mode'
         run: |
           set -eu

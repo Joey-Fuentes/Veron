@@ -1,0 +1,1073 @@
+:!!
+adr x19 @38980
+mov x21 0
+:!"
+mov x0 0
+add x1 x19 x21
+mov x2 67108864
+sub x2 x2 x21
+cmp x2 0
+b.le !$
+mov x8 63
+svc
+cmp x0 0
+b.le !$
+add x21 x21 x0
+b !"
+:!$
+mov x2 67108864
+cmp x21 x2
+b.lt !%
+mov x0 2
+adr x1 @3544
+mov x2 39
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
+:!%
+adr x27 @3632
+mov x23 1
+:!&
+mov x20 0
+mov x22 0
+:!'
+bl "4
+cmp x20 x21
+b.ge !(
+mov x28 x20
+mov x17 0
+ldrb w0 x19 x20
+cmp w0 35
+b.eq !.
+cmp w0 58
+b.eq !/
+cmp w0 46
+b.eq !0
+cmp w0 109
+b.eq !6
+cmp w0 97
+b.eq !5
+cmp w0 99
+b.eq !@
+cmp w0 98
+b.eq !W
+cmp w0 108
+b.eq !B
+cmp w0 115
+b.eq !G
+cmp w0 114
+b.eq !a
+cmp w0 111
+b.eq !b
+cmp w0 117
+b.eq !h
+cmp w0 101
+b.eq !d
+b !*
+:!(
+cmp x23 2
+b.eq !)
+mov x23 2
+b !&
+:!)
+mov x0 0
+mov x8 93
+svc
+:!*
+mov x0 2
+adr x1 @3583
+mov x2 26
+mov x8 64
+svc
+mov x24 x28
+:!+
+cmp x24 x21
+b.ge !-
+ldrb w10 x19 x24
+cmp w10 10
+b.eq !-
+add x24 x24 1
+b !+
+:!-
+add x1 x19 x28
+sub x2 x24 x28
+mov x0 2
+mov x8 64
+svc
+mov x0 2
+adr x1 @3609
+mov x2 1
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
+:!.
+cmp x20 x21
+b.ge !'
+ldrb w10 x19 x20
+add x20 x20 1
+cmp w10 10
+b.ne !.
+b !'
+:!/
+add x20 x20 1
+bl "'
+add x0 x27 x0
+str w22 x0
+b !'
+:!0
+add x2 x20 1
+ldrb w10 x19 x2
+cmp w10 98
+b.eq !1
+cmp w10 97
+b.eq !2
+b !*
+:!1
+add x20 x20 5
+bl "4
+bl "7
+mov w9 w0
+bl "=
+b !'
+:!2
+add x20 x20 6
+bl "4
+ldrb w0 x19 x20
+cmp w0 34
+b.ne !*
+add x20 x20 1
+:!3
+cmp x20 x21
+b.ge !'
+ldrb w0 x19 x20
+add x20 x20 1
+cmp w0 34
+b.eq !'
+cmp w0 92
+b.ne !4
+ldrb w0 x19 x20
+add x20 x20 1
+cmp w0 110
+b.ne !4
+mov w0 10
+:!4
+mov w9 w0
+bl "=
+b !3
+:!5
+add x2 x20 1
+ldrb w10 x19 x2
+cmp w10 110
+b.eq !c
+cmp w10 115
+b.eq !i
+add x2 x20 2
+ldrb w10 x19 x2
+cmp w10 100
+b.eq !;
+cmp w10 114
+b.eq !=
+b !*
+:!6
+add x2 x20 1
+ldrb w10 x19 x2
+cmp w10 117
+b.eq !p
+add x2 x20 3
+ldrb w10 x19 x2
+cmp w10 107
+b.eq !o
+cmp w10 110
+b.eq !7
+add x20 x20 3
+bl !~
+mov w24 w0
+bl "4
+ldrb w0 x19 x20
+cmp w0 120
+b.eq !:
+cmp w0 119
+b.eq !:
+bl "7
+mov w1 3531603968
+b !8
+:!7
+add x20 x20 4
+bl !~
+mov w24 w0
+bl "4
+bl "7
+mov w1 2457862144
+:!8
+mov w13 0
+mov w11 65535
+and w12 w0 w11
+cmp w12 0
+b.ne !9
+cmp w0 0
+b.eq !9
+lsr w0 w0 16
+mov w13 1
+:!9
+lsl w9 w0 5
+orr w9 w9 w13 21
+orr w9 w9 w1
+orr w9 w9 w24
+bl ":
+b !'
+:!:
+add x20 x20 1
+bl "7
+mov w9 992
+movk w9 43520 16
+orr w9 w9 w0 16
+orr w9 w9 w24
+bl ":
+b !'
+:!;
+add x20 x20 3
+bl !~
+mov w24 w0
+bl !~
+mov w25 w0
+bl "4
+ldrb w0 x19 x20
+cmp w0 120
+b.eq !<
+cmp w0 119
+b.eq !<
+bl "7
+lsl w9 w0 10
+mov w1 2432696320
+orr w9 w9 w1
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ":
+b !'
+:!<
+bl !~
+mov w9 2332033024
+orr w9 w9 w0 16
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ":
+b !'
+:!=
+add x20 x20 3
+bl !~
+mov w24 w0
+bl "4
+ldrb w0 x19 x20
+cmp w0 64
+b.ne !>
+add x2 x20 1
+ldrb w2 x19 x2
+cmp w2 48
+b.lt !>
+cmp w2 57
+b.gt !>
+add x20 x20 1
+bl "7
+mov w1 w0
+b !?
+:!>
+bl "'
+add x1 x27 x0
+ldr w1 x1
+:!?
+sub w1 w1 w22
+mov w2 3
+and w2 w1 w2
+asr w3 w1 2
+mov w13 65535
+movk w13 7 16
+and w3 w3 w13
+mov w9 268435456
+orr w9 w9 w2 29
+orr w9 w9 w3 5
+orr w9 w9 w24
+bl ";
+b !'
+:!@
+add x20 x20 3
+bl !~
+mov w24 w0
+bl "4
+ldrb w0 x19 x20
+cmp w0 120
+b.eq !A
+cmp w0 119
+b.eq !A
+bl "7
+lsl w9 w0 10
+mov w1 4043309056
+orr w9 w9 w1
+orr w9 w9 w24 5
+mov w1 31
+orr w9 w9 w1
+bl ":
+b !'
+:!A
+add x20 x20 1
+bl "7
+mov w9 3942645760
+orr w9 w9 w0 16
+orr w9 w9 w24 5
+mov w0 31
+orr w9 w9 w0
+bl ":
+b !'
+:!B
+add x2 x20 1
+ldrb w10 x19 x2
+cmp w10 115
+b.eq !C
+add x2 x20 3
+ldrb w10 x19 x2
+cmp w10 98
+b.eq !D
+cmp w10 104
+b.eq !N
+cmp w10 115
+b.eq !P
+b !E
+:!C
+add x2 x20 2
+ldrb w10 x19 x2
+cmp w10 114
+b.eq !f
+b !e
+:!D
+add x20 x20 4
+bl !~
+mov w24 w0
+bl !~
+mov w25 w0
+bl !~
+mov w9 945815552
+movk w9 26624 0
+orr w9 w9 w0 16
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ";
+b !'
+:!E
+add x20 x20 3
+bl "4
+ldrb w10 x19 x20
+mov w9 3107979264
+cmp w10 120
+b.ne !F
+mov w9 4181721088
+:!F
+bl !~
+mov w24 w0
+bl !~
+orr w9 w9 w0 5
+orr w9 w9 w24
+b !R
+:!G
+add x2 x20 1
+ldrb w10 x19 x2
+cmp w10 118
+b.eq !H
+cmp w10 117
+b.eq !I
+cmp w10 116
+b.eq !K
+cmp w10 100
+b.eq !g
+b !*
+:!H
+add x20 x20 3
+mov w9 1
+movk w9 54272 16
+bl ";
+b !'
+:!I
+add x20 x20 3
+bl !~
+mov w24 w0
+bl !~
+mov w25 w0
+bl "4
+ldrb w0 x19 x20
+cmp w0 120
+b.eq !J
+cmp w0 119
+b.eq !J
+bl "7
+lsl w9 w0 10
+mov w1 3506438144
+orr w9 w9 w1
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ":
+b !'
+:!J
+bl !~
+mov w9 3405774848
+orr w9 w9 w0 16
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ":
+b !'
+:!K
+add x2 x20 3
+ldrb w10 x19 x2
+cmp w10 98
+b.eq !U
+cmp w10 104
+b.eq !O
+b !L
+:!L
+add x20 x20 3
+bl "4
+ldrb w10 x19 x20
+mov w9 3103784960
+cmp w10 120
+b.ne !M
+mov w9 4177526784
+:!M
+bl !~
+mov w24 w0
+bl !~
+orr w9 w9 w0 5
+orr w9 w9 w24
+b !R
+:!N
+add x20 x20 4
+mov w9 2034237440
+b !Q
+:!O
+add x20 x20 4
+mov w9 2030043136
+b !Q
+:!P
+add x2 x20 4
+ldrb w10 x19 x2
+add x20 x20 5
+mov w9 964689920
+cmp w10 98
+b.eq !Q
+cmp w10 104
+b.ne !*
+mov w9 2038431744
+:!Q
+bl !~
+mov w24 w0
+bl !~
+orr w9 w9 w0 5
+orr w9 w9 w24
+bl ";
+b !'
+:!R
+bl "/
+cmp x17 0
+b.ne !S
+lsr w0 w0 3
+b !T
+:!S
+lsr w0 w0 2
+:!T
+orr w9 w9 w0 10
+bl ";
+b !'
+:!U
+add x20 x20 4
+bl !~
+mov w24 w0
+bl !~
+mov w25 w0
+bl "(
+cmp w11 0
+b.eq !V
+mov w9 941621248
+movk w9 26624 0
+orr w9 w9 w0 16
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ";
+b !'
+:!V
+mov w9 956301312
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ";
+b !'
+:!W
+add x2 x20 1
+ldrb w10 x19 x2
+cmp w10 46
+b.eq !q
+cmp w10 108
+b.eq !Z
+cmp w10 114
+b.eq !_
+add x20 x20 1
+bl "4
+ldrb w0 x19 x20
+cmp w0 64
+b.ne !X
+add x2 x20 1
+ldrb w2 x19 x2
+cmp w2 48
+b.lt !X
+cmp w2 57
+b.gt !X
+add x20 x20 1
+bl "7
+mov w1 w0
+b !Y
+:!X
+bl "'
+add x1 x27 x0
+ldr w1 x1
+:!Y
+sub w1 w1 w22
+asr w1 w1 2
+mov w13 65535
+movk w13 1023 16
+and w1 w1 w13
+mov w9 335544320
+orr w9 w9 w1
+bl ";
+b !'
+:!Z
+add x2 x20 2
+ldrb w10 x19 x2
+cmp w10 114
+b.eq !`
+add x20 x20 2
+bl "4
+ldrb w0 x19 x20
+cmp w0 64
+b.ne !\
+add x2 x20 1
+ldrb w2 x19 x2
+cmp w2 48
+b.lt !\
+cmp w2 57
+b.gt !\
+add x20 x20 1
+bl "7
+mov w1 w0
+b !^
+:!\
+bl "'
+add x1 x27 x0
+ldr w1 x1
+:!^
+sub w1 w1 w22
+asr w1 w1 2
+mov w13 65535
+movk w13 1023 16
+and w1 w1 w13
+mov w9 2483027968
+orr w9 w9 w1
+bl ";
+b !'
+:!_
+add x20 x20 2
+bl !~
+mov w9 3592355840
+orr w9 w9 w0 5
+bl ";
+b !'
+:!`
+add x20 x20 3
+bl !~
+mov w9 3594452992
+orr w9 w9 w0 5
+bl ";
+b !'
+:!a
+add x20 x20 3
+mov w9 960
+movk w9 54879 16
+bl ";
+b !'
+:!b
+add x20 x20 3
+bl !~
+mov w24 w0
+bl !~
+mov w25 w0
+bl !~
+mov w9 2852126720
+orr w9 w9 w0 16
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl "/
+orr w9 w9 w0 10
+bl ":
+b !'
+:!c
+add x20 x20 3
+bl !~
+mov w24 w0
+bl !~
+mov w25 w0
+bl !~
+mov w9 2315255808
+orr w9 w9 w0 16
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ":
+b !'
+:!d
+add x20 x20 3
+bl !~
+mov w24 w0
+bl !~
+mov w25 w0
+bl !~
+mov w9 3388997632
+orr w9 w9 w0 16
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ":
+b !'
+:!e
+add x20 x20 3
+mov w26 8192
+mov w16 1
+b !j
+:!f
+add x20 x20 3
+mov w26 9216
+mov w16 2
+b !j
+:!g
+add x20 x20 4
+mov w26 3072
+mov w16 0
+b !j
+:!h
+add x20 x20 4
+mov w26 2048
+mov w16 0
+b !j
+:!i
+add x20 x20 3
+mov w26 10240
+mov w16 3
+:!j
+bl !~
+mov w24 w0
+bl !~
+mov w25 w0
+bl "(
+cmp w11 0
+b.eq !k
+mov w9 2596274176
+orr w9 w9 w26
+orr w9 w9 w0 16
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ":
+b !'
+:!k
+cmp x17 0
+b.eq !*
+bl "/
+mov w13 31
+cmp w16 0
+b.eq !*
+cmp w16 1
+b.ne !l
+mov w11 32
+sub w11 w11 w0
+and w11 w11 w13
+sub w12 w13 w0
+mov w9 1392508928
+b !n
+:!l
+mov w11 w0
+mov w12 w13
+cmp w16 2
+b.eq !m
+mov w9 318767104
+b !n
+:!m
+mov w9 1392508928
+:!n
+orr w9 w9 w11 16
+orr w9 w9 w12 10
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ":
+b !'
+:!o
+add x20 x20 4
+bl !~
+mov w24 w0
+bl "4
+bl "7
+mov w25 w0
+bl "4
+bl "7
+lsr w0 w0 4
+mov w9 4068474880
+orr w9 w9 w0 21
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ":
+b !'
+:!p
+add x20 x20 3
+bl !~
+mov w24 w0
+bl !~
+mov w25 w0
+bl !~
+mov w9 2600468480
+movk w9 31744 0
+orr w9 w9 w0 16
+orr w9 w9 w25 5
+orr w9 w9 w24
+bl ":
+b !'
+:!q
+add x20 x20 2
+ldrb w2 x19 x20
+add x3 x20 1
+ldrb w3 x19 x3
+add x20 x20 2
+cmp w2 101
+b.ne !r
+cmp w3 113
+b.ne !*
+mov w26 0
+b !{
+:!r
+cmp w2 110
+b.ne !s
+cmp w3 101
+b.ne !*
+mov w26 1
+b !{
+:!s
+cmp w2 108
+b.ne !w
+cmp w3 116
+b.ne !t
+mov w26 11
+b !{
+:!t
+cmp w3 101
+b.ne !u
+mov w26 13
+b !{
+:!u
+cmp w3 115
+b.ne !v
+mov w26 9
+b !{
+:!v
+cmp w3 111
+b.ne !*
+mov w26 3
+b !{
+:!w
+cmp w2 103
+b.ne !y
+cmp w3 101
+b.ne !x
+mov w26 10
+b !{
+:!x
+cmp w3 116
+b.ne !*
+mov w26 12
+b !{
+:!y
+cmp w2 104
+b.ne !*
+cmp w3 105
+b.ne !z
+mov w26 8
+b !{
+:!z
+cmp w3 115
+b.ne !*
+mov w26 2
+:!{
+bl "4
+ldrb w0 x19 x20
+cmp w0 64
+b.ne !|
+add x2 x20 1
+ldrb w2 x19 x2
+cmp w2 48
+b.lt !|
+cmp w2 57
+b.gt !|
+add x20 x20 1
+bl "7
+mov w1 w0
+b !}
+:!|
+bl "'
+add x1 x27 x0
+ldr w1 x1
+:!}
+sub w1 w1 w22
+asr w1 w1 2
+mov w13 65535
+movk w13 7 16
+and w1 w1 w13
+mov w9 1409286144
+orr w9 w9 w1 5
+orr w9 w9 w26
+bl ";
+b !'
+:!~
+cmp x20 x21
+b.ge ""
+ldrb w10 x19 x20
+cmp w10 32
+b.eq "!
+cmp w10 9
+b.eq "!
+cmp w10 10
+b.eq "!
+cmp w10 13
+b.eq "!
+b ""
+:"!
+add x20 x20 1
+b !~
+:""
+ldrb w10 x19 x20
+cmp w10 119
+b.ne "$
+mov x17 1
+:"$
+add x20 x20 1
+mov w0 0
+:"%
+cmp x20 x21
+b.ge "&
+ldrb w10 x19 x20
+cmp w10 48
+b.lt "&
+cmp w10 57
+b.gt "&
+sub w10 w10 48
+mov w11 10
+mul w0 w0 w11
+add w0 w0 w10
+add x20 x20 1
+b "%
+:"&
+ret
+:"'
+ldrb w0 x19 x20
+add x20 x20 1
+ldrb w10 x19 x20
+add x20 x20 1
+sub w0 w0 33
+sub w10 w10 33
+mov w11 94
+mul w0 w0 w11
+add w0 w0 w10
+lsl w0 w0 2
+ret
+:"(
+mov x14 x30
+mov x15 x20
+:")
+cmp x20 x21
+b.ge ".
+ldrb w10 x19 x20
+cmp w10 32
+b.eq "*
+cmp w10 9
+b.eq "*
+b "+
+:"*
+add x20 x20 1
+b ")
+:"+
+cmp w10 119
+b.eq "-
+cmp w10 120
+b.ne ".
+:"-
+bl !~
+mov w11 1
+mov x30 x14
+ret
+:".
+mov x20 x15
+mov w0 0
+mov w11 0
+mov x30 x14
+ret
+:"/
+mov x12 x20
+:"0
+cmp x20 x21
+b.ge "3
+ldrb w10 x19 x20
+cmp w10 32
+b.eq "1
+cmp w10 9
+b.eq "1
+b "2
+:"1
+add x20 x20 1
+b "0
+:"2
+cmp w10 48
+b.lt "3
+cmp w10 57
+b.gt "3
+b "7
+:"3
+mov x20 x12
+mov w0 0
+ret
+:"4
+cmp x20 x21
+b.ge "6
+ldrb w10 x19 x20
+cmp w10 32
+b.eq "5
+cmp w10 9
+b.eq "5
+cmp w10 10
+b.eq "5
+cmp w10 13
+b.eq "5
+b "6
+:"5
+add x20 x20 1
+b "4
+:"6
+ret
+:"7
+mov w0 0
+:"8
+cmp x20 x21
+b.ge "9
+ldrb w10 x19 x20
+cmp w10 48
+b.lt "9
+cmp w10 57
+b.gt "9
+sub w10 w10 48
+mov w11 10
+mul w0 w0 w11
+add w0 w0 w10
+add x20 x20 1
+b "8
+:"9
+ret
+:":
+cmp x17 0
+b.eq ";
+mov x13 65535
+movk x13 32767 16
+and x9 x9 x13
+:";
+cmp x23 2
+b.ne "<
+adr x10 @38976
+str w9 x10
+mov x0 1
+mov x1 x10
+mov x2 4
+mov x8 64
+svc
+:"<
+add x22 x22 4
+ret
+:"=
+cmp x23 2
+b.ne ">
+adr x10 @38976
+strb w9 x10
+mov x0 1
+mov x1 x10
+mov x2 1
+mov x8 64
+svc
+:">
+add x22 x22 1
+ret
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 115
+.byte 101
+.byte 108
+.byte 102
+.byte 45
+.byte 97
+.byte 115
+.byte 115
+.byte 101
+.byte 109
+.byte 98
+.byte 108
+.byte 101
+.byte 114
+.byte 58
+.byte 32
+.byte 105
+.byte 110
+.byte 112
+.byte 117
+.byte 116
+.byte 32
+.byte 101
+.byte 120
+.byte 99
+.byte 101
+.byte 101
+.byte 100
+.byte 115
+.byte 32
+.byte 73
+.byte 78
+.byte 66
+.byte 85
+.byte 70
+.byte 95
+.byte 83
+.byte 90
+.byte 10
+.byte 115
+.byte 101
+.byte 108
+.byte 102
+.byte 45
+.byte 97
+.byte 115
+.byte 115
+.byte 101
+.byte 109
+.byte 98
+.byte 108
+.byte 101
+.byte 114
+.byte 58
+.byte 32
+.byte 114
+.byte 101
+.byte 106
+.byte 101
+.byte 99
+.byte 116
+.byte 101
+.byte 100
+.byte 58
+.byte 32
+.byte 10

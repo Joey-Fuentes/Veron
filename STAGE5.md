@@ -1514,7 +1514,7 @@ from apt; and the UEFI firmware is the prebuilt blob qemu vendors, covered by
 the qemu pin but built by nobody here. Both are fixed by the same move: qemu as
 a stage-5 package — its six build dependencies, glib, pixman, zlib, meson,
 ninja and python, are **already recipes** — plus EDK2 from source so `-bios`
-loads something this project compiled. See `spikes/toolbox/README.md`.
+loads something this project compiled (the tools bundle carries ours).
 
 **B5.5 — it boots to a login.** Not packages, and the biggest unknown in the
 project: dinit service definitions, the `/etc` skeleton, getty autologin, the

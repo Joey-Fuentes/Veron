@@ -27,10 +27,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
-      - name: Install
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3
-      - name: 'GATE: rebuild via Stage 1, match the records, run the canary'
-        run: ./stages/2-pico-c/verify.sh
+      - name: 'AIRLOCK: the busybox the box will use, from the pin (bubblewrap is the wall)'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap build-essential curl
+          sh tools/airlock-busybox.sh
+      - name: 'GATE: rebuild via Stage 1, match the records, run the canary -- IN THE BOX'
+        run: sh stages/box.sh stages/2-pico-c/verify.sh
 
       # Attest the record file AND the artifacts this run just rebuilt to the
       # recorded hashes -- so `gh attestation verify` on out/2 artifacts (or

@@ -47,7 +47,15 @@ PINTRUE=yes
 #     handles static ELFs; require it there. (pkg install proot)
 #   - anything else: the toolbox qemu
 # VERON_RUNNER overrides all three.
-if [ -n "${VERON_RUNNER:-}" ]; then RUN="$VERON_RUNNER"
+# THE RUNNER, AND THE SEAL. Inside stages/box.sh the box sets VERON_BOX=1 and
+# VERON_RUNNER to the in-box qemu (empty on an aarch64 host); that is the
+# official path, on CI, on Veron and on any Linux alike, and the only tools
+# that resolve are the box's. Run bare, this script still works -- for a
+# quick look, on Termux through proot -- and SAYS SO, because bare means the
+# host's tools are reachable and nothing here is measured against a budget.
+if [ -n "${VERON_BOX:-}" ]; then
+  RUN="${VERON_RUNNER:-}"
+elif [ -n "${VERON_RUNNER:-}" ]; then RUN="$VERON_RUNNER"
 elif [ "$(uname -o 2>/dev/null)" = Android ]; then
   command -v proot >/dev/null 2>&1 || {
     echo "FAIL: Android blocks direct exec of static binaries (linker64"
@@ -55,9 +63,13 @@ elif [ "$(uname -o 2>/dev/null)" = Android ]; then
     echo "      or set VERON_RUNNER to a loader of your choice."; exit 1; }
   RUN=proot
 elif [ "$(uname -m)" = aarch64 ]; then RUN=""
-elif [ -x spikes/toolbox/qemu-aarch64-static ]; then RUN="$ROOT/spikes/toolbox/qemu-aarch64-static"
-else echo "FAIL: need aarch64 or the toolbox qemu"; exit 1; fi
+elif command -v qemu-aarch64-static >/dev/null 2>&1; then RUN="qemu-aarch64-static"
+elif command -v qemu-aarch64 >/dev/null 2>&1; then RUN="qemu-aarch64"
+else echo "FAIL: need aarch64, or qemu-aarch64-static on PATH (the tools bundle ships one)"; exit 1; fi
+[ -n "${VERON_BOX:-}" ] || echo "UNSEALED: running on the host, not in stages/box.sh -- nothing below is held to a budget"
 run() { ${RUN:+"$RUN"} "$@"; }
+# ELF e_machine without file(1) -- busybox has no file applet. 0xB7 aarch64, 0x3E x86_64.
+elf_machine() { od -An -tx1 -j18 -N1 "$1" 2>/dev/null | tr -d ' \n'; }
 SA="$ROOT/stages/1-self-assembly/self-assembler-arm64"
 EW="$ROOT/stages/1-self-assembly/elf-wrapper-arm64"
 PCA="$ROOT/out/2/aarch64/pico-c-assembler"

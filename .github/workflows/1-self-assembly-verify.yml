@@ -58,8 +58,18 @@ jobs:
           path: build/toolchains/pinned
           key: pinned-${{ runner.arch }}-binutils${{ env.BINUTILS_VER }}-llvm${{ env.LLVM_VER }}
 
-      - name: 'GATE 1: self-host ladder -- committed binaries re-derived'
-        run: ./stages/1-self-assembly/rebaseline.sh verify
+      - name: 'AIRLOCK: the busybox the box will use, from the pin (bubblewrap is the wall)'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap build-essential curl
+          sh tools/airlock-busybox.sh
+      - name: 'AIRLOCK: the committed .s0 translations must match a fresh translation of the .s'
+        run: |
+          sh stages/1-self-assembly/rebaseline.sh airlock
+          git diff --exit-code -- stages/1-self-assembly/*.s0 \
+            || { echo "FAIL: the committed .s0 translations lag their .s sources -- commit the regenerated ones"; exit 1; }
+      - name: 'GATE 1: self-host ladder -- committed binaries re-derived, IN THE BOX'
+        run: sh stages/box.sh stages/1-self-assembly/rebaseline.sh verify
 
       - name: 'GATE 2: pinned two-decoder round-trip -- source matches binary'
         run: ./stages/1-self-assembly/roundtrip.sh

@@ -49,14 +49,29 @@ AOUT="$ROOT/out/3/aarch64"
 
 # The chain executes tcc-arm64 (an aarch64 binary). Same three worlds as
 # build.sh; VERON_RUNNER overrides.
-if [ -n "${VERON_RUNNER:-}" ]; then RUN="$VERON_RUNNER"
+# THE RUNNER, AND THE SEAL. Inside stages/box.sh the box sets VERON_BOX=1 and
+# VERON_RUNNER to the in-box qemu (empty on an aarch64 host); that is the
+# official path, on CI, on Veron and on any Linux alike, and the only tools
+# that resolve are the box's. Run bare, this script still works -- for a
+# quick look, on Termux through proot -- and SAYS SO, because bare means the
+# host's tools are reachable and nothing here is measured against a budget.
+if [ -n "${VERON_BOX:-}" ]; then
+  RUN="${VERON_RUNNER:-}"
+elif [ -n "${VERON_RUNNER:-}" ]; then RUN="$VERON_RUNNER"
 elif [ "$(uname -o 2>/dev/null)" = Android ]; then
-  command -v qemu-aarch64 >/dev/null 2>&1 && RUN=qemu-aarch64 || {
-    echo "FAIL: Android needs qemu-aarch64 (pkg install qemu-user-aarch64)"; exit 1; }
+  command -v proot >/dev/null 2>&1 || {
+    echo "FAIL: Android blocks direct exec of static binaries (linker64"
+    echo "      loads only PIE). Install the loader:  pkg install proot"
+    echo "      or set VERON_RUNNER to a loader of your choice."; exit 1; }
+  RUN=proot
 elif [ "$(uname -m)" = aarch64 ]; then RUN=""
-elif [ -x spikes/toolbox/qemu-aarch64-static ]; then RUN="$ROOT/spikes/toolbox/qemu-aarch64-static"
-else echo "FAIL: need aarch64 or the toolbox qemu"; exit 1; fi
+elif command -v qemu-aarch64-static >/dev/null 2>&1; then RUN="qemu-aarch64-static"
+elif command -v qemu-aarch64 >/dev/null 2>&1; then RUN="qemu-aarch64"
+else echo "FAIL: need aarch64, or qemu-aarch64-static on PATH (the tools bundle ships one)"; exit 1; fi
+[ -n "${VERON_BOX:-}" ] || echo "UNSEALED: running on the host, not in stages/box.sh -- nothing below is held to a budget"
 run() { ${RUN:+"$RUN"} "$@"; }
+# ELF e_machine without file(1) -- busybox has no file applet. 0xB7 aarch64, 0x3E x86_64.
+elf_machine() { od -An -tx1 -j18 -N1 "$1" 2>/dev/null | tr -d ' \n'; }
 art() { printf '    %-22s %10s bytes  %s\n' "$1" "$(wc -c < "$2")" \
         "$(sha256sum "$2" | cut -c1-16)"; }
 
@@ -99,22 +114,28 @@ do_in() {
 # both rungs so the two sysroots are built the same declared way.
 #   musl_build <target> <CC-invocation-with-runner> <sysroot-dir>
 musl_build() {
-  _t="$1"; _cc="$2"; _sys="$3"
-  rm -rf "$B/m-$_t" "$B/bld-$_t" "$_sys"
-  mkdir -p "$B/m-$_t"
-  tar -xzf "$IN/musl-$MUSL_VER.tar.gz" -C "$B/m-$_t" --strip-components=1
-  ( cd "$B/m-$_t"
-    rm -f src/complex/*.c
-    rm -f "src/math/$_t"/*  2>/dev/null || true
+  # musl's Makefile, EXECUTED BY HAND: the same object set in the same order
+  # with the flags that mean anything to tcc, from INSIDE the source tree
+  # with relative paths. No configure, no make. Three things this buys,
+  # each measured (2026-08-25, x86_64 leg, against the runner's archive):
+  #   - no make in stage 3, where nothing has built one yet; the budget
+  #     stays busybox + the compiler this script was handed
+  #   - no host path in any object: configure was invoked by absolute path,
+  #     so srcdir was absolute, so every tcc -c wrote the host's directory
+  #     into the STT_FILE symbol -- 1277 members, three hosts, three
+  #     different libc.a digests, same code. Relative paths make one digest.
+  #   - 1277 of 1277 members byte-identical to the make-driven build once
+  #     that symbol is removed, and the tcc-amd64 linked from it identical
+  #     to the record (090429cf...). The archive changed; the compiler did not.
+  # Makefile line numbers below are musl-1.2.5's.
+  _t="$1"; _cc="$2"; _sys="$3"; _w="$B/m-$_t"
+  rm -rf "$_w" "$_sys"; mkdir -p "$_w"
+  tar -xzf "$IN/musl-$MUSL_VER.tar.gz" -C "$_w" --strip-components=1
+  ( cd "$_w"
+    # ---- the source-tree edits the make-driven build made, kept, each stated ----
+    rm -f src/complex/*.c                     # tcc has no _Complex
+    rm -rf "src/math/$_t"                     # the arch math .s wants a GNU-syntax assembler
     [ "$_t" = x86_64 ] && sed -i 's/@PLT//g' src/signal/x86_64/sigsetjmp.s
-    # THE LONG-DOUBLE PROBE (rungs.sh's mechanism, verbatim values): the
-    # tcc-microc series gives our compilers an 8-byte long double where the
-    # ABI header may expect more (aarch64 wants 113-bit quad -- configure
-    # dies on "unsupported long double type"). Probe the ACTUAL compiler;
-    # if long double really is 8 bytes, replace arch/<t>/bits/float.h with
-    # the MANT_DIG-53 values every real double-is-long-double architecture
-    # ships, so musl's own #if arms activate. If the probe says otherwise
-    # (the spike's x86_64 cross passes untouched), leave the header alone.
     printf 'int _ldprobe[sizeof(long double) == 8 ? 1 : -1];\n' > "$B/ldsize-$_t.c"
     if $_cc -c -o "$B/ldsize-$_t.o" "$B/ldsize-$_t.c" 2>/dev/null \
        && [ -f "arch/$_t/bits/float.h" ]; then
@@ -141,25 +162,62 @@ FLOATH
       echo "    bits/float.h ($_t): left alone"
     fi
     rm -f "$B/ldsize-$_t.c" "$B/ldsize-$_t.o"
-    true )
-  # tcc has -ar; musl's makefile wants AR and RANLIB as programs
-  printf '#!/bin/sh\nexec %s -ar "$@"\n' "$_cc" > "$B/$_t-ar"
-  printf '#!/bin/sh\nexit 0\n' > "$B/$_t-ranlib"
-  chmod +x "$B/$_t-ar" "$B/$_t-ranlib"
-  mkdir -p "$B/bld-$_t"
-  ( cd "$B/bld-$_t" && "$B/m-$_t/configure" --target="$_t" \
-      --disable-shared --prefix="$_sys" CC="$_cc" > cfg.log 2>&1 ) \
-    || { echo "  musl configure ($_t) failed:"; tail -8 "$B/bld-$_t/cfg.log" | sed 's/^/    /'; exit 1; }
-  ( cd "$B/bld-$_t" && timeout 1800 make -j"$(nproc)" \
-      AR="$B/$_t-ar" RANLIB="$B/$_t-ranlib" > b.log 2>&1 \
-    && make install AR="$B/$_t-ar" RANLIB="$B/$_t-ranlib" >> b.log 2>&1 ) \
-    || { echo "  musl build ($_t) failed:"
-         grep -aE "^[^ ]*\.(c|s|S):[0-9]+" "$B/bld-$_t/b.log" | head -8 | sed 's/^/    /'
-         tail -8 "$B/bld-$_t/b.log" | sed 's/^/    /'; exit 1; }
-  for f in lib/libc.a lib/crt1.o lib/crti.o lib/crtn.o; do
-    [ -s "$_sys/$f" ] || { echo "  FAIL: sysroot ($_t) missing $f"; exit 1; }
-  done
-  echo "    sys/$_t: libc.a $(wc -c < "$_sys/lib/libc.a") bytes + crt trio"
+    # ---- generated headers, exactly the Makefile's three rules (98-106) ----
+    mkdir -p obj/include/bits obj/src/internal
+    sed -f tools/mkalltypes.sed "arch/$_t/bits/alltypes.h.in" include/alltypes.h.in > obj/include/bits/alltypes.h
+    cp "arch/$_t/bits/syscall.h.in" obj/include/bits/syscall.h
+    sed -n -e 's/__NR_/SYS_/p' < "arch/$_t/bits/syscall.h.in" >> obj/include/bits/syscall.h
+    printf '#define VERSION "%s"\n' "$(sh tools/version.sh)" > obj/src/internal/version.h
+    # ---- the object set: BASE_SRCS/ARCH_SRCS -> ALL_OBJS, arch overrides
+    #      replace generic, sorted (Makefile 21-33) ----
+    _dirs="$(for d in src/* src/malloc/mallocng crt ldso; do [ -d "$d" ] && echo "$d"; done)"
+    for d in $_dirs; do
+      for f in "$d"/*.c; do [ -f "$f" ] && echo "${f%.c}.o"; done
+      for f in "$d/$_t"/*.c "$d/$_t"/*.s "$d/$_t"/*.S; do [ -f "$f" ] && echo "${f%.*}.o"; done
+    done | LC_ALL=C sort -u > objs.all
+    sed -n "s|/$_t/|/|p" objs.all | LC_ALL=C sort -u > objs.replaced
+    LC_ALL=C comm -23 objs.all objs.replaced > objs.keep          # ALL_OBJS
+    grep '^src/' objs.keep > objs.libc                             # LIBC_OBJS = AOBJS
+    # ---- flags. Of configure's CFLAGS_AUTO, tcc implements two words
+    #      (libtcc.c options_f and the -O parser): -O sets __OPTIMIZE__ for the
+    #      preprocessor, -fno-asynchronous-unwind-tables drops .eh_frame. Both
+    #      are passed so the objects are the ones the make-driven build made;
+    #      the rest of that list is a no-op for tcc and is not written down as
+    #      if it did something. -DCRT on crt objects (130), -fPIC on Scrt1
+    #      and rcrt1 (116). ----
+    _cf="-std=c99 -ffreestanding -nostdinc -O2 -fno-asynchronous-unwind-tables -D_XOPEN_SOURCE=700 -Iarch/$_t -Iarch/generic -Iobj/src/internal -Isrc/include -Isrc/internal -Iobj/include -Iinclude"
+    _n=0
+    while read -r o; do
+      b="${o%.o}"; s=""
+      for e in c s S; do [ -f "$b.$e" ] && { s="$b.$e"; break; }; done
+      [ -n "$s" ] || { echo "  FAIL: no source for $o"; exit 1; }
+      mkdir -p "obj/${o%/*}"
+      x=""
+      case "$o" in crt/*) x="-DCRT" ;; esac
+      case "$o" in crt/Scrt1.o|crt/rcrt1.o|crt/*/Scrt1.o|crt/*/rcrt1.o) x="$x -fPIC" ;; esac
+      $_cc $_cf $x -c -o "obj/$o" "$s" > "$B/musl-$_t.log" 2>&1 \
+        || { echo "  FAIL: $s did not compile ($_t):"; tail -6 "$B/musl-$_t.log" | sed 's/^/    /'; exit 1; }
+      _n=$((_n+1))
+    done < objs.keep
+    # ---- lib/libc.a: rm -f; ar rc in AOBJS order (Makefile 165-168).
+    #      tcc's ar writes constant date/uid/gid/mode; ranlib is a no-op ----
+    mkdir -p lib; rm -f lib/libc.a
+    $_cc -ar rc lib/libc.a $(sed 's|^|obj/|' objs.libc) || { echo "  FAIL: ar ($_t)"; exit 1; }
+    # ---- what the cross consumes: libc.a, the crt trio, the headers.
+    #      lib/%.o is obj/crt/$(ARCH)/%.o when the arch has one (174), else
+    #      obj/crt/%.o (177): crt1 is generic C, crti/crtn are arch .s ----
+    mkdir -p "$_sys/lib" "$_sys/include/bits"
+    cp lib/libc.a "$_sys/lib/"
+    for c in crt1 crti crtn; do
+      if [ -f "obj/crt/$_t/$c.o" ]; then cp "obj/crt/$_t/$c.o" "$_sys/lib/$c.o"; else cp "obj/crt/$c.o" "$_sys/lib/$c.o"; fi
+    done
+    # headers as install-headers lays them: include/, then generic bits, then
+    # the arch's bits over them, then the two generated ones (Makefile 59-62)
+    cp -r include/. "$_sys/include/"
+    [ -d arch/generic/bits ] && cp -r arch/generic/bits/. "$_sys/include/bits/"
+    cp -r "arch/$_t/bits/." "$_sys/include/bits/"
+    cp obj/include/bits/alltypes.h obj/include/bits/syscall.h "$_sys/include/bits/"
+    echo "    sys/$_t: libc.a $(wc -c < lib/libc.a) bytes, $_n objects, $(wc -l < objs.libc) members + crt trio" )
 }
 
 # libtcc1 for a target -- THE FILE LIST IS PER-TARGET, exactly as the
@@ -206,11 +264,9 @@ do_chain() {
   TA="$AOUT/tcc-arm64"
   [ -x "$TA" ] || { echo "FAIL: no $TA -- run build.sh chain first"; exit 1; }
   # THE CONTRACT CHECK: consume the recorded artifact, not a stray file
-  want=$(python3 -c "
-import tomllib
-d = tomllib.load(open('stages/3-micro-c/substages.toml','rb'))
-for s in d['substage']:
-    if s['id'] == '3/4/tcc-arm64': print(s['output'][0]['sha256'])" 2>/dev/null || true)
+  # the recorded digest of 3/4/tcc-arm64, read with sed (no python in the
+  # box): the sha256 line that follows the output path line
+  want=$(sed -n -e '/^path *= *"out\/3\/aarch64\/tcc-arm64"/{' -e 'n' -e 's/^sha256 *= *"\([0-9a-f]*\)".*/\1/p' -e '}' stages/3-micro-c/substages.toml | head -1)
   got=$(sha256sum "$TA" | cut -d' ' -f1)
   if [ -n "$want" ] && [ "$got" != "$want" ]; then
     echo "FAIL: out/3/aarch64/tcc-arm64 ($got)"
@@ -234,10 +290,9 @@ for s in d['substage']:
       "$B/aarch64-libtcc1.a" "$A/lib/crtn.o" > "$B/x1.log" 2>&1 ) \
     || { echo "  FAIL: CROSS 1 (rc=$?):"
          grep -aiE "error|undefined|not found" "$B/x1.log" | head -12 | sed 's/^/    /'; exit 1; }
-  case "$(file -b "$B/tcc-arm64-to-amd64")" in
-    *aarch64*|*"ARM aarch64"*) : ;;
-    *) echo "  FAIL: tcc-arm64-to-amd64 must be an aarch64 binary that emits x86_64"
-       file -b "$B/tcc-arm64-to-amd64"; exit 1 ;;
+  case "$(elf_machine "$B/tcc-arm64-to-amd64")" in
+    b7) : ;;
+    *) echo "  FAIL: tcc-arm64-to-amd64 must be an aarch64 binary that emits x86_64 (e_machine $(elf_machine "$B/tcc-arm64-to-amd64"))"; exit 1 ;;
   esac
   art tcc-arm64-to-amd64 "$B/tcc-arm64-to-amd64"
   XT() { run "$B/tcc-arm64-to-amd64" "$@"; }
@@ -255,13 +310,17 @@ for s in d['substage']:
       "$B/x86_64-libtcc1.a" "$S/lib/crtn.o" > "$B/g2.log" 2>&1 ) \
     || { echo "  FAIL: CROSS 3 (rc=$?):"
          grep -aiE "error|undefined|not found" "$B/g2.log" | head -12 | sed 's/^/    /'; exit 1; }
-  case "$(file -b "$B/tcc-amd64")" in
-    *x86-64*|*x86_64*) : ;;
-    *) echo "  FAIL: wrong target"; file -b "$B/tcc-amd64"; exit 1 ;;
+  case "$(elf_machine "$B/tcc-amd64")" in
+    3e) : ;;
+    *) echo "  FAIL: wrong target (e_machine $(elf_machine "$B/tcc-amd64"), want 3e)"; exit 1 ;;
   esac
-  case "$(file -b "$B/tcc-amd64")" in
-    *"dynamically linked"*) echo "  FAIL: not static"; exit 1 ;;
-  esac
+  # static: no PT_INTERP. The program header table starts at e_phoff (0x20,
+  # 8 bytes); each x86_64 phdr is 56 bytes, p_type is its first 4; PT_INTERP
+  # is 3. busybox od reads it; no readelf in the box.
+  _phoff=$(od -An -tu8 -j32 -N8 "$B/tcc-amd64" | tr -d ' '); _phnum=$(od -An -tu2 -j56 -N2 "$B/tcc-amd64" | tr -d ' ')
+  _i=0; while [ "$_i" -lt "$_phnum" ]; do
+    [ "$(od -An -tu4 -j$((_phoff + _i*56)) -N4 "$B/tcc-amd64" | tr -d ' ')" = 3 ] && { echo "  FAIL: not static (PT_INTERP present)"; exit 1; }
+    _i=$((_i+1)); done
   chmod 0755 "$B/tcc-amd64"
 
   # THE 3->4 CONTRACT (per the boundary decision): stage 3 hands the

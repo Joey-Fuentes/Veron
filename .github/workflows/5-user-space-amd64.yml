@@ -2896,6 +2896,17 @@ jobs:
               echo "one pinned download away, which is the offer, in writing."
               echo
             } > TOOLS-WHENCE
+            # THE BOX'S DRIVER TRAVELS WITH THE BUNDLE: stage 4's static busybox,
+            # the same bytes the image boots on, so stages/box.sh on a runner or
+            # any Linux seals with OUR busybox and records its hash.
+            if [ -x ../sysroot/bin/busybox ]; then
+              static_or_die ../sysroot/bin/busybox
+              cp ../sysroot/bin/busybox "$tdir/veron-tools/"
+              echo "busybox  $(sha256sum ../sysroot/bin/busybox | cut -d' ' -f1)  (stage-4 sysroot; the box driver)" >> TOOLS-WHENCE
+              bundled="$bundled busybox"
+            else
+              echo "  no sysroot/bin/busybox -- not bundled, stated not silent"
+            fi
             for b in qemu-user/usr/bin/qemu-aarch64-static \
                      qemu/usr/bin/qemu-system-x86_64 qemu/usr/bin/qemu-system-aarch64 \
                      qemu/usr/bin/qemu-img swtpm/usr/bin/swtpm swtpm/usr/bin/swtpm_ioctl; do
