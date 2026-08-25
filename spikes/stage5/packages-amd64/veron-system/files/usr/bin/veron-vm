@@ -43,7 +43,7 @@ else
   FW="${FW:-/usr/share/qemu}"; SWTPM="${SWTPM:-swtpm}"
 fi
 
-uefi=no tpm=no windows=no headless=no dry=no
+uefi=no tpm=no windows=no headless=no dry=no machine_extra=""
 disk="" size=64G mem=4G cpus=""
 extra=""
 while [ $# -gt 0 ]; do
@@ -78,13 +78,19 @@ else accel="-cpu max"; acc="tcg (no writable /dev/kvm -- slow)"; fi
 state="${XDG_STATE_HOME:-$HOME/.local/state}/veron-vm"
 mkdir -p "$state"
 
+[ "$headless" = yes ] && machine_extra=",graphics=off"
+
 # ---- machine, memory, input ----
-args="-machine q35,accel=$( [ "$acc" = kvm ] && echo kvm || echo tcg ) $accel -smp $cpus -m $mem"
+args="-machine q35,accel=$( [ "$acc" = kvm ] && echo kvm || echo tcg )$machine_extra $accel -smp $cpus -m $mem"
 args="$args -device qemu-xhci,id=xhci -device usb-tablet -device usb-kbd"
 
 # ---- display and audio ----
 if [ "$headless" = yes ]; then
-  args="$args -display none -serial mon:stdio"
+  # graphics=off is what -nographic sets, and it is what makes SeaBIOS
+  # print its boot menu on the serial port (measured: without it a
+  # headless SeaBIOS boot is silent); OVMF talks to the serial port
+  # regardless. No VGA device is added in this mode.
+  args="$args -display none -serial mon:stdio -vga none"
 else
   # Windows has no inbox virtio-gpu driver; its basic display driver
   # handles std VGA at full resolution. Linux guests get virtio-vga.
@@ -110,17 +116,29 @@ if [ "$tpm" = yes ]; then
   sock="$tdir/swtpm.sock"
   if [ "$dry" = no ]; then
     rm -f "$sock"
+    # terminate: swtpm exits by itself once qemu's control connection
+    # closes, so a VM killed from outside leaves no TPM behind (measured
+    # on the tools bundle: without it two swtpm processes outlived two
+    # killed VMs; with it none did). The trap below covers the paths
+    # where qemu never connected at all.
     "$SWTPM" socket --tpm2 --tpmstate dir="$tdir" \
-      --ctrl type=unixio,path="$sock" --log level=1 --daemon --pid file="$tdir/swtpm.pid" \
+      --ctrl type=unixio,path="$sock",terminate --log level=1 --daemon --pid file="$tdir/swtpm.pid" \
       || { echo "veron-vm: swtpm failed to start" >&2; exit 1; }
     tpmpid=$(cat "$tdir/swtpm.pid" 2>/dev/null || true)
+    trap '[ -n "$tpmpid" ] && kill "$tpmpid" 2>/dev/null' EXIT INT TERM HUP
   fi
   args="$args -chardev socket,id=chrtpm,path=$sock -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0"
 fi
 
 # ---- network ----
-if [ "$windows" = yes ]; then args="$args -netdev user,id=n0 -device e1000,netdev=n0"
-else args="$args -netdev user,id=n0 -device virtio-net-pci,netdev=n0"; fi
+# romfile= IS LOAD-BEARING (measured on the tools bundle, 2026-08-24):
+# qemu attaches an iPXE option ROM (efi-e1000.rom, efi-virtio.rom) to
+# every NIC by default, and this qemu ships only the firmware it built
+# itself -- the iPXE ROMs are prebuilt binaries and were declined.
+# Without romfile= the device fails to construct. The ROM exists for
+# network boot, which nothing here does; the NIC works without it.
+if [ "$windows" = yes ]; then args="$args -netdev user,id=n0 -device e1000,netdev=n0,romfile="
+else args="$args -netdev user,id=n0 -device virtio-net-pci,netdev=n0,romfile="; fi
 
 # ---- storage ----
 # q35 carries an ICH9 AHCI of its own with SATA buses ide.0 .. ide.5, and
