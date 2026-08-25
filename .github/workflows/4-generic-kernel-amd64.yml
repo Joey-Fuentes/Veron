@@ -141,7 +141,13 @@ jobs:
           # /build/kbuild.log, which is bind-mounted so the file survives
           # the box and uploads whole. An earlier revision wrote to the
           # box's tmpfs and tail -40'd failures: destroyed evidence, twice.
-          box "make ARCH=x86_64 -j\$(nproc) 2>&1 | tee /build/kbuild.log; exit \${PIPESTATUS:-\$?}" \
+          # THE STATUS RIDES IN A FILE, NOT IN PIPESTATUS. The box's shell is
+          # busybox ash, which has no PIPESTATUS; the earlier \${PIPESTATUS:-\$?}
+          # silently became tee's \$? -- always 0 -- and a failing make passed
+          # this step (measured 2026-08-25: modules_install failed on depmod
+          # and the step went green). make's own status is written beside
+          # the log and the box exits with it.
+          box "{ make ARCH=x86_64 -j\$(nproc); echo \$? > /build/kbuild.rc; } 2>&1 | tee /build/kbuild.log; exit \$(cat /build/kbuild.rc)" \
             || { echo "FAIL: kbuild failed -- the FULL log streamed above and is in the kbuild-log artifact"; exit 1; }
           # DEPMOD=: SKIPS DEPMOD IN THE BOX. The sysroot has no kmod (it was
           # never in the LFS list; the minimal kernel is all built-in and
@@ -152,7 +158,13 @@ jobs:
           # kmod generates it below, same doctrine as mksquashfs preparing
           # test data. (kmod joins the sysroot alongside zstd when stage 4
           # next grows -- then this moves back in the box.)
-          box "make ARCH=x86_64 INSTALL_MOD_PATH=/build/staging DEPMOD=: modules_install 2>&1 | tee /build/modinstall.log; exit \${PIPESTATUS:-\$?}"
+          # DEPMOD=true, NOT DEPMOD=: -- this kernel's scripts/depmod.sh
+          # exec's \$DEPMOD, and exec needs a program; ':' is a shell builtin
+          # and failed with 127 (kernel 7.1.5, run of 2026-08-25). busybox
+          # has a real true applet, so exec finds it and does nothing, which
+          # is the whole intent. Same status-in-a-file exit as kbuild above.
+          box "{ make ARCH=x86_64 INSTALL_MOD_PATH=/build/staging DEPMOD=true modules_install; echo \$? > /build/modinstall.rc; } 2>&1 | tee /build/modinstall.log; exit \$(cat /build/modinstall.rc)" \
+            || { echo "FAIL: modules_install failed -- the log streamed above"; exit 1; }
           krel=$(ls build/staging/lib/modules)
           /usr/sbin/depmod -b "$PWD/build/staging" -F build/System.map -e "$krel"
           echo "depmod (host kmod): $(ls build/staging/lib/modules/$krel/modules.dep | head -1) written for $krel"
@@ -196,7 +208,7 @@ jobs:
           INIT
           chmod +x initrd/init
           ( cd initrd && find . | cpio -o -H newc --quiet | gzip ) > initrd.img
-          timeout 180 qemu-system-x86_64 -m 1024 -nographic -no-reboot \
+          timeout -k 30 180 qemu-system-x86_64 -m 1024 -nographic -no-reboot \
             -kernel build/arch/x86/boot/bzImage -initrd initrd.img \
             -drive file=payload.squashfs,format=raw,if=virtio \
             -append "console=ttyS0 rdinit=/init" | tee boot.log || true
@@ -226,7 +238,35 @@ jobs:
           # real Boot#### entry uses. CRLF line ending: the EFI shell is a
           # DOS descendant and some builds require it.
           printf 'kernel.efi console=ttyS0,115200 root=PARTUUID=00000000-dead-dead-dead-000000000000 rw init=/usr/bin/dinit panic=-1\r\n'             > efiboot/startup.nsh
-          timeout 300 qemu-system-x86_64             -machine q35 -m 1024 -nographic -no-reboot -nic none             -bios /usr/share/ovmf/OVMF.fd             -drive format=raw,file=fat:rw:efiboot             -serial file:efiboot/serial.log >/dev/null 2>&1 || true
+          # THE SERIAL LOG STREAMS LIVE, AND THE TIMEOUT ESCALATES. Run of
+          # 2026-08-25: this step sat past ten minutes with nothing in the
+          # job log and had to be cancelled by hand -- qemu was written to a
+          # file nobody could see, and `timeout 300` sends only SIGTERM, which
+          # a wedged qemu can ignore forever (the job ceiling is five hours).
+          # Now: -k 30 escalates to SIGKILL; the serial log is tailed into
+          # the job log while qemu runs, so a hang shows WHERE the kernel
+          # stopped instead of showing nothing; and a cancel still leaves
+          # the evidence that had been printed.
+          : > efiboot/serial.log
+          timeout -k 30 300 qemu-system-x86_64             -machine q35 -m 1024 -nographic -no-reboot -nic none             -bios /usr/share/ovmf/OVMF.fd             -drive format=raw,file=fat:rw:efiboot             -serial file:efiboot/serial.log >/dev/null 2>&1 &
+          qpid=$!
+          tail -n +1 -F efiboot/serial.log &
+          tpid=$!
+          # END IT AT THE WITNESS. rootwait means the kernel waits forever for
+          # a root that does not exist, so without this the gate always ran
+          # the full 300 s (run 88895612800: five silent minutes, then pass).
+          # Once "Waiting for root device" is in the log every check below
+          # can already pass; qemu is stopped there and the ceiling stays as
+          # the backstop for a kernel that never gets that far.
+          for _i in $(seq 1 300); do
+            if grep -q "Waiting for root device" efiboot/serial.log 2>/dev/null; then
+              sleep 2; echo "  witness seen after ${_i}s; stopping qemu"; kill "$qpid" 2>/dev/null || true; break
+            fi
+            kill -0 "$qpid" 2>/dev/null || break
+            sleep 1
+          done
+          wait "$qpid" || true
+          sleep 1; kill "$tpid" 2>/dev/null || true
           echo "--- serial (tail) ---"
           tail -60 efiboot/serial.log || true
           fail=0
