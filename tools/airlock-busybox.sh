@@ -22,14 +22,27 @@ BB_URL=$(sed -n 's/^url *= *"\([^"]*\)".*/\1/p' sources/busybox.toml | head -1)
 BB_SHA=$(sed -n 's/^sha256 *= *"\([0-9a-f]*\)".*/\1/p' sources/busybox.toml | head -1)
 [ -n "$BB_URL" ] && [ -n "$BB_SHA" ] || { echo "FAIL: sources/busybox.toml has no url/sha256"; exit 1; }
 mkdir -p box/tools dl
-tb="dl/$(basename "$BB_URL")"
+name=$(basename "$BB_URL"); tb="dl/$name"
+# OUR MIRROR FIRST, UPSTREAM SECOND, THE PIN EITHER WAY. mirror-sources.sh
+# keeps every sources/*.toml tarball as a release of its own -- tag
+# src/<filename>, asset <sha8>-<filename> -- so this build never waits on
+# busybox.net being up (run 89155834277: it was not, and the first version
+# of this file reported a file that never arrived as "does not match").
+# sources/busybox.toml's own mirror line is a git-tag archive of the same
+# commit, not the same bytes, so it cannot satisfy the pin and is not tried.
 if ! { [ -s "$tb" ] && [ "$(sha256sum "$tb" | cut -d' ' -f1)" = "$BB_SHA" ]; }; then
-  # the primary URL only: sources/busybox.toml's mirror is a git-tag archive
-  # of the same commit, not the same bytes, so it cannot satisfy this pin
-  curl -fsSL --connect-timeout 20 --retry 3 -o "$tb" "$BB_URL" || true
+  rm -f "$tb"
+  for u in "https://github.com/${GITHUB_REPOSITORY:-Joey-Fuentes/Veron}/releases/download/src/$name/$(printf '%.8s' "$BB_SHA")-$name" \
+           "$BB_URL"; do
+    if curl -fsSL --connect-timeout 20 --retry 3 -o "$tb" "$u" && [ -s "$tb" ]; then
+      echo "  fetched $name from $u"; break
+    fi
+    echo "  no answer from $u"; rm -f "$tb"
+  done
 fi
-[ "$(sha256sum "$tb" | cut -d' ' -f1)" = "$BB_SHA" ] || { echo "FAIL: $tb does not match sources/busybox.toml"; exit 1; }
-echo "  $(basename "$tb") matches its pin"
+[ -s "$tb" ] || { echo "FAIL: could not fetch $name from the mirror or upstream"; exit 1; }
+[ "$(sha256sum "$tb" | cut -d' ' -f1)" = "$BB_SHA" ] || { echo "FAIL: $tb does not match sources/busybox.toml (got $(sha256sum "$tb" | cut -c1-16))"; exit 1; }
+echo "  $name matches its pin"
 rm -rf build/airlock-busybox && mkdir -p build/airlock-busybox
 tar -xf "$tb" -C build/airlock-busybox --strip-components=1
 cd build/airlock-busybox
