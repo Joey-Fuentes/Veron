@@ -1,0 +1,116 @@
+# OVERLAY, AND THE DELTA IS ONE FLAG: -Ddefault_library=both. The amd64 SDL2 links its
+# Wayland and ALSA backends STATICALLY -- measured reason (bare metal,
+# 2026-08-25): SDL's dlopen path, the distro default, is undefined inside
+# a static-glibc binary, and it showed: libasound segfaulted on its
+# first call and libwayland-client went silent after its first roundtrip,
+# leaving a qemu window that acked its configure and never attached a
+# buffer. So libwayland-client.a, -cursor.a and -egl.a must exist beside the .so for the --static
+# qemu link; the .so stays for every dynamic consumer in this image
+# (wlroots, labwc, foot, every Wayland client). The pcre2/pixman/libffi overlay move, again.
+#
+# [source] is byte-equal to the base recipe's; selftest enforces that.
+#
+name    = "wayland"
+version = "1.26.0"
+group   = "wayland"
+license = "MIT"
+srcdir  = "wayland-1.26.0"
+
+[source]
+url       = "https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.26.0/downloads/wayland-1.26.0.tar.xz"
+sha256    = "64176eaa46e4969903e286f8e5ef8331affc17fdf03ac9b58381d2b23162b7a3"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+# libffi AND expat ARE BOTH ALREADY IN THIS SET, built for other reasons --
+# libffi for python's ctypes and glib, expat for fontconfig. wayland's
+# libwayland-client uses libffi for its message dispatch and expat for the
+# scanner's XML parsing.
+# pkgconf IS A REAL BUILD DEPENDENCY AND WAS INVISIBLE FOR 55 PACKAGES.
+# meson's dependency() resolves through pkg-config first, so without it every
+# external library lookup fails -- and in the shared build root pkgconf has
+# been present since rung 11, so nothing ever noticed. stage5-isolate found it
+# the moment glib was built from its declarations alone:
+#
+#     Did not find pkg-config by name 'pkg-config'
+#     Run-time dependency libpcre2-8 found: NO (tried pkgconfig and cmake)
+#     Downloading pcre2 source from https://github.com/PCRE2Project/...
+#
+# pcre2 WAS in the layer stack. Nothing could find it.
+build        = ["meson", "ninja", "libffi", "expat", "pkgconf"]
+link         = ["libffi", "expat"]
+runtime      = ["libffi", "expat"]
+# documentation needs doxygen, xmlto and graphviz -- none in this set.
+# dtd_validation needs libxml2, which IS here, to validate the protocol DTD at
+# build time; a validation step nothing downstream depends on.
+optional_off = ["documentation", "dtd_validation", "docbook_validation",
+                "tests"]
+
+[declared]
+configure_flags = ["-Ddocumentation=false", "-Ddtd_validation=false",
+                   "-Dtests=false", "-Dlibraries=true", "-Dscanner=true", "-Ddefault_library=both"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["wayland"]
+deferral        = """
+Internals not reviewed. WHAT DEPENDS ON IT: wlroots links libwayland-server, \
+every client links libwayland-client, and wayland-protocols' consumers run \
+wayland-scanner over the XML. All three come from this package.
+
+-Dscanner=true AND -Dlibraries=true ARE BOTH DEFAULTS AND BOTH STATED. They \
+are stated because they are the two things a cross build would turn off, and \
+this recipe would then produce a package whose name suggests it works and \
+which provides neither the scanner nor the libraries. Naming them makes that a \
+visible decision rather than an inherited one.
+
+wayland-protocols PRECEDES THIS PACKAGE in the plan and does not depend on it, \
+which looks backwards and is not: with -Dtests=false, wayland-protocols needs \
+no scanner and installs only XML. That ordering is what lets both exist before \
+wlroots needs them."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+#
+# FIVE OF THESE SIT IN doc/meson.build AND ALL READ AS REQUIRED, because the
+# guard is `if get_option('documentation')` in the PARENT file and a per-call
+# scan cannot see it -- the same shape as glib's gi-docgen.
+"program:doxygen" = "doc/meson.build:6 -- inside `if get_option('documentation')`, which this recipe sets false. The subdir is entered from the parent, so every lookup in it reads REQUIRED."
+"program:dot" = "doc/meson.build:5 -- graphviz, same documentation guard."
+"program:xmlto" = "doc/meson.build:8 -- same guard."
+"program:xsltproc" = "doc/meson.build:7 -- same guard; libxslt is not in this set."
+"program:mdbook" = "doc/meson.build:9 -- same guard; mdbook is Rust, which this system declines entirely."
+"program:wayland-egl-symbols-check" = "egl/meson.build:24 -- an IN-TREE SCRIPT, egl/wayland-egl-symbols-check, not a system tool. It is the command of a `test()`, so -Dtests=false means it is never run; the find_program still evaluates, which is why it appears here at all."
+
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/wayland"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/wayland-1.26.0.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Ddocumentation=false", "-Ddtd_validation=false", "-Dtests=false",
+         "-Dlibraries=true", "-Dscanner=true", "-Ddefault_library=both"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[[steps]]
+name = "archive-present"
+cwd  = "$S"
+run  = [["sh", "-c", "test -f $D/usr/lib/libwayland-client.a && test -f $D/usr/lib/libwayland-cursor.a && test -f $D/usr/lib/libwayland-egl.a || { echo VERON-WAYLAND-NO-ARCHIVE; ls -la $D/usr/lib; exit 1; }"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "wayland-server"]]
+expect = ["1.26.0"]

@@ -1,0 +1,190 @@
+# OVERLAY, AND THE DELTA IS ONE FLAG: --enable-static (alsa-lib alone defaults to shared-only; the base recipe says so). The amd64 SDL2 links its
+# Wayland and ALSA backends STATICALLY -- measured reason (bare metal,
+# 2026-08-25): SDL's dlopen path, the distro default, is undefined inside
+# a static-glibc binary, and it showed: libasound segfaulted on its
+# first call and libwayland-client went silent after its first roundtrip,
+# leaving a qemu window that acked its configure and never attached a
+# buffer. So libasound.a must exist beside the .so for the --static
+# qemu link; the .so stays for every dynamic consumer in this image
+# (alsa-utils, ffmpeg, gstreamer). The pcre2/pixman/libffi overlay move, again.
+#
+# [source] is byte-equal to the base recipe's; selftest enforces that.
+#
+name    = "alsa-lib"
+version = "1.2.16.1"
+group   = "media"
+license = "LGPL-2.1-or-later"
+srcdir  = "alsa-lib-1.2.16.1"
+
+[source]
+url       = "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2"
+sha256    = "f740db7f488255944ffd4428416ee3390a96742856916433df468c281436480e"
+signature = "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["python", "topology", "ucm", "hwdep"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-python", "--disable-topology",
+                   "--disable-ucm", "--enable-static"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["alsa-lib"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+THIS IS THE ONE PACKAGE IN THE MEDIA BATCH THAT IS NOT FOR DECODING. It is the \
+audio OUTPUT path: gst-plugins-base's alsasink is how a decoded stream reaches \
+a sound card. Everything else here turns bytes into frames; this turns frames \
+into sound.
+
+AND IT IS UNTESTABLE IN CI, WHICH IS WORTH STATING BEFORE IT LOOKS LIKE AN \
+OMISSION. The boot test runs qemu with no audio device at all, so nothing \
+about playback can be exercised -- the guest test asserts the library is \
+present and reports its version, and no more. The same shape as \
+wpa_supplicant: buildable, and verifiable only on hardware.
+
+alsa-lib LOOKS FOR ITS CONFIGURATION AT RUNTIME under \
+/usr/share/alsa, which this package installs. A system with the library and \
+without that tree gets "cannot find card" errors that read like missing \
+hardware. The [installs] listing records the tree.
+
+--disable-python IS STATED. alsa-lib can build a Python binding, and python IS \
+in this set -- so the probe would succeed and add a module nothing imports, \
+arriving from a default rather than a decision. Same shape as lcms2's jpeg \
+probe.
+
+NO --disable-static HERE, AND THE FIRST VERSION OF THIS RECIPE PASSED ONE. \
+`--enable-static[=PKGS] ... [default=no]` -- alsa-lib already defaults to \
+shared-only, unlike every other autotools package in this set. It also passed \
+--disable-debug and --without-debug, and neither exists: the option is \
+--enable-debug, opt-in, already off. Three invented flags, caught by reading \
+--help instead of assuming the autotools shape. autotools ignores unknown \
+--disable-* silently, so they would have looked like decisions and been \
+nothing.
+
+THE VERSION MOVED BECAUSE alsa-utils WOULD NOT COMPILE AGAINST 1.2.14, and \
+the source says so precisely. alsactl/alsactl.c:462 reads
+
+    #if SND_LIB_VER(1, 2, 15) < SND_LIB_VERSION
+            snd_lib_error_set_handler(error_handler);
+    #else
+            snd_lib_log_set_handler(log_handler);
+    #endif
+
+so alsa-utils 1.2.16 takes the second branch against any alsa-lib at or below \
+1.2.15 and calls a function that version does not export:
+
+    alsactl.c:465:9: error: implicit declaration of function \
+      'snd_lib_log_set_handler'; did you mean 'snd_lib_error_set_handler'?
+
+VERIFIED AGAINST THE HEADERS OF THIS TARBALL RATHER THAN INFERRED FROM THE \
+VERSION NUMBERS, and the result is stronger than the arithmetic suggested. \
+include/version.h defines SND_LIB_VERSION as SND_LIB_VER(1,2,16), so \
+alsa-utils' test is true and it takes the FIRST branch -- \
+snd_lib_error_set_handler. And include/error.h:93 declares \
+snd_lib_log_set_handler as well, so the other branch would also have linked. \
+The pairing holds either way.
+
+1.2.14 WAS LATEST STABLE WHEN IT WAS PINNED, on 5 August. alsa shipped \
+1.2.15.x and then 1.2.16.1 within the week, and the BLFS book vendored in \
+this repository already says 1.2.15.3 -- which is the tell that was there to \
+be read when the alsa-utils recipe was written against that same page and \
+was not. Nothing in this repository flags a pin going stale; that is a real \
+gap and this is what it costs.
+
+alsa-lib IS PACKAGE 22, so this bump invalidates the checkpoint key of every \
+package built after it. That is the price of the pairing and it is worth \
+paying once rather than pinning alsa-utils backwards to match a library that \
+was going to be bumped anyway.
+
+BLFS CROSS-CHECK: multimedia/alsa-lib.html runs a BARE `./configure` with no \
+--prefix at all, which works because alsa-lib overrides autoconf's default -- \
+`ac_default_prefix=/usr` in its configure, not /usr/local. So --prefix=/usr \
+here is a statement rather than a correction, and it is kept for the same \
+reason every other recipe states it.
+
+BLFS DOES NOT PASS --disable-python AND IT SHOULD MATTER. Checked in the \
+configure script rather than assumed: the else branch of the \
+--enable-python test sets `build_python="yes"`, so the binding is ON by \
+default and BLFS builds it. python is in this set, so the probe would succeed \
+here too. Disabled.
+
+TWO COMPONENTS ARE DISABLED AND NEITHER IS PLAYBACK. ucm (use-case manager) \
+and topology (DSP topology) are each --disable-able and neither is on the path \
+from a decoded audio buffer to a sound card. mixer, pcm and hwdep stay: pcm IS \
+the playback path, mixer is volume, and hwdep is what several drivers need to \
+initialise.
+
+seq WAS IN THAT LIST AND HAD TO COME OUT, BECAUSE A CONSUMER DOES NOT SHARE \
+THIS PACKAGE'S VIEW OF WHAT IS NEEDED. The reasoning above is still correct -- \
+the ALSA sequencer is not on the playback path -- and it is the wrong test. \
+gst-plugins-base's alsa plugin compiles gstalsamidisrc.c UNCONDITIONALLY: \
+ext/alsa/meson.build lists it in alsa_sources with no option guarding it. With \
+--disable-seq the header is never installed, and the build fails with the \
+classic shape of a missing declaration:
+
+    ../ext/alsa/gstalsamidisrc.c:691:31: error: invalid type argument of
+                                        unary '*' (have 'int')
+    ../ext/alsa/gstalsamidisrc.c:692:5: error: implicit declaration of
+                                        function 'snd_seq_queue_status_free'
+
+-- the `int` is the implicit return type C assumes for an undeclared function, \
+so `*` on it is an error, and the real fault is two lines below in the message \
+order. Both symbols exist and are correctly typed in alsa-lib's own \
+include/seq.h at lines 491 and 497; --disable-seq simply stops it being \
+installed.
+
+rawmidi HAD TO COME BACK TOO, AND THE CHECK THAT SAID OTHERWISE WAS THE WRONG \
+ONE. Keeping it off was justified by grepping include/seq.h for "rawmidi" and \
+finding zero occurrences -- true, and irrelevant, because the constraint is in \
+the build system rather than the headers:
+
+    configure:14996  if test "$build_rawmidi" != "yes"; then
+    configure:14997    if test "$build_seq" = "yes"; then
+    configure:14998      as_fn_error $? "Cannot enable sequencer without rawmidi"
+
+A header that does not include another header says nothing about whether the \
+library can be built without it. The ALSA sequencer is layered on the raw MIDI \
+device interface, which is obvious in retrospect and was not checked.
+
+THE ALTERNATIVE WAS -Dalsa=disabled IN gst-plugins-base, AND IT IS WORSE. \
+alsasink is the only reason alsa-lib is in this set at all; turning it off \
+would leave the package built and unused."""
+
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/include/alsa", "usr/include/sys", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/alsa"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/alsa-lib-1.2.16.1.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-python",
+         "--disable-topology",
+         "--disable-ucm", "--enable-static"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[[steps]]
+name = "archive-present"
+cwd  = "$S"
+run  = [["sh", "-c", "test -f $D/usr/lib/libasound.a || { echo VERON-ALSALIB-NO-ARCHIVE; ls -la $D/usr/lib; exit 1; }"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "alsa"]]
+expect = ["1.2.16.1"]

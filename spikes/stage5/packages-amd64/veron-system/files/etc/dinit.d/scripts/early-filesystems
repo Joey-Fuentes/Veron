@@ -85,6 +85,41 @@ case " $(/bin/busybox cat /proc/cmdline 2>/dev/null) " in
     *" veron.maintenance=1 "*) _maint=1 ;;
 esac
 
+# FIRST BOOT OWNS THE REST OF THE DISK (ruled, Joe, 2026-08-25). The image
+# ships persist at 256 MiB -- the last partition, the DVD ceiling's price --
+# and the device this image lands on is almost never 256 MiB bigger than
+# the image. A stick written by the flasher had its persist grown there
+# (GROW-PERSIST); a stick written by dd or Etcher on some other machine
+# arrives here with a persist that stops where the image stopped and a
+# backup GPT sitting in the middle of the disk. Before /persist mounts,
+# grow it to fill the disk. veron-growpart says "nothing to do" and exits
+# 0 in under a second on every boot after the first, refuses to touch a
+# mounted or non-last partition, and never shrinks; veron.persist_grow=0
+# on the cmdline opts out (a person keeping the tail for another OS).
+# Not in maintenance mode: there the stick is the flasher's, not ours.
+_grow=1
+case " $(/bin/busybox cat /proc/cmdline 2>/dev/null) " in
+    *" veron.persist_grow=0 "*) _grow=0 ;;
+esac
+if [ "$_maint" = 0 ] && [ "$_grow" = 1 ]; then
+    _p4=""
+    for _ue in /sys/class/block/*/uevent; do
+        if /bin/busybox grep -qi '^PARTUUID=aaaa0004-0000-4000-8000-564552304e04$' "$_ue" 2>/dev/null; then
+            _p4=$(/bin/busybox basename "$(dirname "$_ue")"); break
+        fi
+    done
+    if [ -n "$_p4" ]; then
+        _pdisk=$(/bin/busybox basename "$(/bin/busybox readlink -f "/sys/class/block/$_p4/..")")
+        if [ -b "/dev/$_pdisk" ]; then
+            if /usr/bin/python3 /usr/sbin/veron-growpart grow "/dev/$_pdisk" --fill; then
+                :
+            else
+                echo "early-filesystems: persist grow on /dev/$_pdisk did not complete (see above); mounting persist as it is"
+            fi
+        fi
+    fi
+fi
+
 while read -r src dst type opts rest; do
     case "$src" in ''|'#'*) continue ;; esac
     case "$dst" in ''|/) continue ;; esac

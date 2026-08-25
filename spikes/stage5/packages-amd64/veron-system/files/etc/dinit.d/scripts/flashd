@@ -26,6 +26,11 @@
 #     veron-maintenance-init before the pivot) into the freshly written
 #     stick's persist partition, so user state survives a geometry change.
 #     Writes a filesystem, not a raw image; targets p4 by PARTUUID on <dev>.
+#   GROW-PERSIST <dev> <fill|MiB> -- after a write verifies: the persist
+#     partition (p4, the last one) grows to fill the disk or to the size the
+#     person chose, and the ext4 inside it grows to match. The work is
+#     /usr/sbin/veron-growpart (a GPT rewrite from the spec, then the kernel,
+#     then resize2fs); this verb is the disk rule around it. Never shrinks.
 #   ARM-MAINTENANCE <preserve|discard> -- the privileged half of entering
 #     maintenance mode. Mounts the ESP and writes a one-shot marker file
 #     (\EFI\veron\once.cmdline) that veron-boot.efi reads, applies, and deletes
@@ -80,6 +85,7 @@ while :; do
     INSTALL) img=$a1; dev=$a2; want_cap=$a3 ;;
     STREAM)  url=$a1; zsha=$a2; isha=$a3; dev=$a4; img=; want_cap= ;;
     RESTORE-PERSIST) backup=$a1; dev=$a2; img=; want_cap= ;;
+    GROW-PERSIST)    dev=$a1; grow=$a2; img=; want_cap= ;;
     ARM-MAINTENANCE) mode=$a1; img=; want_cap= ;;
     *) say "REFUSED: unknown verb '$verb'"; continue ;;
   esac
@@ -179,6 +185,11 @@ while :; do
     FLASH|STREAM|RESTORE-PERSIST)
       [ "$rem" = "1" ]          || { say "REFUSED: $dev is not removable -- $verb writes sticks, never internal disks. Installing to an internal disk is the INSTALL verb, with its own consent."; continue; }
       ;;
+    GROW-PERSIST)
+      # a stick or an internal disk this session just wrote; the root-disk
+      # refusal above already stands, and growpart refuses a mounted p4.
+      case "$grow" in fill|[1-9]*[0-9]|[1-9]) : ;; *) say "REFUSED: GROW-PERSIST wants 'fill' or a size in MiB, not '$grow'"; continue ;; esac
+      ;;
     INSTALL)
       # internal only, and the capacity handshake is the consent.
       [ "$rem" = "0" ]          || { say "REFUSED: $dev is removable -- INSTALL targets internal disks; use FLASH for sticks"; continue; }
@@ -188,6 +199,29 @@ while :; do
       ;;
     *) say "REFUSED: $verb has no disk rule"; continue ;;
   esac
+  # THE KERNEL DOES NOT RE-READ A PARTITION TABLE BY ITSELF. Without udev
+  # (this image has none, by design) nothing issues BLKRRPART after a raw
+  # write, so sysfs kept describing the stick as it was BEFORE the flash.
+  # Every image uses the same PARTUUIDs, so the by-PARTUUID lookup found
+  # the OLD /dev/sdb4 -- same name, old start sector -- and RESTORE-PERSIST
+  # mounted the middle of the new root-B: "Invalid argument" (bare metal,
+  # 2026-08-25). Re-read after every raw write, and again before anything
+  # resolves a partition; refuse loudly if it does not take.
+  rescan() {
+    /bin/busybox blockdev --rereadpt "/dev/$1" 2>>"$DIR/status" && return 0
+    /usr/bin/python3 /usr/sbin/veron-growpart rescan "/dev/$1" >>"$DIR/status" 2>&1
+  }
+  if [ "$verb" = "GROW-PERSIST" ]; then
+    rescan "$dev" || { say "GROW-PERSIST FAILED: the kernel would not re-read /dev/$dev's partition table (something still mounted?)"; continue; }
+    case "$grow" in fill) gargs="--fill" ;; *) gargs="--mib $grow" ;; esac
+    say "growing persist on /dev/$dev ($grow) ..."
+    if /usr/bin/python3 /usr/sbin/veron-growpart grow "/dev/$dev" $gargs >>"$DIR/status" 2>&1; then
+      say "GROW-PERSIST DONE: /dev/$dev"
+    else
+      say "GROW-PERSIST FAILED: see the lines above; the image itself is intact"
+    fi
+    continue
+  fi
   if [ "$verb" = "STREAM" ]; then
     case "$zsha$isha" in *[!0-9a-f]*|"") say "REFUSED: STREAM needs both digests"; continue ;; esac
     say "streaming $url onto /dev/$dev -- nothing stored, three digests checked"
@@ -209,6 +243,7 @@ while :; do
     nbytes=$(/bin/busybox awk '/bytes/{print $1; exit}' "$W/dd")
     [ "$got_z" = "$zsha" ] || { say "VERIFY FAILED: archive digest mismatch (got $got_z) -- the download was not the release"; continue; }
     [ "$got_i" = "$isha" ] || { say "VERIFY FAILED: image digest mismatch after decompress -- do not boot this stick"; continue; }
+    rescan "$dev" || say "warning: the kernel did not re-read /dev/$dev's partition table -- GROW/RESTORE will refuse until it does"
     say "stream digests OK ($nbytes bytes written); reading the device back ..."
     back=$(/bin/busybox dd if="/dev/$dev" bs=4M iflag=count_bytes count="$nbytes" 2>/dev/null | /bin/busybox sha256sum | /bin/busybox cut -d' ' -f1)
     if [ "$back" = "$isha" ]; then
@@ -227,10 +262,18 @@ while :; do
     case "$backup" in /*) : ;; *) say "REFUSED: persist backup path must be absolute"; continue ;; esac
     [ -d "$backup" ]              || { say "REFUSED: no persist backup at $backup"; continue; }
     # p4 by PARTUUID on the freshly written stick, resolved via sysfs (no udev).
-    # The kernel re-read the table after the flash, so the uevent now carries the
-    # new partition's PARTUUID.
+    # The kernel's view is only current because rescan() asked; the PARTUUID
+    # is the same on every image, so a stale table resolves to the right NAME
+    # at the wrong OFFSET. The start sector is checked against the table on
+    # the disk before anything is mounted.
+    rescan "$dev" || { say "RESTORE-PERSIST FAILED: the kernel would not re-read /dev/$dev's partition table"; continue; }
     pnode=$(partuuid_dev aaaa0004-0000-4000-8000-564552304e04)
     [ -n "$pnode" ] && [ -b "$pnode" ] || { say "REFUSED: persist partition not found on the flashed stick yet"; continue; }
+    if /usr/bin/python3 /usr/sbin/veron-growpart show "/dev/$dev" 2>>"$DIR/status" | /bin/busybox grep -q 'STALE'; then
+      say "RESTORE-PERSIST FAILED: the kernel's view of /dev/$dev still disagrees with its partition table -- refusing to mount the wrong sectors"
+      /usr/bin/python3 /usr/sbin/veron-growpart show "/dev/$dev" >>"$DIR/status" 2>&1
+      continue
+    fi
     # sanity: the persist partition must live on the disk we just flashed, not
     # some other disk that happens to carry the same PARTUUID. partuuid_dev
     # already returns a real /dev node; confirm it sits on /dev/$dev.
@@ -266,6 +309,7 @@ while :; do
     say "FLASH FAILED during write -- the stick may be inconsistent"
     continue
   fi
+  rescan "$dev" || say "warning: the kernel did not re-read /dev/$dev's partition table -- GROW/RESTORE will refuse until it does"
   say "write complete; reading every byte back (the part dd cannot promise) ..."
   # cmp -n: the mount-diary lesson -- compare exactly the image's length,
   # and compare it BEFORE anything can auto-mount and scribble.

@@ -1,0 +1,188 @@
+# OVERLAY, AND THE DELTA IS ONE FLAG: -Ddefault_library=both. The amd64 SDL2 links its
+# Wayland and ALSA backends STATICALLY -- measured reason (bare metal,
+# 2026-08-25): SDL's dlopen path, the distro default, is undefined inside
+# a static-glibc binary, and it showed: libasound segfaulted on its
+# first call and libwayland-client went silent after its first roundtrip,
+# leaving a qemu window that acked its configure and never attached a
+# buffer. So libxkbcommon.a must exist beside the .so for the --static
+# qemu link; the .so stays for every dynamic consumer in this image
+# (wlroots, labwc, foot, veron-auth). The pcre2/pixman/libffi overlay move, again.
+#
+# [source] is byte-equal to the base recipe's; selftest enforces that.
+#
+name    = "libxkbcommon"
+version = "1.13.2"
+group   = "graphics-substrate"
+license = "MIT"
+srcdir  = "libxkbcommon-1.13.2"
+
+# Version, options, dependencies and licence read from the tree fetch-git.sh
+# generated.
+
+[source]
+# NO TARBALL EXISTS, AND THE REPOSITORY IS NOT WHERE THIS TREE SAID IT WAS.
+# gap-urls.txt records "libxkbcommon moved to freedesktop GitLab"; the
+# opposite is true. gitlab.freedesktop.org/xorg/lib/libxkbcommon carries two
+# tags, 0.2.0 and 0.3.0, and stops in 2013. GitHub is the live repository.
+# That note is corrected here rather than left to mislead the next reader --
+# and it was found by ASKING the forge, which the same file already warns
+# about: "four of the last six URL failures in this project were invented
+# paths, not missing packages".
+#
+# The GitHub releases carry only auto-generated archives, whose digests GitHub
+# does not guarantee, so the pin is the COMMIT.
+#
+# ANNOTATED TAG: refs/tags/xkbcommon-1.13.2 is 322bf223..., the tag object.
+# The commit is the ^{} dereference below.
+#
+# 1.13.2 AND NOT 1.14.0-beta1, which is the newest tag. probe.py has a rule
+# against pinning pre-releases, added after it pinned one.
+kind      = "git"
+url       = "https://github.com/xkbcommon/libxkbcommon.git"
+commit    = "d1442aaa6b635551182e83c3b55037f4c118c962"
+sha256    = "ffc7e2c3e94e866679fbe7cdb6dc5bfe7ad0ae0358c6d96a7ab705e55c3880c3"
+# THE SHA256 IS OF THE UNCOMPRESSED TAR, NOT THE .tar.gz, and that was
+# measured rather than chosen. The first mirror run failed on this package
+# with a digest mismatch while the COMMIT verified -- same tree, different
+# bytes. Decompressing the phone-generated tarball and recompressing it with
+# the runner's gzip reproduced the runner's file exactly: `git archive
+# --format=tar` is reproducible across machines, gzip is not. Hashing the
+# compressed file made a portable artifact look unportable.
+signature = "none -- the commit IS the provenance; the sha256 is of the tar we derive from it"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja"]
+link         = []
+runtime      = []
+# THREE OF THESE DEFAULT TO true AND EACH PULLS SOMETHING WE DO NOT HAVE.
+# This is not a tidy-up list; without it the build fails or grows edges:
+#   x11          -> xcb, xcb-xkb, and meson.build ERRORS if they are missing
+#   wayland      -> wayland-client, wayland-protocols, wayland-scanner, none
+#                   of which are built yet; also errors when absent
+#   xkbregistry  -> dependency('libxml-2.0') with NO required:false at all
+# CORROBORATIVE DECLINE, ALREADY IMPLIED BY A FLAG. libxml2 is required --
+# no `required: false` at all -- by libxkbregistry, and this recipe passes
+# -Denable-xkbregistry=false. Named here as well as by that flag, because
+# `xkbregistry` is the feature and `libxml2` is the package, and the
+# reconciler compares package names.
+optional_off = ["x11", "wayland", "xkbregistry", "docs", "bash-completion", "cool-uris", "tools", "libxml2"]
+
+[declared]
+configure_flags = ["-Denable-x11=false", "-Denable-wayland=false",
+                   "-Denable-xkbregistry=false", "-Denable-docs=false",
+                   "-Denable-bash-completion=false", "-Denable-tools=false", "-Ddefault_library=both"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libxkbcommon"]
+deferral        = """
+Internals not reviewed. WHY IT IS HERE: wlroots links xkbcommon for keymap \
+handling, and no compositor works without it.
+
+-Denable-wayland=false COSTS NOTHING HERE and is not a contradiction. The \
+option does not affect the library; it builds the `xkbcli interactive-wayland` \
+TOOL, which needs wayland-client and wayland-protocols. Those arrive in the \
+same batch as wlroots, so this could be revisited then -- but nothing in the \
+set runs that tool.
+
+-Denable-xkbregistry=false DROPS A REQUIRED libxml2 EDGE. libxkbregistry \
+lists available layouts for graphical control panels; labwc and wlroots do \
+not consume it. We have libxml2, so this is a choice rather than a \
+constraint, and taking the smaller surface is the choice.
+
+-Denable-bash-completion=false AVOIDS A LOOKUP RATHER THAN A DEPENDENCY. \
+meson.build does `dependency('bash-completion', required: false)` with a \
+datadir fallback -- exactly glib's shape, and exactly what sent meson into \
+its CMake backend and crashed it on cmake 4.x. $CMAKE now makes that a clean \
+not-found, so this would work either way; turning the option off means the \
+lookup never happens at all, which is the narrower fix and belongs in the \
+recipe rather than relying on a global.
+
+-Denable-tools=false IS NOT TIDYING -- THE TOOLS DO NOT COMPILE HERE. I read \
+this package's options and turned five off, judged xkbcli "small" and left it \
+on. It fails:
+
+    tools/info.c:89: error: 'DFLT_XKB_CONFIG_UNVERSIONED_EXTENSIONS_PATH' \
+    undeclared
+
+That macro is set at meson.build:180 only `if \
+XKB_CONFIG_UNVERSIONED_EXTENSIONS_PATH != ''`, which is empty unless a \
+VERSIONED xkeyboard-config is found by pkg-config. tools/info.c references it \
+unconditionally. So libxkbcommon 1.13.2 cannot build its own tools without \
+xkeyboard-config present -- an upstream bug, not a configuration mistake, and \
+one that only shows up in a system that genuinely lacks it.
+
+Nothing here wants xkbcli: wlroots links the LIBRARY. Turning the tools off \
+is the smaller surface and removes the failure at its cause rather than \
+patching a source file to work around a missing dependency.
+
+RUNTIME GAP, DECLARED: libxkbcommon needs xkeyboard-config's data at RUNTIME \
+to resolve any real keymap. That package is pinned and mirrored but has no \
+recipe yet, so it cannot be named in `runtime` -- topo_order requires every \
+dep to exist. Recorded here so the absence is a known state rather than a \
+surprise the first time a compositor cannot map a key. The build-time lookup \
+is `required: false` and only supplies a default config path."""
+
+[undeclarable]
+# Lookups no .pc name can answer, disclosed per ROADMAP.md rule 4. Each was
+# reported by `probe.py reconcile` with a file and line, and each is answered
+# from the tarball rather than from a guess.
+#
+# meson.build:320  bison (REQUIRED, >= 3.6)
+#
+# THE ONE THAT MATTERS. libxkbcommon genuinely requires bison to build -- it
+# generates its keymap parser -- and this recipe declares no dependency on it,
+# because it CANNOT: bison has no stage-5 recipe. It comes from the stage-4
+# sysroot, which STAGE5.md lists among "already built by stage 4" alongside
+# m4, flex and perl. So the build finds it and nothing records why.
+#
+# That is a real gap in the audit story, not a false alarm: a REQUIRED tool
+# satisfied silently by the base image. It is fine today -- bison 3.8.2 is in
+# there and the spike log proves it -- and it is exactly what would break if
+# the sysroot were trimmed further, which stage5-entry already does six times.
+#
+# THE SELF-REBUILD CLAIM DEPENDS ON IT TOO. The image is the sysroot plus what
+# stage 5 merges on top, so bison ships; guest/selfrebuild.sh could rebuild
+# this package. If a future trim removed bison from the sysroot the build
+# would still pass on the runner and the IN-GUEST rebuild would fail, which is
+# the harder failure to attribute. `veron collect` now records bison's path on
+# every run so a trim shows up in the evidence rather than in a later run.
+"program:bison" = "REQUIRED (>= 3.6), and provided by the stage-4 sysroot rather than by any stage-5 recipe -- MEASURED, not assumed: run 84033000235 shows `checking for bison 3.0 or newer... 3.8.2, ok` from inside the sealed box. Generates the keymap parser. No bison package exists here to declare, and stage 4 legitimately owns it."
+"program:doxygen" = "Docs only; -Denable-docs=false, and it is the default."
+"program:Xvfb" = "X11 test harness. -Denable-x11=false, and there is no X11 in this system by policy."
+"program:xkbcomp" = "X11 keymap compiler, used only by the X11 tests. Same reason as Xvfb."
+"program:valgrind" = "Instrumentation for the test suite. Upstream suites are not run here."
+
+[installs]
+prefixes = ["usr/include/xkbcommon", "usr/lib", "usr/lib/pkgconfig"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libxkbcommon-1.13.2.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Denable-x11=false", "-Denable-wayland=false",
+         "-Denable-xkbregistry=false", "-Denable-docs=false",
+         "-Denable-bash-completion=false", "-Denable-tools=false", "-Ddefault_library=both"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[[steps]]
+name = "archive-present"
+cwd  = "$S"
+run  = [["sh", "-c", "test -f $D/usr/lib/libxkbcommon.a || { echo VERON-LIBXKBCOMMON-NO-ARCHIVE; ls -la $D/usr/lib; exit 1; }"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "xkbcommon"]]
+expect = ["1.13.2"]

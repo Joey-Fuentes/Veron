@@ -26,6 +26,7 @@
 #include <FL/Fl_Check_Button.H>
 #include <FL/Fl_Native_File_Chooser.H>
 #include <FL/Fl_Input.H>
+#include <FL/Fl_Int_Input.H>
 #include <FL/Fl_Round_Button.H>
 #include <cstdio>
 #include <cstdlib>
@@ -43,6 +44,11 @@ static Fl_Round_Button *mode_flash, *mode_install;
 static Fl_Input *confirm_name;
 static std::vector<long long> devcaps;
 static Fl_Check_Button *want_sha, *want_att;
+// PERSIST SIZE: the image ships persist at 256 MiB by design (the DVD
+// ceiling); the device owns the rest. Default is the rest of the drive --
+// a live stick that is also the build machine needs it all. flashd does
+// the work (GROW-PERSIST, after the write verifies, before any restore).
+static Fl_Choice *persist_choice; static Fl_Int_Input *persist_gib;
 static Fl_Button *btn_latest, *btn_own, *btn_flash;
 static std::string image_path;                 // "use my own image" mode
 static std::string latest_url, latest_zsha, latest_isha;   // stream mode
@@ -265,13 +271,29 @@ static void cb_own(Fl_Widget*, void*) {
 // image lands and verifies. flashd reports success as a "VERIFIED:" line; we
 // watch for it and then send RESTORE-PERSIST for the same device. This state
 // carries the pending restore between the flash request and that line.
+#define PERSIST_BACKUP_PATH "/run/veron-persist-backup"
 static bool   restore_pending = false;
 static std::string restore_dev;
+// The grow is a flashd round trip too, and it must land BEFORE the restore:
+// the restore mounts p4, and growpart refuses a mounted partition. So:
+// VERIFIED: -> GROW-PERSIST -> "GROW-PERSIST DONE/FAILED" -> RESTORE-PERSIST.
+static bool   grow_pending = false;
+static std::string grow_dev, grow_spec;   // "fill" or a MiB count
+static void send_restore() {
+    struct stat bst;
+    if (stat(PERSIST_BACKUP_PATH, &bst) == 0 && S_ISDIR(bst.st_mode)) {
+        logln("restoring preserved persist ...");
+        FILE *c = fopen("/run/veron-flash/cmd", "w");
+        if (c) { fprintf(c, "RESTORE-PERSIST %s %s\n", PERSIST_BACKUP_PATH, restore_dev.c_str()); fclose(c); }
+        else logln("could not reach flashd to restore persist.");
+    } else {
+        logln("no persist backup present -- nothing to restore (was this a discard?).");
+    }
+}
 // Arming maintenance is a flashd round trip too: the flasher asks (ARM-
 // MAINTENANCE), flashd writes the one-shot ESP marker and answers "ARMED:", and
 // only then do we reboot. This flag carries that intent across the status watch.
 static bool   reboot_after_arm = false;
-#define PERSIST_BACKUP_PATH "/run/veron-persist-backup"
 
 static void poll_status(void*) {
     static long off = 0;
@@ -286,17 +308,22 @@ static void poll_status(void*) {
             // persist restore is pending (maintenance + preserve), fire it now
             // that the new image -- and its fresh, empty persist partition -- is
             // on the stick.
-            if (restore_pending && strstr(line, "VERIFIED:")) {
-                restore_pending = false;
-                struct stat bst;
-                if (stat(PERSIST_BACKUP_PATH, &bst) == 0 && S_ISDIR(bst.st_mode)) {
-                    logln("image verified; restoring preserved persist ...");
+            // A raw write's VERIFIED: line (not the restore's own "VERIFIED: persist
+            // restored", which can only appear after both flags are clear).
+            if ((grow_pending || restore_pending) && strstr(line, "VERIFIED:") && !strstr(line, "persist restored")) {
+                if (grow_pending) {
+                    grow_pending = false;
+                    logln("image verified; growing persist (" + grow_spec + ") ...");
                     FILE *c = fopen("/run/veron-flash/cmd", "w");
-                    if (c) { fprintf(c, "RESTORE-PERSIST %s %s\n", PERSIST_BACKUP_PATH, restore_dev.c_str()); fclose(c); }
-                    else logln("could not reach flashd to restore persist.");
-                } else {
-                    logln("no persist backup present -- nothing to restore (was this a discard?).");
+                    if (c) { fprintf(c, "GROW-PERSIST %s %s\n", grow_dev.c_str(), grow_spec.c_str()); fclose(c); }
+                    else { logln("could not reach flashd to grow persist."); if (restore_pending) { restore_pending = false; send_restore(); } }
+                } else if (restore_pending) {
+                    restore_pending = false;
+                    send_restore();
                 }
+            } else if (restore_pending && (strstr(line, "GROW-PERSIST DONE") || strstr(line, "GROW-PERSIST FAILED"))) {
+                restore_pending = false;
+                send_restore();
             }
             // flashd confirms the one-shot ESP marker is written with "ARMED:".
             // Only now do we reboot -- into the maintenance init, which lifts the
@@ -352,6 +379,17 @@ static void cb_flash(Fl_Widget*, void*) {
     else
         fprintf(f, "FLASH %s %s\n", image_path.c_str(), dev.c_str());
     fclose(f);
+    // The persist size the person chose, sent once the write verifies.
+    {
+        int sel = persist_choice ? persist_choice->value() : 0;
+        if (sel == 0) { grow_pending = true; grow_dev = dev; grow_spec = "fill"; }
+        else if (sel == 2) {
+            long gib = persist_gib && persist_gib->value() ? atol(persist_gib->value()) : 0;
+            if (gib <= 0) logln("custom persist size is empty or not a number -- persist stays at the image's size.");
+            else { grow_pending = true; grow_dev = dev; grow_spec = std::to_string(gib * 1024); }
+        }
+        if (grow_pending) logln("persist will grow to " + (grow_spec == "fill" ? std::string("the rest of the drive") : grow_spec + " MiB") + " after the write verifies.");
+    }
     // In maintenance mode, if a persist backup was banked by the pivot, arrange
     // to restore it once the write verifies (poll_status watches for VERIFIED:).
     if (in_maintenance()) {
@@ -439,7 +477,15 @@ int main(int argc, char **argv) {
         if (!preserve) logln("persist=DISCARD confirmed -- user state will NOT be kept.");
         arm_maintenance(preserve);
     });
-    Fl_Text_Display *disp = new Fl_Text_Display(10, 140, 660, 310);
+    persist_choice = new Fl_Choice(80, 140, 250, 26, "Persist:");
+    persist_choice->add("fill the rest of the drive");
+    persist_choice->add("keep the image's size (256 MiB)");
+    persist_choice->add("custom size, in GiB:");
+    persist_choice->value(0);
+    persist_choice->tooltip("The image ships a small persist partition; after the write it grows to this. Never shrinks.");
+    persist_gib = new Fl_Int_Input(340, 140, 70, 26);
+    persist_gib->tooltip("Only read when 'custom size' is chosen.");
+    Fl_Text_Display *disp = new Fl_Text_Display(10, 174, 660, 276);
     logbuf = new Fl_Text_Buffer();
     disp->buffer(logbuf);
     btn_latest->callback(cb_latest);

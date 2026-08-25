@@ -152,23 +152,23 @@ between this file and the recipes fails the run.
   130. libslirp
   131. llvm
   132. qemu-user
-  133. shared-mime-info
-  134. utf8proc
-  135. wl-clipboard
-  136. chrony
-  137. glib-networking
-  138. gnupg
-  139. harfbuzz
-  140. libwebp
-  141. mesa
-  142. swtpm
-  143. freetype
-  144. libepoxy
-  145. libsoup
-  146. sdl2
-  147. wlroots
-  148. fontconfig
-  149. qemu
+  133. sdl2
+  134. shared-mime-info
+  135. utf8proc
+  136. wl-clipboard
+  137. chrony
+  138. glib-networking
+  139. gnupg
+  140. harfbuzz
+  141. libwebp
+  142. mesa
+  143. qemu
+  144. swtpm
+  145. freetype
+  146. libepoxy
+  147. libsoup
+  148. wlroots
+  149. fontconfig
   150. cairo
   151. fcft
   152. foot
@@ -1145,7 +1145,7 @@ package veron-maintenance-init 1.0
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   1e8870ab930b9a25912a3eedc9f66a51e5211e47faf09670a0269c832f7f24c0
+  recipe-sha   459ad261a90271eb88815af3f31afaf4f25c6051ada3acbdc208e878e3d30ef7
 
   source
     url        this repository
@@ -1278,7 +1278,7 @@ package zlib 1.3.2
 package alsa-lib 1.2.16.1
   group        media
   license      LGPL-2.1-or-later
-  recipe-sha   54dff3efdbfebe22b4319d3c2227d5b513ab44c3eb2e01f03948a18110738631
+  recipe-sha   0b6557872b2dc44f5fc562100d9b1b0f340c4293d3436e2077509f6c577ced07
 
   source
     url        https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2
@@ -1298,13 +1298,16 @@ package alsa-lib 1.2.16.1
          argv ["tar", "-xf", "dl/alsa-lib-1.2.16.1.tar.bz2", "-C", "build/alsa-lib-1.2.16.1"]
     [02] configure
          cwd  build/alsa-lib-1.2.16.1/alsa-lib-1.2.16.1
-         argv ["./configure", "--prefix=/usr", "--disable-python", "--disable-topology", "--disable-ucm"]
+         argv ["./configure", "--prefix=/usr", "--disable-python", "--disable-topology", "--disable-ucm", "--enable-static"]
     [03] build
          cwd  build/alsa-lib-1.2.16.1/alsa-lib-1.2.16.1
          argv ["make", "-j1"]
     [04] install
          cwd  build/alsa-lib-1.2.16.1/alsa-lib-1.2.16.1
          argv ["make", "install", "DESTDIR=dest/alsa-lib"]
+    [05] archive-present
+         cwd  build/alsa-lib-1.2.16.1/alsa-lib-1.2.16.1
+         argv ["sh", "-c", "test -f dest/alsa-lib/usr/lib/libasound.a || { echo VERON-ALSALIB-NO-ARCHIVE; ls -la dest/alsa-lib/usr/lib; exit 1; }"]
 
 ======================================================================
 package autoconf 2.73
@@ -3838,7 +3841,7 @@ package libsfdo 0.1.4
 package libxkbcommon 1.13.2
   group        graphics-substrate
   license      MIT
-  recipe-sha   62cc44d1433c3f00c9df22dd454a2dac39408d1ae1b95786834c930bd02e5700
+  recipe-sha   35a1c37ee6042619afd794fd563395c871461d898b3c5498d329f1a92f784e9b
 
   source
     url        https://github.com/xkbcommon/libxkbcommon.git
@@ -3861,7 +3864,7 @@ package libxkbcommon 1.13.2
     [02] setup
          cwd  build/libxkbcommon-1.13.2/libxkbcommon-1.13.2
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Denable-x11=false", "-Denable-wayland=false", "-Denable-xkbregistry=false", "-Denable-docs=false", "-Denable-bash-completion=false", "-Denable-tools=false"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Denable-x11=false", "-Denable-wayland=false", "-Denable-xkbregistry=false", "-Denable-docs=false", "-Denable-bash-completion=false", "-Denable-tools=false", "-Ddefault_library=both"]
     [03] build
          cwd  build/libxkbcommon-1.13.2/libxkbcommon-1.13.2
          argv ["ninja", "-C", "_b"]
@@ -3869,6 +3872,9 @@ package libxkbcommon 1.13.2
          cwd  build/libxkbcommon-1.13.2/libxkbcommon-1.13.2
          env  DESTDIR=dest/libxkbcommon
          argv ["ninja", "-C", "_b", "install"]
+    [05] archive-present
+         cwd  build/libxkbcommon-1.13.2/libxkbcommon-1.13.2
+         argv ["sh", "-c", "test -f dest/libxkbcommon/usr/lib/libxkbcommon.a || { echo VERON-LIBXKBCOMMON-NO-ARCHIVE; ls -la dest/libxkbcommon/usr/lib; exit 1; }"]
 
 ======================================================================
 package mako 1.4.0
@@ -4147,7 +4153,7 @@ package tllist 1.1.0
 package wayland 1.26.0
   group        wayland
   license      MIT
-  recipe-sha   dc0fa7880bae79c936e2b6ad4d3525d9f69ccaa8829fe0cd959447b73b373cdc
+  recipe-sha   76e52fa12660ba77ea9a8b99934a6a098af1358818b22cf25994cf89c8bd309b
 
   source
     url        https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.26.0/downloads/wayland-1.26.0.tar.xz
@@ -4168,7 +4174,7 @@ package wayland 1.26.0
     [02] setup
          cwd  build/wayland-1.26.0/wayland-1.26.0
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Ddocumentation=false", "-Ddtd_validation=false", "-Dtests=false", "-Dlibraries=true", "-Dscanner=true"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Ddocumentation=false", "-Ddtd_validation=false", "-Dtests=false", "-Dlibraries=true", "-Dscanner=true", "-Ddefault_library=both"]
     [03] build
          cwd  build/wayland-1.26.0/wayland-1.26.0
          argv ["ninja", "-C", "_b"]
@@ -4176,6 +4182,9 @@ package wayland 1.26.0
          cwd  build/wayland-1.26.0/wayland-1.26.0
          env  DESTDIR=dest/wayland
          argv ["ninja", "-C", "_b", "install"]
+    [05] archive-present
+         cwd  build/wayland-1.26.0/wayland-1.26.0
+         argv ["sh", "-c", "test -f dest/wayland/usr/lib/libwayland-client.a && test -f dest/wayland/usr/lib/libwayland-cursor.a && test -f dest/wayland/usr/lib/libwayland-egl.a || { echo VERON-WAYLAND-NO-ARCHIVE; ls -la dest/wayland/usr/lib; exit 1; }"]
 
 ======================================================================
 package wayland-protocols 1.49
@@ -4694,7 +4703,7 @@ package llvm 22.1.8
 package qemu-user 11.0.3
   group        system
   license      GPL-2.0-only
-  recipe-sha   fa6c238ef0c269eceaa9de7f2f0e1bb020da2838d19b53a9f65d16ec7566fcb1
+  recipe-sha   5ef70b1afb0d418a9ff53768755f7a50dccf6d51874204418a7aadeec6da194d
 
   source
     url        https://download.qemu.org/qemu-11.0.3.tar.xz
@@ -4715,9 +4724,11 @@ package qemu-user 11.0.3
     [02] configure
          cwd  build/qemu-user-11.0.3/qemu-11.0.3
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         env  PYTHONHASHSEED=0
          argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-linux-user --disable-debug-info --disable-system --disable-tools --disable-docs --disable-werror --disable-guest-agent --disable-rust"]
     [03] build
          cwd  build/qemu-user-11.0.3/qemu-11.0.3
+         env  PYTHONHASHSEED=0
          argv ["make", "-C", "_b", "-j1"]
     [04] install
          cwd  build/qemu-user-11.0.3/qemu-11.0.3
@@ -4731,6 +4742,54 @@ package qemu-user 11.0.3
     [07] static-or-die
          cwd  build/qemu-user-11.0.3/qemu-11.0.3
          argv ["sh", "-c", "! readelf -d dest/qemu-user/usr/bin/qemu-aarch64-static 2>/dev/null | grep -q NEEDED || { echo 'VERON-QEMU-NOT-STATIC'; readelf -d dest/qemu-user/usr/bin/qemu-aarch64-static | grep NEEDED; exit 1; }"]
+
+======================================================================
+package sdl2 2.32.10
+  group        system
+  license      Zlib
+  recipe-sha   d6cfbb0e971bc4fcdc632e377c8934cc8f59efb5fa0a83456a9a1c4aa9f696fd
+
+  source
+    url        https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz
+    sha256     5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165
+    signature  https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz.sig -- detached PGP by the SDL release key; verify against the fingerprint on libsdl.org before pinning
+    correspond none
+
+  deps
+    build        alsa-lib, cmake, libxkbcommon, ninja, pkgconf, wayland, wayland-protocols
+    link         alsa-lib, libxkbcommon, wayland
+    runtime      -
+    optional_off alsa-shared, ccache, dbus, fcitx, haptic, hidapi, ibus, jack, joystick, kmsdrm, libdecor, libsamplerate, libudev, opengl, opengles, pipewire, power, pulseaudio, rpath, sensor, shared, sndio, test, vulkan, wayland-shared, x11
+
+  patches (applied after unpack, in this order)
+    0001-wayland-egl-only-with-gl.patch
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/sdl2-2.32.10
+         argv ["tar", "-xf", "dl/SDL2-2.32.10.tar.gz", "-C", "build/sdl2-2.32.10"]
+    [02] configure
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_STATIC_PIC=ON", "-DSDL_WAYLAND=ON", "-DSDL_WAYLAND_SHARED=OFF", "-DSDL_WAYLAND_LIBDECOR=OFF", "-DSDL_X11=OFF", "-DSDL_KMSDRM=OFF", "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF", "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=OFF", "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF", "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF", "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF", "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF", "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]
+    [03] wayland-present
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         argv ["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); test -n \"$h\" || { echo VERON-SDL2-NO-GENERATED-CONFIG; find _b -name 'SDL_config*'; exit 1; }; grep -q '^#define SDL_VIDEO_DRIVER_WAYLAND 1' \"$h\" || { echo VERON-SDL2-NO-WAYLAND-DRIVER; grep -n WAYLAND \"$h\"; exit 1; }"]
+    [04] alsa-present
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         argv ["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); grep -q '^#define SDL_AUDIO_DRIVER_ALSA 1' \"$h\" || { echo VERON-SDL2-NO-ALSA-DRIVER; grep -n ALSA \"$h\"; exit 1; }"]
+    [05] no-dynamic-loading
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         argv ["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); ! grep -E '^#define SDL_(VIDEO_DRIVER_WAYLAND|AUDIO_DRIVER_ALSA)_DYNAMIC' \"$h\" || { echo VERON-SDL2-WOULD-DLOPEN; grep -n DYNAMIC \"$h\"; exit 1; }"]
+    [06] build
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         argv ["ninja", "-C", "_b"]
+    [07] install
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         env  DESTDIR=dest/sdl2
+         argv ["ninja", "-C", "_b", "install"]
+    [08] static-only
+         cwd  build/sdl2-2.32.10/SDL2-2.32.10
+         argv ["sh", "-c", "test -f dest/sdl2/usr/lib/libSDL2.a && test -f dest/sdl2/usr/lib/pkgconfig/sdl2.pc && ! ls dest/sdl2/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la dest/sdl2/usr/lib; exit 1; }; grep -E '^Libs.private' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lwayland-client' && grep -E '^Libs.private' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lasound' || { echo VERON-SDL2-PC-LACKS-BACKENDS; grep Libs dest/sdl2/usr/lib/pkgconfig/sdl2.pc; exit 1; }; ! grep -E '^Libs.private' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lEGL' || { echo VERON-SDL2-PC-LINKS-EGL; exit 1; }"]
 
 ======================================================================
 package shared-mime-info 2.5.1
@@ -5063,6 +5122,62 @@ package mesa 26.1.6
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package qemu 11.0.3
+  group        system
+  license      GPL-2.0-only
+  recipe-sha   4aca0223f0b733bf2d167d7ce38c27cdb578e98e5c1a88c8fc5b81d351291703
+
+  source
+    url        https://download.qemu.org/qemu-11.0.3.tar.xz
+    sha256     da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523
+    signature  none -- download.qemu.org publishes digests, not detached signatures
+    correspond none
+
+  deps
+    build        alsa-lib, attr, bash, dtc, glib, libcap-ng, libffi, libslirp, libxkbcommon, meson, ninja, pcre2, pixman, pkgconf, python, python-setuptools, python-wheel, sdl2, wayland, zlib
+    link         alsa-lib, attr, dtc, glib, libcap-ng, libffi, libslirp, libxkbcommon, pcre2, pixman, sdl2, wayland, zlib
+    runtime      -
+    optional_off alsa, auth-pam, bzip2, curl, curses, debug-info, docs, gcrypt, gnutls, gtk, guest-agent, install-blobs, libdw, libssh, libudev, libusb, modules, nettle, opengl, pa, pipewire, png, rust, sdl-image, seccomp, vnc, werror, xkbcommon, zstd
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/qemu-11.0.3
+         argv ["tar", "-xf", "dl/qemu-11.0.3.tar.xz", "-C", "build/qemu-11.0.3"]
+    [02] configure
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         env  PYTHONHASHSEED=0
+         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-softmmu,x86_64-softmmu --enable-kvm --enable-sdl --enable-slirp --enable-virtfs --enable-pixman --enable-tools --enable-fdt=system --audio-drv-list=sdl --disable-modules --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl-image --disable-opengl --disable-alsa --disable-pa --disable-pipewire --disable-curl --disable-gnutls --disable-gcrypt --disable-nettle --disable-libssh --disable-auth-pam --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev"]
+    [03] build
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         env  PYTHONHASHSEED=0
+         argv ["make", "-C", "_b", "-j1"]
+    [04] install
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["make", "-C", "_b", "DESTDIR=dest/qemu", "install"]
+    [05] seabios
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "mkdir -p pc-bios && make -C roms bios vgabios PYTHON=python3 -j1"]
+    [06] optionroms
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "cd pc-bios/optionrom && rm -f *.bin && printf 'TOPSRC_DIR=%s\\nCC=gcc\\nLD=ld\\nOBJCOPY=objcopy\\nPYTHON=python3\\n' \"build/qemu-11.0.3/qemu-11.0.3\" > config.mak && make && ls -la *.bin"]
+    [07] install-our-firmware
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "mkdir -p dest/qemu/usr/share/qemu && for f in bios.bin bios-256k.bin bios-microvm.bin vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-vmware.bin vgabios-ramfb.bin vgabios-bochs-display.bin vgabios-ati.bin; do install -m644 pc-bios/$f dest/qemu/usr/share/qemu/$f || exit 1; done && for f in linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin; do install -m644 pc-bios/optionrom/$f dest/qemu/usr/share/qemu/$f || exit 1; done && rm -rf dest/qemu/usr/share/qemu/dtb dest/qemu/usr/share/qemu/keymaps && sha256sum dest/qemu/usr/share/qemu/*.bin"]
+    [08] only-our-firmware
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "cd dest/qemu/usr/share/qemu && ls -1 | LC_ALL=C sort > /tmp/have && for f in trace-events-all linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin bios-256k.bin bios-microvm.bin bios.bin vgabios-ati.bin vgabios-bochs-display.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-ramfb.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-vmware.bin vgabios.bin; do echo $f; done | LC_ALL=C sort > /tmp/want && diff -u /tmp/want /tmp/have || { echo VERON-QEMU-FIRMWARE-SET-DRIFT; exit 1; }"]
+    [09] static-or-die
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "bad=0; for b in dest/qemu/usr/bin/* dest/qemu/usr/libexec/*; do [ -f \"$b\" ] || continue; head -c4 \"$b\" | grep -q ELF || continue; if readelf -d \"$b\" 2>/dev/null | grep -q NEEDED; then echo VERON-QEMU-NOT-STATIC \"$b\"; readelf -d \"$b\" | grep NEEDED; bad=1; fi; done; [ $bad = 0 ] && echo VERON-QEMU-STATIC"]
+    [10] no-dlopen-targets
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "for b in dest/qemu/usr/bin/qemu-system-x86_64 dest/qemu/usr/bin/qemu-system-aarch64; do if strings \"$b\" | grep -E -q '^lib(wayland-client|wayland-cursor|wayland-egl|xkbcommon|asound|decor-0|EGL)\\.so'; then echo VERON-QEMU-WOULD-DLOPEN \"$b\"; strings \"$b\" | grep -E '^lib(wayland|xkbcommon|asound|decor|EGL)[^ ]*\\.so' | head; exit 1; fi; done && echo VERON-QEMU-NO-DLOPEN-TARGETS"]
+    [11] features-present
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["sh", "-c", "Q=dest/qemu/usr/bin/qemu-system-x86_64; $Q -display help | grep -qx sdl || { echo VERON-QEMU-NO-SDL-DISPLAY; $Q -display help; exit 1; }; $Q -netdev help | grep -qx user || { echo VERON-QEMU-NO-USER-NETDEV; $Q -netdev help; exit 1; }; $Q -accel help | grep -qx kvm || { echo VERON-QEMU-NO-KVM-ACCEL; $Q -accel help; exit 1; }; $Q -tpmdev help 2>&1 | grep -q emulator || { echo VERON-QEMU-NO-TPM-EMULATOR; $Q -tpmdev help; exit 1; }; $Q -audio-help 2>&1 | grep -qi sdl || $Q -audiodev help 2>&1 | grep -qi sdl || { echo VERON-QEMU-NO-SDL-AUDIO; $Q -audiodev help; exit 1; }; for d in virtio-9p-pci virtio-gpu-pci virtio-keyboard-pci virtio-blk-pci virtio-net-pci tpm-tis tpm-crb usb-tablet ich9-ahci; do $Q -device help | grep -q \"name \\\"$d\\\"\" || { echo VERON-QEMU-DEVICE-MISSING $d; exit 1; }; done && dest/qemu/usr/bin/qemu-img --version | head -1 && echo VERON-QEMU-FEATURES-PRESENT"]
+
+======================================================================
 package swtpm 0.10.1
   group        system
   license      BSD-3-Clause
@@ -5207,48 +5322,6 @@ package libsoup 3.6.5
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
-package sdl2 2.32.10
-  group        system
-  license      Zlib
-  recipe-sha   d4c8049fd10ba089ac9c581f76f88f6c2cf2c04d12776274d42fd603afc5f74a
-
-  source
-    url        https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz
-    sha256     5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165
-    signature  https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz.sig -- detached PGP by the SDL release key; verify against the fingerprint on libsdl.org before pinning
-    correspond none
-
-  deps
-    build        alsa-lib, cmake, libxkbcommon, mesa, ninja, pkgconf, wayland, wayland-protocols
-    link         -
-    runtime      alsa-lib, libxkbcommon, wayland
-    optional_off ccache, dbus, fcitx, haptic, hidapi, ibus, jack, joystick, kmsdrm, libdecor, libsamplerate, libudev, opengl, opengles, pipewire, power, pulseaudio, rpath, sensor, shared, sndio, test, vulkan, x11
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/sdl2-2.32.10
-         argv ["tar", "-xf", "dl/SDL2-2.32.10.tar.gz", "-C", "build/sdl2-2.32.10"]
-    [02] configure
-         cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_STATIC_PIC=ON", "-DSDL_WAYLAND=ON", "-DSDL_WAYLAND_SHARED=ON", "-DSDL_WAYLAND_LIBDECOR=OFF", "-DSDL_X11=OFF", "-DSDL_KMSDRM=OFF", "-DSDL_OPENGL=OFF", "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF", "-DSDL_ALSA=ON", "-DSDL_ALSA_SHARED=ON", "-DSDL_PULSEAUDIO=OFF", "-DSDL_PIPEWIRE=OFF", "-DSDL_JACK=OFF", "-DSDL_SNDIO=OFF", "-DSDL_LIBUDEV=OFF", "-DSDL_DBUS=OFF", "-DSDL_IBUS=OFF", "-DSDL_JOYSTICK=OFF", "-DSDL_HAPTIC=OFF", "-DSDL_HIDAPI=OFF", "-DSDL_SENSOR=OFF", "-DSDL_POWER=OFF", "-DSDL_LIBSAMPLERATE=OFF", "-DSDL_TEST=OFF", "-DSDL_RPATH=OFF", "-DSDL_CCACHE=OFF"]
-    [03] wayland-present
-         cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); test -n \"$h\" || { echo VERON-SDL2-NO-GENERATED-CONFIG; find _b -name 'SDL_config*'; exit 1; }; grep -q '^#define SDL_VIDEO_DRIVER_WAYLAND 1' \"$h\" || { echo VERON-SDL2-NO-WAYLAND-DRIVER; grep -n WAYLAND \"$h\"; exit 1; }"]
-    [04] alsa-present
-         cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["sh", "-c", "h=$(find _b -name SDL_config.h -path '*include-config*' | head -1); grep -q '^#define SDL_AUDIO_DRIVER_ALSA 1' \"$h\" || { echo VERON-SDL2-NO-ALSA-DRIVER; grep -n ALSA \"$h\"; exit 1; }"]
-    [05] build
-         cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["ninja", "-C", "_b"]
-    [06] install
-         cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         env  DESTDIR=dest/sdl2
-         argv ["ninja", "-C", "_b", "install"]
-    [07] static-only
-         cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["sh", "-c", "test -f dest/sdl2/usr/lib/libSDL2.a && test -f dest/sdl2/usr/lib/pkgconfig/sdl2.pc && ! ls dest/sdl2/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la dest/sdl2/usr/lib; exit 1; }"]
-
-======================================================================
 package wlroots 0.19.1
   group        graphics
   license      MIT
@@ -5319,57 +5392,6 @@ package fontconfig 2.17.1
          cwd  build/fontconfig-2.17.1/fontconfig-2.17.1
          env  DESTDIR=dest/fontconfig
          argv ["ninja", "-C", "_b", "install"]
-
-======================================================================
-package qemu 11.0.3
-  group        system
-  license      GPL-2.0-only
-  recipe-sha   e23392f52806ab5f36528d1d83794a662f2273ad2e8bc142ec2939d0cc8d9c53
-
-  source
-    url        https://download.qemu.org/qemu-11.0.3.tar.xz
-    sha256     da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523
-    signature  none -- download.qemu.org publishes digests, not detached signatures
-    correspond none
-
-  deps
-    build        attr, bash, dtc, glib, libcap-ng, libslirp, meson, ninja, pcre2, pixman, pkgconf, python, python-setuptools, python-wheel, sdl2, zlib
-    link         attr, dtc, glib, libcap-ng, libslirp, pcre2, pixman, sdl2, zlib
-    runtime      sdl2
-    optional_off alsa, auth-pam, bzip2, curl, curses, debug-info, docs, gcrypt, gnutls, gtk, guest-agent, install-blobs, libdw, libssh, libudev, libusb, modules, nettle, opengl, pa, pipewire, png, rust, sdl-image, seccomp, vnc, werror, xkbcommon, zstd
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/qemu-11.0.3
-         argv ["tar", "-xf", "dl/qemu-11.0.3.tar.xz", "-C", "build/qemu-11.0.3"]
-    [02] configure
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-softmmu,x86_64-softmmu --enable-kvm --enable-sdl --enable-slirp --enable-virtfs --enable-pixman --enable-tools --enable-fdt=system --audio-drv-list=sdl --disable-modules --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl-image --disable-opengl --disable-alsa --disable-pa --disable-pipewire --disable-curl --disable-gnutls --disable-gcrypt --disable-nettle --disable-libssh --disable-auth-pam --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev"]
-    [03] build
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["make", "-C", "_b", "-j1"]
-    [04] install
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["make", "-C", "_b", "DESTDIR=dest/qemu", "install"]
-    [05] seabios
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["sh", "-c", "mkdir -p pc-bios && make -C roms bios vgabios PYTHON=python3 -j1"]
-    [06] optionroms
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["sh", "-c", "cd pc-bios/optionrom && rm -f *.bin && printf 'TOPSRC_DIR=%s\\nCC=gcc\\nLD=ld\\nOBJCOPY=objcopy\\nPYTHON=python3\\n' \"build/qemu-11.0.3/qemu-11.0.3\" > config.mak && make && ls -la *.bin"]
-    [07] install-our-firmware
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["sh", "-c", "mkdir -p dest/qemu/usr/share/qemu && for f in bios.bin bios-256k.bin bios-microvm.bin vgabios.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-vmware.bin vgabios-ramfb.bin vgabios-bochs-display.bin vgabios-ati.bin; do install -m644 pc-bios/$f dest/qemu/usr/share/qemu/$f || exit 1; done && for f in linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin; do install -m644 pc-bios/optionrom/$f dest/qemu/usr/share/qemu/$f || exit 1; done && rm -rf dest/qemu/usr/share/qemu/dtb dest/qemu/usr/share/qemu/keymaps && sha256sum dest/qemu/usr/share/qemu/*.bin"]
-    [08] only-our-firmware
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["sh", "-c", "cd dest/qemu/usr/share/qemu && ls -1 | LC_ALL=C sort > /tmp/have && for f in trace-events-all linuxboot_dma.bin multiboot_dma.bin kvmvapic.bin pvh.bin bios-256k.bin bios-microvm.bin bios.bin vgabios-ati.bin vgabios-bochs-display.bin vgabios-cirrus.bin vgabios-qxl.bin vgabios-ramfb.bin vgabios-stdvga.bin vgabios-virtio.bin vgabios-vmware.bin vgabios.bin; do echo $f; done | LC_ALL=C sort > /tmp/want && diff -u /tmp/want /tmp/have || { echo VERON-QEMU-FIRMWARE-SET-DRIFT; exit 1; }"]
-    [09] static-or-die
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["sh", "-c", "bad=0; for b in dest/qemu/usr/bin/* dest/qemu/usr/libexec/*; do [ -f \"$b\" ] || continue; head -c4 \"$b\" | grep -q ELF || continue; if readelf -d \"$b\" 2>/dev/null | grep -q NEEDED; then echo VERON-QEMU-NOT-STATIC \"$b\"; readelf -d \"$b\" | grep NEEDED; bad=1; fi; done; [ $bad = 0 ] && echo VERON-QEMU-STATIC"]
-    [10] features-present
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["sh", "-c", "Q=dest/qemu/usr/bin/qemu-system-x86_64; $Q -display help | grep -qx sdl || { echo VERON-QEMU-NO-SDL-DISPLAY; $Q -display help; exit 1; }; $Q -netdev help | grep -qx user || { echo VERON-QEMU-NO-USER-NETDEV; $Q -netdev help; exit 1; }; $Q -accel help | grep -qx kvm || { echo VERON-QEMU-NO-KVM-ACCEL; $Q -accel help; exit 1; }; $Q -tpmdev help 2>&1 | grep -q emulator || { echo VERON-QEMU-NO-TPM-EMULATOR; $Q -tpmdev help; exit 1; }; $Q -audio-help 2>&1 | grep -qi sdl || $Q -audiodev help 2>&1 | grep -qi sdl || { echo VERON-QEMU-NO-SDL-AUDIO; $Q -audiodev help; exit 1; }; for d in virtio-9p-pci virtio-gpu-pci virtio-keyboard-pci virtio-blk-pci virtio-net-pci tpm-tis tpm-crb usb-tablet ich9-ahci; do $Q -device help | grep -q \"name \\\"$d\\\"\" || { echo VERON-QEMU-DEVICE-MISSING $d; exit 1; }; done && dest/qemu/usr/bin/qemu-img --version | head -1 && echo VERON-QEMU-FEATURES-PRESENT"]
 
 ======================================================================
 package cairo 1.18.4
@@ -5929,7 +5951,7 @@ package veron-filechooser 1
 package veron-flasher 0.1.0
   group        system
   license      MIT
-  recipe-sha   68b61695fa8331a03b70ebac95f135bf9bdbf1fff8c7f47be58a7a850b1d1466
+  recipe-sha   ada0fcebec9924a3b3b2ef314b1cbd230180d0306b5c2f9688234090767dba8f
 
   source
     url        this repository

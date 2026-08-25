@@ -36,6 +36,17 @@ crosschecked_against = []
 # the ruled DVD-5 ceiling by 128 MiB, and qemu default -g loads every
 # binary with DWARF no gate, guest test or release-image user reads.
 # The debug build stays one recipe line away when a debugger wants it.
+# PYTHONHASHSEED=0 ON EVERY STEP THAT RUNS PYTHON, MEASURED: two builds
+# of this recipe (runs 88828722535 and 88870267999, same commit, same
+# inputs) produced a byte-identical qemu-system-x86_64 and two DIFFERENT
+# qemu-system-aarch64 (.text 192 bytes apart, 40 functions changed).
+# Every changed function is disas_a64/a32/mve/neon/sme_* -- the decoders
+# scripts/decodetree.py generates from target/arm's .decode files, and
+# decodetree iterates Python sets, whose order follows the interpreter's
+# per-process hash seed. i386 decodes by hand, so x86_64 reproduced. The
+# global [env] is frozen by selftest, so the seed is pinned here, on the
+# steps that run python (configure runs meson; build runs decodetree).
+
 [deps]
 # attr AND libcap-ng ARE HERE FOR virtfs, AND virtfs IS ENABLED BY NAME:
 # every boot gate mounts the sysroot with -fsdev local + virtio-9p-pci,
@@ -108,7 +119,7 @@ cwd  = "$S"
 # crash the policy exists to prevent, one wrapper deeper. The value is
 # the policy's own, stated per the defaults.toml rule that a recipe
 # declaring a name outright wins.
-env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend" }
+env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend", PYTHONHASHSEED = "0" }
 # OUT-OF-TREE IS ENFORCED BY UPSTREAM: configure refuses to run in the
 # source root, so the shape matches meson packages' _b convention.
 run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --target-list=aarch64-softmmu --enable-virtfs --disable-debug-info --disable-install-blobs --disable-docs --disable-werror --disable-guest-agent --disable-rust --disable-xkbcommon --disable-vnc --disable-gtk --disable-sdl --disable-opengl --disable-alsa --disable-curl --disable-gnutls --disable-libusb --disable-seccomp --disable-curses --disable-png --disable-bzip2 --disable-zstd --disable-libdw --disable-libudev --audio-drv-list="]]
@@ -116,6 +127,7 @@ run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --targe
 [[steps]]
 name = "build"
 cwd  = "$S"
+env  = { PYTHONHASHSEED = "0" }
 run  = [["make", "-C", "_b", "-j$J"]]
 
 [[steps]]

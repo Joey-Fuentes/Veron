@@ -1,0 +1,282 @@
+#!/usr/bin/python3
+# veron-growpart -- grow the persist partition of a written Veron disk, in
+# place, from the spec: no sfdisk, no parted, no growpart, because none of
+# those ship here and a GPT is ~100 lines of well-specified bytes (UEFI 2.11
+# §5). The writer this undoes is veron-mkgpt; the decoder that checks both is
+# stage6/tools/test-image.py, sharing no code with either.
+#
+# WHY THIS EXISTS (ruled, Joe, 2026-08-25): the image ships persist SMALL --
+# 256 MiB, the last partition -- so the image stays under the DVD ceiling and
+# a cheap stick takes it; the device then owns the rest of its disk. A live
+# stick that is also the build machine needs the whole remainder as persist:
+# local builds, ISOs, checkpoints. So: the persist partition grows to fill the
+# disk, or to a size the person chose, and the ext4 inside it grows to match.
+#
+# TWO CALLERS, ONE TOOL. flashd runs it after a flash, on the stick or the
+# internal disk it just wrote (GROW-PERSIST); early-filesystems runs it on the
+# boot disk before /persist mounts, so an image written by dd or Etcher on
+# some other machine still fills its stick on first boot.
+#
+# WHAT IT REFUSES, BY NAME: a table whose CRCs do not check; a persist that
+# is not the LAST partition (growing would overlap its neighbour); a target
+# smaller than the current size (never shrinks); a partition the kernel
+# reports mounted; a kernel view that still disagrees with the table after
+# the rescan (the stale-geometry bug this tool was written beside: flashd's
+# RESTORE-PERSIST mounted the OLD /dev/sdb4 after a reflash, 2026-08-25).
+#
+# TWO WAYS TO TELL THE KERNEL, AND WHY BOTH: BLKRRPART re-reads the whole
+# table and is refused (EBUSY) when any partition on the disk is in use --
+# which is every first boot, because root-A is mounted from that disk. The
+# kernel's answer for that case is BLKPG_RESIZE_PARTITION: resize ONE
+# partition by number, allowed while its siblings are mounted, provided the
+# partition itself is not. Try the first, fall back to the second, verify
+# through sysfs either way.
+#
+#   veron-growpart show <disk>
+#   veron-growpart grow <disk> (--fill | --mib N) [--dry-run] [--no-fs]
+#   veron-growpart rescan <disk>
+import argparse, fcntl, os, struct, subprocess, sys, zlib
+
+SECTOR = 512
+ENTRIES_LBAS = 32                      # 128 entries x 128 bytes = 16 KiB
+PERSIST_PARTUUID = "aaaa0004-0000-4000-8000-564552304e04"
+BLKRRPART = 0x125F
+BLKPG = 0x1269
+BLKPG_RESIZE_PARTITION = 3
+MIN_GROW_LBAS = 64 * 2048              # below 64 MiB of headroom, say so and do nothing
+
+def guid_bytes(text):
+    """GPT GUIDs are mixed-endian: first three fields little-endian."""
+    raw = bytes.fromhex(text.replace("-", ""))
+    return raw[3::-1] + raw[5:3:-1] + raw[7:5:-1] + raw[8:]
+
+def guid_text(b):
+    return "%08x-%04x-%04x-%s-%s" % (struct.unpack("<I", b[0:4])[0], struct.unpack("<H", b[4:6])[0],
+                                      struct.unpack("<H", b[6:8])[0], b[8:10].hex(), b[10:16].hex())
+
+def crc32(b):
+    return zlib.crc32(b) & 0xFFFFFFFF
+
+class Refusal(SystemExit):
+    def __init__(self, msg):
+        super().__init__("veron-growpart: REFUSED: " + msg)
+
+def disk_size(fd):
+    return os.lseek(fd, 0, os.SEEK_END)
+
+def read_table(fd):
+    """Primary header + entries, CRC-checked. Returns (hdr fields, entries blob)."""
+    os.lseek(fd, SECTOR, os.SEEK_SET)
+    hdr = os.read(fd, 92)
+    if hdr[0:8] != b"EFI PART":
+        raise Refusal("no GPT signature at LBA 1 -- not a Veron image, or not written yet")
+    hcrc = struct.unpack_from("<I", hdr, 16)[0]
+    z = bytearray(hdr); struct.pack_into("<I", z, 16, 0)
+    if crc32(bytes(z)) != hcrc:
+        raise Refusal("primary GPT header CRC does not check")
+    my_lba, alt_lba, first_usable, last_usable = struct.unpack_from("<QQQQ", hdr, 24)
+    disk_guid = hdr[56:72]
+    entries_lba, nent, esz, ecrc = struct.unpack_from("<QIII", hdr, 72)
+    if (nent, esz) != (128, 128):
+        raise Refusal(f"unexpected entry array {nent}x{esz}; this tool knows 128x128")
+    os.lseek(fd, entries_lba * SECTOR, os.SEEK_SET)
+    entries = bytearray(os.read(fd, nent * esz))
+    if crc32(bytes(entries)) != ecrc:
+        raise Refusal("primary GPT entry array CRC does not check")
+    return dict(alt_lba=alt_lba, first_usable=first_usable, last_usable=last_usable,
+                disk_guid=disk_guid, entries_lba=entries_lba, nent=nent, esz=esz), entries
+
+def parts_of(entries, nent, esz):
+    out = []
+    for i in range(nent):
+        e = entries[i*esz:(i+1)*esz]
+        if e[0:16] == b"\x00" * 16:
+            continue
+        first, last, attrs = struct.unpack_from("<QQQ", e, 32)
+        out.append(dict(index=i, number=i + 1, type=guid_text(e[0:16]), guid=guid_text(e[16:32]),
+                        first=first, last=last, attrs=attrs,
+                        name=e[56:128].decode("utf-16-le").rstrip("\x00")))
+    return out
+
+def header_bytes(my_lba, alt_lba, first_usable, last_usable, disk_guid, entries_start, entries_crc):
+    h = bytearray(92)
+    struct.pack_into("<8s4sII", h, 0, b"EFI PART", bytes([0, 0, 1, 0]), 92, 0)
+    struct.pack_into("<IIQQQQ16sQIII", h, 16, 0, 0, my_lba, alt_lba, first_usable, last_usable,
+                     disk_guid, entries_start, 128, 128, entries_crc)
+    struct.pack_into("<I", h, 16, crc32(bytes(h)))
+    return bytes(h) + b"\x00" * (SECTOR - 92)
+
+def part_node(disk, number):
+    base = os.path.basename(disk)
+    return "/dev/" + base + ("p" if base[-1].isdigit() else "") + str(number)
+
+def sysfs_part(disk, number):
+    base = os.path.basename(disk)
+    name = base + ("p" if base[-1].isdigit() else "") + str(number)
+    p = f"/sys/class/block/{name}"
+    try:
+        return int(open(p + "/start").read()), int(open(p + "/size").read())
+    except OSError:
+        return None, None
+
+def is_mounted(node):
+    try:
+        real = os.path.realpath(node)
+        for ln in open("/proc/self/mountinfo"):
+            f = ln.split()
+            if len(f) > 9 and os.path.realpath(f[9]) == real:
+                return True
+    except OSError:
+        pass
+    return False
+
+def kernel_rescan(disk, number, first, last):
+    """BLKRRPART, else BLKPG_RESIZE_PARTITION. Returns the method that worked."""
+    fd = os.open(disk, os.O_RDONLY)
+    try:
+        try:
+            fcntl.ioctl(fd, BLKRRPART)
+            return "BLKRRPART"
+        except OSError as e:
+            if e.errno != 16:               # EBUSY: a sibling partition is in use
+                raise
+        # struct blkpg_partition { long long start, length; int pno; char devname[64], volname[64]; }
+        # struct blkpg_ioctl_arg { int op, flags, datalen; void *data; }  (native layout)
+        bp = struct.Struct("@qqi64s64s")
+        data = bp.pack(first * SECTOR, (last - first + 1) * SECTOR, number, b"", b"")
+        buf = bytearray(data)
+        addr = (ctypes_addr(buf))
+        arg = struct.Struct("@iiiP").pack(BLKPG_RESIZE_PARTITION, 0, len(buf), addr)
+        fcntl.ioctl(fd, BLKPG, arg)
+        return "BLKPG_RESIZE_PARTITION"
+    finally:
+        os.close(fd)
+
+def ctypes_addr(buf):
+    import ctypes
+    return ctypes.addressof((ctypes.c_char * len(buf)).from_buffer(buf))
+
+def cmd_show(a):
+    fd = os.open(a.disk, os.O_RDONLY)
+    try:
+        total = disk_size(fd) // SECTOR
+        h, entries = read_table(fd)
+    finally:
+        os.close(fd)
+    print(f"disk {a.disk}: {total} sectors ({total // 2048} MiB); table says last_usable={h['last_usable']} alt_lba={h['alt_lba']}"
+          + ("" if h["alt_lba"] == total - 1 else f"  [backup GPT NOT at the disk's end: expected {total - 1}]"))
+    for p in parts_of(entries, h["nent"], h["esz"]):
+        tag = "  <- persist" if p["guid"] == PERSIST_PARTUUID else ""
+        ks, kz = sysfs_part(a.disk, p["number"]) if a.disk.startswith("/dev/") else (None, None)
+        kern = "" if ks is None else (f"  kernel: start={ks} size={kz}" + ("" if (ks, kz) == (p["first"], p["last"] - p["first"] + 1) else "  [STALE -- disagrees with the table]"))
+        print(f"  p{p['number']} {p['name']:10s} first={p['first']} last={p['last']} ({(p['last'] - p['first'] + 1) // 2048} MiB){tag}{kern}")
+    return 0
+
+def cmd_rescan(a):
+    fd = os.open(a.disk, os.O_RDONLY)
+    try:
+        fcntl.ioctl(fd, BLKRRPART)
+    finally:
+        os.close(fd)
+    print(f"veron-growpart: kernel re-read the partition table of {a.disk}")
+    return 0
+
+def cmd_grow(a):
+    fd = os.open(a.disk, os.O_RDONLY if a.dry_run else os.O_RDWR)
+    try:
+        total = disk_size(fd) // SECTOR
+        h, entries = read_table(fd)
+        parts = parts_of(entries, h["nent"], h["esz"])
+        persist = [p for p in parts if p["guid"] == PERSIST_PARTUUID]
+        if len(persist) != 1:
+            raise Refusal(f"expected exactly one persist partition (PARTUUID {PERSIST_PARTUUID}), found {len(persist)}")
+        persist = persist[0]
+        later = [p for p in parts if p["first"] > persist["first"]]
+        if later:
+            raise Refusal(f"persist (p{persist['number']}) is not the last partition -- p{later[0]['number']} '{later[0]['name']}' follows it; growing would overlap")
+        new_last_usable = total - 1 - ENTRIES_LBAS - 1
+        if a.fill:
+            new_last = new_last_usable
+        else:
+            new_last = persist["first"] + a.mib * 2048 - 1
+            if new_last > new_last_usable:
+                raise Refusal(f"{a.mib} MiB does not fit: the disk allows persist up to {(new_last_usable - persist['first'] + 1) // 2048} MiB")
+        cur_mib = (persist["last"] - persist["first"] + 1) // 2048
+        new_mib = (new_last - persist["first"] + 1) // 2048
+        if new_last < persist["last"]:
+            raise Refusal(f"persist is {cur_mib} MiB; {new_mib} MiB would shrink it. This tool never shrinks.")
+        node = part_node(a.disk, persist["number"]) if a.disk.startswith("/dev/") else None
+        if node and is_mounted(node):
+            raise Refusal(f"{node} is mounted; unmount it first")
+        if new_last - persist["last"] < MIN_GROW_LBAS and h["alt_lba"] == total - 1:
+            print(f"veron-growpart: persist is {cur_mib} MiB and the disk has under 64 MiB more; nothing to do")
+            return 0
+        print(f"veron-growpart: {a.disk} is {total // 2048} MiB; persist p{persist['number']} {cur_mib} MiB -> {new_mib} MiB"
+              + (" (dry run)" if a.dry_run else ""))
+        if a.dry_run:
+            return 0
+
+        # ---- rewrite: entry, primary header, backup entries + header at the disk's end, protective MBR
+        i = persist["index"] * h["esz"]
+        struct.pack_into("<Q", entries, i + 40, new_last)
+        ecrc = crc32(bytes(entries))
+        primary = header_bytes(1, total - 1, h["first_usable"], new_last_usable, h["disk_guid"], 2, ecrc)
+        backup_entries_lba = total - 1 - ENTRIES_LBAS
+        backup = header_bytes(total - 1, 1, h["first_usable"], new_last_usable, h["disk_guid"], backup_entries_lba, ecrc)
+        # the old backup GPT (at the image's end, inside what is now persist) is zeroed so no
+        # second "EFI PART" signature sits inside a filesystem
+        old_alt = h["alt_lba"]
+        # order: backup first (if the primary write dies the old table still reads), then primary, then MBR
+        os.lseek(fd, backup_entries_lba * SECTOR, os.SEEK_SET); os.write(fd, bytes(entries))
+        os.lseek(fd, (total - 1) * SECTOR, os.SEEK_SET);         os.write(fd, backup)
+        os.lseek(fd, 2 * SECTOR, os.SEEK_SET);                   os.write(fd, bytes(entries))
+        os.lseek(fd, 1 * SECTOR, os.SEEK_SET);                   os.write(fd, primary)
+        mbr = bytearray(os.read(fd, SECTOR) if os.lseek(fd, 0, os.SEEK_SET) == 0 else b"")
+        struct.pack_into("<I", mbr, 446 + 12, min(total - 1, 0xFFFFFFFF))
+        os.lseek(fd, 0, os.SEEK_SET); os.write(fd, bytes(mbr))
+        if old_alt != total - 1 and old_alt > persist["first"]:
+            os.lseek(fd, (old_alt - ENTRIES_LBAS) * SECTOR, os.SEEK_SET)
+            os.write(fd, b"\x00" * ((ENTRIES_LBAS + 1) * SECTOR))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    print(f"veron-growpart: table written; backup GPT at LBA {total - 1}")
+
+    if not a.disk.startswith("/dev/"):
+        print("veron-growpart: not a device node; kernel and filesystem steps skipped")
+        return 0
+    how = kernel_rescan(a.disk, persist["number"], persist["first"], new_last)
+    ks, kz = sysfs_part(a.disk, persist["number"])
+    if (ks, kz) != (persist["first"], new_last - persist["first"] + 1):
+        raise Refusal(f"after {how} the kernel still reports p{persist['number']} start={ks} size={kz}; table says start={persist['first']} size={new_last - persist['first'] + 1}")
+    print(f"veron-growpart: kernel accepted the new geometry via {how}: {node} = {new_mib} MiB")
+    if a.no_fs:
+        return 0
+    # ---- the filesystem: e2fsck -f first (resize2fs insists), then grow to the partition
+    fsck = subprocess.run(["/usr/sbin/e2fsck", "-f", "-p", node], capture_output=True, text=True)
+    if fsck.returncode > 1:                 # 0 clean, 1 corrected; 2+ means stop
+        raise Refusal(f"e2fsck on {node} rc={fsck.returncode}: {(fsck.stdout + fsck.stderr).strip()[-300:]}")
+    rs = subprocess.run(["/usr/sbin/resize2fs", node], capture_output=True, text=True)
+    if rs.returncode != 0:
+        raise Refusal(f"resize2fs on {node} rc={rs.returncode}: {(rs.stdout + rs.stderr).strip()[-300:]}")
+    print(f"veron-growpart: ext4 on {node} grown: {rs.stdout.strip().splitlines()[-1] if rs.stdout.strip() else 'ok'}")
+    print(f"VERON-GROWPART-OK persist {cur_mib} MiB -> {new_mib} MiB on {node}")
+    return 0
+
+def main():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("show"); p.add_argument("disk"); p.set_defaults(fn=cmd_show)
+    p = sub.add_parser("rescan"); p.add_argument("disk"); p.set_defaults(fn=cmd_rescan)
+    p = sub.add_parser("grow"); p.add_argument("disk")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--fill", action="store_true", help="persist ends at the disk's last usable sector")
+    g.add_argument("--mib", type=int, help="persist becomes this many MiB")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--no-fs", action="store_true", help="table and kernel only; leave the filesystem alone")
+    p.set_defaults(fn=cmd_grow)
+    a = ap.parse_args()
+    return a.fn(a)
+
+if __name__ == "__main__":
+    sys.exit(main())

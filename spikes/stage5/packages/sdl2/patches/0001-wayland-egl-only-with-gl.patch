@@ -1,0 +1,43 @@
+Probe and link EGL only when a GL API is enabled.
+
+WHY: CheckWayland asks pkg-config for wayland-client, wayland-egl,
+wayland-cursor, egl and xkbcommon as ONE group (sdlchecks.cmake:661),
+and with SDL_WAYLAND_SHARED off it puts the whole group on the link
+(line 723: list(APPEND EXTRA_LIBS ${PKG_WAYLAND_LIBRARIES})). With
+SDL_OPENGL and SDL_OPENGLES both off, no EGL symbol is referenced
+anywhere in src/video/wayland -- SDL_waylandopengles.c is under
+SDL_VIDEO_OPENGL_EGL, and the three wl_egl_window_* calls that ARE
+unconditional (SDL_waylandwindow.c:176, 2055, 2302) come from
+wayland-egl, which is libwayland's, not mesa's. So -lEGL is a dead flag
+-- and a fatal one for a --static consumer, because mesa builds no
+libEGL.a and ld refuses a static link with a library it cannot find.
+
+WHY THIS AND NOT dlopen: the alternative, SDL_WAYLAND_SHARED=ON, has
+been measured on the image it was built for (bare metal, 2026-08-25):
+static glibc's dlopen loads a second libc for the shared library, and
+across that seam libasound segfaulted at its first call and
+libwayland-client went silent after its first roundtrip -- a window
+that acked its configure and never attached a buffer. Linking the
+backends statically removes the seam. Read from the pinned tarball
+(sha256 5f5993c5...), one hunk, generated with diff -u, applied with
+the same `patch -p1 -N` the driver uses.
+
+WHAT CHANGES: with GL off, egl leaves the probe list and therefore the
+link; mesa leaves the recipe's build dependencies. With GL on, nothing
+changes.
+
+--- a/cmake/sdlchecks.cmake
++++ b/cmake/sdlchecks.cmake
+@@ -658,7 +658,11 @@
+ macro(CheckWayland)
+   if(SDL_WAYLAND)
+     set(WAYLAND_FOUND FALSE)
+-    pkg_check_modules(PKG_WAYLAND "wayland-client>=1.18" wayland-egl wayland-cursor egl "xkbcommon>=0.5.0")
++    set(_veron_wayland_modules "wayland-client>=1.18" wayland-egl wayland-cursor "xkbcommon>=0.5.0")
++    if(SDL_OPENGL OR SDL_OPENGLES)
++      list(APPEND _veron_wayland_modules egl)
++    endif()
++    pkg_check_modules(PKG_WAYLAND ${_veron_wayland_modules})
+ 
+     if(PKG_WAYLAND_FOUND)
+       set(WAYLAND_FOUND TRUE)

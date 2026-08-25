@@ -34,6 +34,17 @@ crosschecked_against = []
 # the ruled DVD-5 ceiling by 128 MiB, and qemu default -g loads every
 # binary with DWARF no gate, guest test or release-image user reads.
 # The debug build stays one recipe line away when a debugger wants it.
+# PYTHONHASHSEED=0 ON EVERY STEP THAT RUNS PYTHON, MEASURED: two builds
+# of this recipe (runs 88828722535 and 88870267999, same commit, same
+# inputs) produced a byte-identical qemu-system-x86_64 and two DIFFERENT
+# qemu-system-aarch64 (.text 192 bytes apart, 40 functions changed).
+# Every changed function is disas_a64/a32/mve/neon/sme_* -- the decoders
+# scripts/decodetree.py generates from target/arm's .decode files, and
+# decodetree iterates Python sets, whose order follows the interpreter's
+# per-process hash seed. i386 decodes by hand, so x86_64 reproduced. The
+# global [env] is frozen by selftest, so the seed is pinned here, on the
+# steps that run python (configure runs meson; build runs decodetree).
+
 [deps]
 # python-setuptools AND python-wheel ARE CONFIGURE DEPENDENCIES, FOUND BY
 # BUILDING (run 88488793190): qemu's mkvenv builds a non-isolated venv and
@@ -76,12 +87,13 @@ cwd  = "$S"
 # crash the policy exists to prevent, one wrapper deeper. The value is
 # the policy's own, stated per the defaults.toml rule that a recipe
 # declaring a name outright wins.
-env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend" }
+env  = { CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend", PYTHONHASHSEED = "0" }
 run  = [["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --static --target-list=aarch64-linux-user --disable-debug-info --disable-system --disable-tools --disable-docs --disable-werror --disable-guest-agent --disable-rust"]]
 
 [[steps]]
 name = "build"
 cwd  = "$S"
+env  = { PYTHONHASHSEED = "0" }
 run  = [["make", "-C", "_b", "-j$J"]]
 
 [[steps]]
