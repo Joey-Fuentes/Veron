@@ -36,7 +36,11 @@ jobs:
       - name: Install (airlock deps for the scripts)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3 git patch file
+          # `patch` is gone from this list on purpose (2026-08-25): the build
+          # applies ONE condensed patch by strict git apply. If it ever needs
+          # patch(1) again, that is a stale patch to regenerate with
+          # stages/3-micro-c/tcc/condense.sh, not a package to install.
+          sudo apt-get install -y --no-install-recommends python3 git file
       - name: 'STAGE 2: rebuild to records (stage 3 consumes out/2)'
         run: ./stages/2-pico-c/verify.sh
       - name: 'STAGE 3 in/: materialize inputs (adopted-first; else pin-true fetch)'

@@ -71,23 +71,40 @@ art() { printf '    %-28s %10s bytes  %s\n' "$1" "$(wc -c < "$2")" \
 do_in() {
   mkdir -p "$IN"
 
-  echo "== in/3: tcc-src = toolbox tarball + the series (CI's own base) =="
+  echo "== in/3: tcc-src = pristine pin + tcc-veron.patch + written config.h =="
   rm -rf "$IN/tcc-src"
-  mkdir -p "$IN/tcc-src"
-  tar -xzf spikes/toolbox/tcc-5ec0e6f8-arm64-configured.tar.gz \
-      -C "$IN/tcc-src" --strip-components=1
-  [ -f "$IN/tcc-src/config.h" ] || { echo "FAIL: not the configured tarball"; exit 1; }
-  for p in spikes/stage3/patches/tcc-arm64-asm/[0-9]*.patch \
-           spikes/stage3/patches/tcc-microc/[0-9]*.patch; do
-    git -C "$IN/tcc-src" apply --ignore-whitespace "$ROOT/$p" 2>/dev/null \
-      || patch -p1 -d "$IN/tcc-src" -i "$ROOT/$p" >/dev/null \
-      || { echo "FAIL: $(basename "$p") does not apply"; exit 1; }
-  done
+  # THE CUTOVER (design D2, stages/3-micro-c/tcc/README.md), done 2026-08-25:
+  # tcc is the PRISTINE pinned tree plus ONE condensed patch, applied by
+  # strict `git apply` -- no fuzz, no fallback, no patch(1) at all. Before
+  # this, the base was the toolbox tarball (a mid-series dev snapshot with a
+  # host-generated config.h) plus two series whose context had drifted, and
+  # `patch -p1 -d` with fuzz was how CI landed tcc-microc/0005 every run;
+  # the image's busybox patch has neither -d nor fuzz, and the ladder's
+  # first run ON VERON stopped exactly there. condense.sh proved (Aug 15)
+  # that pristine + tcc-veron.patch == pristine + both series, byte for
+  # byte; this is the build catching up with that proof.
+  #   pin:      sources/tcc.toml, the single source of truth (read, not copied)
+  #   tree:     clone_pinned -- the same content-addressed fetch M2libc uses
+  #   config.h: stages/3-micro-c/tcc/config.h, written, every value a decision
+  # No offline fallback for tcc: a pin-true tree needs one clone, which is
+  # what the in/ phase is for. PIN-FALLBACK covers M2libc and mescc-tools,
+  # whose reference copies the repo vendors; it never covered tcc.
+  TCC_SHA=$(sed -n 's/^commit *= *"\([0-9a-f]*\)".*/\1/p' sources/tcc.toml | head -1)
+  TCC_URLS=$(sed -n 's/^mirrors *= *\[\(.*\)\]/\1/p' sources/tcc.toml | tr -d '",')
+  [ -n "$TCC_SHA" ] || { echo "FAIL: no commit pin in sources/tcc.toml"; exit 1; }
+  rm -rf "$IN/tcc-src"
+  ( . tools/clone-pinned.sh && clone_pinned "$IN/tcc-src" "$TCC_SHA" "$TCC_URLS" ) \
+    || { echo "FAIL: could not fetch tinycc @ $TCC_SHA from any mirror (the in/ phase needs the network once)"; exit 1; }
+  echo "  tinycc @ $TCC_SHA (pin-true, pristine)"
+  git -C "$IN/tcc-src" apply --ignore-whitespace "$ROOT/stages/3-micro-c/tcc/tcc-veron.patch" \
+    || { echo "FAIL: tcc-veron.patch does not apply to the pristine pin -- regenerate it with tcc/condense.sh, never fuzz it"; exit 1; }
+  echo "  tcc-veron.patch applied (strict git apply, $(grep -c '^@@' "$ROOT/stages/3-micro-c/tcc/tcc-veron.patch") hunks)"
+  cp "$ROOT/stages/3-micro-c/tcc/config.h" "$IN/tcc-src/config.h"
+  rm -rf "$IN/tcc-src/.git"
   grep -q '#include <float.h>' "$IN/tcc-src/tccgen.c" || { echo "FAIL: 0006 absent"; exit 1; }
   grep -q 'VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST' "$IN/tcc-src/tccgen.c" \
     || { echo "FAIL: 0007 absent"; exit 1; }
   find "$IN/tcc-src" -name '*.rej' | grep -q . && { echo "FAIL: .rej present"; exit 1; }
-  find "$IN/tcc-src" -name '*.orig' -delete
   echo "  tcc-src ready: $(ls "$IN"/tcc-src/*.c | wc -l) .c files"
 
   if [ -f "$HERE/ADOPTED-SHA256" ]; then

@@ -16,9 +16,15 @@ is the right audit shape.
   once on a machine with network — never commit an artifact that was never
   verified. The toolbox tcc tarball cannot serve as the base: it is a
   mid-series dev snapshot, measured, not pristine.
-- **At cutover:** `sources/tcc.toml`'s `[patches]` section repoints from the
-  spike series dirs to this one file; the spike dirs stay live and untouched
-  until then (§7.0).
+- **Cutover done (2026-08-25):** `build.sh`'s in/ phase now takes the
+  pristine pin (clone_pinned from `sources/tcc.toml`) + `tcc-veron.patch`
+  by strict `git apply` + the written `config.h` beside this file. The
+  toolbox tarball and the two spike series are no longer on the official
+  build path; the spike workflows still use them and stay untouched.
+  Forced by the ladder's first run ON VERON: the image's busybox patch has
+  neither `-d` nor fuzz, and the old path had leaned on both.
+- **`config.h`:** written, not generated -- only the values that reach the
+  compiler, each a decision, with the grep that justifies every omission.
 
 Run once, commit the output:
 
