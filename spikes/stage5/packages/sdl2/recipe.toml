@@ -175,7 +175,13 @@ name = "static-only"
 cwd  = "$S"
 # THE PROPERTY THE FLAGS PROMISE, CHECKED WHERE IT IS MADE: an archive,
 # a .pc, and no shared object for qemu's --static link to trip over.
-run  = [["sh", "-c", "test -f $D/usr/lib/libSDL2.a && test -f $D/usr/lib/pkgconfig/sdl2.pc && ! ls $D/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la $D/usr/lib; exit 1; }; grep -E '^Libs.private' $D/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lwayland-client' || { echo VERON-SDL2-PC-LACKS-BACKENDS; grep Libs $D/usr/lib/pkgconfig/sdl2.pc; exit 1; }; ! grep -E '^Libs.private' $D/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lEGL' || { echo VERON-SDL2-PC-LINKS-EGL; exit 1; }"]]
+# THE BACKENDS ARE ON THE PUBLIC Libs: LINE, MEASURED (run 88906901854):
+# a static-only SDL2 writes "Libs: -lSDL2 ... -lwayland-egl
+# -lwayland-cursor -lwayland-client -lxkbcommon", not Libs.private --
+# correct, since an archive's consumer must always link them -- and the
+# first version of this check read only Libs.private and failed a
+# build that was right. Either line counts; -lEGL on either is wrong.
+run  = [["sh", "-c", "test -f $D/usr/lib/libSDL2.a && test -f $D/usr/lib/pkgconfig/sdl2.pc && ! ls $D/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la $D/usr/lib; exit 1; }; grep -E '^Libs(.private)?:' $D/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lwayland-client' || { echo VERON-SDL2-PC-LACKS-BACKENDS; grep Libs $D/usr/lib/pkgconfig/sdl2.pc; exit 1; }; ! grep -E '^Libs(.private)?:' $D/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lEGL' || { echo VERON-SDL2-PC-LINKS-EGL; grep Libs $D/usr/lib/pkgconfig/sdl2.pc; exit 1; }"]]
 
 [guest]
 test   = [["/usr/bin/pkgconf", "--modversion", "sdl2"]]

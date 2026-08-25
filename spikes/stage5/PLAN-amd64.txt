@@ -4744,7 +4744,7 @@ package qemu-user 11.0.3
 package sdl2 2.32.10
   group        system
   license      Zlib
-  recipe-sha   d63d6ca658338e8cdb5ed5bd52fdc8a9fd5cf5b87f804d6198399fb5a54f1ff4
+  recipe-sha   b570cda563d88b9ea38361c5742cc3d6e57edee5dfff463cddd3eede1afc1cc4
 
   source
     url        https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz
@@ -4783,7 +4783,7 @@ package sdl2 2.32.10
          argv ["ninja", "-C", "_b", "install"]
     [07] static-only
          cwd  build/sdl2-2.32.10/SDL2-2.32.10
-         argv ["sh", "-c", "test -f dest/sdl2/usr/lib/libSDL2.a && test -f dest/sdl2/usr/lib/pkgconfig/sdl2.pc && ! ls dest/sdl2/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la dest/sdl2/usr/lib; exit 1; }; grep -E '^Libs.private' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lwayland-client' || { echo VERON-SDL2-PC-LACKS-BACKENDS; grep Libs dest/sdl2/usr/lib/pkgconfig/sdl2.pc; exit 1; }; ! grep -E '^Libs.private' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lEGL' || { echo VERON-SDL2-PC-LINKS-EGL; exit 1; }"]
+         argv ["sh", "-c", "test -f dest/sdl2/usr/lib/libSDL2.a && test -f dest/sdl2/usr/lib/pkgconfig/sdl2.pc && ! ls dest/sdl2/usr/lib/libSDL2*.so* 2>/dev/null | grep -q . || { echo VERON-SDL2-NOT-STATIC-ONLY; ls -la dest/sdl2/usr/lib; exit 1; }; grep -E '^Libs(.private)?:' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lwayland-client' || { echo VERON-SDL2-PC-LACKS-BACKENDS; grep Libs dest/sdl2/usr/lib/pkgconfig/sdl2.pc; exit 1; }; ! grep -E '^Libs(.private)?:' dest/sdl2/usr/lib/pkgconfig/sdl2.pc | grep -q -- '-lEGL' || { echo VERON-SDL2-PC-LINKS-EGL; grep Libs dest/sdl2/usr/lib/pkgconfig/sdl2.pc; exit 1; }"]
 
 ======================================================================
 package shared-mime-info 2.5.1
