@@ -120,7 +120,10 @@ do_in() {
     rm -rf "$IN/microc" && mkdir -p "$IN/microc"
     cp -r "$HERE/micro-c/." "$IN/microc/"
     S="$IN/microc/test/test1000/hello-aarch64.sh"
-    sed -e ':a' -e '/\\$/{N; s/\\\n/ /; ta}' "$S" > "$IN/joined.sh"
+  # ONE sed COMMAND PER -e: a `t` label runs to end of line in POSIX sed, so
+  # the one-line form `{N; s/..//; ta}` reads its label as "a}" and busybox
+  # sed reports "unterminated {" (the image, 2026-08-25); GNU sed is lenient.
+    sed -e ':a' -e '/\\$/{' -e 'N' -e 's/\\\n/ /' -e 'ta' -e '}' "$S" > "$IN/joined.sh"
     grep -m1 'bin/M2-Planet' "$IN/joined.sh" \
       | grep -oE -- '-f[[:space:]]+[^[:space:]]+' \
       | sed 's/^-f[[:space:]]*//' > "$IN/microc-srcs.txt"
@@ -168,7 +171,7 @@ do_in() {
   # the flist names M2libc/bootstrappable.c; supply it at the pin's path
   cp "$IN/m2libc-pin/bootstrappable.c" "$IN/microc/M2libc/bootstrappable.c"
   S="$IN/microc/test/test1000/hello-aarch64.sh"
-  sed -e ':a' -e '/\\$/{N; s/\\\n/ /; ta}' "$S" > "$IN/joined.sh"
+  sed -e ':a' -e '/\\$/{' -e 'N' -e 's/\\\n/ /' -e 'ta' -e '}' "$S" > "$IN/joined.sh"
   grep -m1 'bin/M2-Planet' "$IN/joined.sh" \
     | grep -oE -- '-f[[:space:]]+[^[:space:]]+' \
     | sed 's/^-f[[:space:]]*//' > "$IN/microc-srcs.txt"
