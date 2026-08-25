@@ -23,6 +23,10 @@ is the right audit shape.
   build path; the spike workflows still use them and stay untouched.
   Forced by the ladder's first run ON VERON: the image's busybox patch has
   neither `-d` nor fuzz, and the old path had leaned on both.
+- **`tccdefs_.h`:** the predefs the compiler bakes in, generated from
+  `include/tccdefs.h` by `tools/c2str.py` -- tinycc's `conftest.c -DC2STR`
+  ported line for line, proven byte-identical to the gcc-built reference
+  -- and regenerated + compared on every `in` run.
 - **`config.h`:** written, not generated -- only the values that reach the
   compiler, each a decision, with the grep that justifies every omission.
 
