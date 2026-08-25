@@ -10,15 +10,13 @@ srcdir  = "SDL2-2.32.10"
 # the whole GTK stack, and this system declines it). SDL2's Wayland
 # video driver is what puts a qemu window on labwc.
 #
-# AUDIO IS OFF, MEASURED (run 88903036799): SDL's ALSA backend linked
-# statically needs libasound.a, and alsa-lib's configure refuses to
-# build shared and static from one tree ("do not use --enable-shared=yes
-# with --enable-static=yes") -- the one autotools package in this set
-# that does. A static-only alsa-lib would take libasound.so from
-# alsa-utils, ffmpeg, gstreamer and wpewebkit. So SDL_AUDIO is OFF, qemu
-# is built with no audio backend, and a guest has no sound card until a
-# static-only alsa-lib side package with its own libdir exists for sdl2
-# alone. Declined and dated, not deferred silently.
+# SDL_AUDIO IS OFF: sound in a guest goes through qemu's own ALSA
+# backend on alsa-lib-static, not through SDL's audio subsystem. SDL is
+# here to put a window on Wayland, and its surface stays exactly what
+# was measured; audio through it would add SDL's audio layer between
+# the guest and libasound for no gain. (alsa-lib will not build shared
+# and static from one tree -- run 88903036799 -- which is why the static
+# archive is its own package.)
 #
 # THE WINDOW GETS ITS PIXELS BY wl_shm, BY PATCH (0002), MEASURED: with
 # the backends linked in and GL off, the protocol handshake completed on

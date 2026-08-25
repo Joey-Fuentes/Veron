@@ -1,0 +1,112 @@
+name       = "alsa-lib-static"
+version    = "1.2.16.1"
+group      = "build-substrate"
+license    = "LGPL-2.1-or-later"
+srcdir     = "alsa-lib-1.2.16.1"
+build_only = true
+
+# THE SAME alsa-lib TARBALL, BUILT A SECOND TIME, AS AN ARCHIVE ONLY --
+# for one consumer: the amd64 --static qemu's ALSA audio backend, so a
+# guest has a sound card. alsa-lib's configure refuses to build a shared
+# library and a static one from one tree (measured, run 88903036799;
+# INSTALL says why: "due to bug in the libtool script"), and the image
+# needs libasound.so for alsa-utils, ffmpeg, gstreamer and wpewebkit. So
+# two builds of one pinned source: `alsa-lib` (shared, /usr, ships) and
+# this (static, /opt/alsa-static, build_only, ships nothing). The
+# qemu/qemu-user and freetype/freetype-bootstrap shape.
+#
+# READ FROM THE TARBALL (sha256 f740db7f...), NOT RECALLED:
+#   --enable-shared=no --enable-static=yes is INSTALL's own spelling of
+#     a static build, and the only one configure accepts.
+#   configure ALSO refuses --with-pic for a static build, and
+#     src/dlmisc.c is the reason: with PIC undefined, snd_dlopen(NULL)
+#     returns the BUILT-IN symbol table (snd_dlsym_start), which is how
+#     a static libasound finds its own hw/plug/dmix/softvol plugins. A
+#     static build has its own code path here; this is not a shared
+#     library forced into an archive.
+#   --without-libdl compiles the external-plugin loader out (HAVE_LIBDL
+#     off: no dlopen, no dladdr in the archive). External plugins
+#     (pulse, jack) are dlopen'd modules and are not in this set anyway.
+#     The no-dlopen step below asserts the archive carries no dlopen.
+#   --with-configdir=/usr/share/alsa is the COMPILED-IN path to
+#     alsa.conf (ALSA_CONFIG_DIR). The base alsa-lib ships those files
+#     on the image at that path; this prefix never exists at runtime.
+#     The install also writes them under $D/usr/share/alsa -- identical
+#     bytes to the base package's -- and the trim step removes them so
+#     this package owns only its archive and headers.
+#   The static objects are non-PIC by libtool's rule and PIE by the
+#     stage-4 gcc's default, which is what a static-pie qemu link wants:
+#     attr and libcap-ng went in the same way.
+#
+# UNBUILT AS WRITTEN. What the first run measures: the three-flag
+# combination configuring cleanly, and qemu's meson finding THIS alsa.pc
+# through PKG_CONFIG_PATH ahead of the shared one in /usr/lib/pkgconfig.
+
+[source]
+url       = "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2"
+sha256    = "f740db7f488255944ffd4428416ee3390a96742856916433df468c281436480e"
+signature = "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["shared", "libdl", "python", "topology", "ucm"]
+
+[declared]
+configure_flags = ["--prefix=/opt/alsa-static", "--enable-shared=no", "--enable-static=yes", "--without-libdl",
+                   "--with-configdir=/usr/share/alsa", "--disable-python", "--disable-topology", "--disable-ucm"]
+verification    = "archive-present (libasound.a, alsa.pc pointing at /opt/alsa-static, no .so); no-dlopen (no dlopen/dladdr symbol in the archive)"
+deferral        = """
+Internals not reviewed beyond dlmisc.c and configure's static rules. The \
+plugin set is the default (all built-in PCM and control plugins); python, \
+topology and UCM are off as in the base recipe, for the same reasons it \
+gives."""
+
+[installs]
+prefixes = ["opt/alsa-static/include", "opt/alsa-static/lib"]
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/alsa-lib-1.2.16.1.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/opt/alsa-static", "--enable-shared=no", "--enable-static=yes", "--without-libdl",
+         "--with-configdir=/usr/share/alsa", "--disable-python", "--disable-topology", "--disable-ucm"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[[steps]]
+name = "trim"
+cwd  = "$S"
+# Only the archive and its headers are this package's: the config files
+# under usr/share/alsa are the base alsa-lib's bytes and already on the
+# image; aserver and the aclocal macro have no consumer here.
+run  = [["sh", "-c", "rm -rf $D/usr $D/opt/alsa-static/bin $D/opt/alsa-static/share && find $D -type f | sort"]]
+
+[[steps]]
+name = "archive-present"
+cwd  = "$S"
+run  = [["sh", "-c", "test -f $D/opt/alsa-static/lib/libasound.a && test -f $D/opt/alsa-static/lib/pkgconfig/alsa.pc && ! ls $D/opt/alsa-static/lib/libasound*.so* 2>/dev/null | grep -q . || { echo VERON-ALSA-STATIC-NO-ARCHIVE; ls -la $D/opt/alsa-static/lib; exit 1; }; grep -q '^libdir=/opt/alsa-static/lib' $D/opt/alsa-static/lib/pkgconfig/alsa.pc || { echo VERON-ALSA-STATIC-PC-WRONG-PREFIX; cat $D/opt/alsa-static/lib/pkgconfig/alsa.pc; exit 1; }"]]
+
+[[steps]]
+name = "no-dlopen"
+cwd  = "$S"
+# --without-libdl's promise, checked on the bytes: an archive that
+# still referenced dlopen would put a second libc into the static qemu,
+# the seam that broke libasound the first time.
+run  = [["sh", "-c", "! nm $D/opt/alsa-static/lib/libasound.a 2>/dev/null | grep -E -q ' U (dlopen|dladdr|dlsym)$' || { echo VERON-ALSA-STATIC-WOULD-DLOPEN; nm $D/opt/alsa-static/lib/libasound.a | grep -E ' U dl'; exit 1; }; echo VERON-ALSA-STATIC-NO-DLOPEN"]]
+
+[guest]
+# build_only, SO THIS NEVER RUNS. qemu's -audiodev alsa is the test.
