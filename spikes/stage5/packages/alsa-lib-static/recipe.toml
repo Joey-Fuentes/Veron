@@ -98,7 +98,12 @@ run  = [["sh", "-c", "rm -rf $D/usr $D/opt/alsa-static/bin $D/opt/alsa-static/sh
 [[steps]]
 name = "archive-present"
 cwd  = "$S"
-run  = [["sh", "-c", "test -f $D/opt/alsa-static/lib/libasound.a && test -f $D/opt/alsa-static/lib/pkgconfig/alsa.pc && ! ls $D/opt/alsa-static/lib/libasound*.so* 2>/dev/null | grep -q . || { echo VERON-ALSA-STATIC-NO-ARCHIVE; ls -la $D/opt/alsa-static/lib; exit 1; }; grep -q '^libdir=/opt/alsa-static/lib' $D/opt/alsa-static/lib/pkgconfig/alsa.pc || { echo VERON-ALSA-STATIC-PC-WRONG-PREFIX; cat $D/opt/alsa-static/lib/pkgconfig/alsa.pc; exit 1; }"]]
+# THE .pc IS READ BY pkgconf, NOT GREPPED (run 89082659478): configure
+# writes libdir=${exec_prefix}/lib, the standard form, which the first
+# version of this check failed for not being spelled /opt/alsa-static/lib.
+# What matters is what the file resolves to, and what a static consumer
+# is handed: the archive's libdir, and no -ldl.
+run  = [["sh", "-c", "test -f $D/opt/alsa-static/lib/libasound.a && test -f $D/opt/alsa-static/lib/pkgconfig/alsa.pc && ! ls $D/opt/alsa-static/lib/libasound*.so* 2>/dev/null | grep -q . || { echo VERON-ALSA-STATIC-NO-ARCHIVE; ls -la $D/opt/alsa-static/lib; exit 1; }; test \"$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=$D/opt/alsa-static/lib/pkgconfig pkgconf --variable=libdir alsa)\" = /opt/alsa-static/lib || { echo VERON-ALSA-STATIC-PC-WRONG-PREFIX; cat $D/opt/alsa-static/lib/pkgconfig/alsa.pc; exit 1; }; ! PKG_CONFIG_LIBDIR=$D/opt/alsa-static/lib/pkgconfig pkgconf --static --libs alsa | grep -q -- '-ldl' || { echo VERON-ALSA-STATIC-PC-LINKS-DL; exit 1; }"]]
 
 [[steps]]
 name = "no-dlopen"

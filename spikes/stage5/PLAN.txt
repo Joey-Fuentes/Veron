@@ -1300,7 +1300,7 @@ package alsa-lib-static 1.2.16.1
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
   license      LGPL-2.1-or-later
-  recipe-sha   b1de7f5c21694d416da43d9677ffc29acfa494ff9bd912da2aafc25885b4b0d2
+  recipe-sha   16f9503085b0622950f2a60c55b3e1e13eab6ea6def663fc1e78905c5a373254
 
   source
     url        https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.16.1.tar.bz2
@@ -1332,7 +1332,7 @@ package alsa-lib-static 1.2.16.1
          argv ["sh", "-c", "rm -rf dest/alsa-lib-static/usr dest/alsa-lib-static/opt/alsa-static/bin dest/alsa-lib-static/opt/alsa-static/share && find dest/alsa-lib-static -type f | sort"]
     [06] archive-present
          cwd  build/alsa-lib-static-1.2.16.1/alsa-lib-1.2.16.1
-         argv ["sh", "-c", "test -f dest/alsa-lib-static/opt/alsa-static/lib/libasound.a && test -f dest/alsa-lib-static/opt/alsa-static/lib/pkgconfig/alsa.pc && ! ls dest/alsa-lib-static/opt/alsa-static/lib/libasound*.so* 2>/dev/null | grep -q . || { echo VERON-ALSA-STATIC-NO-ARCHIVE; ls -la dest/alsa-lib-static/opt/alsa-static/lib; exit 1; }; grep -q '^libdir=/opt/alsa-static/lib' dest/alsa-lib-static/opt/alsa-static/lib/pkgconfig/alsa.pc || { echo VERON-ALSA-STATIC-PC-WRONG-PREFIX; cat dest/alsa-lib-static/opt/alsa-static/lib/pkgconfig/alsa.pc; exit 1; }"]
+         argv ["sh", "-c", "test -f dest/alsa-lib-static/opt/alsa-static/lib/libasound.a && test -f dest/alsa-lib-static/opt/alsa-static/lib/pkgconfig/alsa.pc && ! ls dest/alsa-lib-static/opt/alsa-static/lib/libasound*.so* 2>/dev/null | grep -q . || { echo VERON-ALSA-STATIC-NO-ARCHIVE; ls -la dest/alsa-lib-static/opt/alsa-static/lib; exit 1; }; test \"$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=dest/alsa-lib-static/opt/alsa-static/lib/pkgconfig pkgconf --variable=libdir alsa)\" = /opt/alsa-static/lib || { echo VERON-ALSA-STATIC-PC-WRONG-PREFIX; cat dest/alsa-lib-static/opt/alsa-static/lib/pkgconfig/alsa.pc; exit 1; }; ! PKG_CONFIG_LIBDIR=dest/alsa-lib-static/opt/alsa-static/lib/pkgconfig pkgconf --static --libs alsa | grep -q -- '-ldl' || { echo VERON-ALSA-STATIC-PC-LINKS-DL; exit 1; }"]
     [07] no-dlopen
          cwd  build/alsa-lib-static-1.2.16.1/alsa-lib-1.2.16.1
          argv ["sh", "-c", "! nm dest/alsa-lib-static/opt/alsa-static/lib/libasound.a 2>/dev/null | grep -E -q ' U (dlopen|dladdr|dlsym)$' || { echo VERON-ALSA-STATIC-WOULD-DLOPEN; nm dest/alsa-lib-static/opt/alsa-static/lib/libasound.a | grep -E ' U dl'; exit 1; }; echo VERON-ALSA-STATIC-NO-DLOPEN"]
