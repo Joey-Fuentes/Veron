@@ -31,6 +31,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap build-essential curl
+          # THE RUNNER'S OWN PRECONDITION FOR bwrap: Ubuntu 24.04 confines
+          # unprivileged user namespaces under AppArmor, and --unshare-all's
+          # loopback setup is refused with "RTM_NEWADDR: Operation not
+          # permitted" (run 89150011076). Every sealed workflow in this repo
+          # lifts it the same way; the box's contents are unaffected.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           sh tools/airlock-busybox.sh
       - name: 'GATE: rebuild via Stage 1, match the records, run the canary -- IN THE BOX'
         run: sh stages/box.sh stages/2-pico-c/verify.sh
