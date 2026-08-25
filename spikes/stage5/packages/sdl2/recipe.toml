@@ -20,6 +20,15 @@ srcdir  = "SDL2-2.32.10"
 # static-only alsa-lib side package with its own libdir exists for sdl2
 # alone. Declined and dated, not deferred silently.
 #
+# THE WINDOW GETS ITS PIXELS BY wl_shm, BY PATCH (0002), MEASURED: with
+# the backends linked in and GL off, the protocol handshake completed on
+# bare metal and on a purpose-built compositor and no buffer was ever
+# attached -- upstream's Wayland driver draws only through EGL and has
+# no software framebuffer path. patches/0002 adds one on the driver's
+# own shm helper; SDL_video.c reaches it only when no accelerated
+# renderer exists. First compiled by this recipe's build; first measured
+# by the bundle that build produces.
+#
 # ONE STATIC ARCHIVE, PLATFORM LIBRARIES LINKED IN, NO dlopen ANYWHERE.
 # SDL_SHARED is OFF and SDL_STATIC is ON because the consumer is a
 # --static qemu. SDL_WAYLAND_SHARED and SDL_ALSA_SHARED are OFF too --

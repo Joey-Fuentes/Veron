@@ -1,0 +1,155 @@
+Give the Wayland backend a wl_shm window framebuffer.
+
+WHY: upstream's Wayland video driver puts pixels on a surface only
+through EGL; its one use of wl_shm is the mouse cursor
+(SDL_waylandmouse.c). With SDL_OPENGL and SDL_OPENGLES off there is no
+accelerated renderer, so SDL_video.c's texture path fails and it falls
+back to the driver's native CreateWindowFramebuffer -- which Wayland
+does not provide. The result was MEASURED twice (bare metal 2026-08-25,
+and a minimal compositor built for the purpose, run 88916268912's
+bundle): the window is created, configured and acked, the size follows
+the guest's mode changes, 38 events flow in 12 seconds, and no buffer is
+ever attached. A perfect handshake and never a pixel.
+
+WHAT: the three native framebuffer entry points, on the driver's own
+Wayland_SHMBuffer helper. Two shm buffers alternate so the one the
+compositor holds is never the one being written; the caller draws into
+a plain buffer that is copied into the next shm buffer on update, then
+attach + damage (the driver's own version-4 idiom) + commit + flush.
+Reached only when no accelerated renderer exists, so with GL present
+nothing changes.
+
+Read from the pinned tarball (sha256 5f5993c5...), three hunks,
+generated with diff -u, applied with the same `patch -p1 -N` the driver
+uses. Not compiled where it was written (no Wayland headers there): the
+recipe's build is its first compile, and the tools bundle it produces,
+against a compositor that dumps frames, is its first measurement.
+
+--- a/src/video/wayland/SDL_waylandwindow.h	2025-01-06 22:13:16.000000000 +0000
++++ b/src/video/wayland/SDL_waylandwindow.h	2026-08-25 16:48:38.527874114 +0000
+@@ -94,6 +94,14 @@
+ 
+     struct Wayland_SHMBuffer icon;
+ 
++    /* wl_shm window framebuffer: the software path this backend lacked.
++       Two buffers alternate so the one the compositor holds is never
++       the one being written; fb_pixels is the surface the caller draws. */
++    struct Wayland_SHMBuffer fb_shm[2];
++    int fb_next;
++    void *fb_pixels;
++    int fb_w, fb_h, fb_pitch;
++
+     /* floating dimensions for restoring from maximized and fullscreen */
+     int floating_width, floating_height;
+ 
+@@ -156,6 +164,9 @@
+ extern int Wayland_FlashWindow(_THIS, SDL_Window *window, SDL_FlashOperation operation);
+ extern void Wayland_RemoveOutputFromWindow(SDL_WindowData *window, struct wl_output *output);
+ 
++extern int Wayland_CreateWindowFramebuffer(_THIS, SDL_Window *window, Uint32 *format, void **pixels, int *pitch);
++extern int Wayland_UpdateWindowFramebuffer(_THIS, SDL_Window *window, const SDL_Rect *rects, int numrects);
++extern void Wayland_DestroyWindowFramebuffer(_THIS, SDL_Window *window);
+ extern void Wayland_InitWin(SDL_VideoData *data);
+ extern void Wayland_QuitWin(SDL_VideoData *data);
+ 
+--- a/src/video/wayland/SDL_waylandwindow.c	2025-01-06 22:20:10.000000000 +0000
++++ b/src/video/wayland/SDL_waylandwindow.c	2026-08-25 16:48:50.567109335 +0000
+@@ -2390,6 +2390,86 @@
+     SDL_DelHintCallback(SDL_HINT_VIDEO_EGL_ALLOW_TRANSPARENCY, EGLTransparencyChangedCallback, data);
+ }
+ 
++/* A wl_shm window framebuffer for the Wayland backend.
++ *
++ * Upstream's Wayland driver puts pixels on a surface only through EGL; its
++ * one use of wl_shm is the cursor. With no GL API compiled in, SDL's
++ * software renderer draws into a buffer that has nowhere to go: the window
++ * is created, configured and acked, and never shows a frame. This is the
++ * native framebuffer path the driver lacked, built on its own
++ * Wayland_SHMBuffer helper. SDL_video.c only reaches it after the texture
++ * path finds no accelerated renderer, so with GL present nothing changes.
++ */
++int Wayland_CreateWindowFramebuffer(_THIS, SDL_Window *window, Uint32 *format, void **pixels, int *pitch)
++{
++    SDL_WindowData *wind = window->driverdata;
++    int w, h, i;
++
++    SDL_GetWindowSizeInPixels(window, &w, &h);
++    Wayland_DestroyWindowFramebuffer(_this, window);
++
++    for (i = 0; i < 2; ++i) {
++        if (Wayland_AllocSHMBuffer(w, h, &wind->fb_shm[i]) < 0) {
++            Wayland_DestroyWindowFramebuffer(_this, window);
++            return -1;
++        }
++    }
++    wind->fb_pitch = w * 4;
++    wind->fb_pixels = SDL_calloc((size_t)h, (size_t)wind->fb_pitch);
++    if (!wind->fb_pixels) {
++        Wayland_DestroyWindowFramebuffer(_this, window);
++        return SDL_OutOfMemory();
++    }
++    wind->fb_w = w;
++    wind->fb_h = h;
++    wind->fb_next = 0;
++
++    *format = SDL_PIXELFORMAT_ARGB8888;
++    *pixels = wind->fb_pixels;
++    *pitch = wind->fb_pitch;
++    return 0;
++}
++
++int Wayland_UpdateWindowFramebuffer(_THIS, SDL_Window *window, const SDL_Rect *rects, int numrects)
++{
++    SDL_WindowData *wind = window->driverdata;
++    struct Wayland_SHMBuffer *buf;
++
++    if (!wind->fb_pixels || !wind->surface) {
++        return SDL_SetError("Window framebuffer not available");
++    }
++
++    buf = &wind->fb_shm[wind->fb_next];
++    wind->fb_next ^= 1;
++    SDL_memcpy(buf->shm_data, wind->fb_pixels, (size_t)wind->fb_h * (size_t)wind->fb_pitch);
++
++    wl_surface_attach(wind->surface, buf->wl_buffer, 0, 0);
++    if (wl_compositor_get_version(wind->waylandData->compositor) >= 4) {
++        wl_surface_damage_buffer(wind->surface, 0, 0, wind->fb_w, wind->fb_h);
++    } else {
++        wl_surface_damage(wind->surface, 0, 0, wind->window_width, wind->window_height);
++    }
++    wl_surface_commit(wind->surface);
++    WAYLAND_wl_display_flush(wind->waylandData->display);
++    return 0;
++}
++
++void Wayland_DestroyWindowFramebuffer(_THIS, SDL_Window *window)
++{
++    SDL_WindowData *wind = window->driverdata;
++    int i;
++
++    if (!wind) {
++        return;
++    }
++    for (i = 0; i < 2; ++i) {
++        Wayland_ReleaseSHMBuffer(&wind->fb_shm[i]);
++    }
++    SDL_free(wind->fb_pixels);
++    wind->fb_pixels = NULL;
++    wind->fb_w = wind->fb_h = wind->fb_pitch = 0;
++}
++
+ #endif /* SDL_VIDEO_DRIVER_WAYLAND */
+ 
+ /* vi: set ts=4 sw=4 expandtab: */
+--- a/src/video/wayland/SDL_waylandvideo.c	2025-05-19 21:24:41.000000000 +0000
++++ b/src/video/wayland/SDL_waylandvideo.c	2026-08-25 16:48:38.529434525 +0000
+@@ -276,6 +276,9 @@
+     device->SetWindowIcon = Wayland_SetWindowIcon;
+     device->GetWindowSizeInPixels = Wayland_GetWindowSizeInPixels;
+     device->DestroyWindow = Wayland_DestroyWindow;
++    device->CreateWindowFramebuffer = Wayland_CreateWindowFramebuffer;
++    device->UpdateWindowFramebuffer = Wayland_UpdateWindowFramebuffer;
++    device->DestroyWindowFramebuffer = Wayland_DestroyWindowFramebuffer;
+     device->SetWindowHitTest = Wayland_SetWindowHitTest;
+     device->FlashWindow = Wayland_FlashWindow;
+     device->HasScreenKeyboardSupport = Wayland_HasScreenKeyboardSupport;
