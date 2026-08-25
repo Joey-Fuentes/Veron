@@ -112,6 +112,20 @@ if [ -e /dev/dri/renderD128 ]; then
     echo "  /dev/dri/renderD128 -> render 0660"
 fi
 
+# THE HYPERVISOR NODE, which qemu-system opens for hardware acceleration.
+# devtmpfs makes it root:root 0600; without this, veron-vm says
+# "accel=tcg (no writable /dev/kvm)" and a guest runs at software speed
+# (bare metal, 2026-08-25). kvm is a group like render: the desktop user
+# is in it, nothing else is. Absent when the kernel has no KVM or the
+# firmware has virtualization off -- stated, not an error.
+if [ -e /dev/kvm ]; then
+    /bin/busybox chgrp kvm /dev/kvm 2>/dev/null
+    /bin/busybox chmod 0660 /dev/kvm 2>/dev/null
+    echo "  /dev/kvm -> kvm 0660"
+else
+    echo "  /dev/kvm absent (no KVM in this kernel, or virtualization off in firmware)"
+fi
+
 # THE CARD NODE STAYS root:root ON PURPOSE. seatd opens it and hands over the
 # descriptor; loosening it would give every process on the machine the ability
 # to become DRM master and take the display, which is exactly what seatd

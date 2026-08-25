@@ -248,6 +248,20 @@ CONFIG_DEVTMPFS_MOUNT=y
 CONFIG_CMDLINE_BOOL=y
 CONFIG_CMDLINE="root=PARTUUID=aaaa0002-0000-4000-8000-564552304e02 rootwait rw init=/usr/bin/veron-init console=ttyS0,115200 panic=30 vt.global_cursor_default=0"
 
+# v11: THE HYPERVISOR, BUILT IN -- learned on metal (2026-08-25): the
+# image now carries its own qemu-system-x86_64, and the first Tiny Core
+# boot on real hardware ran under TCG at software speed because
+# /dev/kvm did not exist. No modules here, so KVM is =y or it is
+# nothing; both vendor halves ride, since the same image boots Intel and
+# AMD laptops. The device node's permissions are the desktop's business
+# (veron-system device-nodes: kvm group, 0660); this is only the driver.
+# TUN stays out: -netdev user is the network a desktop user gets, and
+# the kernel ledger says no /dev/net/tun by design.
+CONFIG_VIRTUALIZATION=y
+CONFIG_KVM=y
+CONFIG_KVM_INTEL=y
+CONFIG_KVM_AMD=y
+
 # v10: THE SILENT PANEL AND THE FAST-PATH HARDWARE, one cycle.
 # console=tty0 IS GONE, and that is the whole mechanism: the panel is
 # simply not a kernel console, so it shows no printk at any level,

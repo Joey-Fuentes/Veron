@@ -35,7 +35,12 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-if [ -x "$here/qemu-system-x86_64" ]; then
+# THE BUNDLE IS RECOGNISED BY ITS FIRMWARE DIRECTORY, NOT BY THE EMULATOR
+# BESIDE THIS SCRIPT: on the image this script and qemu-system-x86_64 are
+# both in /usr/bin, and testing for the binary alone sent -L to
+# /usr/bin/share/qemu (bare metal, 2026-08-25). veron-tools/ is the only
+# place with share/qemu next to the launcher.
+if [ -x "$here/qemu-system-x86_64" ] && [ -d "$here/share/qemu" ]; then
   QEMU="$here/qemu-system-x86_64"; QIMG="$here/qemu-img"
   FW="$here/share/qemu"; SWTPM="$here/swtpm"
 else
@@ -45,7 +50,7 @@ fi
 
 uefi=no tpm=no windows=no headless=no dry=no machine_extra=""
 disk="" size=64G mem=4G cpus=""
-extra=""
+extra="" pos=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --uefi) uefi=yes ;;
@@ -60,10 +65,18 @@ while [ $# -gt 0 ]; do
     --help|-h) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; extra="$*"; break ;;
     -*) echo "veron-vm: unknown option $1 (use -- to pass flags to qemu)" >&2; exit 2 ;;
-    *) break ;;
+    # A POSITIONAL (an ISO, a disk) DOES NOT END OPTION PARSING: the first
+    # version broke out of this loop at the first non-option, so a -- that
+    # came after the ISO was handed to qemu as a drive named "--" (bare
+    # metal, 2026-08-25). Positionals are collected, one per line, and
+    # become $@ again below; -- is honoured wherever it appears.
+    *) pos="$pos$1
+" ;;
   esac
   shift
 done
+_ifs=$IFS; IFS='
+'; set -- $pos; IFS=$_ifs
 [ $# -gt 0 ] || [ -n "$disk" ] || { echo "veron-vm: nothing to boot (an ISO, a disk, or --disk FILE)" >&2; exit 2; }
 
 if [ -z "$cpus" ]; then
