@@ -109,7 +109,10 @@ do_in() {
 
   if [ -f "$HERE/ADOPTED-SHA256" ]; then
     echo "== in/3: ADOPTED repo sources (D2 -- no upstream, no patches) =="
-    ( cd "$HERE" && sha256sum -c ADOPTED-SHA256 --quiet ) \
+    # -c with stdout dropped, not --quiet: busybox sha256sum has no long
+    # options (the image's, measured 2026-08-25); the exit status is the
+    # verdict on both it and coreutils.
+    ( cd "$HERE" && sha256sum -c ADOPTED-SHA256 >/dev/null ) \
       || { echo "FAIL: adopted sources do not match ADOPTED-SHA256"; exit 1; }
     echo "  $(wc -l < "$HERE/ADOPTED-SHA256") adopted files verified"
     rm -rf "$IN/m2libc-veron" && cp -r "$HERE/m2libc" "$IN/m2libc-veron"

@@ -66,7 +66,7 @@ art() { printf '    %-22s %10s bytes  %s\n' "$1" "$(wc -c < "$2")" \
 do_in() {
   mkdir -p "$IN"
   if [ -s "$IN/musl-$MUSL_VER.tar.gz" ] && [ -f "$HERE/MUSL-PINS.sha256" ] \
-     && ( cd "$IN" && sha256sum -c "$HERE/MUSL-PINS.sha256" --quiet ); then
+     && ( cd "$IN" && sha256sum -c "$HERE/MUSL-PINS.sha256" >/dev/null ); then
     echo "  musl-$MUSL_VER.tar.gz already present and pinned"
     return 0
   fi
@@ -275,8 +275,17 @@ for s in d['substage']:
   # DETERMINISTIC CONTAINER (the compare gate's first catch: tar embeds
   # mtimes and gzip a timestamp, so identical contents made a different
   # tarball every run -- 12 drifting bytes while every direct .a hash held).
-  tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='@0' \
-      -cf - -C "$B" sys-x86_64 | gzip -n > "$B/sys-x86_64.tar.gz"
+  # PORTABLY: --sort/--owner/--mtime are GNU tar's and busybox tar (the
+  # image's) has none of them. The same determinism by other means -- every
+  # mtime set to the epoch, the member list sorted and fed with -T, gzip -n
+  # -- so two runs on one host give one tarball. Ownership is whatever the
+  # host's is (root in CI's box, veron on the image); this file is a test
+  # fixture verify-native unpacks, recorded nowhere, so cross-host byte
+  # identity is not a promise it makes.
+  ( cd "$B" && find sys-x86_64 -exec touch -h -t 197001010000.00 {} + \
+    && find sys-x86_64 | LC_ALL=C sort > sys-x86_64.list \
+    && tar -cf - -T sys-x86_64.list | gzip -n > sys-x86_64.tar.gz \
+    && rm -f sys-x86_64.list )
   cp "$B/sys-x86_64.tar.gz" "$B/x86_64-libtcc1.a" "$OUT/"   # fixtures for verify-native
   echo
   echo "== STAGE 3 (amd64 leg) OUTPUT =="
