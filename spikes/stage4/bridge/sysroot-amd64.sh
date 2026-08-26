@@ -417,7 +417,20 @@ if [ "$B0" = ok ]; then
         # -Dcc=gcc. An earlier revision of this rung added -Doptimize and
         # -Dvendorprefix from nowhere -- rung 11.5 passes -Doptimize because
         # its perl is a static build for a musl box, which this is not.
+        # EVERYTHING Configure WOULD READ FROM THE HOST IS TOLD TO IT INSTEAD.
+        # Without these it records the box's hostname, `uname -r`, the whole
+        # `uname -a` line, the builder's name and the build time into
+        # config.h, Config_heavy.pl, perlbug and perlthanks -- the only four
+        # sysroot files that differed between two green runs (2026-08-26),
+        # and the ones that would differ between a runner's kernel and a
+        # Veron laptop's. Constants, so the sysroot is the same bytes on any
+        # host: no runner name, no host kernel version, no clock in the artifact.
+        # osvers is a constant that still looks like a kernel version because
+        # the Linux hints file branches on it (old 2.x cases).
         ( cd "$_d" && ./Configure -des -Dprefix=/usr -Dcc=gcc \
+              -Dmyhostname=veron -Dmydomain= -Dosvers=7.1.5 -Dmyuname='Linux veron 7.1.5 x86_64' \
+              -Dcf_by=veron -Dcf_email=veron@veron -Dperladmin=veron@veron \
+              -Dcf_time='Thu Jan  1 00:00:00 UTC 1970' \
               > c.log 2>&1 && make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1 ) ;;
       openssl)
         # install_sw, NOT install: the full target builds documentation, which
