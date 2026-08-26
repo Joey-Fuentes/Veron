@@ -19,6 +19,9 @@
 # OVMF for the gates (the image's own where present), and, for the modules
 # tarball, GNU tar where present (transport, not artifact: the kernel and
 # module bytes are what KERNEL-GENERIC-SHA256 records per file).
+# `sh build.sh` is how every stage is invoked in this repo, and the image's sh
+# is busybox: re-exec under bash, which these step bodies were written for.
+[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$HERE"

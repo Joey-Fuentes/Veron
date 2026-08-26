@@ -24,6 +24,9 @@
 # THE BUDGET, unchanged: tier 1 empty; tier 2 busybox (+ a gawk wrapper
 # around its awk, written here). ref-tcc is the stage-3 contract, verified
 # against the committed record before anything runs.
+# `sh build.sh` is how every stage is invoked in this repo, and the image's sh
+# is busybox: re-exec under bash, which these step bodies were written for.
+[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$HERE"

@@ -24,6 +24,9 @@
 #   SELFREBUILD=1  BOOT_SYSTEM=1  NET_TEST=1  SKIP_BOOT=1  RELAY=<name>
 # Checkpoints need gh (restore/publish are GitHub releases); without gh the
 # build is cold, which is what a first laptop run wants anyway.
+# `sh build.sh` is how every stage is invoked in this repo, and the image's sh
+# is busybox: re-exec under bash, which these step bodies were written for.
+[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$HERE"
