@@ -4,9 +4,16 @@
 [build]
 prefix     = "/usr"
 flavor     = "glibc"
-jobs       = 1          # PINNED, NOT DETECTED. Parallelism changes output
-                        # bytes for some builds. `nproc` would make the image
-                        # depend on the runner it happened to land on.
+jobs       = 1          # make's -j$J, PINNED: some make-based builds are
+                        # not safe to parallelise (unordered concatenation).
+                        # ninja-driven steps are NOT governed by this: the
+                        # tool derives their job count from the machine
+                        # (tools/veron ninja_jobs: RAM/2500 MiB, capped by
+                        # CPUs, one link at a time) and injects -j / CMake
+                        # job pools at run time. Parallelism is scheduling,
+                        # not an input -- the bytes are the same at any
+                        # count -- so the count may differ per host while
+                        # every digest the ledger records does not.
 path       = "/usr/bin:/bin"
 sysroot_id = "stage4"
 

@@ -292,6 +292,56 @@ def subst(token, env):
     return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", one, token)
 
 
+# PARALLELISM IS SCHEDULING, NOT AN INPUT. How many compilers run at once
+# changes when an object is produced, never what it contains -- so the job
+# count is DERIVED FROM THE MACHINE, printed once, and the bytes are the same
+# on every host. Before this (2026-08-26) there was no rule: policy pinned
+# jobs=1 for make, and the 70-odd ninja recipes ran ninja bare, i.e. at
+# ninja's own default of cores+2 -- ten -O3 cc1plus on a 7 GiB laptop, and
+# the OOM killer took SimplifyCFG.cpp at object 977 of LLVM's 2854.
+#
+# The rule: one compile job per 2500 MiB of physical memory, at most one per
+# CPU in this process's affinity mask, never fewer than one; ONE link job,
+# always (linking is the largest single consumer -- LLVM's own guidance is
+# ~10 GB per link). 2500 MiB is the distribution consensus for a heavy -O3
+# C++ translation unit. `taskset` on the driver shrinks the mask and the
+# count with it, no root needed.
+#
+# Applied where a step is RUN, not where the plan is written: PLAN.txt and
+# its committed digest do not carry the machine.
+_JOBS = None
+def ninja_jobs():
+    global _JOBS
+    if _JOBS is None:
+        try:
+            mem_mib = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024)
+        except (ValueError, OSError):
+            mem_mib = 0
+        try:
+            cores = len(os.sched_getaffinity(0))
+        except (AttributeError, OSError):
+            cores = os.cpu_count() or 1
+        by_mem = mem_mib // 2500 if mem_mib else cores
+        _JOBS = max(1, min(by_mem, cores))
+        print(f"VERON-JOBS  compile={_JOBS} link=1  (RAM {mem_mib} MiB, {cores} CPUs in the affinity mask; "
+              f"scheduling only -- the bytes do not depend on it)")
+    return _JOBS
+
+def schedule_argv(argv):
+    """Apply the parallelism rule to one step's argv. ninja gets -j (unless the
+    recipe set one); a CMake configure with the Ninja generator gets job pools
+    (compile=N, link=1) so every CMake project -- LLVM, WebKit, the rest --
+    is bounded the same way. Anything else is returned untouched."""
+    if not argv:
+        return argv
+    n = ninja_jobs()
+    if argv[0] == "ninja" and not any(x == "-j" or x.startswith("-j") for x in argv[1:]):
+        return [argv[0], "-j", str(n)] + list(argv[1:])
+    if argv[0] == "cmake" and "Ninja" in argv and not any(x.startswith("-DCMAKE_JOB_POOLS") for x in argv):
+        return list(argv) + [f"-DCMAKE_JOB_POOLS=compile={n};link=1",
+                             "-DCMAKE_JOB_POOL_COMPILE=compile", "-DCMAKE_JOB_POOL_LINK=link"]
+    return argv
+
 def step_env(pkg, r, policy, roots):
     slug = f"{r['name']}-{r['version']}"
     return {
@@ -771,8 +821,8 @@ def run_step(s, logf, dry, may_create=False):
         printed = f"sh -c {s['shell']!r}"
         argv, shell = s["shell"], True
     else:
-        printed = " ".join(s["argv"])
-        argv, shell = s["argv"], False
+        argv, shell = schedule_argv(s["argv"]), False
+        printed = " ".join(argv)
     for k in sorted(s.get("env", {})):
         logf.write(f"+ env {k}={s['env'][k]}\n")
     logf.write(f"+ cwd={s['cwd']}\n+ {printed}\n")
