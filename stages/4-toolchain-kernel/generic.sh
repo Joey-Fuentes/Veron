@@ -285,7 +285,7 @@ phase_efi() {
   # stopped instead of showing nothing; and a cancel still leaves
   # the evidence that had been printed.
   : > efiboot/serial.log
-  timeout -k 30 300 "$(qemu_bin)"             -machine q35 -m 1024 -nographic -no-reboot -nic none             -bios "$OVMF"             -drive format=raw,file=fat:rw:efiboot             -serial file:efiboot/serial.log >/dev/null 2>&1 &
+  timeout -k 30 300 "$(qemu_bin)"             -machine q35 -m 1024 -nographic -no-reboot -nic none             -bios "$OVMF"             -drive format=raw,file=fat:rw:efiboot             -serial file:efiboot/serial.log > efiboot/qemu.err 2>&1 &
   qpid=$!
   tail -n +1 -F efiboot/serial.log &
   tpid=$!
@@ -304,6 +304,8 @@ phase_efi() {
   done
   wait "$qpid" || true
   sleep 1; kill "$tpid" 2>/dev/null || true
+  echo "--- qemu's own output (efiboot/qemu.err) ---"
+  sed 's/^/    /' efiboot/qemu.err 2>/dev/null | head -20 || true
   echo "--- serial (tail) ---"
   tail -60 efiboot/serial.log || true
   fail=0
