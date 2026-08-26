@@ -55,6 +55,17 @@ qemu_shim() {
   chmod +x "$B5/bin/qemu-system-x86_64"
 }
 export PATH="$B5/bin:$PATH"
+# TLS FOR THE AIRLOCK'S PYTHON. The image's OpenSSL has openssldir=/etc/ssl
+# and so looks for /etc/ssl/cert.pem; ca-certificates installs the bundle
+# as /etc/ssl/certs/ca-certificates.crt and nothing links the two, so
+# python's default context verified nothing (laptop, 2026-08-26). curl was
+# built with --with-ca-bundle= pointing at the bundle and never noticed.
+# Name the bundle for OpenSSL here; the image-level fix is a cert.pem link.
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+  for _ca in /etc/ssl/cert.pem /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+    [ -s "$_ca" ] && { export SSL_CERT_FILE="$_ca"; break; }
+  done
+fi
 
 
 phase_in() {
