@@ -309,10 +309,10 @@ def subst(token, env):
 #
 # Applied where a step is RUN, not where the plan is written: PLAN.txt and
 # its committed digest do not carry the machine.
-_JOBS = None
-def ninja_jobs():
-    global _JOBS
-    if _JOBS is None:
+_MACHINE = None
+def machine():
+    global _MACHINE
+    if _MACHINE is None:
         try:
             mem_mib = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024)
         except (ValueError, OSError):
@@ -321,13 +321,23 @@ def ninja_jobs():
             cores = len(os.sched_getaffinity(0))
         except (AttributeError, OSError):
             cores = os.cpu_count() or 1
-        by_mem = mem_mib // 2500 if mem_mib else cores
-        _JOBS = max(1, min(by_mem, cores))
-        print(f"VERON-JOBS  compile={_JOBS} link=1  (RAM {mem_mib} MiB, {cores} CPUs in the affinity mask; "
-              f"scheduling only -- the bytes do not depend on it)")
-    return _JOBS
+        _MACHINE = (mem_mib, cores)
+        print(f"VERON-JOBS  RAM {mem_mib} MiB, {cores} CPUs in the affinity mask -> "
+              f"{ninja_jobs()} job(s) at the default 2500 MiB per job; a recipe may state its own cost "
+              f"(scheduling only -- the bytes do not depend on it)")
+    return _MACHINE
 
-def schedule_argv(argv):
+def ninja_jobs(per_job_mib=2500):
+    """Jobs for one package: RAM / its per-job cost, capped by CPUs, never
+    fewer than one. 2500 MiB is the heavy -O3 C++ translation unit of
+    distribution consensus (LLVM fits it); a recipe whose units are larger
+    states [build] ram_per_job_mib -- WebCore's unified sources need ~4000,
+    two of them at -j2 OOM-killed cc1plus on a 7 GiB laptop (2026-08-26)."""
+    mem_mib, cores = machine()
+    by_mem = mem_mib // max(1, per_job_mib) if mem_mib else cores
+    return max(1, min(by_mem, cores))
+
+def schedule_argv(argv, per_job_mib=2500):
     """Apply the parallelism rule to one step's argv: ninja gets -j N, and a
     recipe's own -j is a ceiling, not an override -- min(recipe, machine).
     Nothing else is touched. (CMake job pools were tried first and dropped:
@@ -338,7 +348,7 @@ def schedule_argv(argv):
     bound that matters.)"""
     if not argv or argv[0] != "ninja":
         return argv
-    n = ninja_jobs()
+    n = ninja_jobs(per_job_mib)
     out = [argv[0]]
     i = 1
     seen = False
@@ -809,7 +819,7 @@ def cmd_fetch(a):
 DEFAULT_STEP_TIMEOUT = 1800
 
 
-def run_step(s, logf, dry, may_create=False):
+def run_step(s, logf, dry, may_create=False, per_job_mib=2500):
     # CREATING A MISSING cwd HIDES THE ERROR THAT MATTERS. Python's tarball
     # unpacks to Python-3.14.6 while the driver derived python-3.14.6 from the
     # package name -- so the configure step's cwd did not exist, this happily
@@ -832,7 +842,7 @@ def run_step(s, logf, dry, may_create=False):
         printed = f"sh -c {s['shell']!r}"
         argv, shell = s["shell"], True
     else:
-        argv, shell = schedule_argv(s["argv"]), False
+        argv, shell = schedule_argv(s["argv"], per_job_mib), False
         printed = " ".join(argv)
     for k in sorted(s.get("env", {})):
         logf.write(f"+ env {k}={s['env'][k]}\n")
@@ -1776,7 +1786,8 @@ def cmd_build(a):
                     logf.write(f"+ SKIPPED optional step: {s['name']}\n")
                     continue
                 _t0 = time.time()
-                rc = run_step(s, logf, a.dry_run, may_create=(s is p["steps"][0]))
+                rc = run_step(s, logf, a.dry_run, may_create=(s is p["steps"][0]),
+                              per_job_mib=int(p["recipe"].get("build", {}).get("ram_per_job_mib", 2500)))
                 timings.append((s["name"], time.time() - _t0))
                 if rc == 0 and not a.dry_run:
                     # REPORTS, DOES NOT DECIDE -- AND THAT IS A CORRECTION.

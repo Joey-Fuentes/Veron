@@ -10,6 +10,17 @@ sha256    = "bcfc6c91db7659dcf24f6ff79ad27ac1eae1bc61dca0dbfee154706926740b3b"
 signature = "none -- wpewebkit.org publishes .asc signatures; not yet pinned here"
 crosschecked_against = []
 
+# WHAT ONE COMPILE JOB COSTS HERE, MEASURED. WebCore is built as unified
+# sources -- eight files concatenated per translation unit, at -O3 -- and
+# the kernel's OOM record for UnifiedSource-3a52ce78-41.cpp on a 7 GiB
+# laptop (2026-08-26) reads anon-rss:4730540kB: 4.5 GiB for one cc1plus,
+# with a second one at 1.5 GiB beside it. tools/veron sizes ninja -j from
+# RAM / this number (default 2500 MiB for ordinary C++): that laptop builds
+# WebKit one job at a time, a 16 GiB runner three. Scheduling only: the
+# bytes do not depend on the count.
+[build]
+ram_per_job_mib = 4700
+
 [deps]
 # EIGHTEEN find_package(... REQUIRED) IN OptionsWPE.cmake:12-27, plus the
 # GStreamer stack and bubblewrap. Every one of these was read out of that file
