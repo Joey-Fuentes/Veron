@@ -32,8 +32,10 @@ name=$(basename "$BB_URL"); tb="dl/$name"
 # commit, not the same bytes, so it cannot satisfy the pin and is not tried.
 if ! { [ -s "$tb" ] && [ "$(sha256sum "$tb" | cut -d' ' -f1)" = "$BB_SHA" ]; }; then
   rm -f "$tb"
-  for u in "https://github.com/${GITHUB_REPOSITORY:-Joey-Fuentes/Veron}/releases/download/src/$name/$(printf '%.8s' "$BB_SHA")-$name" \
-           "$BB_URL"; do
+  # the mirror's asset is the plain filename (tools/mirror-sources.sh);
+  # the <sha8>- form is the stage-5 MIRRORS.tsv route -- tried second
+  _rel="https://github.com/${GITHUB_REPOSITORY:-Joey-Fuentes/Veron}/releases/download/src/$name"
+  for u in "$_rel/$name" "$_rel/$(printf '%.8s' "$BB_SHA")-$name" "$BB_URL"; do
     if curl -fsSL --connect-timeout 20 --retry 3 -o "$tb" "$u" && [ -s "$tb" ]; then
       echo "  fetched $name from $u"; break
     fi
@@ -56,7 +58,7 @@ done
 for sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
   sed -i "s/^CONFIG_$sym=y/# CONFIG_$sym is not set/" .config
 done
-yes '' | make oldconfig >/dev/null 2>&1 || true
+yes '' 2>/dev/null | make oldconfig >/dev/null 2>&1 || true
 for sym in STATIC SPLIT COMM OD STAT TAR TOUCH SHA256SUM; do
   grep -q "^CONFIG_$sym=y" .config || { echo "FAIL: CONFIG_$sym did not survive oldconfig"; exit 1; }
 done
