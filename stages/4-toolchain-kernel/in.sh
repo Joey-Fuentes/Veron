@@ -45,15 +45,30 @@ else
       | sha256sum -c ) || { echo "FAIL: release digest check"; exit 1; }
   cmp -s "$IN/rel-substages.toml" stages/3-micro-c/substages-amd64.toml \
     || { echo "FAIL: the release's records differ from the committed record"; exit 1; }
+  # THE ATTESTATION, VERIFIED WHERE gh IS PRESENT: the release's tcc-amd64
+  # must carry a provenance attestation from this repository's 3-cross-amd64
+  # workflow. Digest + records prove the bytes; the attestation proves who
+  # built them. On a host without gh (the image) the digest check stands
+  # alone and the log says so.
+  if command -v gh >/dev/null 2>&1; then
+    gh attestation verify "$IN/rel-tcc-amd64" -R "$REPO" >/dev/null \
+      && echo "  attestation: verified (built by a workflow of $REPO)" \
+      || { echo "FAIL: tcc-amd64's attestation did not verify"; exit 1; }
+  else
+    echo "  attestation: gh not on this host -- digest + records only"
+  fi
   cp "$IN/rel-tcc-amd64" "$IN/ref-tcc"
-  SRC="3/latest-x86_64 release (digests + records verified)"
+  SRC="3/latest-x86_64 release (digests + records + attestation verified)"
 fi
 chmod 0755 "$IN/ref-tcc"
 got=$(sha256sum "$IN/ref-tcc" | cut -d' ' -f1)
 [ "$got" = "$want" ] || { echo "FAIL: ref-tcc $got != recorded $want"; exit 1; }
-case "$(file -b "$IN/ref-tcc")" in
-  *"dynamically linked"*) echo "FAIL: ref-tcc must be static"; exit 1 ;;
-esac
+# static, read from the ELF program headers (no file(1) on the image):
+# PT_INTERP (type 3) present means dynamically linked
+_phoff=$(od -An -tu8 -j32 -N8 "$IN/ref-tcc" | tr -d ' '); _phnum=$(od -An -tu2 -j56 -N2 "$IN/ref-tcc" | tr -d ' '); _i=0
+while [ "$_i" -lt "$_phnum" ]; do
+  [ "$(od -An -tu4 -j$((_phoff + _i*56)) -N4 "$IN/ref-tcc" | tr -d ' ')" = 3 ] && { echo "FAIL: ref-tcc must be static"; exit 1; }
+  _i=$((_i+1)); done
 
 # the box also receives the patched tcc SOURCE tree (it rebuilds libtcc1
 # in-box); materialize it the repo-hermetic way -- the committed toolbox

@@ -13,3 +13,17 @@ Consumes `3/latest-<arch>`; publishes `4/latest-<arch>` (sysroot + the
 kernel matrix). Substage records per design doc D4.
 
 **Status: SCAFFOLD ONLY — extraction not begun.**
+
+## Running it (2026-08-25: extracted from the workflow into `build.sh`)
+
+    sh stages/4-toolchain-kernel/build.sh in        # airlock: 3->4 contract (out/3 first, else the release, attested), pins, repack
+    sh stages/4-toolchain-kernel/build.sh chain     # the box: ref-tcc -> musl -> make -> binutils -> gcc -> the final system
+    sh stages/4-toolchain-kernel/build.sh collect   # out/4/{boot,toolchain,manifest}, BUDGET
+    sh stages/4-toolchain-kernel/build.sh boot      # the kernel under qemu -- ours when the host has it
+    sh stages/4-toolchain-kernel/build.sh pack      # trim + tar -> out/4/rel (the release payload); out/4/lfs where GNU tar is absent
+
+Same text on a GitHub runner, a Veron laptop, or any Linux with bubblewrap.
+The pins are `pins.env`, one place. The busybox the box uses is resolved
+the way `stages/box.sh` resolves it (bundle, airlock-built from the pin,
+or the system's) and recorded by hash in `out/4/BUDGET`. Needs ~15 GB of
+working space; `box4/` is the box and is safe to delete between runs.
