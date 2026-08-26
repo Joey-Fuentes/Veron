@@ -25,5 +25,19 @@ kernel matrix). Substage records per design doc D4.
 Same text on a GitHub runner, a Veron laptop, or any Linux with bubblewrap.
 The pins are `pins.env`, one place. The busybox the box uses is resolved
 the way `stages/box.sh` resolves it (bundle, airlock-built from the pin,
-or the system's) and recorded by hash in `out/4/BUDGET`. Needs ~15 GB of
-working space; `box4/` is the box and is safe to delete between runs.
+or the system's) and recorded by hash in `out/4/BUDGET`.
+
+Disk, measured on bare-metal Veron 2026-08-26, nothing deleted as it goes
+(the build tree is the build tree; what leaves it is the deliverable):
+stages 1-3 0.25 GB; the stage-4 airlock ~2 GB; the chain through `pack`
+**40 GB**. `box4/` is the box and is one `rm -rf` when you are done.
+
+## The generic kernel (`generic.sh`)
+
+    sh stages/4-toolchain-kernel/generic.sh in|config|build|boot|efi|loader|pack|all
+
+Extracted 2026-08-26 from 4-generic-kernel-amd64.yml. Consumes `out/4/lfs`
+when a local stage-4 run made one, else `4/latest-x86_64` (attested).
+Scratch is `box4g/`, outputs `out/4-generic/rel`. The squashfs gate needs
+`mksquashfs` (CI has it; the image does not, and says so); the EFI gate uses
+the host's OVMF (`/usr/share/qemu/OVMF.fd` on the image).
