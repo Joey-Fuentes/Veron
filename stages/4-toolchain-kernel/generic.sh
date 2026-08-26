@@ -351,13 +351,14 @@ phase_loader() {
        /build/mkpe /build/veron-boot.bin "$bss" /build/veron-boot.efi'
   [ -s $G/build/veron-boot.efi ] || { echo "  FAIL: veron-boot.efi not produced"; exit 1; }
   # prove it is a PE32+ EFI application (subsystem 10) before we ship it.
-  python3 - <<'PY'
-  d=open("$G/build/veron-boot.efi","rb").read()
-  pe=int.from_bytes(d[0x3c:0x40],"little")
-  assert d[:2]==b"MZ" and d[pe:pe+4]==b"PE\x00\x00", "not a PE"
-  ss=int.from_bytes(d[pe+24+68:pe+24+70],"little")
-  assert ss==10, f"subsystem {ss} != 10 (EFI application)"
-  print(f"  ok    veron-boot.efi is PE32+ EFI application ({len(d)} bytes)")
+  python3 - "$G/build/veron-boot.efi" <<'PY'
+import sys
+d=open(sys.argv[1],"rb").read()
+pe=int.from_bytes(d[0x3c:0x40],"little")
+assert d[:2]==b"MZ" and d[pe:pe+4]==b"PE\x00\x00", "not a PE"
+ss=int.from_bytes(d[pe+24+68:pe+24+70],"little")
+assert ss==10, f"subsystem {ss} != 10 (EFI application)"
+print(f"  ok    veron-boot.efi is PE32+ EFI application ({len(d)} bytes)")
 PY
 
 }
