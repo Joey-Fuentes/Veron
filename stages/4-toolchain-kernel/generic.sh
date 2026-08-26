@@ -222,21 +222,21 @@ phase_boot() {
   ov=$(find $G/build/staging -name 'overlay.ko*' | head -1 || true)
   [ -n "$ov" ] && cp "$ov" initrd/overlay.ko || : > initrd/no-overlay-module
   cat > initrd/init << 'INIT'
-  #!/bin/busybox sh
-  /bin/busybox mkdir -p /proc /sys /dev /ro /rw /work /merged
-  /bin/busybox mount -t proc proc /proc
-  /bin/busybox mount -t sysfs sys /sys
-  /bin/busybox mount -t devtmpfs dev /dev
-  [ -f /overlay.ko ] && /bin/busybox insmod /overlay.ko
-  /bin/busybox mount -t squashfs -o ro /dev/vda /ro || { echo VERON-GENERIC-FAIL squashfs; /bin/busybox poweroff -f; }
-  /bin/busybox mount -t tmpfs tmpfs /rw
-  /bin/busybox mkdir -p /rw/up /rw/work
-  /bin/busybox mount -t overlay overlay -o lowerdir=/ro,upperdir=/rw/up,workdir=/rw/work /merged \
-    || { echo VERON-GENERIC-FAIL overlay; /bin/busybox poweroff -f; }
-  echo written > /merged/new.txt
-  /bin/busybox cat /merged/proof.txt
-  echo "VERON-GENERIC-TESTS pass=2 fail=0"
-  /bin/busybox poweroff -f
+#!/bin/busybox sh
+/bin/busybox mkdir -p /proc /sys /dev /ro /rw /work /merged
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t sysfs sys /sys
+/bin/busybox mount -t devtmpfs dev /dev
+[ -f /overlay.ko ] && /bin/busybox insmod /overlay.ko
+/bin/busybox mount -t squashfs -o ro /dev/vda /ro || { echo VERON-GENERIC-FAIL squashfs; /bin/busybox poweroff -f; }
+/bin/busybox mount -t tmpfs tmpfs /rw
+/bin/busybox mkdir -p /rw/up /rw/work
+/bin/busybox mount -t overlay overlay -o lowerdir=/ro,upperdir=/rw/up,workdir=/rw/work /merged \
+  || { echo VERON-GENERIC-FAIL overlay; /bin/busybox poweroff -f; }
+echo written > /merged/new.txt
+/bin/busybox cat /merged/proof.txt
+echo "VERON-GENERIC-TESTS pass=2 fail=0"
+/bin/busybox poweroff -f
 INIT
   chmod +x initrd/init
   ( cd initrd && find . | cpio -o -H newc --quiet | gzip ) > initrd.img
