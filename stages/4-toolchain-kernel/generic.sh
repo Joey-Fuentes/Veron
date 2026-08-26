@@ -184,9 +184,13 @@ phase_build() {
   if [ -x /usr/sbin/depmod ]; then
     /usr/sbin/depmod -b "$G/build/staging" -F "$G/build/System.map" -e "$krel"; echo "  depmod: host kmod"
   else
+    # a read-only root has no /lib/modules to bind onto: give the box a tmpfs
+    # /lib (busybox is static; it needs nothing under the real one) and bind
+    # the staging tree inside it
     bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc \
-      --bind "$G/build/staging/lib/modules" /lib/modules \
-      busybox depmod -F "$G/build/System.map" "$krel" && echo "  depmod: busybox (modprobe-small), staging bound at /lib/modules"
+      --tmpfs /lib --bind "$G/build/staging/lib/modules" /lib/modules \
+      --bind "$G/build" "$G/build" \
+      /bin/busybox depmod -F "$G/build/System.map" "$krel" && echo "  depmod: busybox (modprobe-small), staging bound at /lib/modules"
   fi
   [ -s "$G/build/staging/lib/modules/$krel/modules.dep" ] || [ -s "$G/build/staging/lib/modules/$krel/modules.dep.bb" ] \
     || echo "  no modules.dep written -- module dependency file absent here; the modules themselves are complete"
