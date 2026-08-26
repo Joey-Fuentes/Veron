@@ -328,19 +328,30 @@ def ninja_jobs():
     return _JOBS
 
 def schedule_argv(argv):
-    """Apply the parallelism rule to one step's argv. ninja gets -j (unless the
-    recipe set one); a CMake configure with the Ninja generator gets job pools
-    (compile=N, link=1) so every CMake project -- LLVM, WebKit, the rest --
-    is bounded the same way. Anything else is returned untouched."""
-    if not argv:
+    """Apply the parallelism rule to one step's argv: ninja gets -j N, and a
+    recipe's own -j is a ceiling, not an override -- min(recipe, machine).
+    Nothing else is touched. (CMake job pools were tried first and dropped:
+    a project that defines its own JOB_POOLS property -- WebKit does --
+    makes CMake ignore the CMAKE_JOB_POOLS variable while still honouring
+    CMAKE_JOB_POOL_COMPILE, and ninja then fails on an unknown pool name.
+    -j bounds compiles and links together, which at these counts is the
+    bound that matters.)"""
+    if not argv or argv[0] != "ninja":
         return argv
     n = ninja_jobs()
-    if argv[0] == "ninja" and not any(x == "-j" or x.startswith("-j") for x in argv[1:]):
-        return [argv[0], "-j", str(n)] + list(argv[1:])
-    if argv[0] == "cmake" and "Ninja" in argv and not any(x.startswith("-DCMAKE_JOB_POOLS") for x in argv):
-        return list(argv) + [f"-DCMAKE_JOB_POOLS=compile={n};link=1",
-                             "-DCMAKE_JOB_POOL_COMPILE=compile", "-DCMAKE_JOB_POOL_LINK=link"]
-    return argv
+    out = [argv[0]]
+    i = 1
+    seen = False
+    while i < len(argv):
+        x = argv[i]
+        if x == "-j" and i + 1 < len(argv):
+            out += ["-j", str(min(n, int(argv[i + 1])))]; seen = True; i += 2; continue
+        if x.startswith("-j") and x[2:].isdigit():
+            out += ["-j", str(min(n, int(x[2:])))]; seen = True; i += 1; continue
+        out.append(x); i += 1
+    if not seen:
+        out[1:1] = ["-j", str(n)]
+    return out
 
 def step_env(pkg, r, policy, roots):
     slug = f"{r['name']}-{r['version']}"
