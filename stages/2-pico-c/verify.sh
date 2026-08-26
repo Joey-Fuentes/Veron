@@ -33,9 +33,12 @@ elif [ "$(uname -o 2>/dev/null)" = Android ]; then
 elif [ "$(uname -m)" = aarch64 ]; then RUN=""
 elif command -v qemu-aarch64-static >/dev/null 2>&1; then RUN="qemu-aarch64-static"
 elif command -v qemu-aarch64 >/dev/null 2>&1; then RUN="qemu-aarch64"
-else echo "FAIL: need aarch64, or qemu-aarch64-static on PATH (the tools bundle ships one)"; exit 1; fi
+else RUN=__none__; fi   # decided at the first `run`, not here: the in/ phases execute nothing
 [ -n "${VERON_BOX:-}" ] || echo "UNSEALED: running on the host, not in stages/box.sh -- nothing below is held to a budget"
-run() { ${RUN:+"$RUN"} "$@"; }
+run() {
+  [ "$RUN" != __none__ ] || { echo "FAIL: need aarch64, or qemu-aarch64-static on PATH (the tools bundle ships one) to execute $1"; exit 1; }
+  ${RUN:+"$RUN"} "$@"
+}
 # ELF e_machine without file(1) -- busybox has no file applet. 0xB7 aarch64, 0x3E x86_64.
 elf_machine() { od -An -tx1 -j18 -N1 "$1" 2>/dev/null | tr -d ' \n'; }
 mkdir -p out/2/aarch64
