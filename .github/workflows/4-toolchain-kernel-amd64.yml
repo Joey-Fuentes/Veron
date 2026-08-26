@@ -90,8 +90,19 @@ on:
       # which is the one event that stales a stage-5 checkpoint mid-climb
       # (commit "generic kernel v5...", 2026-08-16).
       - '!stages/4-toolchain-kernel/generic/**'
-      - 'stages/3-micro-c/substages-amd64.toml'
       - '.github/workflows/4-toolchain-kernel-amd64.yml'
+  # STAGE 4 RUNS BECAUSE STAGE 3 PUBLISHED, NOT BECAUSE THE SAME FILE MOVED.
+  # This used to list stages/3-micro-c/substages-amd64.toml as a path --
+  # the same path that triggers 3-cross-amd64. A records mint then fired
+  # both at once, this workflow downloaded 3/latest-x86_64 before 3-cross
+  # had replaced it, and failed on "the release's records differ from the
+  # committed record" (runs 89150010912, 2026-08-25). Now it waits for the
+  # publisher: a completed, successful 3-cross-amd64 on main. Dispatch
+  # still works for reruns against whatever 3/latest-x86_64 holds.
+  workflow_run:
+    workflows: ['3-cross-amd64']
+    types: [completed]
+    branches: [main]
 # NO concurrency GROUP, DELIBERATELY.
 #
 # The group used to be "arch-spike-amd64-${{ github.ref }}" -- the same key for every
@@ -324,6 +335,9 @@ env:
 
 jobs:
   amd64:
+    # a workflow_run event arrives for failed upstream runs too; only a
+    # green 3-cross-amd64 has published the contract this job consumes
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04            # NATIVE x86_64, no emulation
     # 20 RUNGS INCLUDING FOUR gcc BUILDS AND A KERNEL. 330 was set when this
     # job stopped at gcc 4.7.4; gcc 15 pass 1 alone can take an hour. GitHub's
