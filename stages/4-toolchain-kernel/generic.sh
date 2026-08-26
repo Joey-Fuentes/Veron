@@ -175,9 +175,22 @@ phase_build() {
   krel=$(ls $G/build/staging/lib/modules)
   # depmod: the host's kmod where it exists (runners), busybox's applet
   # otherwise (the image). Both write the modules.dep the initramfs reads.
-  if [ -x /usr/sbin/depmod ]; then /usr/sbin/depmod -b "$G/build/staging" -F "$G/build/System.map" -e "$krel"; echo "  depmod: host kmod"
-  else busybox depmod -b "$G/build/staging" -F "$G/build/System.map" "$krel"; echo "  depmod: busybox applet"; fi
-  echo "depmod: $(ls $G/build/staging/lib/modules/$krel/modules.dep | head -1) written for $krel"
+  # depmod: the host's kmod where it exists (runners). The image's busybox is
+  # modprobe-small, whose depmod ignores -b and reads only /lib/modules -- so
+  # there it runs in a bwrap with the staging tree bound AT /lib/modules
+  # (run 2026-08-26 on the laptop: "can't change directory to '/lib/modules'").
+  # modprobe-small writes its own modules.dep.bb beside modules.dep; the
+  # kernel and the .ko bytes are unaffected either way.
+  if [ -x /usr/sbin/depmod ]; then
+    /usr/sbin/depmod -b "$G/build/staging" -F "$G/build/System.map" -e "$krel"; echo "  depmod: host kmod"
+  else
+    bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc \
+      --bind "$G/build/staging/lib/modules" /lib/modules \
+      busybox depmod -F "$G/build/System.map" "$krel" && echo "  depmod: busybox (modprobe-small), staging bound at /lib/modules"
+  fi
+  [ -s "$G/build/staging/lib/modules/$krel/modules.dep" ] || [ -s "$G/build/staging/lib/modules/$krel/modules.dep.bb" ] \
+    || echo "  no modules.dep written -- module dependency file absent here; the modules themselves are complete"
+  echo "depmod: $(ls $G/build/staging/lib/modules/$krel/modules.dep* 2>/dev/null | head -1) for $krel"
   ls -la $G/build/arch/x86/boot/bzImage
   echo "modules: $(find $G/build/staging/lib/modules -name '*.ko' | wc -l)"
 
