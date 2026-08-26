@@ -427,13 +427,18 @@ if [ "$B0" = ok ]; then
         # host: no runner name, no host kernel version, no clock in the artifact.
         # osvers is a constant that still looks like a kernel version because
         # the Linux hints file branches on it (old 2.x cases).
-        # cf_time IS THE ONE VALUE Configure COMPUTES ANYWAY: -Dcf_time went
-        # into config_args and was then overwritten by `date` (two runs on
-        # 2026-08-26 differed only by the clock, still). config.over is
-        # Configure's own override file, sourced after every value is
-        # decided and just before config.sh is written, so what it says is
-        # final. The clock never reaches the artifact.
-        printf "cf_time='Thu Jan  1 00:00:00 UTC 1970'\n" > "$_d/config.over"
+        # TWO VALUES Configure COMPUTES REGARDLESS OF -D. cf_time is taken
+        # from `date` unconditionally (Configure line 3924 in 5.44.0) -- the
+        # -Dcf_time above lands in config_args and is then overwritten, so
+        # two runs on 2026-08-26 still differed only by the clock. And an
+        # empty -Dmydomain= reads as "not set", so Configure looks the domain
+        # up: '.(none)' on one host, the VM's search domain on another.
+        # config.over is Configure's own override file, sourced after every
+        # value is decided and just before config.sh is written (line 24887
+        # vs 24979), so what it says is final. Proven against the 5.44.0
+        # tarball: config.sh then reads cf_time='Thu Jan  1 00:00:00 UTC
+        # 1970' and mydomain='.veron', and nothing else in it names the host.
+        printf "cf_time='Thu Jan  1 00:00:00 UTC 1970'\nmydomain='.veron'\n" > "$_d/config.over"
         ( cd "$_d" && ./Configure -des -Dprefix=/usr -Dcc=gcc \
               -Dmyhostname=veron -Dmydomain= -Dosvers=7.1.5 -Dmyuname='Linux veron 7.1.5 x86_64' \
               -Dcf_by=veron -Dcf_email=veron@veron -Dperladmin=veron@veron \
