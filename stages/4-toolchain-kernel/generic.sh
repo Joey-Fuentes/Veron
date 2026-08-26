@@ -250,6 +250,10 @@ INIT
 
 # the emulator and firmware: this project's own where the host has them
 qemu_bin() { command -v qemu-system-x86_64; }
+# qemu's vvfat driver (the EFI gate's fat:rw: drive) writes a temp file
+# under $TMPDIR, default /var/tmp -- which the image does not have. Give
+# every qemu here a TMPDIR that exists.
+mkdir -p "$G/tmp"; export TMPDIR="$G/tmp"
 ovmf_fd() { for f in /usr/share/qemu/OVMF.fd /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd "$ROOT/veron-tools/share/qemu/OVMF.fd"; do [ -f "$f" ] && { echo "$f"; return; }; done; echo ""; }
 
 phase_efi() {
