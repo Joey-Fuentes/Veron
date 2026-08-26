@@ -260,78 +260,63 @@ phase_efi() {
   cd "$G"
   OVMF=$(ovmf_fd); [ -n "$OVMF" ] || { echo "  no OVMF firmware on this host -- EFI gate skipped, said so"; cd "$ROOT"; return 0; }
   echo "  qemu: $(qemu_bin)  firmware: $OVMF"
-
-  # THE CLAIM UNDER TEST: this bzImage is a complete EFI
-  # application -- firmware loads it from a FAT filesystem, its
-  # LoadOptions become the kernel command line, and it runs far
-  # enough to parse root=PARTUUID=. No bootloader, no initramfs.
-  # The host installs OVMF and qemu to TEST the guest kernel, the
-  # same doctrine as squashfs-tools above: test harness, not build
-  # input -- not one byte of either lands in an artifact.
-  mkdir -p efiboot
-  cp $G/build/arch/x86/boot/bzImage efiboot/kernel.efi
-  # THE STARTUP.NSH TRICK, AND WHY. OVMF auto-boots
-  # \EFI\BOOT\BOOTX64.EFI with EMPTY LoadOptions -- which would
-  # test nothing about the cmdline path. The kernel is therefore
-  # placed at a NON-fallback name so autoboot finds nothing, OVMF
-  # drops to its shell, and the shell runs startup.nsh -- whose
-  # arguments become LoadOptions, which is exactly the mechanism a
-  # real Boot#### entry uses. CRLF line ending: the EFI shell is a
-  # DOS descendant and some builds require it.
-  printf 'kernel.efi console=ttyS0,115200 root=PARTUUID=00000000-dead-dead-dead-000000000000 rw init=/usr/bin/dinit panic=-1\r\n'             > efiboot/startup.nsh
-  # THE SERIAL LOG STREAMS LIVE, AND THE TIMEOUT ESCALATES. Run of
-  # 2026-08-25: this step sat past ten minutes with nothing in the
-  # job log and had to be cancelled by hand -- qemu was written to a
-  # file nobody could see, and `timeout 300` sends only SIGTERM, which
-  # a wedged qemu can ignore forever (the job ceiling is five hours).
-  # Now: -k 30 escalates to SIGKILL; the serial log is tailed into
-  # the job log while qemu runs, so a hang shows WHERE the kernel
-  # stopped instead of showing nothing; and a cancel still leaves
-  # the evidence that had been printed.
-  : > efiboot/serial.log
-  timeout -k 30 300 "$(qemu_bin)"             -machine q35 -m 1024 -nographic -no-reboot -nic none             -bios "$OVMF"             -drive format=raw,file=fat:rw:efiboot             -serial file:efiboot/serial.log > efiboot/qemu.err 2>&1 &
-  qpid=$!
-  tail -n +1 -F efiboot/serial.log &
-  tpid=$!
-  # END IT AT THE WITNESS. rootwait means the kernel waits forever for
-  # a root that does not exist, so without this the gate always ran
-  # the full 300 s (run 88895612800: five silent minutes, then pass).
-  # Once "Waiting for root device" is in the log every check below
-  # can already pass; qemu is stopped there and the ceiling stays as
-  # the backstop for a kernel that never gets that far.
-  for _i in $(seq 1 300); do
-    if grep -q "Waiting for root device" efiboot/serial.log 2>/dev/null; then
-      sleep 2; echo "  witness seen after ${_i}s; stopping qemu"; kill "$qpid" 2>/dev/null || true; break
+  # TWO WAYS TO HAND THE KERNEL TO THE FIRMWARE. Ubuntu's OVMF.fd carries the
+  # UEFI Shell, which runs startup.nsh from the FAT drive -- that is how
+  # LoadOptions (the command line) get tested. The project's own OVMF is a
+  # SECURE_BOOT_ENABLE build, and edk2's OvmfPkgX64.dsc omits the shell in
+  # that case (run 2026-08-26 on the laptop: "No bootable option or device
+  # was found"). There the kernel goes in as EFI/BOOT/BOOTX64.EFI, the
+  # removable-media path every UEFI boots unasked: the EFI stub and the
+  # root-mount witness are still proven; LoadOptions cannot be, and the
+  # gate says so instead of failing on the wrong thing.
+  efi_run() {   # $1 = shell | fallback
+    rm -rf efiboot; mkdir -p efiboot/EFI/BOOT
+    cp build/arch/x86/boot/bzImage efiboot/kernel.efi
+    if [ "$1" = shell ]; then
+      printf 'kernel.efi console=ttyS0,115200 root=PARTUUID=00000000-dead-dead-dead-000000000000 rw init=/usr/bin/dinit panic=-1\r\n' > efiboot/startup.nsh
+    else
+      cp build/arch/x86/boot/bzImage efiboot/EFI/BOOT/BOOTX64.EFI
     fi
-    kill -0 "$qpid" 2>/dev/null || break
-    sleep 1
-  done
-  wait "$qpid" || true
-  sleep 1; kill "$tpid" 2>/dev/null || true
+    : > efiboot/serial.log
+    timeout -k 30 300 "$(qemu_bin)" -machine q35 -m 1024 -nographic -no-reboot -nic none \
+      -bios "$OVMF" -drive format=raw,file=fat:rw:efiboot \
+      -serial file:efiboot/serial.log > efiboot/qemu.err 2>&1 &
+    qpid=$!
+    for _i in $(seq 1 300); do
+      if grep -q "Waiting for root device\|Cannot open root device\|VFS: Unable to mount root\|No bootable option" efiboot/serial.log 2>/dev/null; then
+        sleep 2; echo "  witness seen after ${_i}s; stopping qemu"; kill "$qpid" 2>/dev/null || true; break
+      fi
+      kill -0 "$qpid" 2>/dev/null || break
+      sleep 1
+    done
+    wait "$qpid" || true
+  }
+  efi_run shell
+  MODE=shell
+  if grep -q "No bootable option" efiboot/serial.log 2>/dev/null; then
+    echo "  this OVMF has no UEFI Shell (a SECURE_BOOT build): retrying by the removable-media path, EFI/BOOT/BOOTX64.EFI"
+    efi_run fallback; MODE=fallback
+  fi
   echo "--- qemu's own output (efiboot/qemu.err) ---"
   sed 's/^/    /' efiboot/qemu.err 2>/dev/null | head -20 || true
   echo "--- serial (tail) ---"
   tail -60 efiboot/serial.log || true
   fail=0
-  # THE x86 STUB IS SILENT ON THE HAPPY PATH -- it prints "EFI stub:"
-  # lines only when it has something to report (initrd, Secure Boot),
-  # so this gate's first firing failed a kernel that had stub-booted
-  # perfectly (run 87005224870: LoadOptions and PARTUUID checks both
-  # passed -- only possible via EFI handover). The structural witness
-  # is the kernel's own EFI runtime banner, printed on every EFI boot.
-  grep -Eq "efi: EFI v|EFI stub" efiboot/serial.log             && echo "  ok    EFI handover confirmed (runtime banner or stub chatter)"             || { echo "  FAIL  no EFI evidence: kernel did not boot via EFI"; fail=1; }
-  grep -q "Command line:.*root=PARTUUID=00000000-dead" efiboot/serial.log             && echo "  ok    LoadOptions became the kernel command line"             || { echo "  FAIL  LoadOptions did not reach the cmdline"; fail=1; }
-  # ROOTWAIT CHANGED THE WITNESS (fragment v9): the kernel no longer
-  # panics on an absent root -- it WAITS, as designed for slow USB
-  # enumeration, and prints "Waiting for root device ..." when it
-  # engages. That line is the stronger proof: cmdline parsed, PARTUUID
-  # resolution active, rootwait armed. The old panic greps stay as
-  # alternates for any kernel predating v9 (run 87044356715 failed a
-  # correct kernel against the old expectation).
-  grep -Eq "Waiting for root device|Cannot open root device|unknown-block|VFS: Unable to mount root" efiboot/serial.log             && echo "  ok    root=PARTUUID= parsed; the kernel is waiting or reported it, as designed"             || { echo "  FAIL  the kernel never reached root mounting"; fail=1; }
-  [ "$fail" -eq 0 ] || exit 1
-  echo "VERON-EFISTUB-OK  no bootloader, no initramfs: the kernel IS the boot program"
-
+  grep -Eq "efi: EFI v|EFI stub" efiboot/serial.log \
+    && echo "  ok    EFI handover confirmed (runtime banner or stub chatter)" \
+    || { echo "  FAIL  no EFI evidence: kernel did not boot via EFI"; fail=1; }
+  if [ "$MODE" = shell ]; then
+    grep -q "Command line:.*root=PARTUUID=00000000-dead" efiboot/serial.log \
+      && echo "  ok    LoadOptions became the kernel command line" \
+      || { echo "  FAIL  LoadOptions did not reach the cmdline"; fail=1; }
+  else
+    echo "  skip  LoadOptions -> cmdline: not testable without the firmware shell on this host (CI's OVMF has it)"
+  fi
+  grep -Eq "Waiting for root device|Cannot open root device|unknown-block|VFS: Unable to mount root" efiboot/serial.log \
+    && echo "  ok    the kernel reached root mounting (waiting or reported it, as designed)" \
+    || { echo "  FAIL  the kernel never reached root mounting"; fail=1; }
+  [ "$fail" -eq 0 ] || { cd "$ROOT"; exit 1; }
+  echo "VERON-EFISTUB-OK  no bootloader, no initramfs: the kernel IS the boot program ($MODE path)"
   cd "$ROOT"
 }
 
