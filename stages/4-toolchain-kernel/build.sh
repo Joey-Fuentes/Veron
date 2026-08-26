@@ -694,6 +694,12 @@ phase_chain() {
     echo "ref-tcc  $(sha256sum "$BOX/work/ref-tcc" | cut -d' ' -f1)  the 3->4 contract"
   } > "$OUT4/BUDGET"
   echo "== IN THE BOX: ref-tcc -> musl -> make -> binutils -> gcc 4.7.4 =="
+  # --hostname veron ON BOTH BOXES: under --unshare-all the box otherwise
+  # inherits the host's name, and perl's Configure (rung B1) writes it into
+  # config.h, Config_heavy.pl, perlbug and perlthanks -- the only four
+  # sysroot files that differed between the Aug 17 and Aug 26 green runs
+  # (every runner VM has a different name). A constant name makes those
+  # four constant, on a runner and on a Veron laptop alike.
 
   # EVERY VERSION THE RUNGS READ IS PASSED WITH --setenv BELOW.
   #
@@ -713,6 +719,7 @@ phase_chain() {
   bwrap \
     --unshare-all \
     --die-with-parent \
+    --hostname veron \
     --setenv PATH /bin \
     --setenv HOME /work \
     --setenv LC_ALL POSIX \
@@ -778,6 +785,7 @@ phase_chain() {
   bwrap \
     --unshare-all \
     --die-with-parent \
+    --hostname veron \
     --new-session \
     --clearenv \
     --setenv PATH /usr/bin:/usr/sbin \
