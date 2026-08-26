@@ -86,7 +86,7 @@ phase_in() {
   bwrap --unshare-all --die-with-parent \
     --bind "$G/lfs" / --proc /proc --dev /dev \
     --tmpfs /tmp --tmpfs /run \
-    --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
+    --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp \
     /usr/bin/sh -c 'echo "  canary: the box opens; sh is $(command -v sh)"' \
     || { echo "FAIL: bwrap cannot open the box -- its own message is above"; exit 1; }
   fail=0
@@ -94,7 +94,7 @@ phase_in() {
     if bwrap --unshare-all --die-with-parent \
          --bind "$G/lfs" / --proc /proc --dev /dev \
          --tmpfs /tmp --tmpfs /run \
-         --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
+         --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp \
          /usr/bin/sh -c "command -v $t" >/dev/null 2>&1; then
       echo "  ok      $t"
     else
@@ -110,7 +110,7 @@ phase_config() {
   box() { bwrap --unshare-all --die-with-parent \
           --bind "$G/lfs" / --bind "$G/build" /build \
           --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
-          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
+          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp \
           --chdir /build \
           /usr/bin/sh -c "$*"; }
   cp stages/4-toolchain-kernel/generic/veron-generic.fragment $G/build/
@@ -134,7 +134,7 @@ phase_build() {
   box() { bwrap --unshare-all --die-with-parent \
           --bind "$G/lfs" / --bind "$G/build" /build \
           --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
-          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
+          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp \
           --setenv KBUILD_BUILD_TIMESTAMP "$KBUILD_TS" \
           --setenv KBUILD_BUILD_USER veron \
           --setenv KBUILD_BUILD_HOST veron \
@@ -240,7 +240,7 @@ phase_boot() {
 INIT
   chmod +x initrd/init
   ( cd initrd && find . | cpio -o -H newc --quiet | gzip ) > initrd.img
-  timeout -k 30 180 "$(qemu_bin)" -m 1024 -nographic -no-reboot \
+  TMPDIR="$QTMP" timeout -k 30 180 "$(qemu_bin)" -m 1024 -nographic -no-reboot \
     -kernel $G/build/arch/x86/boot/bzImage -initrd initrd.img \
     -drive file=payload.squashfs,format=raw,if=virtio \
     -append "console=ttyS0 rdinit=/init" | tee boot.log || true
@@ -254,9 +254,11 @@ INIT
 # the emulator and firmware: this project's own where the host has them
 qemu_bin() { command -v qemu-system-x86_64; }
 # qemu's vvfat driver (the EFI gate's fat:rw: drive) writes a temp file
-# under $TMPDIR, default /var/tmp -- which the image does not have. Give
-# every qemu here a TMPDIR that exists.
-mkdir -p "$G/tmp"; export TMPDIR="$G/tmp"
+# under $TMPDIR, default /var/tmp -- which the image does not have. The
+# gates' qemu gets one that exists, PER INVOCATION: exporting it here leaked
+# a host path into the boxes (bwrap passes the environment through) and
+# kbuild's mktemp failed on CI (run 2026-08-26). Boxes set their own below.
+mkdir -p "$G/tmp"; QTMP="$G/tmp"
 ovmf_fd() { for f in /usr/share/qemu/OVMF.fd /usr/share/ovmf/OVMF.fd /usr/share/OVMF/OVMF.fd "$ROOT/veron-tools/share/qemu/OVMF.fd"; do [ -f "$f" ] && { echo "$f"; return; }; done; echo ""; }
 
 phase_efi() {
@@ -281,7 +283,7 @@ phase_efi() {
       cp build/arch/x86/boot/bzImage efiboot/EFI/BOOT/BOOTX64.EFI
     fi
     : > efiboot/serial.log
-    timeout -k 30 300 "$(qemu_bin)" -machine q35 -m 1024 -nographic -no-reboot -nic none \
+    TMPDIR="$QTMP" timeout -k 30 300 "$(qemu_bin)" -machine q35 -m 1024 -nographic -no-reboot -nic none \
       -bios "$OVMF" -drive format=raw,file=fat:rw:efiboot \
       -serial file:efiboot/serial.log > efiboot/qemu.err 2>&1 &
     qpid=$!
@@ -337,7 +339,7 @@ phase_loader() {
           --bind "$G/lfs" / --bind "$G/build" /build \
           --ro-bind "$ROOT/spikes/stage6/boot" /boot-src \
           --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
-          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp \
+          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp \
           --chdir /build \
           /usr/bin/sh -c "$*"; }
   box "cc -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone \
