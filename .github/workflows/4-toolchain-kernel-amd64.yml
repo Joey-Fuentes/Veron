@@ -170,6 +170,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bubblewrap build-essential git curl xz-utils python3 cpio qemu-system-x86 zstd
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          # THIS PROJECT'S TOOLS FOR THE PACKER (zstd) AND THE GATES: the stage-5
+          # bundle, verified, as veron-tools/. Best effort -- a bundle that
+          # predates the static zstd leaves the packer on apt's, which
+          # rel/PACKED-BY then names by hash.
+          sh tools/fetch-tools.sh || echo "  (no tools bundle; host tools will be recorded)"
           sh tools/airlock-busybox.sh
       - uses: actions/cache@v4
         with:

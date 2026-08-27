@@ -39,6 +39,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bubblewrap qemu-system-x86 ovmf squashfs-tools cpio zstd python3 kmod >/dev/null
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          # THIS PROJECT'S TOOLS FOR THE PACKER (zstd) AND THE GATES: the stage-5
+          # bundle, verified, as veron-tools/. Best effort -- a bundle that
+          # predates the static zstd leaves the packer on apt's, which
+          # rel/PACKED-BY then names by hash.
+          sh tools/fetch-tools.sh || echo "  (no tools bundle; host tools will be recorded)"
       - name: 'IN: the sysroot contract (4/latest-x86_64, digest + attestation) and the pinned kernel source'
         env:
           GH_TOKEN: ${{ github.token }}

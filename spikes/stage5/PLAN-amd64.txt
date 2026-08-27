@@ -2213,7 +2213,7 @@ declared in deps.build, which puts it at rung 20 against this package's 40.
 package zstd 1.5.7
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   be276bdda4d2a861068795ca5e12f3a5bf76eeeac90d19e374b804c83a2ad5b4
+  recipe-sha   2cdfb932f2052f7289bb22ba34f1e72050b0d87e57573d5793a9f68193f4c9c6
 
   source
     url        https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
@@ -2234,7 +2234,11 @@ package zstd 1.5.7
     [02] build
          cwd  build/zstd-1.5.7/zstd-1.5.7
          argv ["make", "-j1", "PREFIX=/usr", "HAVE_ZLIB=0", "HAVE_LZMA=0", "HAVE_LZ4=0"]
-    [03] install
+    [03] static-cli
+         cwd  build/zstd-1.5.7/zstd-1.5.7
+         SHELL (declared) why=relink the CLI static and prove it with readelf before install -- a conditional, not an argv
+         | rm -f programs/zstd && make -C programs zstd LDFLAGS=-static HAVE_ZLIB=0 HAVE_LZMA=0 HAVE_LZ4=0 -j1 && if readelf -d programs/zstd | grep -q NEEDED; then echo 'zstd CLI is not static'; readelf -d programs/zstd | grep NEEDED; exit 1; fi && echo 'zstd CLI: static'
+    [04] install
          cwd  build/zstd-1.5.7/zstd-1.5.7
          argv ["make", "PREFIX=/usr", "DESTDIR=dest/zstd", "install"]
 

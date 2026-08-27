@@ -484,7 +484,7 @@ jobs:
               echo "  recording an adopted checkpoint in the release"
               sed 's/^/    /' ADOPTED-CHECKPOINT
             fi
-            assets="rootfs.img.tar.zst IMAGE-SHA256"
+            assets="rootfs.img.tar.zst IMAGE-SHA256 PACKED-BY"
             # THE FULL IMAGE IS OPTIONAL AND APPENDED THE SAME WAY
             # ADOPTED-CHECKPOINT IS. A run where the strip was skipped has no
             # rootfs-full.img.tar.zst, and naming a file that does not exist
@@ -600,7 +600,8 @@ jobs:
             fi
             for b in qemu-user/usr/bin/qemu-aarch64-static \
                      qemu/usr/bin/qemu-system-x86_64 qemu/usr/bin/qemu-system-aarch64 \
-                     qemu/usr/bin/qemu-img swtpm/usr/bin/swtpm swtpm/usr/bin/swtpm_ioctl; do
+                     qemu/usr/bin/qemu-img swtpm/usr/bin/swtpm swtpm/usr/bin/swtpm_ioctl \
+                     zstd/usr/bin/zstd; do
               if [ -x "../dest/$b" ]; then
                 static_or_die "../dest/$b"
                 cp "../dest/$b" "$tdir/veron-tools/"

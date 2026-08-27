@@ -404,17 +404,12 @@ phase_pack() {
   # the host has it (the workflow's exact line); busybox tar piped through
   # zstd elsewhere, stated. The per-module bytes are what the manifest and
   # the initramfs consume.
-  # --mtime=@0: without it the tarball carried pack time on all 320 members
-  # (three CI runs, three digests, every member's CONTENT identical --
-  # tools/diag/modules-diff.py, 2026-08-27). The sysroot tarball always had it.
-  if tar --version 2>/dev/null | grep -q 'GNU tar'; then
-    tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu \
-        --zstd -cf "rel/modules-$KERNEL-generic.tar.zst" -C build/staging .
-  else
-    find build/staging -exec touch -h -t 197001010000.00 {} +
-    ( cd build/staging && tar -cf - . ) | zstd -19 -q > "rel/modules-$KERNEL-generic.tar.zst"
-    echo "  modules tarball made with busybox tar (no GNU tar here) -- its digest differs from a runner's; the modules inside do not"
-  fi
+  # ONE PACKER, IN THE BOX: tools/pack.py on the sysroot's python, this
+  # project's zstd (the bundle's, or /usr/bin/zstd on a Veron image),
+  # recorded by hash in rel/PACKED-BY. Before this, GNU tar on runners and
+  # busybox tar on the image wrote different containers around identical
+  # files (2026-08-27). Same bytes now, on every host with our zstd.
+  sh "$ROOT/tools/pack-in-box.sh" "$G/lfs" "rel/modules-$KERNEL-generic.tar.zst" --record rel/PACKED-BY build/staging
   ( cd rel && sha256sum vmlinuz-generic config-generic veron-boot.efi "modules-$KERNEL-generic.tar.zst" ) > rel/KERNEL-GENERIC-SHA256
   cat rel/KERNEL-GENERIC-SHA256
   rm -rf "$OUTG/rel"; cp -a rel "$OUTG/rel"

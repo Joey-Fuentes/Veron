@@ -1110,22 +1110,14 @@ phase_pack() {
   done
   [ -s "$BOX/out/manifest.tsv" ] && cp "$BOX/out/manifest.tsv" rel/ || true
   cp "$OUT4/BUDGET" rel/BUDGET 2>/dev/null || true
-  # THE CONTAINER IS TRANSPORT, NOT ARTIFACT: the records and the stage-5
-  # airlock check the sysroot's manifest digest, host-independent.
-  # sysroot.tar.zst is how a release carries it -- GNU tar + zstd, the
-  # workflow's exact line so a laptop's SYSROOT-SHA256 and a runner's are
-  # one number. The image ships busybox tar: there, out/4/lfs is the
-  # deliverable and the tarball is skipped, said so, not faked.
-  if tar --version 2>/dev/null | grep -q 'GNU tar' && command -v zstd >/dev/null 2>&1; then
-    ZSTD_CLEVEL=19; export ZSTD_CLEVEL
-    tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
-        --format=gnu --zstd -cf rel/sysroot.tar.zst -C lfs .
-    sha256sum rel/sysroot.tar.zst | tee rel/SYSROOT-SHA256
-    printf '  sysroot.tar.zst: %s (from %s MB of files)\n' "$(du -h rel/sysroot.tar.zst | cut -f1)" "$after"
-  else
-    echo "  no GNU tar + zstd on this host: the trimmed sysroot is out/4/lfs; sysroot.tar.zst not made here"
-    mv lfs "$OUT4/lfs"
-  fi
+  # ONE PACKER, IN THE BOX (tools/pack-in-box.sh): the trimmed sysroot's
+  # own python writes the tar, this project's zstd compresses it, both
+  # recorded in rel/PACKED-BY -- so a laptop makes sysroot.tar.zst too, and
+  # to the same bytes as a runner once the bundle carries our zstd.
+  sh "$ROOT/tools/pack-in-box.sh" lfs rel/sysroot.tar.zst --record rel/PACKED-BY lfs
+  sha256sum rel/sysroot.tar.zst | tee rel/SYSROOT-SHA256
+  printf '  sysroot.tar.zst: %s (from %s MB of files)\n' "$(du -h rel/sysroot.tar.zst | cut -f1)" "$after"
+  rm -rf "$OUT4/lfs"; mv lfs "$OUT4/lfs"
   cp -a rel "$OUT4/rel"
   echo "  out/4/rel: $(ls "$OUT4/rel" | tr '\n' ' ')"
 }

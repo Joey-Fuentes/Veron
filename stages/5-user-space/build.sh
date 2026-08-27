@@ -1975,21 +1975,15 @@ fi
 # per-run mtime in the tar header, so the .tar.zst differed run-to-run
 # (1c90fb5a vs 16ef70c1 at a fixed commit) even though IMAGE-SHA256
 # matched. --mtime=@0 pins it; the rest match stage 4 exactly.
-if tar --version 2>/dev/null | grep -q 'GNU tar'; then
-  ZSTD_CLEVEL=10 tar --sort=name --mtime=@0 --owner=0 --group=0 \
-    --numeric-owner --format=gnu --zstd -cf rootfs.img.tar.zst rootfs.img
-else
-  # transport only: rootfs.img is the artifact and IMAGE-SHA256 names it;
-  # without GNU tar the image stays uncompressed in out/5
-  echo "  no GNU tar here: rootfs.img left as is (IMAGE-SHA256 covers it)"
-fi
+# ONE PACKER, IN THE BOX: the merged system's own python and this project's
+# zstd (tools/pack-in-box.sh), recorded in PACKED-BY. Level 10, as before.
+sh "$ROOT/tools/pack-in-box.sh" "$ROOT/spikes/stage5/sysroot" rootfs.img.tar.zst -l 10 --record PACKED-BY -f rootfs.img
 printf '  rootfs.img.tar.zst (stripped): %s\n' "$(du -h rootfs.img.tar.zst | cut -f1)"
 # THE FULL IMAGE TOO, WHEN THE STRIP RAN. A run where stripping was
 # skipped or failed has no rootfs-full.img, and publishing a missing
 # file would fail the step for a reason unrelated to the image.
-if [ -e rootfs-full.img ] && tar --version 2>/dev/null | grep -q 'GNU tar'; then
-  ZSTD_CLEVEL=10 tar --sort=name --mtime=@0 --owner=0 --group=0 \
-    --numeric-owner --format=gnu --zstd -cf rootfs-full.img.tar.zst rootfs-full.img
+if [ -e rootfs-full.img ]; then
+  sh "$ROOT/tools/pack-in-box.sh" "$ROOT/spikes/stage5/sysroot" rootfs-full.img.tar.zst -l 10 --record PACKED-BY -f rootfs-full.img
   printf '  rootfs-full.img.tar.zst (unstripped): %s\n' \
     "$(du -h rootfs-full.img.tar.zst | cut -f1)"
   printf '  the stripped image is what a device runs; the full one\n'
@@ -1998,7 +1992,7 @@ fi
 
 cd "$ROOT"
 rm -rf "$OUT5"; mkdir -p "$OUT5"
-for f in rootfs.img rootfs.img.tar.zst rootfs-full.img.tar.zst IMAGE-SHA256 files.tsv initramfs.cpio.gz .adopted-from; do
+for f in rootfs.img rootfs.img.tar.zst rootfs-full.img.tar.zst IMAGE-SHA256 PACKED-BY files.tsv initramfs.cpio.gz .adopted-from; do
   [ -e "spikes/stage5/out/$f" ] && cp "spikes/stage5/out/$f" "$OUT5/"
 done
 cp boot/Image "$OUT5/Image"

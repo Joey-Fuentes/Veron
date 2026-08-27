@@ -78,6 +78,20 @@ cwd  = "$S"
 run  = [["make", "-j$J", "PREFIX=/usr",
          "HAVE_ZLIB=0", "HAVE_LZMA=0", "HAVE_LZ4=0"]]
 
+# THE CLI IS LINKED STATIC. It travels in the tools bundle (tools-x86_64)
+# so that a GitHub runner compresses a release with THIS zstd rather than
+# apt's -- two zstd builds compress the same input to different bytes, and
+# the published .tar.zst is what the website's SHA names (2026-08-27). The
+# bundle refuses dynamic binaries, so the program is relinked -static after
+# the normal build (the shared libzstd.so stays as built); readelf proves
+# it before install. The static CLI is also what the image ships: same
+# bytes as the bundle's, by construction.
+[[steps]]
+name  = "static-cli"
+cwd   = "$S"
+why   = "relink the CLI static and prove it with readelf before install -- a conditional, not an argv"
+shell = "rm -f programs/zstd && make -C programs zstd LDFLAGS=-static HAVE_ZLIB=0 HAVE_LZMA=0 HAVE_LZ4=0 -j$J && if readelf -d programs/zstd | grep -q NEEDED; then echo 'zstd CLI is not static'; readelf -d programs/zstd | grep NEEDED; exit 1; fi && echo 'zstd CLI: static'"
+
 [[steps]]
 name = "install"
 cwd  = "$S"
