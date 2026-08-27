@@ -331,7 +331,7 @@ if gh release download 5/ckpt-x86_64 --pattern 'dest.tar.zst' \
   # The guard stays where it is -- it is the last line of defence
   # against reusing artifacts compiled against another libc. This
   # simply stops handing it something it must reject.
-  _want='$SYSROOT_SHA'
+  _want="$SYSROOT_SHA"
   _m=$(python3 -c 'import json;print(json.load(open("dest/.veron-checkpoint")).get("base",""))' 2>/dev/null || echo "")
   if [ "$_m" != "$_want" ]; then
     echo "  checkpoint base $(echo "$_m" | cut -c1-12) != sysroot $(echo "$_want" | cut -c1-12)"
