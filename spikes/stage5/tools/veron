@@ -871,6 +871,20 @@ def run_step(s, logf, dry, may_create=False, per_job_mib=2500):
     # heartbeat: silence and work look identical from outside. This is the
     # same lesson `tee` taught the probe and the ticker taught wpe-timing.
     limit = s.get("timeout", DEFAULT_STEP_TIMEOUT)
+    # A STEP'S TIMEOUT WAS WRITTEN FOR THE RUNNER'S PARALLELISM. When the
+    # jobs rule reduces a ninja step's -j below what the recipe asked for
+    # (a 7 GiB laptop building WebKit at -j1 instead of -j4), the same work
+    # takes proportionally longer; the watchdog scales with it, so "slower
+    # machine" is not reported as "hung" (laptop, 2026-08-27: WebKit killed
+    # at 360 min, 7400 of 8685 objects done). A genuine hang still trips it.
+    if not shell and argv and argv[0] == "ninja":
+        asked = next((int(x) for x in s["argv"][1:] if x.startswith("-j") and x[2:].isdigit()), None)
+        if asked is None:
+            asked = next((int(s["argv"][k + 1]) for k, x in enumerate(s["argv"]) if x == "-j" and k + 1 < len(s["argv"])), None)
+        got = next((int(argv[k + 1]) for k, x in enumerate(argv) if x == "-j" and k + 1 < len(argv)), None)
+        if asked and got and got < asked:
+            limit = limit * asked // got
+            print(f"  timeout scaled x{asked // got} for -j {got} (recipe asked -j {asked}): {limit // 60} min")
     start = time.time()
     beat = threading.Event()
 
