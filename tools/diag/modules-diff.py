@@ -4,6 +4,7 @@
 # size), which exist in only one. python3 only.
 #
 #     python3 tools/diag/modules-diff.py A.tar.zst B.tar.zst
+#     python3 tools/diag/modules-diff.py box4g/build/staging B.tar.zst   # a staging tree vs a tarball
 import sys, tarfile, hashlib
 def unzstd(path):
     data = open(path, 'rb').read()
@@ -19,9 +20,23 @@ def unzstd(path):
         return subprocess.run(['zstd', '-dc', path], check=True, capture_output=True).stdout
 
 def load(path):
-    raw = unzstd(path)
-    import io
+    """A tarball (.tar / .tar.zst) or a DIRECTORY (a staging tree): members
+    keyed by './'-relative path, so a laptop's build/staging can be compared
+    with a runner's published tarball directly."""
+    import io, os
     members = {}
+    if os.path.isdir(path):
+        for dp, dns, fns in os.walk(path):
+            for n in dns + fns:
+                full = os.path.join(dp, n); rel = './' + os.path.relpath(full, path)
+                st = os.lstat(full)
+                if os.path.islink(full): h, ty = None, b'2'
+                elif os.path.isdir(full): h, ty = None, b'5'
+                else: h, ty = hashlib.sha256(open(full, 'rb').read()).hexdigest(), b'0'
+                members[rel] = (h, st.st_mode & 0o777, 0, 0, 0, st.st_size if ty == b'0' else 0, ty)
+        members['.'] = (None, 0o755, 0, 0, 0, 0, b'5')
+        return members
+    raw = unzstd(path)
     with tarfile.open(fileobj=io.BytesIO(raw), mode='r:') as tf:
         for m in tf:
             h = hashlib.sha256(tf.extractfile(m).read()).hexdigest() if m.isfile() else None
