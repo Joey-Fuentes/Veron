@@ -878,7 +878,7 @@ def run_step(s, logf, dry, may_create=False, per_job_mib=2500):
     # machine" is not reported as "hung" (laptop, 2026-08-27: WebKit killed
     # at 360 min, 7400 of 8685 objects done). A genuine hang still trips it.
     if not shell and argv and argv[0] == "ninja":
-        asked = next((int(x) for x in s["argv"][1:] if x.startswith("-j") and x[2:].isdigit()), None)
+        asked = next((int(x[2:]) for x in s["argv"][1:] if x.startswith("-j") and x[2:].isdigit()), None)
         if asked is None:
             asked = next((int(s["argv"][k + 1]) for k, x in enumerate(s["argv"]) if x == "-j" and k + 1 < len(s["argv"])), None)
         got = next((int(argv[k + 1]) for k, x in enumerate(argv) if x == "-j" and k + 1 < len(argv)), None)
