@@ -776,13 +776,12 @@ build_img() {
   # dejavu-fonts recipe), not shipped in the image, so clearing it
   # here restores reproducibility and ships exactly what was intended.
   rm -rf ../sysroot/var/cache/fontconfig
-  # IN THE BOX, BY THE SYSTEM ITSELF (tools/mkimage-in-box.sh): a sorted
-  # uid-0 tar of the system feeds its own mke2fs, so neither the host's
-  # readdir order, nor the host's uid, nor the host's e2fsprogs reaches the
-  # image. Two CI runs published two images from identical files before
-  # this (2026-08-27). The mkfs flags and the normaliser (run inside) are
-  # unchanged; the normaliser call that followed here is now part of it.
-  sh "$ROOT/tools/mkimage-in-box.sh" ../sysroot "$1" "$SZ"
+  /sbin/mke2fs -q -t ext4 -d ../sysroot \
+    -U 00000000-0000-4000-8000-000000000001 \
+    -E hash_seed=00000000-0000-4000-8000-000000000002 \
+    -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
+    -m 0 -b 4096 "$1" "${SZ}M"
+  python3 ../tools/normalize-ext4.py "$1"
   # DECLARED TRANSFORMATION, not a silent fixup: rewrites the three
   # superblock timestamps and every inode's times, with debugfs so
   # the checksums are recomputed rather than left wrong.
@@ -1875,13 +1874,12 @@ build_img() {
   # dejavu-fonts recipe), not shipped in the image, so clearing it
   # here restores reproducibility and ships exactly what was intended.
   rm -rf ../sysroot/var/cache/fontconfig
-  # IN THE BOX, BY THE SYSTEM ITSELF (tools/mkimage-in-box.sh): a sorted
-  # uid-0 tar of the system feeds its own mke2fs, so neither the host's
-  # readdir order, nor the host's uid, nor the host's e2fsprogs reaches the
-  # image. Two CI runs published two images from identical files before
-  # this (2026-08-27). The mkfs flags and the normaliser (run inside) are
-  # unchanged; the normaliser call that followed here is now part of it.
-  sh "$ROOT/tools/mkimage-in-box.sh" ../sysroot "$1" "$SZ"
+  /sbin/mke2fs -q -t ext4 -d ../sysroot \
+    -U 00000000-0000-4000-8000-000000000001 \
+    -E hash_seed=00000000-0000-4000-8000-000000000002 \
+    -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
+    -m 0 -b 4096 "$1" "${SZ}M"
+  python3 ../tools/normalize-ext4.py "$1"
 }
 # KEEP THE FULL IMAGE. Everything above -- the guest tests, the
 # desktop screenshot, the two-instance DHCP run -- was measured
