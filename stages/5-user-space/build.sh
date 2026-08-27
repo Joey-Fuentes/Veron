@@ -464,7 +464,25 @@ bwrap --unshare-all --die-with-parent \
     --overlay /packages-amd64 \
     --dl /dl --build-dir /build --dest /dest --logs /logs --out /out \
     --sysroot / \
-    build --clean ${USE_CHECKPOINT:+--resume --base $SYSROOT_SHA} ${STOP_AFTER:+--upto $STOP_AFTER}
+    build --clean ${USE_CHECKPOINT:+--resume --base $SYSROOT_SHA} ${STOP_AFTER:+--upto $STOP_AFTER} \
+  || build_rc=$?
+build_rc="${build_rc:-0}"
+
+# ---- THE CHECKPOINT MARKER, WRITTEN LOCALLY, BUILD DONE OR NOT ----
+# --resume restores only what a marker in dest/ describes, and the marker
+# used to be written only by CI's publish step -- so on a laptop
+# USE_CHECKPOINT=1 restored nothing ("no checkpoint marker -- building
+# everything") while still keeping stale dest/ dirs around. Written here
+# after every chain, success or failure, it records the packages dest/
+# holds, keyed to this sysroot: the next --resume restores exactly the
+# complete, still-valid ones and rebuilds the rest. A laptop that dies
+# at package 132 resumes at 132.
+if [ -d dest ] && [ -n "${SYSROOT_SHA:-}" ]; then
+  python3 tools/veron --overlay packages-amd64 --dest dest checkpoint --base "$SYSROOT_SHA" \
+    && echo "  checkpoint marker: dest/ ($(ls dest | wc -l) package dir(s)) keyed to $SYSROOT_SHA" \
+    || echo "  checkpoint marker: not written"
+fi
+[ "$build_rc" -eq 0 ] || exit "$build_rc"
 
 # ---- The install listings exist before anything can fail on them ----
 cd "$ROOT"
@@ -758,15 +776,16 @@ build_img() {
   # dejavu-fonts recipe), not shipped in the image, so clearing it
   # here restores reproducibility and ships exactly what was intended.
   rm -rf ../sysroot/var/cache/fontconfig
-  /sbin/mke2fs -q -t ext4 -d ../sysroot \
-    -U 00000000-0000-4000-8000-000000000001 \
-    -E hash_seed=00000000-0000-4000-8000-000000000002 \
-    -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
-    -m 0 -b 4096 "$1" "${SZ}M"
+  # IN THE BOX, BY THE SYSTEM ITSELF (tools/mkimage-in-box.sh): a sorted
+  # uid-0 tar of the system feeds its own mke2fs, so neither the host's
+  # readdir order, nor the host's uid, nor the host's e2fsprogs reaches the
+  # image. Two CI runs published two images from identical files before
+  # this (2026-08-27). The mkfs flags and the normaliser (run inside) are
+  # unchanged; the normaliser call that followed here is now part of it.
+  sh "$ROOT/tools/mkimage-in-box.sh" ../sysroot "$1" "$SZ"
   # DECLARED TRANSFORMATION, not a silent fixup: rewrites the three
   # superblock timestamps and every inode's times, with debugfs so
   # the checksums are recomputed rather than left wrong.
-  python3 ../tools/normalize-ext4.py "$1"
 }
 build_img rootfs.img
 sha256sum rootfs.img | tee IMAGE-SHA256
@@ -1856,12 +1875,13 @@ build_img() {
   # dejavu-fonts recipe), not shipped in the image, so clearing it
   # here restores reproducibility and ships exactly what was intended.
   rm -rf ../sysroot/var/cache/fontconfig
-  /sbin/mke2fs -q -t ext4 -d ../sysroot \
-    -U 00000000-0000-4000-8000-000000000001 \
-    -E hash_seed=00000000-0000-4000-8000-000000000002 \
-    -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
-    -m 0 -b 4096 "$1" "${SZ}M"
-  python3 ../tools/normalize-ext4.py "$1"
+  # IN THE BOX, BY THE SYSTEM ITSELF (tools/mkimage-in-box.sh): a sorted
+  # uid-0 tar of the system feeds its own mke2fs, so neither the host's
+  # readdir order, nor the host's uid, nor the host's e2fsprogs reaches the
+  # image. Two CI runs published two images from identical files before
+  # this (2026-08-27). The mkfs flags and the normaliser (run inside) are
+  # unchanged; the normaliser call that followed here is now part of it.
+  sh "$ROOT/tools/mkimage-in-box.sh" ../sysroot "$1" "$SZ"
 }
 # KEEP THE FULL IMAGE. Everything above -- the guest tests, the
 # desktop screenshot, the two-instance DHCP run -- was measured
