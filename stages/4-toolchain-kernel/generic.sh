@@ -196,27 +196,22 @@ phase_build() {
   box "{ make ARCH=x86_64 INSTALL_MOD_PATH=/build/staging DEPMOD=true modules_install; echo \$? > /build/modinstall.rc; } 2>&1 | tee /build/modinstall.log; exit \$(cat /build/modinstall.rc)" \
     || { echo "FAIL: modules_install failed -- the log streamed above"; exit 1; }
   krel=$(ls $G/build/staging/lib/modules)
-  # depmod: the host's kmod where it exists (runners), busybox's applet
-  # otherwise (the image). Both write the modules.dep the initramfs reads.
-  # depmod: the host's kmod where it exists (runners). The image's busybox is
-  # modprobe-small, whose depmod ignores -b and reads only /lib/modules -- so
-  # there it runs in a bwrap with the staging tree bound AT /lib/modules
-  # (run 2026-08-26 on the laptop: "can't change directory to '/lib/modules'").
-  # modprobe-small writes its own modules.dep.bb beside modules.dep; the
-  # kernel and the .ko bytes are unaffected either way.
-  if [ -x /usr/sbin/depmod ]; then
-    /usr/sbin/depmod -b "$G/build/staging" -F "$G/build/System.map" -e "$krel"; echo "  depmod: host kmod"
-  else
-    # a read-only root has no /lib/modules to bind onto: give the box a tmpfs
-    # /lib (busybox is static; it needs nothing under the real one) and bind
-    # the staging tree inside it
-    bwrap --unshare-all --die-with-parent --ro-bind / / --dev /dev --proc /proc \
-      --tmpfs /lib --bind "$G/build/staging/lib/modules" /lib/modules \
-      --bind "$G/build" "$G/build" \
-      /bin/busybox depmod -F "$G/build/System.map" "$krel" && echo "  depmod: busybox (modprobe-small), staging bound at /lib/modules"
-  fi
-  [ -s "$G/build/staging/lib/modules/$krel/modules.dep" ] || [ -s "$G/build/staging/lib/modules/$krel/modules.dep.bb" ] \
-    || echo "  no modules.dep written -- module dependency file absent here; the modules themselves are complete"
+  # depmod IN THE BOX, WITH THE SYSROOT'S BUSYBOX, ON EVERY HOST. The first
+  # version preferred a host kmod when it found one: a runner then shipped
+  # kmod's ten modules.* index files and a laptop shipped busybox's
+  # modules.dep.bb, with all 182 .ko byte-identical (tools/diag/modules-diff,
+  # 2026-08-27) -- a host tool deciding published content. The image runs
+  # busybox modprobe-small and reads modules.dep.bb; that is the index to
+  # ship, written by the same busybox on both sides. modprobe-small's
+  # depmod reads only /lib/modules, so the staging tree is bound there.
+  bwrap --unshare-all --die-with-parent \
+    --bind "$G/lfs" / --bind "$G/build" /build --bind "$G/build/staging/lib/modules" /lib/modules \
+    --proc /proc --dev /dev --tmpfs /tmp \
+    --setenv PATH /usr/bin:/usr/sbin --setenv TZ UTC --setenv LC_ALL C \
+    /usr/bin/busybox depmod -F /build/System.map "$krel"
+  echo "  depmod: the sysroot's busybox (modprobe-small), in the box"
+  [ -s "$G/build/staging/lib/modules/$krel/modules.dep.bb" ] \
+    || { echo "FAIL: depmod wrote no modules.dep.bb"; exit 1; }
   echo "depmod: $(ls $G/build/staging/lib/modules/$krel/modules.dep* 2>/dev/null | head -1) for $krel"
   ls -la $G/build/arch/x86/boot/bzImage
   echo "modules: $(find $G/build/staging/lib/modules -name '*.ko' | wc -l)"
