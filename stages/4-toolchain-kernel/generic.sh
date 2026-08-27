@@ -204,12 +204,24 @@ phase_build() {
   # busybox modprobe-small and reads modules.dep.bb; that is the index to
   # ship, written by the same busybox on both sides. modprobe-small's
   # depmod reads only /lib/modules, so the staging tree is bound there.
+  # ...AND IN A DIRECTORY WHOSE ORDER WE CHOSE. modprobe-small's depmod
+  # writes modules.dep.bb in the order it finds modules: readdir order,
+  # which on ext4 follows a per-volume hash seed -- a laptop and a runner
+  # produced different index files from identical .ko sets (2026-08-27).
+  # So the tree is copied into a tmpfs, in sorted order, and depmod runs
+  # on that; tmpfs lists entries in creation order, the same on every host.
   bwrap --unshare-all --die-with-parent \
-    --bind "$G/lfs" / --bind "$G/build" /build --bind "$G/build/staging/lib/modules" /lib/modules \
+    --bind "$G/lfs" / --bind "$G/build" /build --tmpfs /lib/modules \
     --proc /proc --dev /dev --tmpfs /tmp \
     --setenv PATH /usr/bin:/usr/sbin --setenv TZ UTC --setenv LC_ALL C \
-    /usr/bin/busybox depmod -F /build/System.map "$krel"
-  echo "  depmod: the sysroot's busybox (modprobe-small), in the box"
+    /usr/bin/sh -c '
+      set -e; cd /build/staging/lib/modules
+      find . | LC_ALL=C sort | while read -r p; do
+        if [ -d "$p" ] && [ ! -L "$p" ]; then mkdir -p "/lib/modules/$p"; else cp -a "$p" "/lib/modules/$p"; fi
+      done
+      /usr/bin/busybox depmod -F /build/System.map "'"$krel"'"
+      cp /lib/modules/'"$krel"'/modules.dep.bb "/build/staging/lib/modules/'"$krel"'/modules.dep.bb"'
+  echo "  depmod: the sysroot's busybox (modprobe-small), in the box, over a sorted tmpfs copy"
   [ -s "$G/build/staging/lib/modules/$krel/modules.dep.bb" ] \
     || { echo "FAIL: depmod wrote no modules.dep.bb"; exit 1; }
   echo "depmod: $(ls $G/build/staging/lib/modules/$krel/modules.dep* 2>/dev/null | head -1) for $krel"
