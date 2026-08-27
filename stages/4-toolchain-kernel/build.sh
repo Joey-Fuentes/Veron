@@ -725,7 +725,7 @@ phase_chain() {
     --hostname veron \
     --setenv PATH /bin \
     --setenv HOME /work \
-    --setenv LC_ALL POSIX \
+    --setenv LC_ALL POSIX --setenv TZ UTC \
     --setenv TERM dumb \
     --setenv SOURCE_DATE_EPOCH 0 \
     --setenv LD_LIBRARY_PATH /lib \
@@ -793,7 +793,7 @@ phase_chain() {
     --clearenv \
     --setenv PATH /usr/bin:/usr/sbin \
     --setenv HOME /build \
-    --setenv LC_ALL POSIX \
+    --setenv LC_ALL POSIX --setenv TZ UTC \
     --setenv TERM dumb \
     --setenv SOURCE_DATE_EPOCH 0 \
     --setenv ARM reference \

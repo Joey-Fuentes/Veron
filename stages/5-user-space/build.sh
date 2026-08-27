@@ -728,7 +728,7 @@ cd "$ROOT"
 cd spikes/stage5
 bwrap --unshare-all --die-with-parent \
   --bind sysroot / --proc /proc --dev /dev --tmpfs /tmp \
-  --setenv PATH /usr/bin:/usr/sbin --setenv LC_ALL C \
+  --setenv PATH /usr/bin:/usr/sbin --setenv LC_ALL C --setenv TZ UTC \
   --chdir / /usr/bin/veron-stage5-test
 }
 

@@ -86,7 +86,7 @@ phase_in() {
   bwrap --unshare-all --die-with-parent \
     --bind "$G/lfs" / --proc /proc --dev /dev \
     --tmpfs /tmp --tmpfs /run \
-    --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp \
+    --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp --setenv TZ UTC --setenv LC_ALL C \
     /usr/bin/sh -c 'echo "  canary: the box opens; sh is $(command -v sh)"' \
     || { echo "FAIL: bwrap cannot open the box -- its own message is above"; exit 1; }
   fail=0
@@ -94,7 +94,7 @@ phase_in() {
     if bwrap --unshare-all --die-with-parent \
          --bind "$G/lfs" / --proc /proc --dev /dev \
          --tmpfs /tmp --tmpfs /run \
-         --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp \
+         --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp --setenv TZ UTC --setenv LC_ALL C \
          /usr/bin/sh -c "command -v $t" >/dev/null 2>&1; then
       echo "  ok      $t"
     else
@@ -110,7 +110,7 @@ phase_config() {
   box() { bwrap --unshare-all --die-with-parent \
           --bind "$G/lfs" / --bind "$G/build" /build \
           --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
-          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp \
+          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp --setenv TZ UTC --setenv LC_ALL C \
           --chdir /build \
           /usr/bin/sh -c "$*"; }
   cp stages/4-toolchain-kernel/generic/veron-generic.fragment $G/build/
@@ -134,7 +134,7 @@ phase_build() {
   box() { bwrap --unshare-all --die-with-parent \
           --bind "$G/lfs" / --bind "$G/build" /build \
           --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
-          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp \
+          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp --setenv TZ UTC --setenv LC_ALL C \
           --setenv KBUILD_BUILD_TIMESTAMP "$KBUILD_TS" \
           --setenv KBUILD_BUILD_USER veron \
           --setenv KBUILD_BUILD_HOST veron \
@@ -144,7 +144,13 @@ phase_build() {
   # mtime is whatever the download gave it, which is not a constant across
   # hosts. Pinned to the epoch instead: reproducible everywhere, and the
   # kernel's own banner already names the toolchain.
-  KBUILD_TS="1970-01-01"
+  # THE ZONE IS PART OF THE TIMESTAMP. "1970-01-01" alone is local midnight
+  # to gen_initramfs's `date -d`: 00:00 UTC on a runner, 05:00 UTC on a
+  # laptop in the eastern US -- and that mtime lands in the cpio headers of
+  # the kernel's built-in initramfs (laptop ddfd1d91... vs CI 8c816b21...,
+  # 2026-08-27, every other byte identical). Spelled out, and the boxes
+  # run with TZ=UTC besides.
+  KBUILD_TS="1970-01-01 00:00:00 UTC"
   export KBUILD_TS
   # AGENTS.md invariant 9: NEVER TRUNCATE LOGS IN CI. The build
   # streams live -- the output is the heartbeat -- AND tees to
@@ -339,7 +345,7 @@ phase_loader() {
           --bind "$G/lfs" / --bind "$G/build" /build \
           --ro-bind "$ROOT/spikes/stage6/boot" /boot-src \
           --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
-          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp \
+          --setenv PATH /usr/bin:/usr/sbin --setenv HOME /tmp --setenv TMPDIR /tmp --setenv TZ UTC --setenv LC_ALL C \
           --chdir /build \
           /usr/bin/sh -c "$*"; }
   box "cc -ffreestanding -fno-stack-protector -fshort-wchar -mno-red-zone \
