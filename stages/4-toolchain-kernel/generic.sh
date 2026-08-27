@@ -144,13 +144,27 @@ phase_build() {
   # mtime is whatever the download gave it, which is not a constant across
   # hosts. Pinned to the epoch instead: reproducible everywhere, and the
   # kernel's own banner already names the toolchain.
-  # THE ZONE IS PART OF THE TIMESTAMP. "1970-01-01" alone is local midnight
-  # to gen_initramfs's `date -d`: 00:00 UTC on a runner, 05:00 UTC on a
-  # laptop in the eastern US -- and that mtime lands in the cpio headers of
-  # the kernel's built-in initramfs (laptop ddfd1d91... vs CI 8c816b21...,
-  # 2026-08-27, every other byte identical). Spelled out, and the boxes
-  # run with TZ=UTC besides.
-  KBUILD_TS="1970-01-01 00:00:00 UTC"
+  # THE TIMESTAMP MUST PARSE TO 0 IN THE BOX'S OWN date, AND THE BOX SAYS
+  # WHICH FORM DID. gen_initramfs turns KBUILD_BUILD_TIMESTAMP into the
+  # built-in initramfs's cpio mtimes with `date -d`; the box's date is the
+  # sysroot's busybox. Two lessons, both paid for in 2026-08-27 kernels:
+  #   "1970-01-01"                  parses, as LOCAL midnight -- the host's
+  #                                 timezone in the image (laptop ddfd1d91
+  #                                 vs CI 8c816b21, 5 hours apart)
+  #   "1970-01-01 00:00:00 UTC"     does not parse in busybox date; the
+  #                                 fallback is the wall clock, so three CI
+  #                                 runs gave three kernels (e270c142,
+  #                                 f6af6578, ed282f7d)
+  # Stage 4's B6 already probes for a form that parses to 0 and refuses to
+  # continue otherwise; this is that probe, with TZ=UTC set in the box so
+  # a zone-less form means UTC everywhere. Same sysroot -> same busybox ->
+  # same chosen form on every host, so the banner is the same string too.
+  KBUILD_TS=""
+  for _f in "1970-01-01 00:00:00 UTC" "1970-01-01 00:00:00" "@0"; do
+    if [ "$(KBUILD_TS="$_f" box "date -d '$_f' +%s 2>/dev/null")" = 0 ]; then KBUILD_TS="$_f"; break; fi
+  done
+  [ -n "$KBUILD_TS" ] || { echo "FAIL: no timestamp form parses to 0 in the box's date -- the built-in initramfs would carry the clock"; exit 1; }
+  echo "  KBUILD_BUILD_TIMESTAMP='$KBUILD_TS' parses to 0 in the box (TZ=UTC): built-in initramfs mtimes are 0"
   export KBUILD_TS
   # AGENTS.md invariant 9: NEVER TRUNCATE LOGS IN CI. The build
   # streams live -- the output is the heartbeat -- AND tees to
