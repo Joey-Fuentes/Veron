@@ -41,3 +41,12 @@ when a local stage-4 run made one, else `4/latest-x86_64` (attested).
 Scratch is `box4g/`, outputs `out/4-generic/rel`. The squashfs gate needs
 `mksquashfs` (CI has it; the image does not, and says so); the EFI gate uses
 the host's OVMF (`/usr/share/qemu/OVMF.fd` on the image).
+
+## Diagnostics (`tools/diag/`)
+
+    sh tools/diag/kernel-diff.sh    # this checkout's generic kernel vs the published one: digests, ELF extraction, strings diff
+
+For the case where the kernel differs between two hosts on the same
+commit; the output names the input that differed, or says it is code
+layout. `extract-vmlinux.py` is the kernel's `scripts/extract-vmlinux`
+without its GNU-grep and mktemp assumptions, so it runs on the image.
