@@ -17,32 +17,48 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/.." && pwd)"
 SYS="$1"; OUT="$2"; shift 2
 Z=""
-for c in "${VERON_TOOLS:-/nonexistent}/zstd" "$ROOT/veron-tools/zstd" /usr/bin/zstd; do [ -x "$c" ] && { Z="$c"; break; }; done
+ZPROV=""
+for c in "${VERON_TOOLS:-/nonexistent}/zstd" "$ROOT/veron-tools/zstd" /usr/bin/zstd; do
+  [ -x "$c" ] || continue; Z="$c"
+  case "$c" in "$ROOT/veron-tools/"*) ZPROV="veron-tools bundle";; /usr/bin/*) ZPROV="system";; *) ZPROV="VERON_TOOLS";; esac; break
+done
 [ -n "$Z" ] || { echo "pack-in-box: no zstd (VERON_TOOLS, veron-tools/, /usr/bin)"; exit 1; }
 ZD="$(mktemp -d "$ROOT/box-pack.XXXXXX")"; cp "$Z" "$ZD/zstd"; chmod 755 "$ZD/zstd"
 OUTDIR="$(cd "$(dirname "$OUT")" && pwd)"; OUTNAME="$(basename "$OUT")"
 # THE ROOT IS READ-ONLY, so every mountpoint lives under the /tmp tmpfs:
 # /tmp/v/in/N (inputs; a -f file keeps its basename, which pack.py uses as
-# the member name), /tmp/v/out, /tmp/v/rec, /tmp/v/tools/zstd, /tmp/v/pack.py.
-opts=""; ins=""; binds=""; n=0; recbind=""; recopt=""; files=0
+# the member name), /tmp/v/out, /tmp/v/pack.py.
+#
+# TAR IN THE BOX, ZSTD ON THE HOST. The tar is what must be ours (python's
+# tarfile on the sysroot's python: same bytes on every host). The zstd runs
+# outside the box because a dynamically linked one -- apt's, on a runner
+# without the bundle -- cannot exec inside a box rooted at our sysroot
+# (CI, 2026-08-27: "No such file or directory: /tmp/v/tools/zstd", the
+# loader, not the file). Which zstd it was is recorded either way.
+opts=""; ins=""; binds=""; n=0; files=0; level=19; record=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    -l) opts="$opts -l $2"; shift 2 ;;
+    -l) level="$2"; shift 2 ;;
     -f) opts="$opts -f"; files=1; shift ;;
-    --record) r="$(readlink -f "$2" 2>/dev/null || printf '%s' "$2")"; mkdir -p "$(dirname "$r")"; touch "$r"
-              recbind="--bind $(dirname "$r") /tmp/v/rec"; recopt="--record /tmp/v/rec/$(basename "$r")"; shift 2 ;;
+    --record) record="$(readlink -f "$2" 2>/dev/null || printf '%s' "$2")"; shift 2 ;;
     *) n=$((n+1)); p="$(readlink -f "$1")"
        if [ "$files" = 1 ]; then b="/tmp/v/in/$n/$(basename "$p")"; else b="/tmp/v/in/$n"; fi
        binds="$binds --ro-bind $p $b"; ins="$ins $b"; shift ;;
   esac
 done
+TARNAME="${OUTNAME%.zst}"
 # shellcheck disable=SC2086
 if ! bwrap --unshare-all --die-with-parent \
-  --ro-bind "$SYS" / --proc /proc --dev /dev --tmpfs /tmp --dir /tmp/v --dir /tmp/v/in --dir /tmp/v/out \
-  --ro-bind "$ROOT/tools/pack.py" /tmp/v/pack.py --ro-bind "$ZD" /tmp/v/tools \
-  --bind "$OUTDIR" /tmp/v/out $recbind $binds \
-  --setenv PATH /usr/bin:/usr/sbin --setenv TZ UTC --setenv LC_ALL C --setenv VERON_TOOLS /tmp/v/tools \
-  /usr/bin/python3 /tmp/v/pack.py $opts $recopt "/tmp/v/out/$OUTNAME" $ins; then
-  rm -rf "$ZD"; echo "pack-in-box: failed"; exit 1
+  --ro-bind "$SYS" / --proc /proc --dev /dev --tmpfs /tmp --dir /tmp/v --dir /tmp/v/in \
+  --ro-bind "$ROOT/tools/pack.py" /tmp/v/pack.py \
+  --bind "$OUTDIR" /tmp/v/out $binds \
+  --setenv PATH /usr/bin:/usr/sbin --setenv TZ UTC --setenv LC_ALL C \
+  /usr/bin/python3 /tmp/v/pack.py --tar-only $opts "/tmp/v/out/$TARNAME" $ins > "$ZD/tar.line"; then
+  rm -rf "$ZD"; echo "pack-in-box: tar failed"; exit 1
 fi
+"$ZD/zstd" -"$level" -T1 -q --no-progress -f -o "$OUTDIR/$OUTNAME" "$OUTDIR/$TARNAME" || { rm -rf "$ZD"; echo "pack-in-box: zstd failed"; exit 1; }
+rm -f "$OUTDIR/$TARNAME"
+tsha=$(cut -d' ' -f2 "$ZD/tar.line"); zsha=$(sha256sum "$ZD/zstd" | cut -d' ' -f1); osha=$(sha256sum "$OUTDIR/$OUTNAME" | cut -d' ' -f1)
+line="packed-by  tar $tsha  zstd-binary $zsha ($ZPROV, level $level, -T1)  archive $osha  $OUTNAME"
+echo "$line"; [ -n "$record" ] && { mkdir -p "$(dirname "$record")"; echo "$line" >> "$record"; }
 rm -rf "$ZD"

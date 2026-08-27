@@ -44,7 +44,7 @@ def add_tree(tf, root, arcroot):
             tf.addfile(ti)
 
 def main(argv):
-    level, record, files = 19, None, False
+    level, record, files, tar_only = 19, None, False, False
     args = []
     i = 0
     while i < len(argv):
@@ -52,6 +52,7 @@ def main(argv):
         if a == '-l': level = int(argv[i + 1]); i += 2; continue
         if a == '--record': record = argv[i + 1]; i += 2; continue
         if a == '-f': files = True; i += 1; continue
+        if a == '--tar-only': tar_only = True; i += 1; continue
         args.append(a); i += 1
     out, inputs = args[0], args[1:]
     buf = io.BytesIO()
@@ -65,6 +66,14 @@ def main(argv):
             for d in inputs:
                 add_tree(tf, d, '')
     tar_bytes = buf.getvalue()
+    if tar_only:
+        # the tar alone, uncompressed: the caller compresses it OUTSIDE this
+        # process (pack-in-box.sh does, on the host, with whichever zstd it
+        # found and records) -- a dynamic zstd cannot run inside a box
+        # rooted at a different libc
+        open(out, 'wb').write(tar_bytes)
+        print(f'tar {hashlib.sha256(tar_bytes).hexdigest()}  {os.path.basename(out)}')
+        return
     zstd, prov = find_zstd()
     r = subprocess.run([zstd, f'-{level}', '-T1', '-q', '--no-progress', '-o', out, '-f'], input=tar_bytes, check=True)
     zsha = hashlib.sha256(open(zstd, 'rb').read()).hexdigest()
