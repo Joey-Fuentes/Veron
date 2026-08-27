@@ -1777,6 +1777,16 @@ def cmd_build(a):
                     print(f"== {name} {p['recipe']['version']}  RESTORED "
                           f"({n} paths staged, not rebuilt)")
                 continue
+        # A PACKAGE ABOUT TO BE BUILT STARTS FROM AN EMPTY dest/. With
+        # --resume, dest/ survives --clean so restorable packages can be
+        # kept -- but a package that is NOT restored (no marker, a changed
+        # recipe key, a rejected listing) may still have its old DESTDIR
+        # sitting there, and its install then lands on top of it: unifdef's
+        # `ln -s` met its own previous symlink, "File exists" (laptop,
+        # 2026-08-27, first resume across a recipe change). Cleared here,
+        # unconditionally, right before the first step runs.
+        if not a.dry_run:
+            shutil.rmtree(os.path.join(roots["dest"], name), ignore_errors=True)
         idx = plan.index(p) + 1
         src = p["recipe"]["source"]
         print(f"\n[{idx}/{len(plan)}] {name} {p['recipe']['version']}"
