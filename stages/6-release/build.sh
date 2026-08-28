@@ -177,6 +177,10 @@ boot)
     chmod +x "$S6/bin/qemu-system-x86_64"; Q="$S6/bin/qemu-system-x86_64"; budget qemu "$S6/rootfs/usr/bin/qemu-system-x86_64"
   else budget qemu "$Q"; fi
   OVMF="$S6/rootfs/usr/share/qemu/OVMF.fd"; budget OVMF "$OVMF"
+  # -L: a static qemu still looks for its ROMs (kvmvapic, vgabios-*) in its
+  # compiled-in datadir, which exists only on a Veron host. The released
+  # system's /usr/share/qemu is that directory, on every host.
+  QL="$S6/rootfs/usr/share/qemu"
   ACCEL=""; [ -w /dev/kvm ] && ACCEL="-enable-kvm"
   before=$(sha256sum "$IMG" | cut -d' ' -f1); echo "  guard: image before boot = $before"
   mkdir -p "$S6/boot"
@@ -185,7 +189,7 @@ boot)
     else DRIVE="-drive format=raw,file=$IMG,snapshot=on"; fi
     log="$S6/boot/serial-$attach.log"; : > "$log"
     echo "=== boot attempt: $attach ==="
-    TMPDIR="$S6/tmp" timeout -k 30 300 "$Q" -machine q35 $ACCEL -cpu qemu64 -m 2048 -nographic -no-reboot -nic none \
+    TMPDIR="$S6/tmp" timeout -k 30 300 "$Q" -L "$QL" -machine q35 $ACCEL -cpu qemu64 -m 2048 -nographic -no-reboot -nic none \
       -bios "$OVMF" $DRIVE -serial "file:$log" > "$S6/boot/qemu-$attach.err" 2>&1 &
     qpid=$!
     for _i in $(seq 1 300); do
