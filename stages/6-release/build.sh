@@ -136,8 +136,14 @@ unpack)
   DBG=$(tool debugfs) || { echo "FAIL: no debugfs -- the stage-5 tools bundle carries one from the publish after 2026-08-27; on Veron it is /usr/sbin/debugfs"; exit 1; }
   budget debugfs "$DBG"
   rm -rf "$S6/rootfs"; mkdir -p "$S6/rootfs"
-  "$DBG" -R "rdump / $S6/rootfs" "$S6/in/rootfs/rootfs.img" >/dev/null 2>&1
-  [ -e "$S6/rootfs/etc/veron-release" ] || { echo "FAIL: rdump produced no tree"; exit 1; }
+  echo "  debugfs: $DBG ($("$DBG" -V 2>&1 | head -1))"
+  if ! "$DBG" -R "rdump / $S6/rootfs" "$S6/in/rootfs/rootfs.img" > "$S6/unpack.log" 2>&1; then
+    echo "  debugfs exited $? -- its output (tail):"; tail -20 "$S6/unpack.log" | sed 's/^/    /'
+    [ -e "$S6/rootfs/etc/veron-release" ] || { echo "FAIL: rdump produced no tree"; exit 1; }
+    echo "  (a tree exists despite the exit status; continuing, stated)"
+  fi
+  [ -e "$S6/rootfs/etc/veron-release" ] || { echo "FAIL: rdump produced no tree"; tail -20 "$S6/unpack.log" | sed 's/^/    /'; exit 1; }
+  grep -c -i -E 'error|permission|failed' "$S6/unpack.log" | sed 's/^/  rdump messages: /'  || true
   for t in usr/bin/python3 usr/sbin/mke2fs usr/sbin/debugfs usr/bin/make usr/bin/zstd usr/bin/busybox usr/share/qemu/OVMF.fd; do
     [ -e "$S6/rootfs/$t" ] || { echo "FAIL: the released system lacks $t, which this stage runs in the box"; exit 1; }
   done
