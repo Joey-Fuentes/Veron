@@ -1,0 +1,30 @@
+--- a/Source/JavaScriptCore/CMakeLists.txt
++++ b/Source/JavaScriptCore/CMakeLists.txt
+@@ -1717,6 +1717,27 @@
+ endif ()
+ 
+ WEBKIT_COMPUTE_SOURCES(JavaScriptCore)
++
++# Veron: JavaScriptCore's standalone JIT sources are the tree's other
++# memory monsters -- upstream itself marks them @no-unify in Sources.txt
++# because they are too large to bundle. A -j3 build on an 8 GiB machine
++# was OOM-killed on dfg/DFGSpeculativeJIT.cpp (2026-08-28) the moment
++# three of them were co-scheduled. Cap GCC's IR garbage collector on
++# upstream's own list of giants; the params do not change generated code
++# (GCC documents them as memory/time tuning only), so bytes are identical
++# everywhere and the compile-time cost is confined to these few files.
++if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
++    set_source_files_properties(
++        dfg/DFGSpeculativeJIT.cpp
++        dfg/DFGSpeculativeJIT32_64.cpp
++        dfg/DFGSpeculativeJIT64.cpp
++        ftl/FTLLowerDFGToB3.cpp
++        parser/Parser.cpp
++        wasm/WasmBBQJIT.cpp
++        wasm/WasmBBQJIT32_64.cpp
++        wasm/WasmBBQJIT64.cpp
++        PROPERTIES COMPILE_OPTIONS "--param=ggc-min-expand=10;--param=ggc-min-heapsize=32768")
++endif ()
+ WEBKIT_FRAMEWORK(JavaScriptCore)
+ 
+ target_precompile_headers(JavaScriptCore PRIVATE JavaScriptCorePrefix.h)

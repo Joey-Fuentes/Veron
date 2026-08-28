@@ -24,6 +24,11 @@ crosschecked_against = []
 # Debian/Igalia device for exactly this, ~40% peak reduction on record),
 # predicted worst is ~1.5-1.9 GiB.
 #
+# JavaScriptCore's standalone JIT giants (DFGSpeculativeJIT*, FTL, BBQ,
+# Parser -- upstream's own @no-unify list) are the same monster class and
+# killed the first -j3 run at object 1913; patch 0005 puts the identical
+# collector caps on exactly that list.
+#
 # 2000 = that prediction plus margin: an 8 GiB machine derives 3 jobs, a
 # 16 GiB runner 4 (capped by the recipe's -j4). CI pays the sparse tax
 # only on the bindings subset -- estimated +7-12% against the 150-190
