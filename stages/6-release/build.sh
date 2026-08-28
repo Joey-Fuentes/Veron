@@ -133,21 +133,19 @@ PY
 # =============================================================================
 unpack)
   echo "=== 6 unpack: the released system, as a tree ==="
-  DBG=$(tool debugfs) || { echo "FAIL: no debugfs -- the stage-5 tools bundle carries one from the publish after 2026-08-27; on Veron it is /usr/sbin/debugfs"; exit 1; }
-  budget debugfs "$DBG"
+  # tools/ext4-extract.py, python's standard library, verified against
+  # debugfs rdump on this project's own image layout. NOT debugfs: a static
+  # glibc debugfs dlopen()s the host's libc for NSS and aborts when that libc
+  # is not the one it was built with (the bundle's, on a runner, 2026-08-27:
+  # "rtld_static_init: guard_sym != NULL"). Reading a filesystem is a pure
+  # function of its bytes; this reads it the same way on every host.
+  budget python3-airlock "$(command -v python3 || true)"
   rm -rf "$S6/rootfs"; mkdir -p "$S6/rootfs"
-  echo "  debugfs: $DBG ($("$DBG" -V 2>&1 | head -1))"
-  if ! "$DBG" -R "rdump / $S6/rootfs" "$S6/in/rootfs/rootfs.img" > "$S6/unpack.log" 2>&1; then
-    echo "  debugfs exited $? -- its output (tail):"; tail -20 "$S6/unpack.log" | sed 's/^/    /'
-    [ -e "$S6/rootfs/etc/veron-release" ] || { echo "FAIL: rdump produced no tree"; exit 1; }
-    echo "  (a tree exists despite the exit status; continuing, stated)"
-  fi
-  [ -e "$S6/rootfs/etc/veron-release" ] || { echo "FAIL: rdump produced no tree"; tail -20 "$S6/unpack.log" | sed 's/^/    /'; exit 1; }
-  grep -c -i -E 'error|permission|failed' "$S6/unpack.log" | sed 's/^/  rdump messages: /'  || true
+  python3 tools/ext4-extract.py "$S6/in/rootfs/rootfs.img" "$S6/rootfs" | sed 's/^/  /'
+  [ -e "$S6/rootfs/etc/veron-release" ] || { echo "FAIL: extraction produced no tree"; exit 1; }
   for t in usr/bin/python3 usr/sbin/mke2fs usr/sbin/debugfs usr/bin/make usr/bin/zstd usr/bin/busybox usr/share/qemu/OVMF.fd; do
     [ -e "$S6/rootfs/$t" ] || { echo "FAIL: the released system lacks $t, which this stage runs in the box"; exit 1; }
   done
-  echo "  $(find "$S6/rootfs" -type f | wc -l) files; debugfs: $DBG"
   echo "VERON-6-UNPACK-OK"
   ;;
 # =============================================================================
