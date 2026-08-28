@@ -29,6 +29,16 @@ crosschecked_against = []
 # killed the first -j3 run at object 1913; patch 0005 puts the identical
 # collector caps on exactly that list.
 #
+# THE EVENING'S THREE FACTS, read off the machine instead of modeled:
+# MemTotal is 7251 MiB (iGPU carve-out; ~6.8 GiB available), the compiler
+# is GCC 15.2.0, and a THREE-file sparse bindings bundle led by
+# JSDOMWindow.cpp was killed at anon-rss 4.9 GiB WITH collector caps
+# already applied -- live IR, immune to GC tuning and to bundling. Patch
+# 0003 therefore compiles the binding bundles at -O1 (recorded there),
+# which attacks the live IR itself: ~1.2-1.8 GiB predicted peak, faster
+# compiles on every machine, a runtime cost confined to DOM-binding
+# crossings.
+#
 # 3000 -- RAISED FROM 2000 AFTER THE -j3 RUN'S KILL (2026-08-28, object
 # 7397): with the bindings sparse and JSC capped, the biggest remaining
 # unit is an ORDINARY WebCore unified bundle at an estimated 2.5-3.0 GiB,

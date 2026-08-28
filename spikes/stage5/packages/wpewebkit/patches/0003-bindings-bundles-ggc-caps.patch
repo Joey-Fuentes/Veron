@@ -1,0 +1,35 @@
+--- a/Source/WebCore/CMakeLists.txt
++++ b/Source/WebCore/CMakeLists.txt
+@@ -3058,6 +3058,32 @@
+ 
+ WEBKIT_COMPUTE_SOURCES(WebCore)
+ 
++# Veron: the unified bundles holding the generated JS-DOM bindings are the
++# build's memory monsters -- kernel logs on an 8 GiB machine recorded one
++# cc1plus at anon-rss 5.13 GiB (bundle 8, -O2, 2026-08-28) and 4.62 GiB
++# (-O3, 2026-08-26), always on a WebCore DerivedSources bundle. Cap GCC's
++# IR garbage collector on exactly those bundles: identified by CONTENT
++# (they #include "JS*.cpp"), not by their hash-numbered filenames, so the
++# match survives regeneration. Ordinary WebCore bundles and every other
++# framework keep upstream compile behavior; ggc params do not change the
++# generated code, only how much garbage cc1plus hoards while making it.
++# -O1 was added 2026-08-28 evening on direct evidence: a THREE-file sparse
++# bundle led by JSDOMWindow.cpp was killed at anon-rss 4.9 GiB WITH the
++# collector caps already applied -- that is live IR, not garbage, and the
++# only lever against live IR is the optimization level. Bindings are
++# forwarding glue; -O1 here trades some DOM-crossing microbenchmark speed
++# for roughly a two-thirds cut in peak, and compiles faster everywhere.
++if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND ENABLE_UNIFIED_BUILDS)
++    file(GLOB _veron_webcore_bundles ${WebCore_DERIVED_SOURCES_DIR}/unified-sources/UnifiedSource-*.c*)
++    foreach (_veron_bundle IN LISTS _veron_webcore_bundles)
++        file(READ ${_veron_bundle} _veron_bundle_text)
++        if (_veron_bundle_text MATCHES "#include \"JS")
++            set_source_files_properties(${_veron_bundle} PROPERTIES
++                COMPILE_OPTIONS "-O1;--param=ggc-min-expand=10;--param=ggc-min-heapsize=32768")
++        endif ()
++    endforeach ()
++endif ()
++
+ target_precompile_headers(WebCore PRIVATE WebCorePrefix.h)
+ 
+ list(APPEND WebCore_PRIVATE_FRAMEWORK_HEADERS
