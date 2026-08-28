@@ -1,0 +1,31 @@
+--- a/Source/WTF/Scripts/generate-unified-source-bundles.rb
++++ b/Source/WTF/Scripts/generate-unified-source-bundles.rb
+@@ -290,6 +290,18 @@
+     end
+ end
+ 
++# Veron: SPARSE bundling for WebCore's JS bindings. Every kernel OOM on an
++# 8 GiB build machine named a bundle of generated JS-DOM bindings (worst:
++# anon-rss 5.13 GiB at bundle 8, -O2) -- not because these bundles hold
++# more files, but because each generated JS*.cpp is individually enormous
++# and template-heavy. Bundling THOSE at 3 files per TU cuts the peak to
++# roughly the range ordinary bundles already occupy, while the other ~8000
++# translation units keep the upstream bundle size and upstream cost.
++# Scoped to WebCore so JavaScriptCore's many small JS*.cpp files are not
++# fragmented. This is the inverse of the script's dense-bundle feature,
++# which the CMake build never engages.
++VERON_SPARSE_BUNDLE_SIZE = 3
++
+ def BundlePrefixAndSizeForPath(path)
+     topLevelDirectory = TopLevelDirectoryForPath(path.dirname)
+     $denseBundleFilters.each { |filter|
+@@ -297,6 +309,9 @@
+             return filter, MAX_DENSE_BUNDLE_SIZE
+         end
+     }
++    if $sourceTreePath && $sourceTreePath.to_s.end_with?("WebCore") && path.basename.fnmatch("JS*")
++        return "#{topLevelDirectory}-veron-js-sparse", VERON_SPARSE_BUNDLE_SIZE
++    end
+     return topLevelDirectory, $maxBundleSize
+ end
+ 
