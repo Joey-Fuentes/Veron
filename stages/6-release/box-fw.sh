@@ -5,7 +5,9 @@
 #     box-fw.sh FWDL FWTREE      (paths as seen inside the box)
 #
 # What the workflow's FW step did on the runner with the runner's make, tar,
-# xz and zstd, done here with the system's own. Every compressed file is
+# xz and zstd, done here with the system's own -- and the tree itself laid
+# out from WHENCE by firmware-tree.py rather than by linux-firmware's
+# copy-firmware.sh, which needs GNU realpath flags busybox lacks. Every compressed file is
 # zstd -19 -T1 by the same binary the image ships, in sorted order.
 set -eu
 DL="$1"; TREE="$2"
@@ -14,10 +16,9 @@ lf=$(ls "$DL"/linux-firmware-*.tar.xz | head -1)
 [ -s "$lf" ] || { echo "box-fw: no linux-firmware tarball in $DL"; exit 1; }
 xz -dc "$lf" | tar -xf - -C "$DL"
 src=$(ls -d "$DL"/linux-firmware-*/ | head -1)
-make -C "$src" install DESTDIR="$DL/stage" FIRMWAREDIR=/ >/dev/null
-cp -a "$src"/WHENCE* "$DL/stage/"
-cp -a "$src"/LICEN* "$DL/stage/"
-cp -a "$src"/GPL* "$DL/stage/" 2>/dev/null || true
+# the tree from WHENCE, by firmware-tree.py: what `make install` does,
+# without copy-firmware.sh's GNU `realpath -m -s` (busybox has neither flag)
+python3 /tmp/stage/firmware-tree.py "$src" "$DL/stage"
 [ "$(find "$DL/stage" -maxdepth 2 \( -name 'LICEN*' -o -name 'GPL*' \) | wc -l)" -gt 10 ] \
   || { echo "box-fw: suspiciously few license files in the tree"; exit 1; }
 n=0

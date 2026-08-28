@@ -5,20 +5,52 @@
 #     prune-firmware.py MODULES-DIR FWTREE OUT
 #
 # modinfo is whichever is on PATH inside the box: the released system's own.
-import os, shutil, subprocess, sys
+import os, shutil, struct, sys
 mods, tree, out = sys.argv[1:4]
+
+def modinfo_firmware(path):
+    """The firmware= entries of a module's .modinfo section, read from the
+    ELF directly: no modinfo(8) -- busybox's answers only a fixed set of
+    fields (not firmware; the runner, 2026-08-27), kmod's is not in the
+    released system. A section is a pure function of the file's bytes."""
+    d = open(path, "rb").read()
+    if d[:4] != b"\x7fELF":
+        return []
+    is64 = d[4] == 2; le = d[5] == 1; E = "<" if le else ">"
+    if is64:
+        shoff, = struct.unpack_from(E + "Q", d, 0x28)
+        shentsize, shnum, shstrndx = struct.unpack_from(E + "HHH", d, 0x3A)
+    else:
+        shoff, = struct.unpack_from(E + "I", d, 0x20)
+        shentsize, shnum, shstrndx = struct.unpack_from(E + "HHH", d, 0x2E)
+    def sh(i):
+        o = shoff + i * shentsize
+        if is64:
+            name, typ, flags, addr, off, size = struct.unpack_from(E + "IIQQQQ", d, o)
+        else:
+            name, typ, flags, addr, off, size = struct.unpack_from(E + "IIIIII", d, o)
+        return name, off, size
+    _, stroff, strsize = sh(shstrndx)
+    strtab = d[stroff:stroff + strsize]
+    for i in range(shnum):
+        name, off, size = sh(i)
+        nm = strtab[name:strtab.index(b"\0", name)]
+        if nm == b".modinfo":
+            entries = d[off:off + size].split(b"\0")
+            return [e[9:].decode() for e in entries if e.startswith(b"firmware=")]
+    return []
+
 want = set()
+nmods = 0
 for dp, _, fs in sorted(os.walk(mods)):
     for f in sorted(fs):
         if ".ko" not in f:
             continue
-        r = subprocess.run(["modinfo", "-F", "firmware", os.path.join(dp, f)],
-                           capture_output=True, text=True)
-        want.update(x.strip() for x in r.stdout.splitlines() if x.strip())
-nmods = sum(1 for dp, _, fs in os.walk(mods) for f in fs if ".ko" in f)
+        nmods += 1
+        want.update(modinfo_firmware(os.path.join(dp, f)))
 if nmods and not want:
-    sys.exit(f"prune-firmware: {nmods} modules and modinfo named no firmware at all -- "
-             f"modinfo -F firmware is not answering here; refusing to prune the tree to nothing")
+    sys.exit(f"prune-firmware: {nmods} modules and none of their .modinfo sections names firmware -- "
+             f"that cannot be right for a generic kernel; refusing to prune the tree to nothing")
 def place(rel):
     src = os.path.join(tree, rel)
     for cand in (src, src + ".zst"):
