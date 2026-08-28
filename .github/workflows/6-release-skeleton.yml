@@ -6,44 +6,109 @@
 # box rooted at the released system itself (see build.sh); the airlock
 # installs bubblewrap and fetches the stage-5 tools bundle (debugfs, zstd,
 # qemu) so that nothing apt provides touches the image.
-name: 6-release-skeleton
+# NAMED 6-release, NOT 6-release-skeleton, AND THE NAME IS LOAD-BEARING.
+# 6-pages triggers on workflow_run matching this name: field; the round that
+# renamed it to match the filename silently severed pages from the release --
+# GitHub raises no error for a listener whose producer name does not exist.
+# The stages.tsv label "6-release" and the pages awk both assume this name.
+name: 6-release
 
 on:
+  # THE CHAIN: 5-user-space-amd64 -> 6-release -> 6-pages, each link a
+  # workflow_run on the previous link's completion -- the same pattern
+  # 4-toolchain-kernel-amd64 uses to follow 3-cross-amd64. Dispatch still
+  # works for reruns and for gate experiments.
+  workflow_run:
+    workflows: ['5-user-space-amd64']
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
+      # DEFAULTS ARE THE FULL CONSUMER RELEASE, THE SAME SHAPE AS THE
+      # AUTOMATIC CHAIN: publish, boot gate, maintenance gate. A bare
+      # dispatch used to be the opposite -- dry run, every gate off -- so
+      # the default button produced a release that proved nothing and
+      # published nothing, and the real release required four clicks in the
+      # right pattern. Weakening a run (dry_run on, a gate off) is now the
+      # deliberate act, not the accident.
+      # publish_site WAS REMOVED: nothing consumed inputs.publish_site --
+      # pages is its own workflow, triggered by this one's completion.
       dry_run:
         description: "dry_run -- build and verify everything, publish nothing."
-        type: boolean
-        default: true
-      publish_site:
-        description: "deploy the storefront to GitHub Pages."
         type: boolean
         default: false
       boot_gate:
         description: "boot the image under OVMF (ahci and usb) and require dinit. Publishing needs it."
         type: boolean
-        default: false
+        default: true
       maintenance_gate:
         description: "the user journey into maintenance mode, unmocked (apt qemu; a gate, not a byte-shaper)."
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write
   id-token: write
   attestations: write
   pages: write
+  # actions: write BECAUSE THE CHAIN GATE READS THE TRIGGERING RUN'S STEPS
+  # AND CANCELS ITSELF when that run banked instead of publishing. The
+  # restricted default token has NO actions scope otherwise, and the gh api
+  # call below would 403 with a message that names the wrong problem.
+  actions: write
 
 jobs:
   release:
+    # a workflow_run event arrives for failed upstream runs too; only a
+    # green 5-user-space-amd64 has published the payload this job consumes
+    # -- the same guard 4-toolchain-kernel-amd64 puts on 3-cross-amd64.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
+      # EFFECTIVE GATES, NOT RAW INPUTS. Under workflow_run every inputs.*
+      # is EMPTY -- defaults apply only to workflow_dispatch -- so the raw
+      # references would have read: dry_run false (publish!), boot_gate ''
+      # (gate skipped), and then PUBLISH's own refusal
+      # [ "$boot_gate" = "true" ] would fail the run: an automatic release
+      # that publishes without booting, stopped only by its last guard.
+      # An automatic release runs the FULL consumer journey: publish, boot
+      # gate, maintenance gate. A manual dispatch keeps its stated inputs.
+      DRY_RUN: ${{ github.event_name == 'workflow_run' && 'false' || (inputs.dry_run && 'true' || 'false') }}
+      BOOT_GATE: ${{ github.event_name == 'workflow_run' && 'true' || (inputs.boot_gate && 'true' || 'false') }}
+      MAINTENANCE_GATE: ${{ github.event_name == 'workflow_run' && 'true' || (inputs.maintenance_gate && 'true' || 'false') }}
     steps:
+      - name: 'CHAIN GATE -- follow only a 5-run that PUBLISHED, not one that banked a checkpoint'
+        if: ${{ github.event_name == 'workflow_run' }}
+        run: |
+          set -eu
+          rid=${{ github.event.workflow_run.id }}
+          # 5-user-space-amd64 completes GREEN for relay and stop_after
+          # rounds too -- "Publishes NOTHING: no image, no boot, no release"
+          # -- and relay re-dispatches until a round publishes, so firing a
+          # release per green completion would rebuild identical bytes once
+          # per relay hop. The discriminator is in the run itself: only a
+          # publishing round drives the step named 'Publish the image' to
+          # success. Cancelled, not failed: a banked round is the 5-leg
+          # working as designed, and a red X here would read as a stage-6
+          # regression that never happened.
+          concl=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs" --paginate \
+                    --jq '[.jobs[].steps[] | select(.name == "Publish the image") | .conclusion] | first')
+          echo "triggering run $rid -- 'Publish the image': ${concl:-absent}"
+          if [ "${concl:-absent}" != "success" ]; then
+            echo "that round banked or skipped -- no new stage-5 payload; cancelling this release."
+            gh run cancel "$GITHUB_RUN_ID"
+            sleep 300
+            echo "cancellation did not land in five minutes"; exit 1
+          fi
+
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.sha }}
+          # THE COMMIT THE 5-RUN BUILT, when one triggered this. Under
+          # workflow_run github.sha is merely the default branch's tip at
+          # event time, which can already be a later commit than the payload.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: KVM -- hardware virtualization when the runner has it
         run: |
@@ -66,10 +131,10 @@ jobs:
       - name: 6 IMAGE -- the A/B GPT image, in the box, twice, compared
         run: sh stages/6-release/build.sh image
       - name: 6 BOOT GATE -- the consumer path boots to init, ahci and usb, under the system's own OVMF
-        if: ${{ inputs.boot_gate }}
+        if: ${{ env.BOOT_GATE == 'true' }}
         run: sh stages/6-release/build.sh boot
       - name: EVIDENCE -- the boot serials, whole, always
-        if: ${{ always() && inputs.boot_gate }}
+        if: ${{ always() && env.BOOT_GATE == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: boot-serial
@@ -77,7 +142,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: MAINTENANCE GATE -- a person enters maintenance mode, and the stick becomes writable
-        if: ${{ inputs.maintenance_gate }}
+        if: ${{ env.MAINTENANCE_GATE == 'true' }}
         run: |
           set -eu
           # THE WHOLE JOURNEY, DRIVEN LIKE A PERSON DRIVES IT, NOTHING MOCKED:
@@ -111,7 +176,7 @@ jobs:
               --image "$img" --out out/maintenance-gate --mem 6144 --kvm auto 2>&1
           done
       - name: EVIDENCE -- the maintenance journey
-        if: ${{ always() && inputs.maintenance_gate }}
+        if: ${{ always() && env.MAINTENANCE_GATE == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: maintenance-gate
@@ -224,14 +289,14 @@ jobs:
           if-no-files-found: error
 
       - name: PUBLISH -- size-gate, immutable tag, moving latest
-        if: ${{ !inputs.dry_run }}
+        if: ${{ env.DRY_RUN != 'true' }}
         run: |
           set -eu
           # TWO STRUCTURAL REFUSALS BEFORE ANY BYTE UPLOADS: publishing
           # requires the boot gate to have run, and no .NOBOOT artifact
           # may ever reach a release -- the name exists so this line can
           # read it.
-          [ "${{ inputs.boot_gate }}" = "true" ] \
+          [ "$BOOT_GATE" = "true" ] \
             || { echo "publish without boot_gate is not a thing"; exit 1; }
           ! ls out/6/*.NOBOOT.img >/dev/null 2>&1 \
             || { echo "a .NOBOOT artifact cannot be published"; exit 1; }
@@ -296,7 +361,7 @@ jobs:
             out/6/*.img.zst out/6/SHA256SUMS out/6/PACKED-BY out/6/BUDGET out/evidence.tar.gz
 
       - name: ATTEST -- provenance for everything published
-        if: ${{ !inputs.dry_run }}
+        if: ${{ env.DRY_RUN != 'true' }}
         uses: actions/attest-build-provenance@v3
         with:
           subject-path: out/6/*.img.zst

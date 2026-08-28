@@ -8,6 +8,11 @@ name: 6-pages
 
 on:
   workflow_run:
+    # MATCHES THE name: FIELD OF THE PRODUCER, NOT ITS FILENAME. The release
+    # workflow (file: 6-release-skeleton.yml) is NAMED 6-release, restored
+    # after a rename to 6-release-skeleton silently severed this trigger --
+    # GitHub raises no error for listening to a name no workflow carries.
+    # If that name: field ever changes again, this list must change with it.
     workflows: ["6-release"]
     types: [completed]
 

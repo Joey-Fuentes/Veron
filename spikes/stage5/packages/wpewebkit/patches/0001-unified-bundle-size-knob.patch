@@ -1,0 +1,15 @@
+--- a/Source/cmake/WebKitMacros.cmake
++++ b/Source/cmake/WebKitMacros.cmake
+@@ -17,6 +17,12 @@
+     if (MSVC AND ${_framework} STREQUAL "WebCore" AND ${_framework}_LIBRARY_TYPE STREQUAL "STATIC")
+         list(APPEND gusb_args --max-bundle-size 16)
+     endif ()
++    # Veron: cap files per unified bundle so one cc1plus stays inside a stated
++    # memory budget. Upstream default is 8; -DWEBKIT_UNIFIED_BUNDLE_SIZE=N
++    # overrides it for every framework (WTF, JSC, WebCore, WebKit alike).
++    if (WEBKIT_UNIFIED_BUNDLE_SIZE)
++        list(APPEND gusb_args --max-bundle-size ${WEBKIT_UNIFIED_BUNDLE_SIZE})
++    endif ()
+ 
+     if (ENABLE_UNIFIED_BUILDS)
+         execute_process(COMMAND ${Ruby_EXECUTABLE} ${WTF_SCRIPTS_DIR}/generate-unified-source-bundles.rb

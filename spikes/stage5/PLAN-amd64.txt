@@ -6050,7 +6050,7 @@ package veron-pinentry 1.0
 package wpewebkit 2.52.5
   group        browser
   license      LGPL-2.1-or-later AND BSD-2-Clause
-  recipe-sha   1a1a6c4ea29253b6e4e40327658ad318dbbba715ef9864437d0fc1d8d5c89e4a
+  recipe-sha   1c40b4e6e1848cdf33e71cb2dd3c001d66c68e96238093c6bd5ebd9cf85f44b9
 
   source
     url        https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz
@@ -6064,13 +6064,18 @@ package wpewebkit 2.52.5
     runtime      bubblewrap, cairo, fontconfig, freetype, glib, glib-networking, gst-libav, gst-plugins-bad, gst-plugins-base, gst-plugins-good, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libseccomp, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, sqlite, wayland, zlib
     optional_off atk, avif, documentation, encrypted-media, gamepad, gstreamer-gl, introspection, journald-log, jpegxl, libbacktrace, media-stream, pdfjs, speech-synthesis, sysprof-capture, webdriver, woff2
 
+  patches (applied after unpack, in this order)
+    0001-unified-bundle-size-knob.patch
+    0002-generated-serializers-low-mem.patch
+
   commands (literal; this is exactly what runs)
     [01] unpack
          cwd  build/wpewebkit-2.52.5
          argv ["tar", "-xf", "dl/wpewebkit-2.52.5.tar.xz", "-C", "build/wpewebkit-2.52.5"]
     [02] configure
          cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DPORT=WPE", "-DENABLE_JOURNALD_LOG=OFF", "-DENABLE_INTROSPECTION=OFF", "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_GAMEPAD=OFF", "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_WEBDRIVER=OFF", "-DENABLE_MEDIA_STREAM=OFF", "-DENABLE_BUBBLEWRAP_SANDBOX=ON", "-DUSE_LIBHYPHEN=ON", "-DENABLE_PDFJS=OFF", "-DUSE_SYSTEM_MALLOC=ON", "-DENABLE_XSLT=OFF", "-DENABLE_WPE_PLATFORM=ON", "-DENABLE_WPE_LEGACY_API=OFF", "-DENABLE_WPE_PLATFORM_DRM=ON", "-DENABLE_WPE_PLATFORM_WAYLAND=ON", "-DENABLE_WPE_PLATFORM_HEADLESS=ON", "-DUSE_WOFF2=OFF", "-DUSE_LIBBACKTRACE=OFF", "-DUSE_SYSPROF_CAPTURE=OFF", "-DENABLE_MINIBROWSER=ON", "-DCMAKE_SKIP_INSTALL_RPATH=ON", "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy", "-DUSE_ATK=OFF", "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF", "-DUSE_GSTREAMER_GL=OFF"]
+         env  WEBKIT_NINJA_LINK_MAX=1
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DPORT=WPE", "-DENABLE_JOURNALD_LOG=OFF", "-DENABLE_INTROSPECTION=OFF", "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_GAMEPAD=OFF", "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_WEBDRIVER=OFF", "-DENABLE_MEDIA_STREAM=OFF", "-DENABLE_BUBBLEWRAP_SANDBOX=ON", "-DUSE_LIBHYPHEN=ON", "-DENABLE_PDFJS=OFF", "-DUSE_SYSTEM_MALLOC=ON", "-DENABLE_XSLT=OFF", "-DENABLE_WPE_PLATFORM=ON", "-DENABLE_WPE_LEGACY_API=OFF", "-DENABLE_WPE_PLATFORM_DRM=ON", "-DENABLE_WPE_PLATFORM_WAYLAND=ON", "-DENABLE_WPE_PLATFORM_HEADLESS=ON", "-DUSE_WOFF2=OFF", "-DUSE_LIBBACKTRACE=OFF", "-DUSE_SYSPROF_CAPTURE=OFF", "-DENABLE_MINIBROWSER=ON", "-DCMAKE_SKIP_INSTALL_RPATH=ON", "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy", "-DUSE_ATK=OFF", "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF", "-DUSE_GSTREAMER_GL=OFF", "-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG", "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG", "-DCMAKE_CXX_FLAGS=--param=ggc-min-expand=20 --param=ggc-min-heapsize=65536", "-DWEBKIT_UNIFIED_BUNDLE_SIZE=4"]
     [03] build
          cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
          argv ["ninja", "-C", "_b", "-j4"]

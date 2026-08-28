@@ -10,16 +10,28 @@ sha256    = "bcfc6c91db7659dcf24f6ff79ad27ac1eae1bc61dca0dbfee154706926740b3b"
 signature = "none -- wpewebkit.org publishes .asc signatures; not yet pinned here"
 crosschecked_against = []
 
-# WHAT ONE COMPILE JOB COSTS HERE, MEASURED. WebCore is built as unified
-# sources -- eight files concatenated per translation unit, at -O3 -- and
-# the kernel's OOM record for UnifiedSource-3a52ce78-41.cpp on a 7 GiB
-# laptop (2026-08-26) reads anon-rss:4730540kB: 4.5 GiB for one cc1plus,
-# with a second one at 1.5 GiB beside it. tools/veron sizes ninja -j from
-# RAM / this number (default 2500 MiB for ordinary C++): that laptop builds
-# WebKit one job at a time, a 16 GiB runner three. Scheduling only: the
-# bytes do not depend on the count.
+# WHAT ONE COMPILE JOB COSTS HERE, AND WHY THE NUMBER MOVED. The old value,
+# 4700, was measured on a build this recipe no longer describes: unified
+# sources at EIGHT files per translation unit at -O3 (UnifiedSource
+# -3a52ce78-41.cpp, anon-rss:4730540kB, 7 GiB laptop, 2026-08-26). Even that
+# number was not enough -- at -j1 the same laptop was OOM-killed anyway, by
+# GeneratedSerializers.cpp at anon-rss:6210700kB (2026-08-27), a single TU
+# larger than the whole job budget. Two changes shrink the unit of work
+# itself, so the per-job cost is a different quantity now:
+#
+#   -DWEBKIT_UNIFIED_BUNDLE_SIZE=4 (patch 0001) halves the code per bundle,
+#   and -O2 replaces cmake's Release default of -O3, with GCC's collector
+#   capped by --param ggc-min-expand/-heapsize. Estimated worst bundle:
+#   ~1.3-1.5 GiB. GeneratedSerializers.cpp itself is compiled at -O1 by
+#   patch 0002 and stops being the outlier.
+#
+# 1700 = that estimate plus margin. An 8 GiB machine reports ~6.8-7.8 GiB
+# physical -> 4 jobs; a 16 GiB runner -> 4 (capped by the recipe's -j4).
+# ESTIMATED, NOT YET MEASURED: the first -j4 run's kernel log is what turns
+# this into a measurement -- if it OOMs, raise this, do not lower -j in the
+# step. Scheduling only: the bytes do not depend on the count.
 [build]
-ram_per_job_mib = 4700
+ram_per_job_mib = 1700
 
 [deps]
 # EIGHTEEN find_package(... REQUIRED) IN OptionsWPE.cmake:12-27, plus the
@@ -68,7 +80,11 @@ configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", 
                    "-DCMAKE_SKIP_INSTALL_RPATH=ON",
                    "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy",
                    "-DUSE_ATK=OFF", "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF",
-                   "-DUSE_GSTREAMER_GL=OFF"]
+                   "-DUSE_GSTREAMER_GL=OFF",
+                   "-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG",
+                   "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG",
+                   "-DCMAKE_CXX_FLAGS=--param=ggc-min-expand=20 --param=ggc-min-heapsize=65536",
+                   "-DWEBKIT_UNIFIED_BUNDLE_SIZE=4"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["wpewebkit"]
 deferral        = """
@@ -260,6 +276,51 @@ run  = [["tar", "-xf", "$DL/wpewebkit-2.52.5.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "configure"
 cwd  = "$S"
+# THE MEMORY PLAN, IN FULL, BECAUSE -j1 WAS NOT ENOUGH. An 8 GiB laptop at
+# -j1 was OOM-killed 370 minutes in: cc1plus on GeneratedSerializers.cpp at
+# total-vm:6348256kB, anon-rss:6210700kB (kernel log, 2026-08-27). One
+# translation unit outgrew the machine, so no job count fixes it -- the unit
+# of work has to shrink. Four levers, all of them flags or patches, so CI and
+# the laptop build the same bytes:
+#
+#   -DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG (and _C_): cmake's Release
+#     default for GNU is -O3 -DNDEBUG; nothing in Source/cmake overrides it,
+#     so -O3 was an accident of the generator, not a decision. -O2 is what
+#     Fedora and Debian ship WebKit with; it cuts cc1plus peak RSS roughly a
+#     third on the largest units and compile time with it. -DNDEBUG is kept:
+#     dropping it would turn every ASSERT on and change far more than bytes.
+#
+#   -DCMAKE_CXX_FLAGS=--param=ggc-min-expand=20 --param=ggc-min-heapsize=65536:
+#     GCC's IR garbage collector defaults to hoarding on big-memory hosts --
+#     collections are skipped until the heap has grown by a machine-derived
+#     percentage, so peak RSS depends on the host's RAM. Pinning the two
+#     params makes the collector run on the same schedule everywhere: under
+#     64 MiB of GC heap nothing changes, above it growth past 20% triggers a
+#     pass. Small units never notice; the WebCore monsters trade a few
+#     percent of time for a bounded peak.
+#
+#   -DWEBKIT_UNIFIED_BUNDLE_SIZE=4 (needs patches/0001): upstream concatenates
+#     EIGHT .cpp files per unified translation unit -- that is what made one
+#     cc1plus want 4.5 GiB. Four per bundle halves the code per unit while
+#     staying a unified build, which upstream tests continuously (bundle size
+#     is already varied per-port: Windows uses 16). ENABLE_UNIFIED_BUILDS=OFF
+#     was considered and declined: it multiplies total compile time ~2.5x and
+#     upstream only keeps it building via a separate bot.
+#
+#   patches/0002 compiles GeneratedSerializers.cpp (and its two siblings) at
+#     -O1 with tight ggc caps. It is generated IPC marshalling glue -- every
+#     encoder/decoder in one file -- and is the file the kernel named. -O1
+#     there is a cost nobody will measure at runtime and ~5 GiB of peak RSS
+#     nobody pays at build time.
+#
+# WEBKIT_NINJA_LINK_MAX=1: read by WebKitCommon.cmake at configure time to
+# size ninja's link pool. The Release default is FOUR concurrent links;
+# libWPEWebKit-2.0.so is a 170 MB output whose single BFD link is the
+# largest non-compile consumer in the build. One link at a time, always --
+# this is the same job-pool mechanism tools/veron's scheduler note says
+# CMake users cannot inject from outside, reached through the knob WebKit
+# itself exposes for it.
+env  = { WEBKIT_NINJA_LINK_MAX = "1" }
 run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
          "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release",
          "-DPORT=WPE",
@@ -280,7 +341,11 @@ run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
                    "-DCMAKE_SKIP_INSTALL_RPATH=ON",
                    "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy",
                    "-DUSE_ATK=OFF", "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF",
-                   "-DUSE_GSTREAMER_GL=OFF"]]
+                   "-DUSE_GSTREAMER_GL=OFF",
+                   "-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG",
+                   "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG",
+                   "-DCMAKE_CXX_FLAGS=--param=ggc-min-expand=20 --param=ggc-min-heapsize=65536",
+                   "-DWEBKIT_UNIFIED_BUNDLE_SIZE=4"]]
 
 [[steps]]
 name = "build"

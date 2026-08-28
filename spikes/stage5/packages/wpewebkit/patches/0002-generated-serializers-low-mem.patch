@@ -1,0 +1,24 @@
+--- a/Source/WebKit/CMakeLists.txt
++++ b/Source/WebKit/CMakeLists.txt
+@@ -949,6 +949,21 @@
+     ${WebKit_DERIVED_SOURCES_DIR}/WebKitPlatformGeneratedSerializers.${WebKit_GENERATED_SERIALIZERS_SUFFIX}
+ )
+ 
++# Veron: GeneratedSerializers.cpp is one machine-written translation unit of
++# every IPC encoder/decoder in the tree. At the release optimization level a
++# single cc1plus on it was OOM-killed at anon-rss 6.2 GiB on an 8 GiB machine
++# (kernel log, 2026-08-27) -- the largest single consumer in the whole build.
++# It is mechanical marshalling glue, not hot code: compile these three files
++# at -O1 with the GCC garbage collector held on a short leash. Bytes change
++# only in these objects, identically on every host.
++if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
++    set_source_files_properties(
++        ${WebKit_DERIVED_SOURCES_DIR}/GeneratedSerializers.${WebKit_GENERATED_SERIALIZERS_SUFFIX}
++        ${WebKit_DERIVED_SOURCES_DIR}/SerializedTypeInfo.${WebKit_GENERATED_SERIALIZERS_SUFFIX}
++        ${WebKit_DERIVED_SOURCES_DIR}/WebKitPlatformGeneratedSerializers.${WebKit_GENERATED_SERIALIZERS_SUFFIX}
++        PROPERTIES COMPILE_OPTIONS "-O1;--param=ggc-min-expand=10;--param=ggc-min-heapsize=32768")
++endif ()
++
+ add_custom_command(
+     OUTPUT
+         ${WebKit_DERIVED_SOURCES_DIR}/GeneratedSerializers.h
