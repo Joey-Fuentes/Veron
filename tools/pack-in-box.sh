@@ -56,9 +56,9 @@ if ! bwrap --unshare-all --die-with-parent \
   /usr/bin/python3 /tmp/v/pack.py --tar-only $opts "/tmp/v/out/$TARNAME" $ins > "$ZD/tar.line"; then
   rm -rf "$ZD"; echo "pack-in-box: tar failed"; exit 1
 fi
-"$ZD/zstd" -"$level" -T1 -q --no-progress -f -o "$OUTDIR/$OUTNAME" "$OUTDIR/$TARNAME" || { rm -rf "$ZD"; echo "pack-in-box: zstd failed"; exit 1; }
+"$ZD/zstd" -"$level" -T0 -q --no-progress -f -o "$OUTDIR/$OUTNAME" "$OUTDIR/$TARNAME" || { rm -rf "$ZD"; echo "pack-in-box: zstd failed"; exit 1; }
 rm -f "$OUTDIR/$TARNAME"
 tsha=$(cut -d' ' -f2 "$ZD/tar.line"); zsha=$(sha256sum "$ZD/zstd" | cut -d' ' -f1); osha=$(sha256sum "$OUTDIR/$OUTNAME" | cut -d' ' -f1)
-line="packed-by  tar $tsha  zstd-binary $zsha ($ZPROV, level $level, -T1)  archive $osha  $OUTNAME"
+line="packed-by  tar $tsha  zstd-binary $zsha ($ZPROV, level $level, -T0)  archive $osha  $OUTNAME"
 echo "$line"; [ -n "$record" ] && { mkdir -p "$(dirname "$record")"; echo "$line" >> "$record"; }
 rm -rf "$ZD"

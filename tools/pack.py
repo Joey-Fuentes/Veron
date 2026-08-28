@@ -15,7 +15,7 @@
 #   - GNU format; uid/gid 0, no names; mtime 0; mode kept (executable bits
 #     matter), symlinks kept as symlinks
 #   - zstd: $VERON_TOOLS/zstd, then ./veron-tools/zstd (the bundle), then the
-#     system's; single thread, no checksum-bearing frame extras; the binary
+#     system's; all cores -- zstd documents its output as identical for any -T value; only --single-thread differs; the binary
 #     used is RECORDED by sha256 so a mismatch has a name
 # The record line goes to --record (appended), so a release's SHA256 file
 # can sit beside "packed-by zstd <sha256> <provenance>".
@@ -88,11 +88,11 @@ def main(argv):
         print(f'tar {tsha}  {os.path.basename(out)}')
         return
     zstd, prov = find_zstd()
-    subprocess.run([zstd, f'-{level}', '-T1', '-q', '--no-progress', '-f', '-o', out, tar_path], check=True)
+    subprocess.run([zstd, f'-{level}', '-T0', '-q', '--no-progress', '-f', '-o', out, tar_path], check=True)
     os.remove(tar_path)
     zsha = hashlib.sha256(open(zstd, 'rb').read()).hexdigest()
     osha = hashlib.sha256(open(out, 'rb').read()).hexdigest()
-    line = f'packed-by  tar {tsha}  zstd-binary {zsha} ({prov}, level {level}, -T1)  archive {osha}  {os.path.basename(out)}'
+    line = f'packed-by  tar {tsha}  zstd-binary {zsha} ({prov}, level {level}, -T0)  archive {osha}  {os.path.basename(out)}'
     print(line)
     if record:
         with open(record, 'a') as f: f.write(line + '\n')

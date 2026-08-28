@@ -218,9 +218,9 @@ pack)
   cp "$IMG" "$OUT6/$name"
   Z=$(tool zstd) || { echo "FAIL: no zstd (bundle or image)"; exit 1; }
   ZPROV="system"; case "$Z" in "$ROOT/veron-tools/"*) ZPROV="veron-tools bundle";; "${VERON_TOOLS:-/nonexistent}"*) ZPROV="VERON_TOOLS";; esac
-  "$Z" -19 -T1 -q --no-progress -f -o "$OUT6/$name.zst" "$OUT6/$name"
+  "$Z" -19 -T0 -q --no-progress -f -o "$OUT6/$name.zst" "$OUT6/$name"
   ( cd "$OUT6" && sha256sum "$name" "$name.zst" ) > "$OUT6/SHA256SUMS"
-  printf 'packed-by  image %s  zstd-binary %s (%s, level 19, -T1)  archive %s  %s\n' \
+  printf 'packed-by  image %s  zstd-binary %s (%s, level 19, -T0)  archive %s  %s\n' \
     "$(sha256sum "$IMG" | cut -d' ' -f1)" "$(sha256sum "$Z" | cut -d' ' -f1)" "$ZPROV" \
     "$(sha256sum "$OUT6/$name.zst" | cut -d' ' -f1)" "$name.zst" > "$OUT6/PACKED-BY"
   cp "$S6/BUDGET" "$OUT6/BUDGET"; cp -a "$S6/boot" "$OUT6/boot" 2>/dev/null || true
