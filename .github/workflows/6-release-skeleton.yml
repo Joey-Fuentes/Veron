@@ -1,34 +1,30 @@
-# 6-release -- SKELETON. The shape is real; the unbuilt steps say so and
-# exit loudly rather than pretending. Nothing publishes until dry_run is
-# turned off ON PURPOSE, which will not happen until every placeholder
-# below has become a real step. Committed now so the structure can be
-# reviewed against docs/STAGE6-RELEASE.md while stage 5 finishes its relay.
+# 6-release-skeleton -- stage 6, the consumer release, on a runner.
 #
-# ONE STAGE 6 FOR EVERY ARCHITECTURE. This workflow is arch-common by
-# ruling: it reads EVERY arch's current stage-5 and kernel releases,
-# builds consumer images for whichever arches have inputs, and regenerates
-# the ENTIRE site every run -- the storefront is a function of all current
-# releases, never of what just ran.
-
-name: 6-release
+# The stage lives in stages/6-release/build.sh, one phase per step below;
+# the workflow adds what only a runner can: the evidence chain, publish,
+# attestation, the maintenance gate. Every byte-shaping tool runs inside a
+# box rooted at the released system itself (see build.sh); the airlock
+# installs bubblewrap and fetches the stage-5 tools bundle (debugfs, zstd,
+# qemu) so that nothing apt provides touches the image.
+name: 6-release-skeleton
 
 on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'dry_run -- build and verify everything, publish nothing. Stays true until the skeleton is fully fleshed.'
+        description: "dry_run -- build and verify everything, publish nothing."
         type: boolean
         default: true
       publish_site:
-        description: 'deploy the storefront to GitHub Pages. The site is honest about what does not exist yet, so it may go live before the images do.'
+        description: "deploy the storefront to GitHub Pages."
         type: boolean
         default: false
       boot_gate:
-        description: 'boot every built image under OVMF and require dinit. Arm this once 4/kernel carries fragment v8 (EFI stub + baked cmdline); a passing gate is what retires the .NOBOOT name.'
+        description: "boot the image under OVMF (ahci and usb) and require dinit. Publishing needs it."
         type: boolean
         default: false
       maintenance_gate:
-        description: 'the user journey into maintenance mode, unmocked: boot the image as a USB stick to the desktop, open foot, run veron-flasher, click "Reflash this boot device...", let it reboot itself into RAM, open the flasher again and screenshot it listing the stick. Slow (two graphical boots, one RAM pivot); does not gate publishing yet.'
+        description: "the user journey into maintenance mode, unmocked (apt qemu; a gate, not a byte-shaper)."
         type: boolean
         default: false
 
@@ -41,507 +37,46 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
     env:
-      # The arch list is data, not structure: adding an arch is one word
-      # here once its stage-5 exists. Today x86_64 is the only populated
-      # input; the loop below simply finds nothing for the others and says
-      # so, which is the designed behavior, not a failure.
-      ARCHES: "x86_64 aarch64"
-      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
-
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v5
-        # PIN TO THE DISPATCH COMMIT, not the branch tip. On workflow_dispatch,
-        # checkout@v5 defaults to GITHUB_REF (the branch's current head), which
-        # drifts if main advances after the run starts -- so the job would build
-        # a different commit than GITHUB_SHA, which is what gets tagged and
-        # attested. (This pin was added in 77b82410 and dropped when the pages
-        # split rebuilt this file; restored here.)
         with:
           ref: ${{ github.sha }}
 
-      - name: 'KVM -- hardware virtualization when the runner has it; the CPU model stays qemu64 either way'
+      - name: KVM -- hardware virtualization when the runner has it
         run: |
-          # KVM is speed, not a different machine: every qemu below keeps -cpu
-          # qemu64 (the baseline the image is certified against) and adds
-          # -enable-kvm when /dev/kvm is present. The maintenance gate ran this
-          # way and boots took seconds instead of minutes. CPUID stays masked
-          # to qemu64, so a -march=native artifact still faults here as it would
-          # on the baseline -- which is the point. TCG is the fallback.
-          if [ -e /dev/kvm ]; then
-            sudo chmod 666 /dev/kvm
-            echo "VERON_ACCEL=-enable-kvm" >> "$GITHUB_ENV"
-            echo "kvm: on (-enable-kvm -cpu qemu64)"
-          else
-            echo "VERON_ACCEL=" >> "$GITHUB_ENV"
-            echo "kvm: absent -- TCG (-cpu qemu64)"
-          fi
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; echo "kvm: on"; else echo "kvm: absent -- TCG"; fi
 
-      - name: 'IN -- every arch''s current releases, digest- and attestation-verified'
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: AIRLOCK -- bubblewrap is the wall; the stage-5 tools bundle carries debugfs, zstd, qemu
         run: |
           set -eu
-          mkdir -p in
-          found=0
-          for arch in $ARCHES; do
-            if ! gh release download "5/latest-$arch" -R "$GITHUB_REPOSITORY" \
-                 -D "in/5-$arch" --clobber 2>/dev/null; then
-              echo "  $arch: no 5/latest-$arch release -- arch skipped (stated, not silent)"
-              continue
-            fi
-            # THE IMAGE DIGEST IS CHECKED BEFORE ANYTHING CONSUMES IT --
-            # the same refusal discipline every stage seam already has.
-            # IMAGE-SHA256 names the UNCOMPRESSED rootfs.img; the release
-            # ships rootfs.img.tar.zst -- so unpack, THEN check. The first
-            # dispatch failed here on exactly that (run 86974795496):
-            # "rootfs.img: No such file" -- the gate refusing an
-            # unverified input, which is correct, aimed at the wrong file,
-            # which is fixed.
-            ( cd "in/5-$arch"               && tar --zstd -xf rootfs.img.tar.zst               && sha256sum -c IMAGE-SHA256 )
-            # REPRODUCIBILITY INSTRUMENTATION: log the EXACT identity of every
-            # input this run pulled -- rootfs.img, its tarball, and IMAGE-SHA256
-            # -- so two runs are diffable. "rootfs.img: OK" only says the file
-            # matched ITS OWN downloaded IMAGE-SHA256; if 5/latest was
-            # republished between runs, both say OK while consuming different
-            # bytes. The sha here makes that visible instead of hidden.
-            python3 tools/manifest.py "rootfs.img ($arch)" "in/5-$arch/rootfs.img"
-            python3 tools/manifest.py "rootfs.img.tar.zst ($arch)" "in/5-$arch/rootfs.img.tar.zst"
-            python3 tools/manifest.py "IMAGE-SHA256 ($arch)" "in/5-$arch/IMAGE-SHA256"
-            # THE ATTESTATION IS CHECKED HERE TOO: stage 6 is the first
-            # consumer that exists to serve strangers, so it verifies what
-            # a stranger would verify, and refuses what they would refuse.
-            gh attestation verify "in/5-$arch/rootfs.img.tar.zst" \
-              -R "$GITHUB_REPOSITORY"
-            gh release download "4/kernel-$arch" -R "$GITHUB_REPOSITORY" \
-              -D "in/k-$arch" --clobber 2>/dev/null \
-              && ( cd "in/k-$arch" \
-                   && grep vmlinuz-generic KERNEL-GENERIC-SHA256 | sha256sum -c - ) \
-              || echo "  $arch: no 4/kernel-$arch -- generic kernel absent for this arch"
-            found=$((found + 1))
-          done
-          [ "$found" -gt 0 ] || { echo "no arch has a stage-5 release; nothing to do"; exit 1; }
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap >/dev/null
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          sh tools/fetch-tools.sh
 
-      - name: 'FW -- the pinned firmware tree, prepared for absorption'
-        env:
-          # python block-buffers stdout under Actions (no tty): without
-          # this, mirror.py's route lines sit invisible in the buffer while
-          # a 619 MB download grinds -- ten silent minutes, measured, run
-          # of 2026-08-18. Loud beats fast, and this step is now both.
-          PYTHONUNBUFFERED: "1"
-        run: |
-          set -eu
-          # THE FLASH SCRIPT'S JOB MOVES INTO THE ARTIFACT: firmware
-          # fetched through the mirror like every pinned source, prepared
-          # the way upstream ships it (dedup by its own install; per-file
-          # zstd the kernel decompresses at load), WHENCE and LICENCE.*
-          # beside the blobs. Unpinned entries skip OUT LOUD; unknown
-          # pinned names fail so new sources get deliberate handlers.
-          python3 - > fw-list.tsv <<'PY'
-          import tomllib
-          for src in tomllib.load(open("sources/firmware.toml", "rb"))["source"]:
-              if not src.get("sha256"):
-                  print("SKIP\t%s\tunpinned -- stated, not silent" % src["name"])
-                  continue
-              # Tarball pins carry a url and are named by it. GIT pins have
-              # url = "" -- their artifact is the tarball fetch-git.sh
-              # generated, named <name>-<version>.tar.gz, and the mirror
-              # row recorded at mint time is the route to it. The first
-              # version derived the name from the empty url and asked
-              # mirror.py to fetch a file called nothing (run of
-              # 2026-08-18 02:13Z).
-              if src.get("url"):
-                  fname, url = src["url"].rsplit("/", 1)[-1], src["url"]
-              elif src.get("git") and src.get("commit"):
-                  fname = "%s-%s.tar.gz" % (src["name"], src["version"])
-                  url = src["git"]
-              else:
-                  raise SystemExit("source %r has neither url nor git+commit" % src["name"])
-              print("FETCH\t%s\t%s\t%s\t%s" % (src["name"], src["sha256"], fname, url))
-          PY
-          cat fw-list.tsv
-          mkdir -p fw-dl fwtree
-          while IFS="$(printf '\t')" read -r verb name a b c; do
-            case "$verb" in
-              SKIP)  echo "  $name: $a" ;;
-              FETCH) echo "::group::fetch $name ($b)"
-                     date -u +"  start %H:%M:%SZ"
-                     # HARD CEILING: a route that trickles must fail loudly,
-                     # not eat the job. 8 minutes moves 619 MB at ~1.3 MB/s;
-                     # anything slower is a bad route, and mirror.py's next
-                     # route deserves the chance the ceiling creates.
-                     timeout 480 python3 tools/mirror.py fetch "$a" "$b" --url "$c" --dest fw-dl \
-                       || { echo "  fetch of $name timed out or failed."
-                            echo "  If the github route 404'd: the mirror lacks firmware --"
-                            echo "  run  sh tools/mirror-sources.sh  once (authed) and re-dispatch;"
-                            echo "  kernel.org at runner bandwidth cannot beat this ceiling."
-                            exit 1; }
-                     date -u +"  done  %H:%M:%SZ"
-                     echo "::endgroup::"
-                     case "$name" in
-                       linux-firmware|wireless-regdb|intel-ucode) : ;;
-                       *) echo "  $name is pinned but has no handler here -- add one deliberately"; exit 1 ;;
-                     esac ;;
-            esac
-          done < fw-list.tsv
-          echo "::group::prepare the tree"
-          date -u +"  extract %H:%M:%SZ"
-          tar -xf fw-dl/linux-firmware-*.tar.xz -C fw-dl
-          # PLAIN install (dedup + layout, no compression), then compress
-          # IN PARALLEL ourselves: install-zst runs zstd one file at a
-          # time -- thousands of files, one core, many silent minutes.
-          # xargs -P fans out; -T1 per file keeps every output byte
-          # deterministic regardless of core count, which the built-twice
-          # cmp downstream depends on.
-          make -C fw-dl/linux-firmware-*/ install DESTDIR="$PWD/fwstage" FIRMWAREDIR=/ >/dev/null
-          # copy-firmware.sh INSTALLS ONLY THE BLOBS -- WHENCE and the
-          # LICENCE/GPL texts live in the source root and never reach
-          # DESTDIR ("prepared tree lost WHENCE", run of 2026-08-18). They
-          # are the redistribution terms, so they ship beside what they
-          # govern, uncompressed and readable on the installed system.
-          # -a, because upstream ships BOTH loose LICENCE.* files AND a
-          # LICENSES/ directory (cp without -r refused it, run of
-          # 2026-08-18 02:00Z). Everything license-shaped comes along.
-          cp -a fw-dl/linux-firmware-*/WHENCE* fwstage/
-          cp -a fw-dl/linux-firmware-*/LICEN* fwstage/
-          cp -a fw-dl/linux-firmware-*/GPL* fwstage/ 2>/dev/null || true
-          [ "$(find fwstage -maxdepth 2 \( -name 'LICEN*' -o -name 'GPL*' \) | wc -l)" -gt 10 ] \
-            || { echo "suspiciously few license files in the tree"; exit 1; }
-          date -u +"  compress %H:%M:%SZ"
-          find fwstage -type f ! -name 'WHENCE*' ! -name 'LICEN*' ! -name 'GPL*' ! -name '*.txt' ! -path '*/LICENSES/*' ! -path '*/intel-ucode/*' -print0 \
-            | xargs -0 -n64 -P"$(nproc)" zstd -q -19 -T1 --rm
-          cp -a fwstage/. fwtree/
-          if ls fw-dl/intel-ucode-*.tar.gz >/dev/null 2>&1; then
-            tar -xf fw-dl/intel-ucode-*.tar.gz -C fw-dl
-            # the plain family files and the license; NOT with-caveats --
-            # Intel gates those behind per-platform conditions this
-            # project has no way to honour, so they do not ship
-            cp -a fw-dl/intel-ucode-20*/intel-ucode fwtree/
-            cp fw-dl/intel-ucode-20*/license fwtree/LICENSE.intel-ucode
-          fi
-          if ls fw-dl/wireless-regdb-*.tar.xz >/dev/null 2>&1; then
-            tar -xf fw-dl/wireless-regdb-*.tar.xz -C fw-dl
-            cp fw-dl/wireless-regdb-*/regulatory.db fw-dl/wireless-regdb-*/regulatory.db.p7s fwtree/
-          fi
-          [ -e fwtree/WHENCE ] || [ -e fwtree/WHENCE.zst ] \
-            || { echo "prepared tree lost WHENCE"; exit 1; }
-          date -u +"  done %H:%M:%SZ"
-          echo "::endgroup::"
-          echo "firmware tree: $(find fwtree -type f | wc -l) file(s), $(du -sh fwtree | cut -f1)"
-          # REPRODUCIBILITY INSTRUMENTATION: the firmware tree's whole-tree
-          # identity, so two runs are diffable here. "4846 files, 847M" hides a
-          # per-file byte difference; the TREE-SHA does not. If this line's
-          # TREE-SHA differs across runs, firmware prep is the fork; if it
-          # matches but the image differs, the drift is downstream.
-          python3 tools/manifest.py "firmware-tree (fwtree)" fwtree
-
-      - name: 'IMG -- the A/B GPT disk image'
-        run: |
-          set -eu
-          # THE TOOLS ARE REAL; ONE INPUT IS NOT YET. veron-mkimage builds
-          # the full A/B GPT image reproducibly (built twice and compared
-          # below). What stage 4 does not yet publish is an EFI-STUB kernel
-          # with the initramfs baked in -- until it does, the image is
-          # assembled with the published kernel as a stand-in so every
-          # OTHER property (layout, determinism, decode) is proven per run,
-          # and the boot gate below stays off. The stand-in is stated in
-          # the artifact name: veron-<arch>-<sha7>.NOBOOT.img.
-          mkdir -p out
-          for arch in $ARCHES; do
-            [ -d "in/5-$arch" ] || continue
-            mkdir -p "work/$arch/rootfs"
-            # IN already unpacked rootfs.img beside the tarball and
-            # digest-verified it; the tree is extracted from the ext4
-            # image without privileges via debugfs rdump
-            /sbin/debugfs -R "rdump / work/$arch/rootfs" "in/5-$arch/rootfs.img" >/dev/null 2>&1
-            [ -e "work/$arch/rootfs/etc/veron-release" ]               || { echo "  $arch: rdump produced no tree"; exit 1; }
-            # RDUMP MATERIALIZES HARDLINKS AS COPIES -- the extracted tree
-            # measured ~1893 MiB where the strip step measured 1229 MB of
-            # the same system (~660 MiB of phantom duplication; git's
-            # hardlinked builtins are the bulk). Content-dedupe restores
-            # them: byte-identical regular files become hardlinks again,
-            # mke2fs -d stores each once, and every path keeps exactly the
-            # bytes the records claim. Deterministic: sorted walk, first
-            # path is the canon.
-            python3 - "work/$arch/rootfs" <<'PY'
-          import hashlib, os, sys
-          root = sys.argv[1]
-          seen = {}
-          relinked = saved = 0
-          for dirpath, dirs, files in sorted(os.walk(root)):
-              dirs.sort()
-              for f in sorted(files):
-                  p = os.path.join(dirpath, f)
-                  if os.path.islink(p) or not os.path.isfile(p):
-                      continue
-                  st = os.stat(p)
-                  if st.st_size < 4096:
-                      continue
-                  h = hashlib.sha256()
-                  with open(p, "rb") as fh:
-                      for c in iter(lambda: fh.read(1 << 20), b""):
-                          h.update(c)
-                  k = (h.hexdigest(), st.st_mode & 0o7777)
-                  if k in seen:
-                      os.unlink(p)
-                      os.link(seen[k], p)
-                      relinked += 1
-                      saved += st.st_size
-                  else:
-                      seen[k] = p
-          print(f"  dedupe: {relinked} file(s) re-hardlinked, {saved // 1048576} MiB reclaimed")
-          PY
-            KERNEL="in/k-$arch/vmlinuz-generic"
-            [ -s "$KERNEL" ] || KERNEL="in/5-$arch/Image"
-            MODTAR=$(ls in/k-$arch/modules-*.tar.zst 2>/dev/null | head -1 || true)
-            ABSORB=""
-            [ -n "$MODTAR" ] && ABSORB="--modules-tar $MODTAR"
-            # FIRMWARE PRUNE, RULED BY THE DVD (Joe, 2026-08-18: the image
-            # must fit a standard DVD-5, and the complete 847 MB tree puts
-            # two slots past that budget). What ships is the firmware THIS
-            # ARCH'S KERNEL CAN ASK FOR: every name in the modules' own
-            # modinfo firmware fields, symlink targets chased, .zst
-            # spelling matched -- plus regdb, intel-ucode, WHENCE and every
-            # license, whole. Firmware for hardware this kernel cannot
-            # drive is dead bytes by definition. Stated limitation: the
-            # prune is keyed to MODULES; this fragment's built-in drivers
-            # (storage, xhci) request no blobs, and if one ever does, the
-            # boot gate is what catches it.
-            if [ -n "$MODTAR" ] && [ -d fwtree ]; then
-              mkdir -p "work/$arch/mods-scan"
-              tar -xf "$MODTAR" -C "work/$arch/mods-scan"
-              python3 - "work/$arch/mods-scan" fwtree "work/$arch/fw" <<'PY'
-          import os, shutil, subprocess, sys
-          mods, tree, out = sys.argv[1:4]
-          want = set()
-          for dp, _, fs in os.walk(mods):
-              for f in fs:
-                  if ".ko" not in f:
-                      continue
-                  r = subprocess.run(["/usr/sbin/modinfo", "-F", "firmware",
-                                      os.path.join(dp, f)],
-                                     capture_output=True, text=True)
-                  want.update(x.strip() for x in r.stdout.splitlines() if x.strip())
-          def place(rel):
-              src = os.path.join(tree, rel)
-              for cand in (src, src + ".zst"):
-                  if os.path.lexists(cand):
-                      dst = os.path.join(out, os.path.relpath(cand, tree))
-                      os.makedirs(os.path.dirname(dst), exist_ok=True)
-                      if os.path.islink(cand):
-                          t = os.readlink(cand)
-                          if not os.path.lexists(dst):
-                              os.symlink(t, dst)
-                          # chase the target so the link resolves
-                          tgt = os.path.normpath(os.path.join(os.path.dirname(rel), t))
-                          place(tgt)
-                      elif not os.path.exists(dst):
-                          shutil.copy2(cand, dst)
-                      return True
-              return False
-          os.makedirs(out, exist_ok=True)
-          hit = sum(1 for rel in sorted(want) if place(rel))
-          # the redistribution terms and the always-wanted pieces, whole
-          for keep in ("WHENCE", "WHENCE.zst", "regulatory.db", "regulatory.db.p7s",
-                       "LICENSE.intel-ucode"):
-              p = os.path.join(tree, keep)
-              if os.path.exists(p):
-                  shutil.copy2(p, os.path.join(out, keep))
-          for e in sorted(os.listdir(tree)):
-              if e.startswith(("LICEN", "GPL")) or e == "LICENSES":
-                  srcp = os.path.join(tree, e)
-                  dstp = os.path.join(out, e)
-                  (shutil.copytree(srcp, dstp, dirs_exist_ok=True)
-                   if os.path.isdir(srcp) else shutil.copy2(srcp, dstp))
-          if os.path.isdir(os.path.join(tree, "intel-ucode")):
-              shutil.copytree(os.path.join(tree, "intel-ucode"),
-                              os.path.join(out, "intel-ucode"), dirs_exist_ok=True)
-          missing = len(want) - hit
-          total = sum(os.path.getsize(os.path.join(dp, f))
-                      for dp, _, fs in os.walk(out) for f in fs
-                      if not os.path.islink(os.path.join(dp, f)))
-          print(f"  firmware pruned to what the modules name: {hit} of {len(want)} "
-                f"referenced names present ({missing} not in the tree -- the kernel "
-                f"would miss them identically), {total // 1048576} MiB kept")
-          PY
-              rm -rf "work/$arch/mods-scan"
-              ABSORB="$ABSORB --firmware-dir work/$arch/fw"
-            elif [ -d fwtree ]; then
-              ABSORB="$ABSORB --firmware-dir fwtree"
-            fi
-            # veron-boot.efi -- the one-shot maintenance chainloader that lands
-            # at \EFI\BOOT\BOOTX64.EFI. It is BOOT CODE, so it is built in stage 4
-            # under the pinned toolchain and published beside the kernel; here we
-            # only consume it, exactly as we consume the kernel -- never compiled
-            # on this host. It arrives inside the 4/kernel-$arch release already
-            # downloaded to in/k-$arch/.
-            LOADER="in/k-$arch/veron-boot.efi"
-            [ -s "$LOADER" ] || { echo "  FAIL: veron-boot.efi absent from 4/kernel-$arch -- stage 4 must publish it"; exit 1; }
-            echo "  loader: veron-boot.efi ($(stat -c%s "$LOADER") bytes) from 4/kernel-$arch"
-            # REPRODUCIBILITY INSTRUMENTATION: log the identity (path, mode,
-            # size, sha256, TREE-SHA) of EVERY input to veron-mkimage, so two
-            # runs are diffable to find exactly where they fork. If the
-            # TREE-SHAs match but the image differs, mkimage is the culprit; if
-            # an input TREE-SHA differs, that input is. FWIN is the firmware dir
-            # actually passed.
-            FWIN=$(printf '%s' "$ABSORB" | sed -n 's/.*--firmware-dir \([^ ]*\).*/\1/p')
-            python3 tools/manifest.py "rootfs-tree ($arch)" "work/$arch/rootfs"
-            python3 tools/manifest.py "kernel ($arch)" "$KERNEL"
-            python3 tools/manifest.py "loader ($arch)" "$LOADER"
-            [ -n "$MODTAR" ] && python3 tools/manifest.py "modules-tar ($arch)" "$MODTAR" || echo "  (no modules tar)"
-            [ -n "$FWIN" ] && python3 tools/manifest.py "firmware-dir ($arch)" "$FWIN" || echo "  (no firmware dir)"
-            VERON_NORMALIZE=spikes/stage5/tools/normalize-ext4.py               sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" --loader "$LOADER" $ABSORB                 --out "out/veron-$arch.raw"
-            sh spikes/stage6/tools/veron-mkimage                 --rootfs "work/$arch/rootfs" --kernel "$KERNEL" --loader "$LOADER" $ABSORB                 --out "out/veron-$arch.raw2" 2>/dev/null || true
-            cmp "out/veron-$arch.raw" "out/veron-$arch.raw2"               && echo "  $arch image REPRODUCED (built twice, same bytes)"               || { echo "  $arch image NOT reproducible"; exit 1; }
-            rm -f "out/veron-$arch.raw2"
-            python3 tools/manifest.py "image-raw ($arch)" "out/veron-$arch.raw"
-          done
-
-      - name: 'ISO -- hybrid live image, persistence optional (PLACEHOLDER)'
-        if: ${{ always() && false }}  # enabled when IMG exists
-        run: |
-          echo "UNBUILT: squashfs + overlay; fscrypt-on-ext4 .dat persistence"
-          exit 1
-
-      - name: 'BOOT GATE -- the image boots the way a consumer boots it'
-        id: bootgate
+      - name: 6 IN -- rootfs (stage 5), kernel + loader + modules (stage 4), firmware pins
+        run: sh stages/6-release/build.sh in
+      - name: 6 UNPACK -- the released system as a tree, with its own debugfs
+        run: sh stages/6-release/build.sh unpack
+      - name: 6 FW -- the firmware tree, in the box
+        run: sh stages/6-release/build.sh fw
+      - name: 6 IMAGE -- the A/B GPT image, in the box, twice, compared
+        run: sh stages/6-release/build.sh image
+      - name: 6 BOOT GATE -- the consumer path boots to init, ahci and usb, under the system's own OVMF
         if: ${{ inputs.boot_gate }}
-        run: |
-          set -eu
-          # THE SCENARIO UNDER TEST IS dd-AND-BOOT: firmware finds
-          # \EFI\BOOT\BOOTX64.EFI on the ESP with EMPTY LoadOptions --
-          # no NVRAM entries, no installer, nothing. Everything after that
-          # is the image's own doing: the stub runs, fragment v8's BAKED
-          # cmdline names slot A by PARTUUID, EFI_PARTITION parses the
-          # GPT, built-in ext4 mounts the slot, and the kernel execs
-          # /usr/bin/dinit. The serial log must show each link BY NAME.
-          sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 ovmf inotify-tools >/dev/null
-          # HOST QEMU AND HOST OVMF, BY REVERSION (Joe, 2026-08-24): the
-          # wrapper-borne gate flip is withdrawn from this workflow -- it ran
-          # the rootfs's own dynamic qemu under apt bwrap, a borrowed tool
-          # introduced against the stated direction that gates use OUR tools.
-          # The self-hosted gate returns when the tools bundle carries a
-          # static bubblewrap (Rung H); until then the borrowed emulator is
-          # stated here rather than smuggled through an exec shim.
-          for img in out/veron-x86_64.raw; do
-            [ -e "$img" ] || continue
-            # REPRODUCIBILITY GUARD (part 1 of 2): record the image's identity
-            # BEFORE the boot gate touches it. Booting a raw disk writable
-            # mutates it (journal replay, first-boot state, timestamps), which
-            # made the PUBLISHED image differ run-to-run even though the BUILT
-            # image was byte-identical. snapshot=on now sends every boot write
-            # to a discarded overlay; this guard PROVES the backing image is
-            # untouched, and fails loudly if a boot ever writes through again.
-            before_sha=$(sha256sum "$img" | cut -d' ' -f1)
-            echo "  guard: $img before boot = $before_sha"
-            # TWO ATTACHMENTS, BECAUSE METAL TAUGHT US THEY DIFFER: the
-            # default drive is AHCI (a built-in driver), but a consumer's
-            # stick is USB mass storage -- a different driver spine that
-            # the first metal flash proved missing while this gate stayed
-            # green (2026-08-18). The image must boot BOTH ways.
-            for attach in ahci usb; do
-              if [ "$attach" = usb ]; then
-                DRIVE="-device qemu-xhci -device usb-storage,drive=d0 -drive if=none,id=d0,format=raw,file=$img,snapshot=on"
-              else
-                DRIVE="-drive format=raw,file=$img,snapshot=on"
-              fi
-              echo "=== boot attempt: $attach attachment ==="
-              # EVENT-DRIVEN, NOT A FIXED WAIT. This used to be `timeout 300 qemu`
-              # and then read the log: the guest boots to [ OK ] boot in ~2s and
-              # sits on a desktop, qemu never exits on its own, so every attempt
-              # was a flat 300s until the timeout killed it -- two attachments,
-              # ten minutes, for four seconds of work (run 88364882265: boot
-              # complete at 23:48:24, not read until 23:53:22). Now the serial
-              # stream is read LIVE and qemu is killed the instant the line that
-              # means "booted" arrives. timeout is only the watchdog for a guest
-              # that genuinely never gets there.
-              : > boot-serial.log
-              timeout 300 qemu-system-x86_64 \
-                -machine q35 $VERON_ACCEL -cpu qemu64 -m 2048 -nographic -no-reboot -nic none \
-                -bios /usr/share/ovmf/OVMF.fd \
-                $DRIVE \
-                -serial file:boot-serial.log >/dev/null 2>>boot-serial.log &
-              qpid=$!
-              # tail -f follows the file as qemu writes it; grep -m1 exits on the
-              # first match, which closes the pipe and ends tail. No polling, no
-              # sleep: the kernel wakes tail when bytes land.
-              if tail -n +1 -f boot-serial.log --pid="$qpid" 2>/dev/null \
-                | grep -m1 -q "\[  OK  \] boot"; then
-                echo "  booted: [  OK  ] boot seen; stopping qemu"
-              else
-                echo "  qemu ended before [  OK  ] boot (watchdog or crash)"
-              fi
-              kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null || true
-            echo "--- serial (tail) ---"; tail -60 boot-serial.log || true
-            # THE ONE LINE THAT ADJUDICATES: the kernel's verbatim cmdline
-            # echo. Run 87012288217 booted to a login prompt while the
-            # baked-cmdline grep failed -- witnesses contradicting each
-            # other, unreadable because only a 60-line tail of churning
-            # services survived. Never again: the line is printed by name,
-            # and the whole serial uploads below.
-            echo "--- the cmdline the kernel says it booted with ---"
-            grep -m1 "Kernel command line" boot-serial.log || echo "  (no cmdline echo found in serial at all)"
-            fail=0
-            # the x86 stub is silent on the happy path (run 87005224870);
-            # the witness is the kernel's EFI runtime banner
-            grep -Eq "efi: EFI v|EFI stub" boot-serial.log \
-              && echo "  ok    EFI handover from the fallback path confirmed" \
-              || { echo "  FAIL  no EFI evidence"; fail=1; }
-            # veron-boot.efi is now the fallback path; it must run and chainload.
-            # A normal boot (no marker) prints its "normal boot" line; the kernel
-            # then comes up on its baked cmdline exactly as before.
-            grep -q "veron-boot: starting the kernel" boot-serial.log \
-              && echo "  ok    veron-boot chainloader ran and launched the kernel" \
-              || { echo "  FAIL  veron-boot loader did not run (fallback path wrong?)"; fail=1; }
-            # -i, because the kernel has TWO cmdline echoes with different
-            # capitalisation -- core's "Kernel command line:" and x86
-            # setup's older capital-C "Command line:" -- and which appears
-            # varies by version. Run 87014621708 printed the baked line
-            # verbatim while the capital-C grep failed it: the witness was
-            # hunting the wrong duplicate.
-            grep -iq "command line:.*root=PARTUUID=aaaa0002" boot-serial.log \
-              && echo "  ok    the BAKED cmdline named slot A" \
-              || { echo "  FAIL  baked cmdline absent (kernel predates fragment v8?)"; fail=1; }
-            grep -Eq "EXT4-fs \(.*\): mounted|VFS: Mounted root" boot-serial.log \
-              && echo "  ok    slot A mounted by PARTUUID" \
-              || { echo "  FAIL  root never mounted"; fail=1; }
-            grep -q "as init process" boot-serial.log \
-              && echo "  ok    the kernel handed the machine to dinit" \
-              || { echo "  FAIL  init never ran"; fail=1; }
-            [ "$fail" -eq 0 ] || exit 1
-            done
-            # REPRODUCIBILITY GUARD (part 2 of 2): the image must be byte-for-
-            # byte what it was before the boot gate ran. If snapshot=on ever
-            # regresses, or any boot writes through to the backing file, this
-            # catches it here -- before NAME renames it by content hash and
-            # PUBLISH ships it -- instead of surfacing as a mysterious
-            # non-reproducible release later.
-            after_sha=$(sha256sum "$img" | cut -d' ' -f1)
-            echo "  guard: $img after  boot = $after_sha"
-            if [ "$before_sha" != "$after_sha" ]; then
-              echo "  FAIL  the boot gate MUTATED the image ($img):"
-              echo "        before $before_sha"
-              echo "        after  $after_sha"
-              echo "        a boot wrote through to the backing file -- the"
-              echo "        published image would not be reproducible. Refusing."
-              exit 1
-            fi
-            echo "  ok    image unchanged by the boot gate (reproducible)"
-          done
-          echo "VERON-BOOT-GATE-OK  the consumer path boots to init, on both attachments"
-
-      - name: 'EVIDENCE -- the boot serial, whole, always'
+        run: sh stages/6-release/build.sh boot
+      - name: EVIDENCE -- the boot serials, whole, always
         if: ${{ always() && inputs.boot_gate }}
         uses: actions/upload-artifact@v4
         with:
           name: boot-serial
-          path: boot-serial.log
+          path: box6/boot/
           if-no-files-found: ignore
 
-      - name: 'MAINTENANCE GATE -- a person enters maintenance mode, and the stick becomes writable'
-        id: maintgate
+      - name: MAINTENANCE GATE -- a person enters maintenance mode, and the stick becomes writable
         if: ${{ inputs.maintenance_gate }}
         run: |
           set -eu
@@ -570,59 +105,23 @@ jobs:
           # KVM when the runner has it (GitHub's Linux runners do, behind a
           # root-only node); TCG otherwise. The gate prints which.
           mkdir -p out/maintenance-gate
-          for img in out/veron-x86_64.raw; do
+          for img in box6/img/veron-x86_64.raw; do
             [ -e "$img" ] || { echo "no x86_64 image to test"; exit 1; }
             sh spikes/stage6/tools/veron-maintenance-gate \
               --image "$img" --out out/maintenance-gate --mem 6144 --kvm auto 2>&1
           done
-
-      - name: 'EVIDENCE -- the maintenance journey: three frames and its serial'
+      - name: EVIDENCE -- the maintenance journey
         if: ${{ always() && inputs.maintenance_gate }}
         uses: actions/upload-artifact@v4
         with:
           name: maintenance-gate
-          path: |
-            out/maintenance-gate/01-flasher-normal.png
-            out/maintenance-gate/02-flasher-armed.png
-            out/maintenance-gate/02a-flasher-pre-click.png
-            out/maintenance-gate/02m1-after-pin.png
-            out/maintenance-gate/02m2-after-half.png
-            out/maintenance-gate/02b-flasher-after-keys.png
-            out/maintenance-gate/02c-flasher-keyboard-armed.png
-            out/maintenance-gate/03-flasher-maintenance.png
-            out/maintenance-gate/maintenance-serial.log
-            out/maintenance-gate/maintenance-serial.log.timed
+          path: out/maintenance-gate/
           if-no-files-found: ignore
 
-      - name: 'NAME -- the artifact says what was proven'
-        run: |
-          set -eu
-          # NOT AN EDITORIAL DECISION: the gate input decides the suffix,
-          # and a failed gate never reaches this step. .NOBOOT survives
-          # exactly as long as the boot proof is missing.
-          for raw in out/veron-*.raw; do
-            [ -e "$raw" ] || continue
-            arch=$(basename "$raw" .raw); arch=${arch#veron-}
-            SHA7=$(sha256sum "$raw" | cut -c1-7)
-            if [ "${{ inputs.boot_gate }}" = "true" ]; then
-              mv "$raw" "out/veron-$arch-$SHA7.img"
-              # COMPRESS HERE, NOT AT PUBLISH: the manifest gathers after
-              # this step, and the card must advertise the asset that will
-              # actually exist. The first card advertised the raw .img --
-              # an asset never uploaded -- and the external user's first
-              # click after the URL fix would have 404'd on it (caught in
-              # audit, 2026-08-18, minutes before that click).
-              zstd -19 -T0 -q "out/veron-$arch-$SHA7.img" \
-                -o "out/veron-$arch-$SHA7.img.zst"
-            else
-              mv "$raw" "out/veron-$arch-$SHA7.NOBOOT.img"
-            fi
-          done
-          ls -la out/*.img*
+      - name: 6 PACK -- out/6 named by what was proven; .zst by this project's zstd; SHA256SUMS, PACKED-BY, BUDGET
+        run: sh stages/6-release/build.sh pack
 
-      - name: 'EVIDENCE-CHAIN -- the attestations and build logs of everything this release is made from'
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: EVIDENCE-CHAIN -- the attestations and build logs of everything this release is made from
         run: |
           set -eu
           # THE CHAIN IS EIGHT STAGES, EACH WITH ONE DELIVERABLE AND ONE LOG.
@@ -713,10 +212,19 @@ jobs:
           tar -czf out/evidence.tar.gz -C evidence .
           echo "  wrote out/evidence.tar.gz ($(stat -c%s out/evidence.tar.gz) bytes)"
 
-      - name: 'PUBLISH -- compress, size-gate, immutable tag, moving latest'
+      - name: EVIDENCE -- out/6 as an artifact, so any two runs can be compared file by file
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-out
+          path: |
+            out/6/SHA256SUMS
+            out/6/PACKED-BY
+            out/6/BUDGET
+            box6/img/veron-x86_64.raw
+          if-no-files-found: error
+
+      - name: PUBLISH -- size-gate, immutable tag, moving latest
         if: ${{ !inputs.dry_run }}
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           # TWO STRUCTURAL REFUSALS BEFORE ANY BYTE UPLOADS: publishing
@@ -725,12 +233,12 @@ jobs:
           # read it.
           [ "${{ inputs.boot_gate }}" = "true" ] \
             || { echo "publish without boot_gate is not a thing"; exit 1; }
-          ! ls out/*.NOBOOT.img >/dev/null 2>&1 \
+          ! ls out/6/*.NOBOOT.img >/dev/null 2>&1 \
             || { echo "a .NOBOOT artifact cannot be published"; exit 1; }
           C7=${GITHUB_SHA::7}
-          : > out/SHA256SUMS
-          for img in out/*.img; do
-            [ -e "$img.zst" ] || zstd -19 -T0 -q "$img" -o "$img.zst"
+          # out/6/SHA256SUMS and the .zst are made by `build.sh pack` with this project's zstd (out/6/PACKED-BY names it)
+          for img in out/6/*.img; do
+            [ -e "$img.zst" ] || { echo "$img has no .zst -- build.sh pack did not run"; exit 1; }
             size=$(stat -c %s "$img.zst")
             # GITHUB'S CEILING IS 2 GiB PER ASSET; the gate fails BEFORE an
             # upload half-succeeds, and says which escape hatch to take.
@@ -772,33 +280,23 @@ jobs:
             echo "  ok    rebuilt image matches the published release ($our_sha)"
             echo "  re-uploading assets (idempotent, --clobber)"
             gh release upload "release/$C7" \
-              out/*.img.zst out/SHA256SUMS out/evidence.tar.gz --clobber
+              out/6/*.img.zst out/6/SHA256SUMS out/6/PACKED-BY out/6/BUDGET out/evidence.tar.gz --clobber
           else
             echo "  release/$C7 is new -- creating it"
             gh release create "release/$C7" \
               --title "Veron release/$C7" \
               --notes "Consumer release at commit $GITHUB_SHA. Digests in SHA256SUMS; provenance on the repository's attestation page." \
-              out/*.img.zst out/SHA256SUMS out/evidence.tar.gz
+              out/6/*.img.zst out/6/SHA256SUMS out/6/PACKED-BY out/6/BUDGET out/evidence.tar.gz
           fi
           gh release delete "6/latest" --yes 2>/dev/null || true
           git push --delete origin "6/latest" 2>/dev/null || true
           gh release create "6/latest" \
             --title "Veron -- latest consumer release" \
             --notes "Moving pointer; the immutable record is release/$C7." \
-            out/*.img.zst out/SHA256SUMS out/evidence.tar.gz
-      - name: 'ATTEST -- provenance for everything published'
+            out/6/*.img.zst out/6/SHA256SUMS out/6/PACKED-BY out/6/BUDGET out/evidence.tar.gz
+
+      - name: ATTEST -- provenance for everything published
         if: ${{ !inputs.dry_run }}
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: 'out/*.img.zst'
-
-  # ==========================================================================
-  # PAGES -- a SEPARATE job that runs only after `release` (needs: release),
-  # so the release's OWN attestation exists by the time the site is built.
-  # RULED (Joe, 2026-08-19): the storefront must be 100% complete for the run
-  # it deploys -- previously PAGES ran before ATTEST, so the site could never
-  # cite its own release's attestation. This job re-downloads every tier from
-  # its published tag and INDEPENDENTLY re-verifies it (marker-absent + all
-  # files present), even though `release` already verified: the tags are read
-  # at a different moment, and a moving tag can change between the two reads.
-  # ==========================================================================
+          subject-path: out/6/*.img.zst

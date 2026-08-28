@@ -601,7 +601,7 @@ jobs:
             for b in qemu-user/usr/bin/qemu-aarch64-static \
                      qemu/usr/bin/qemu-system-x86_64 qemu/usr/bin/qemu-system-aarch64 \
                      qemu/usr/bin/qemu-img swtpm/usr/bin/swtpm swtpm/usr/bin/swtpm_ioctl \
-                     zstd/usr/bin/zstd; do
+                     zstd/usr/bin/zstd e2fsprogs/usr/sbin/debugfs e2fsprogs/usr/sbin/mke2fs; do
               if [ -x "../dest/$b" ]; then
                 static_or_die "../dest/$b"
                 cp "../dest/$b" "$tdir/veron-tools/"

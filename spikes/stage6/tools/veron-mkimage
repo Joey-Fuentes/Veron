@@ -116,9 +116,14 @@ cp -al "$ROOTFS" "$STAGE"
 if [ -n "$MODTAR" ]; then
     [ -s "$MODTAR" ] || { echo "no modules tar: $MODTAR" >&2; exit 1; }
     mkdir -p "$W/mods"
-    # -xf without a compression flag: GNU tar auto-detects zstd/gzip/xz
-    # from the stream, so the same line serves CI (.tar.zst) and tests
-    tar -xf "$MODTAR" -C "$W/mods"
+    # By suffix, not by sniffing: busybox tar (the released system's, when
+    # this runs in the box) does not auto-detect zstd from the stream the
+    # way GNU tar does. .tar.zst is what stage 4 publishes; plain .tar is
+    # what the tests hand in.
+    case "$MODTAR" in
+        *.zst) zstd -dc "$MODTAR" | tar -xf - -C "$W/mods" ;;
+        *)     tar -xf "$MODTAR" -C "$W/mods" ;;
+    esac
     src=$(find "$W/mods" -maxdepth 3 -type d -name modules | head -1)
     [ -n "$src" ] || { echo "modules tar holds no lib/modules" >&2; exit 1; }
     mkdir -p "$STAGE/usr/lib/modules"
