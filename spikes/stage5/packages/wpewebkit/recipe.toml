@@ -29,14 +29,20 @@ crosschecked_against = []
 # killed the first -j3 run at object 1913; patch 0005 puts the identical
 # collector caps on exactly that list.
 #
-# 2000 = that prediction plus margin: an 8 GiB machine derives 3 jobs, a
-# 16 GiB runner 4 (capped by the recipe's -j4). CI pays the sparse tax
-# only on the bindings subset -- estimated +7-12% against the 150-190
-# baseline. If a kernel log shows a kill at -j3, the anon-rss on the
-# named file replaces the prediction -- raise this, never lower -j in the
-# step. Scheduling only: the bytes do not depend on the count.
+# 3000 -- RAISED FROM 2000 AFTER THE -j3 RUN'S KILL (2026-08-28, object
+# 7397): with the bindings sparse and JSC capped, the biggest remaining
+# unit is an ORDINARY WebCore unified bundle at an estimated 2.5-3.0 GiB,
+# and three of those together outgrew the machine. Two fit by
+# measurement: 2 x 3.0 = 6.0 in ~7. This is not the -j2 that died on
+# 2026-08-28 morning -- that death was the 5.13 GiB bindings bundle,
+# which patch 0004 has since removed from existence. An 8 GiB machine
+# derives 2 jobs; a 16 GiB runner still derives 4 (16000/3000=5, capped
+# by cores and the recipe), so CI is untouched. If a kernel log shows a
+# kill at -j2, the anon-rss on the named file replaces the estimate --
+# raise this, never lower -j in the step. Scheduling only: the bytes do
+# not depend on the count.
 [build]
-ram_per_job_mib = 2000
+ram_per_job_mib = 3000
 
 [deps]
 # EIGHTEEN find_package(... REQUIRED) IN OptionsWPE.cmake:12-27, plus the
