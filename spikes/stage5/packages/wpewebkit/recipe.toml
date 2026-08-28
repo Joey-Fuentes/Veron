@@ -10,28 +10,28 @@ sha256    = "bcfc6c91db7659dcf24f6ff79ad27ac1eae1bc61dca0dbfee154706926740b3b"
 signature = "none -- wpewebkit.org publishes .asc signatures; not yet pinned here"
 crosschecked_against = []
 
-# WHAT ONE COMPILE JOB COSTS HERE, AND WHY THE NUMBER MOVED. The old value,
-# 4700, was measured on a build this recipe no longer describes: unified
-# sources at EIGHT files per translation unit at -O3 (UnifiedSource
-# -3a52ce78-41.cpp, anon-rss:4730540kB, 7 GiB laptop, 2026-08-26). Even that
-# number was not enough -- at -j1 the same laptop was OOM-killed anyway, by
-# GeneratedSerializers.cpp at anon-rss:6210700kB (2026-08-27), a single TU
-# larger than the whole job budget. Two changes shrink the unit of work
-# itself, so the per-job cost is a different quantity now:
+# WHAT ONE COMPILE JOB COSTS HERE -- TWO MEASUREMENTS AND ONE CI BILL.
+# Measured: bundle-8 -O3 worst 4.62 GiB (2026-08-26); bundle-4 -O2 with
+# global ggc caps worst 2.58 GiB, four jobs together killing a 7 GiB
+# machine (2026-08-28). Then CI answered the other half: that bundle-4 +
+# caps configuration cost 305 min against a 150-190 baseline. Shrinking
+# every translation unit taxes EVERY machine to save the small one --
+# repeated header parsing and a hobbled collector roughly doubled total
+# CPU. Wall clock, not the -j number, is the target: two jobs on
+# efficient 8-file bundles beat four jobs on starved 2-file ones on both
+# machines at once.
 #
-#   -DWEBKIT_UNIFIED_BUNDLE_SIZE=4 (patch 0001) halves the code per bundle,
-#   and -O2 replaces cmake's Release default of -O3, with GCC's collector
-#   capped by --param ggc-min-expand/-heapsize. Estimated worst bundle:
-#   ~1.3-1.5 GiB. GeneratedSerializers.cpp itself is compiled at -O1 by
-#   patch 0002 and stops being the outlier.
-#
-# 1700 = that estimate plus margin. An 8 GiB machine reports ~6.8-7.8 GiB
-# physical -> 4 jobs; a 16 GiB runner -> 4 (capped by the recipe's -j4).
-# ESTIMATED, NOT YET MEASURED: the first -j4 run's kernel log is what turns
-# this into a measurement -- if it OOMs, raise this, do not lower -j in the
-# step. Scheduling only: the bytes do not depend on the count.
+# So the unit returns to upstream's shape (bundle 8, -O2, no collector
+# caps; serializers still -O1 via patch 0002) and MEMORY IS THE
+# SCHEDULER'S JOB: worst bundle-8 TU at -O2 interpolates to ~3.2-3.5 GiB,
+# so 3500 makes an 8 GiB machine derive 2 jobs (2 x 3.5 = 7.0, fits) and
+# a 16 GiB runner derive 4. Laptop wall ~3 h and COMPLETES; CI at or
+# under its old baseline because -O2 compiles faster than the -O3 it
+# replaced. If a kernel log shows a kill at -j2, the anon-rss on the
+# named file replaces the interpolation -- raise this, never lower -j in
+# the step. Scheduling only: the bytes do not depend on the count.
 [build]
-ram_per_job_mib = 1700
+ram_per_job_mib = 3500
 
 [deps]
 # EIGHTEEN find_package(... REQUIRED) IN OptionsWPE.cmake:12-27, plus the
@@ -82,9 +82,7 @@ configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", 
                    "-DUSE_ATK=OFF", "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF",
                    "-DUSE_GSTREAMER_GL=OFF",
                    "-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG",
-                   "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG",
-                   "-DCMAKE_CXX_FLAGS=--param=ggc-min-expand=20 --param=ggc-min-heapsize=65536",
-                   "-DWEBKIT_UNIFIED_BUNDLE_SIZE=4"]
+                   "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["wpewebkit"]
 deferral        = """
@@ -290,22 +288,13 @@ cwd  = "$S"
 #     third on the largest units and compile time with it. -DNDEBUG is kept:
 #     dropping it would turn every ASSERT on and change far more than bytes.
 #
-#   -DCMAKE_CXX_FLAGS=--param=ggc-min-expand=20 --param=ggc-min-heapsize=65536:
-#     GCC's IR garbage collector defaults to hoarding on big-memory hosts --
-#     collections are skipped until the heap has grown by a machine-derived
-#     percentage, so peak RSS depends on the host's RAM. Pinning the two
-#     params makes the collector run on the same schedule everywhere: under
-#     64 MiB of GC heap nothing changes, above it growth past 20% triggers a
-#     pass. Small units never notice; the WebCore monsters trade a few
-#     percent of time for a bounded peak.
-#
-#   -DWEBKIT_UNIFIED_BUNDLE_SIZE=4 (needs patches/0001): upstream concatenates
-#     EIGHT .cpp files per unified translation unit -- that is what made one
-#     cc1plus want 4.5 GiB. Four per bundle halves the code per unit while
-#     staying a unified build, which upstream tests continuously (bundle size
-#     is already varied per-port: Windows uses 16). ENABLE_UNIFIED_BUILDS=OFF
-#     was considered and declined: it multiplies total compile time ~2.5x and
-#     upstream only keeps it building via a separate bot.
+#   REMOVED, AND THE REMOVALS ARE PART OF THE RECORD: global ggc collector
+#     caps and -DWEBKIT_UNIFIED_BUNDLE_SIZE (patch 0001 still carries the
+#     knob, unused). Both were tried; together they took CI from 150-190
+#     min to 305 by taxing every translation unit on every machine. The
+#     8 GiB fit comes from ram_per_job_mib deriving -j2 instead -- see the
+#     [build] comment for the two kernel-log measurements and the CI bill
+#     behind this shape.
 #
 #   patches/0002 compiles GeneratedSerializers.cpp (and its two siblings) at
 #     -O1 with tight ggc caps. It is generated IPC marshalling glue -- every
@@ -343,9 +332,7 @@ run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
                    "-DUSE_ATK=OFF", "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF",
                    "-DUSE_GSTREAMER_GL=OFF",
                    "-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG",
-                   "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG",
-                   "-DCMAKE_CXX_FLAGS=--param=ggc-min-expand=20 --param=ggc-min-heapsize=65536",
-                   "-DWEBKIT_UNIFIED_BUNDLE_SIZE=4"]]
+                   "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG"]]
 
 [[steps]]
 name = "build"
