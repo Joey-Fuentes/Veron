@@ -310,7 +310,21 @@ mkdir -p dest
 # libc. The guard in this step would then correctly discard it on
 # the next aarch64 run -- after that run had already downloaded
 # several gigabytes and thrown them away.
-if gh release download 5/ckpt-x86_64 --pattern 'dest.tar.zst' \
+# THE LOCAL MARKER OUTRANKS THE DOWNLOAD, AND THIS ORDER IS THE FIX FOR
+# "USE_CHECKPOINT never worked on the laptop". The marker written after
+# every chain (below, success or failure) is exactly what --resume needs
+# -- and this step then DOWNLOADED CI's checkpoint over dest/, replacing
+# that marker with one keyed to CI's sysroot value. A laptop whose
+# sysroot digest is computed from a local out/4 can never equal it, so
+# the mismatch branch rm -rf'd dest and every run started from zero:
+# the resume state was destroyed two lines before --resume could read
+# it. A matching local marker means dest/ already describes THIS
+# machine's progress against THIS sysroot; the download can only be the
+# same or worse.
+if [ -s dest/.veron-checkpoint ] && \
+   [ "$(python3 -c 'import json;print(json.load(open("dest/.veron-checkpoint")).get("base",""))' 2>/dev/null)" = "$SYSROOT_SHA" ]; then
+  echo "  local checkpoint marker matches this sysroot -- resuming from dest/ ($(ls dest | wc -l) package dir(s)), not downloading 5/ckpt-x86_64"
+elif gh release download 5/ckpt-x86_64 --pattern 'dest.tar.zst' \
      --dir . 2>/dev/null; then
   tar --zstd -xf dest.tar.zst && rm -f dest.tar.zst
   python3 -c 'import json;m=json.load(open("dest/.veron-checkpoint"));print("  downloaded a checkpoint holding",len(m["keys"]),"package(s)")'
@@ -335,7 +349,13 @@ if gh release download 5/ckpt-x86_64 --pattern 'dest.tar.zst' \
   _m=$(python3 -c 'import json;print(json.load(open("dest/.veron-checkpoint")).get("base",""))' 2>/dev/null || echo "")
   if [ "$_m" != "$_want" ]; then
     echo "  checkpoint base $(echo "$_m" | cut -c1-12) != sysroot $(echo "$_want" | cut -c1-12)"
-    if [ '${ADOPT_CHECKPOINT:-}' = 'true' ]; then
+    # QUOTING BUG, FIXED: this read [ '${ADOPT_CHECKPOINT:-}' = 'true' ] --
+    # single quotes, so the shell compared the LITERAL STRING
+    # ${ADOPT_CHECKPOINT:-} against 'true', which is never equal; and the
+    # usage header documents ADOPT_CHECKPOINT=1, which the old comparison
+    # would not have accepted even with expansion working. Adoption was
+    # dead code in the local script since the day it was written.
+    if [ "${ADOPT_CHECKPOINT:-}" = "1" ] || [ "${ADOPT_CHECKPOINT:-}" = "true" ]; then
       # ADOPTING A CHECKPOINT ACROSS A SYSROOT CHANGE, DELIBERATELY,
       # AND THIS IS THE WEAKEST THING IN THIS FILE.
       #
