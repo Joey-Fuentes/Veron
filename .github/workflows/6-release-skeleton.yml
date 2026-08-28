@@ -246,9 +246,9 @@ jobs:
               echo "$img.zst is $size bytes -- over the 2 GiB asset ceiling."
               echo "Shrink slots or move to the chunked layout (spec 12)."
               exit 1; }
-            ( cd out && sha256sum "$(basename "$img")" "$(basename "$img").zst" ) >> out/SHA256SUMS
           done
-          cat out/SHA256SUMS
+          ( cd out/6 && sha256sum -c SHA256SUMS )
+          cat out/6/SHA256SUMS
           # RE-RELEASING THE SAME COMMIT IS ALLOWED, because the image is now
           # byte-reproducible (boot gate no longer mutates it). The invariant
           # worth keeping is NOT "the tag may never be created twice" -- that
@@ -258,7 +258,7 @@ jobs:
           # image MUST match what is already published -- same bytes re-release
           # succeeds (idempotent), different bytes fail loudly (a real
           # reproducibility violation, the thing actually worth catching).
-          our_sha=$(awk '/\.img$/{print $1; exit}' out/SHA256SUMS)
+          our_sha=$(awk '/\.img$/{print $1; exit}' out/6/SHA256SUMS)
           if gh release view "release/$C7" >/dev/null 2>&1; then
             echo "  release/$C7 already exists -- verifying byte-identity"
             pub_line=$(gh release view "release/$C7" \
