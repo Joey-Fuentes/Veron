@@ -71,19 +71,24 @@ cwd  = "$B"
 run  = [["tar", "-xf", "$DL/elfutils-0.192.tar.bz2", "-C", "$B"]]
 
 [[steps]]
-name = "no-ldl"
-cwd  = "$S"
-# UPSTREAM HARDCODES -ldl ON libdw.so AND THIS SYSROOT HAS NOTHING FOR IT
-# TO RESOLVE: glibc >= 2.34 folded dlopen into libc and ships only the
-# runtime libdl.so.2 compat object -- no libdl.so dev name, no stub .a.
-# The first REAL rebuild of this package in the project's history
-# (forced by the zstd determinism pin, 2026-08-29) died on
-#     ld: cannot find -ldl
-# proving every prior elfutils binary on every machine was a
-# checkpoint-restored relic of a sysroot that no longer exists. dlopen
-# is in libc; the flag is deleted at the source of the generated
-# Makefile rather than stubbed around.
-run  = [["sh", "-c", "sed -i 's/ -ldl / /' libdw/Makefile.in && ! grep -q ' -ldl ' libdw/Makefile.in"]]
+name = "glibc-compat-stubs"
+cwd  = "$B"
+# EMPTY ARCHIVES FOR THE LIBRARIES glibc ATE. glibc >= 2.34 folded
+# libdl, libpthread, librt, libutil and libanl into libc, shipping only
+# runtime compat objects -- no dev names for -ldl or -lpthread to
+# resolve. Upstream elfutils still passes both, and the first REAL
+# rebuild of this package in the project's history (forced by the zstd
+# determinism pin, 2026-08-29) died on `cannot find -ldl`, then on
+# `cannot find -lpthread` after the first flag was scrubbed -- proving
+# every prior elfutils binary everywhere was a checkpoint-restored
+# relic of a sysroot that no longer exists. Scrubbing flags out of
+# upstream Makefiles one at a time is an arms race; this is what every
+# distro's glibc does instead: an empty ar archive (the literal eight
+# bytes '!<arch>\n') per legacy name, so any -lfoo of the family links
+# to nothing, deterministically. LIBRARY_PATH on the build step shows
+# them to ld without touching the read-only sysroot; the emitted
+# libraries gain no code and no DT_NEEDED from an empty archive.
+run  = [["sh", "-c", "mkdir -p $B/glibc-stubs && for l in dl pthread rt util anl; do printf '!<arch>\n' > $B/glibc-stubs/lib$l.a; done"]]
 
 [[steps]]
 name = "configure"
@@ -119,6 +124,7 @@ run  = [["./configure", "--prefix=/usr", "--disable-debuginfod",
 [[steps]]
 name = "build"
 cwd  = "$S"
+env  = { LIBRARY_PATH = "$B/glibc-stubs" }
 run  = [["make", "-j$J"]]
 
 [[steps]]

@@ -2379,7 +2379,7 @@ package curl 8.18.0
 package elfutils 0.192
   group        graphics-substrate
   license      GPL-3.0-or-later AND LGPL-3.0-or-later
-  recipe-sha   ad5fa2d3005c895ce8f8a77c00ebae1c105dfc9c440906a507d7121f6b9ccd27
+  recipe-sha   ae1c090fc6297f14e5b92e10df03fd246d5de3ea07cd5c67bdd31eb7cd4e5dec
 
   source
     url        https://sourceware.org/pub/elfutils/0.192/elfutils-0.192.tar.bz2
@@ -2397,14 +2397,15 @@ package elfutils 0.192
     [01] unpack
          cwd  build/elfutils-0.192
          argv ["tar", "-xf", "dl/elfutils-0.192.tar.bz2", "-C", "build/elfutils-0.192"]
-    [02] no-ldl
-         cwd  build/elfutils-0.192/elfutils-0.192
-         argv ["sh", "-c", "sed -i 's/ -ldl / /' libdw/Makefile.in && ! grep -q ' -ldl ' libdw/Makefile.in"]
+    [02] glibc-compat-stubs
+         cwd  build/elfutils-0.192
+         argv ["sh", "-c", "mkdir -p build/elfutils-0.192/glibc-stubs && for l in dl pthread rt util anl; do printf '!<arch>\n' > build/elfutils-0.192/glibc-stubs/lib$l.a; done"]
     [03] configure
          cwd  build/elfutils-0.192/elfutils-0.192
          argv ["./configure", "--prefix=/usr", "--disable-debuginfod", "--disable-libdebuginfod", "--disable-nls", "--without-bzlib", "--without-lzma", "--with-zstd", "--without-libarchive", "--disable-static", "--program-prefix=eu-", "CFLAGS=-g -O2 -Wno-error=discarded-qualifiers"]
     [04] build
          cwd  build/elfutils-0.192/elfutils-0.192
+         env  LIBRARY_PATH=build/elfutils-0.192/glibc-stubs
          argv ["make", "-j1"]
     [05] install
          cwd  build/elfutils-0.192/elfutils-0.192
