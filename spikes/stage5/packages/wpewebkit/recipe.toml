@@ -69,7 +69,18 @@ crosschecked_against = []
 # raise this, never lower -j in the step. Scheduling only: the bytes do
 # not depend on the count.
 [build]
-ram_per_job_mib = 3000
+ram_per_job_mib = 3700
+# 3700, THE CLOSING NUMBER OF THE MEMORY CAMPAIGN (2026-08-29): the same
+# dom/ bundle died AGAIN with the collector caps verified ON its compile
+# line -- like the bindings, its weight is live IR, beyond GC tuning. On
+# a machine reporting 7251 MiB this derives ONE job: the largest
+# remaining TU (~3.5 GiB, ordinary bundle, was 6.2 before the campaign)
+# runs alone in ~6.8 GiB available, and nothing can be co-scheduled
+# against it. A 16 GiB runner still derives 4 (16000/3700=4): CI shape
+# unchanged. Every cheaper configuration was tried and measured to
+# death; the kernel logs are quoted above. If this machine ever gains
+# swap or the toolchain's live-IR appetite shrinks, lower this and the
+# same recipe speeds up -- the bytes never depended on it.
 
 [deps]
 # EIGHTEEN find_package(... REQUIRED) IN OptionsWPE.cmake:12-27, plus the
