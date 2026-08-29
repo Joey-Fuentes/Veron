@@ -808,9 +808,16 @@ build_img() {
 }
 build_img rootfs.img
 sha256sum rootfs.img | tee IMAGE-SHA256
-cp rootfs.img /tmp/img1
+# THE SCRATCH COPY LIVES BESIDE THE IMAGE, NOT IN /tmp. On CI /tmp is
+# a large disk; on the laptop it is a 3.5 GiB tmpfs -- RAM, on the
+# machine this whole campaign rationed RAM for -- and a 1.4 GB image
+# parked there (and never deleted) filled it to 100% and broke the
+# NEXT phase's cp with "No space left on device" (2026-08-29). The
+# out/ directory this step already stands in has the room by
+# construction: the image itself just got written to it.
+cp rootfs.img img1.repro-scratch
 build_img rootfs.img
-if cmp -s /tmp/img1 rootfs.img; then
+if cmp -s img1.repro-scratch rootfs.img; then
   echo "VERON-IMAGE-REPRO-OK  two builds, identical bytes"
 else
   echo "VERON-IMAGE-REPRO-DIFF  the CONTAINER did not reproduce."
@@ -832,11 +839,12 @@ else
   # not a reason to discard it -- `veron collect` picks the file up,
   # and the console gets a count and a sample rather than a silent
   # sample presented as the answer.
-  cmp -l /tmp/img1 rootfs.img > image-diff.txt 2>&1 || true
+  cmp -l img1.repro-scratch rootfs.img > image-diff.txt 2>&1 || true
   printf '  %s differing byte(s); full list in the diag bundle as repro/image-diff.txt\n' \
     "$(wc -l < image-diff.txt)"
   head -20 image-diff.txt | sed 's/^/    /'
 fi
+rm -f img1.repro-scratch
 
 # PUBLISH THE IMAGE, FOR THE SAME REASON THE SYSROOT AND THE TOOLBOX
 # ARE PUBLISHED. rootfs.img is what this entire pipeline exists to
@@ -1966,15 +1974,18 @@ sha256sum rootfs-full.img | tee IMAGE-SHA256-FULL
 # match the artifact beside it.
 build_img rootfs.img
 sha256sum rootfs.img | tee IMAGE-SHA256
-cp rootfs.img /tmp/img-stripped
+# SAME RULE AS THE IMAGE PHASE: scratch beside the artifact, never in
+# the laptop's RAM-backed /tmp.
+cp rootfs.img img-stripped.repro-scratch
 build_img rootfs.img
-if cmp -s /tmp/img-stripped rootfs.img; then
+if cmp -s img-stripped.repro-scratch rootfs.img; then
   echo "VERON-IMAGE-REPRO-OK  two builds of the stripped tree, identical bytes"
 else
   echo "VERON-IMAGE-REPRO-DIFF  the stripped container did not reproduce"
-  cmp -l /tmp/img-stripped rootfs.img > image-diff-stripped.txt 2>&1 || true
+  cmp -l img-stripped.repro-scratch rootfs.img > image-diff-stripped.txt 2>&1 || true
   printf '  %s differing byte(s)\n' "$(wc -l < image-diff-stripped.txt)"
 fi
+rm -f img-stripped.repro-scratch
 
 cd "$ROOT"
 if [ -z "${SKIP_BOOT:-}" ]; then
