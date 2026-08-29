@@ -1,23 +1,25 @@
 --- a/Source/WebCore/CMakeLists.txt
 +++ b/Source/WebCore/CMakeLists.txt
-@@ -3058,6 +3058,34 @@
+@@ -3058,6 +3058,33 @@
  
  WEBKIT_COMPUTE_SOURCES(WebCore)
  
-+# Veron: cap GCC's IR garbage collector on EVERY WebCore unified bundle,
-+# and compile the JS-DOM binding bundles at -O1 besides. The evidence
-+# trail, all from one 8 GiB laptop's kernel logs and build.ninja:
++# Veron: compile the JS-DOM binding bundles at -O1 with GCC's IR garbage
++# collector capped -- and ONLY those. The full evidence trail from one
++# 8 GiB laptop and two CI runs:
 +#   - binding bundles (JSDOMWindow-class): 4.9 GiB for THREE files at
-+#     -O2 -- live IR, so -O1, the only lever that shrinks it;
-+#   - ORDINARY bundles (e.g. eight dom/DeviceOrientation* files,
-+#     UnifiedSource-be65d27a-7, 2026-08-29): 3.5 GiB at plain -O2 under
-+#     GCC 15.2, beside a 2.8 GiB sibling -- dead at -j2 on 6.8 GiB
-+#     available. Collector caps (~40% peak cut on public record) bring
-+#     the pair inside the machine.
-+# Verified landing: 535 build.ninja commands carry these flags. The caps
-+# do not change generated code (GCC documents them as memory/time
-+# tuning); -O1 does, identically on every machine, since this patch is
-+# part of the recipe.
++#     -O2; live IR, so -O1 -- the only lever that shrinks it. This
++#     configuration measured 180 min on the 16 GiB CI runner: at budget.
++#   - ordinary bundles (dom/DeviceOrientation* and kin): ~3.5 GiB at
++#     -O2 under GCC 15.2. Capping the collector on ALL of them was
++#     tried on 2026-08-29 and is the recorded dead end: CI went 180 ->
++#     265 min and the capped TU was OOM-killed anyway, caps verified on
++#     its command line -- live IR on both counts. Ordinary bundles
++#     therefore keep pristine upstream flags and the scheduler runs
++#     them one at a time on small machines (see ram_per_job_mib).
++# Identified by bundle CONTENT so the match survives regeneration; the
++# ggc params do not change generated code, -O1 does, identically on
++# every machine, since this patch is part of the recipe.
 +if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND ENABLE_UNIFIED_BUILDS)
 +    file(GLOB _veron_webcore_bundles ${WebCore_DERIVED_SOURCES_DIR}/unified-sources/UnifiedSource-*.c*)
 +    foreach (_veron_bundle IN LISTS _veron_webcore_bundles)
@@ -25,9 +27,6 @@
 +        if (_veron_bundle_text MATCHES "#include \"JS")
 +            set_source_files_properties(${_veron_bundle} PROPERTIES
 +                COMPILE_OPTIONS "-O1;--param=ggc-min-expand=10;--param=ggc-min-heapsize=32768")
-+        else ()
-+            set_source_files_properties(${_veron_bundle} PROPERTIES
-+                COMPILE_OPTIONS "--param=ggc-min-expand=10;--param=ggc-min-heapsize=32768")
 +        endif ()
 +    endforeach ()
 +endif ()
