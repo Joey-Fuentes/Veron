@@ -2379,7 +2379,7 @@ package curl 8.18.0
 package elfutils 0.192
   group        graphics-substrate
   license      GPL-3.0-or-later AND LGPL-3.0-or-later
-  recipe-sha   80fd4d57f043d217d031114cb495919e9cc4c165cffda6dd466699e75db5637a
+  recipe-sha   ad5fa2d3005c895ce8f8a77c00ebae1c105dfc9c440906a507d7121f6b9ccd27
 
   source
     url        https://sourceware.org/pub/elfutils/0.192/elfutils-0.192.tar.bz2
@@ -2397,13 +2397,16 @@ package elfutils 0.192
     [01] unpack
          cwd  build/elfutils-0.192
          argv ["tar", "-xf", "dl/elfutils-0.192.tar.bz2", "-C", "build/elfutils-0.192"]
-    [02] configure
+    [02] no-ldl
          cwd  build/elfutils-0.192/elfutils-0.192
-         argv ["./configure", "--prefix=/usr", "--disable-debuginfod", "--disable-libdebuginfod", "--disable-nls", "--without-bzlib", "--without-lzma", "--with-zstd", "--disable-static", "--program-prefix=eu-", "CFLAGS=-g -O2 -Wno-error=discarded-qualifiers"]
-    [03] build
+         argv ["sh", "-c", "sed -i 's/ -ldl / /' libdw/Makefile.in && ! grep -q ' -ldl ' libdw/Makefile.in"]
+    [03] configure
+         cwd  build/elfutils-0.192/elfutils-0.192
+         argv ["./configure", "--prefix=/usr", "--disable-debuginfod", "--disable-libdebuginfod", "--disable-nls", "--without-bzlib", "--without-lzma", "--with-zstd", "--without-libarchive", "--disable-static", "--program-prefix=eu-", "CFLAGS=-g -O2 -Wno-error=discarded-qualifiers"]
+    [04] build
          cwd  build/elfutils-0.192/elfutils-0.192
          argv ["make", "-j1"]
-    [04] install
+    [05] install
          cwd  build/elfutils-0.192/elfutils-0.192
          env  DESTDIR=dest/elfutils
          argv ["make", "install"]

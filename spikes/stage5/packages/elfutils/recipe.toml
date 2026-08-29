@@ -38,7 +38,8 @@ optional_off = ["debuginfod", "libdebuginfod", "nls", "demangler",
 configure_flags = ["CFLAGS=-g -O2 -Wno-error=discarded-qualifiers",
                    "--prefix=/usr", "--disable-debuginfod",
                    "--disable-libdebuginfod", "--disable-nls",
-                   "--without-bzlib", "--without-lzma", "--with-zstd", "--disable-static",
+                   "--without-bzlib", "--without-lzma", "--with-zstd",
+                   "--without-libarchive", "--disable-static",
                    "--program-prefix=eu-"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["elfutils", "libelf"]
@@ -70,6 +71,21 @@ cwd  = "$B"
 run  = [["tar", "-xf", "$DL/elfutils-0.192.tar.bz2", "-C", "$B"]]
 
 [[steps]]
+name = "no-ldl"
+cwd  = "$S"
+# UPSTREAM HARDCODES -ldl ON libdw.so AND THIS SYSROOT HAS NOTHING FOR IT
+# TO RESOLVE: glibc >= 2.34 folded dlopen into libc and ships only the
+# runtime libdl.so.2 compat object -- no libdl.so dev name, no stub .a.
+# The first REAL rebuild of this package in the project's history
+# (forced by the zstd determinism pin, 2026-08-29) died on
+#     ld: cannot find -ldl
+# proving every prior elfutils binary on every machine was a
+# checkpoint-restored relic of a sysroot that no longer exists. dlopen
+# is in libc; the flag is deleted at the source of the generated
+# Makefile rather than stubbed around.
+run  = [["sh", "-c", "sed -i 's/ -ldl / /' libdw/Makefile.in && ! grep -q ' -ldl ' libdw/Makefile.in"]]
+
+[[steps]]
 name = "configure"
 cwd  = "$S"
 # CFLAGS CARRIES ONE UN-PROMOTION, AND IT IS NOT A STYLE CHOICE.
@@ -96,7 +112,8 @@ cwd  = "$S"
 # default; omitting them would quietly build elfutils unoptimised.
 run  = [["./configure", "--prefix=/usr", "--disable-debuginfod",
          "--disable-libdebuginfod", "--disable-nls", "--without-bzlib",
-         "--without-lzma", "--with-zstd", "--disable-static", "--program-prefix=eu-",
+         "--without-lzma", "--with-zstd", "--without-libarchive",
+         "--disable-static", "--program-prefix=eu-",
          "CFLAGS=-g -O2 -Wno-error=discarded-qualifiers"]]
 
 [[steps]]
