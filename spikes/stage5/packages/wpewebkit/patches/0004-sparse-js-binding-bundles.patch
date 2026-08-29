@@ -1,25 +1,61 @@
 --- a/Source/WTF/Scripts/generate-unified-source-bundles.rb
 +++ b/Source/WTF/Scripts/generate-unified-source-bundles.rb
-@@ -290,6 +290,18 @@
+@@ -225,6 +225,12 @@
+         @extraFiles = []
+         @currentDirectory = nil
+         @lastBundlingPrefix = nil
++        # Veron: one persistent counter per hash key. The counter used to
++        # reset on every prefix change while the filename hashed the
++        # directory; two prefixes sharing a directory then rewrote each
++        # other's UnifiedSource-<hash>-N files and the earlier group's
++        # code silently fell out of the build.
++        @bundleCounts = Hash.new(0)
+     end
+ 
+     def writeFile(file, text)
+@@ -252,7 +258,11 @@
+     end
+ 
+     def flush
+-        @bundleCount += 1
++        if @maxCount
++            @bundleCount += 1
++        else
++            @bundleCount = (@bundleCounts[@currentDirectory.to_s] += 1)
++        end
+         bundleFile = bundleFileName
+         $generatedSources << $unifiedSourceOutputPath + bundleFile
+         @extraFiles << bundleFile if @maxCount and @bundleCount > @maxCount
+@@ -278,8 +288,10 @@
+                 flush
+             end
+             @lastBundlingPrefix = bundlePrefix
+-            @currentDirectory = path.dirname
+-            @bundleCount = 0 unless @maxCount
++            # Veron: hash key follows the PREFIX (unique per bundling
++            # group), not the first directory seen; counters never reset,
++            # they continue per key via @bundleCounts.
++            @currentDirectory = @maxCount ? path.dirname : Pathname.new(bundlePrefix.to_s)
+         end
+         if @fileCount >= bundleSize
+             log("Flushing because new bundle is full (#{@fileCount} sources)")
+@@ -290,6 +302,15 @@
      end
  end
  
 +# Veron: SPARSE bundling for WebCore's JS bindings. Every kernel OOM on an
-+# 8 GiB build machine named a bundle of generated JS-DOM bindings (worst:
-+# anon-rss 5.13 GiB at bundle 8, -O2) -- not because these bundles hold
-+# more files, but because each generated JS*.cpp is individually enormous
-+# and template-heavy. Bundling THOSE at 3 files per TU cuts the peak to
-+# roughly the range ordinary bundles already occupy, while the other ~8000
-+# translation units keep the upstream bundle size and upstream cost.
++# 8 GiB build machine named a bundle of generated JS-DOM bindings -- not
++# because those bundles hold more files, but because each generated
++# JS*.cpp is individually enormous. Bundle THOSE at 3 per TU; the other
++# ~8000 translation units keep the upstream size and upstream cost.
 +# Scoped to WebCore so JavaScriptCore's many small JS*.cpp files are not
-+# fragmented. This is the inverse of the script's dense-bundle feature,
-+# which the CMake build never engages.
++# fragmented.
 +VERON_SPARSE_BUNDLE_SIZE = 3
 +
  def BundlePrefixAndSizeForPath(path)
      topLevelDirectory = TopLevelDirectoryForPath(path.dirname)
      $denseBundleFilters.each { |filter|
-@@ -297,6 +309,9 @@
+@@ -297,6 +318,9 @@
              return filter, MAX_DENSE_BUNDLE_SIZE
          end
      }

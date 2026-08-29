@@ -29,6 +29,15 @@ crosschecked_against = []
 # killed the first -j3 run at object 1913; patch 0005 puts the identical
 # collector caps on exactly that list.
 #
+# THE CI LINK FAILURE OF 2026-08-29 (undefined nameLiteral, CommonVM,
+# DOMWrapperWorld symbols after 210 min) was patch 0004's own defect, now
+# fixed IN the patch: bundle filenames hashed the directory while the
+# counter reset per PREFIX, so sparse and default groups sharing a
+# directory overwrote each other's UnifiedSource files and the earlier
+# group's code silently left the build. Filenames now hash the prefix
+# with one persistent counter per key -- collision-free under any
+# interleaving, proven by simulation before shipping.
+#
 # THE EVENING'S THREE FACTS, read off the machine instead of modeled:
 # MemTotal is 7251 MiB (iGPU carve-out; ~6.8 GiB available), the compiler
 # is GCC 15.2.0, and a THREE-file sparse bindings bundle led by
