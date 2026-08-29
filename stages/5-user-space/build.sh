@@ -1237,21 +1237,25 @@ cd "$ROOT"
 O=spikes/stage5/out
 [ -s "$O/initramfs.cpio.gz" ] || { echo "VERON-GENERIC-BOOT-SKIP  no initramfs"; exit 0; }
 mkdir -p boot-generic
-# THE SKIP MESSAGE USED TO LIE. Without gh installed, bash printed a raw
-# "gh: command not found" and the || branch then claimed "no
-# 4/kernel-x86_64 release yet" -- about a release that exists and that CI
-# downloads every run. The machine that first ran this phase locally
-# (2026-08-29) simply has no gh. Say which condition actually held, and
-# reuse a previously fetched kernel so a gh-less machine that obtained
-# one once (or by hand: any vmlinuz-generic + KERNEL-GENERIC-SHA256
-# dropped into boot-generic/) can still run the generic boot.
-if [ -s boot-generic/vmlinuz-generic ]; then
-  echo "  boot-generic/vmlinuz-generic already present -- not re-fetching"
+# THE LOCAL BUILD OUTRANKS THE DOWNLOAD, the same priority generic.sh
+# gives the sysroot (out/4/lfs before 4/latest-x86_64). A machine that
+# ran `generic.sh pack` has the kernel at out/4-generic/rel/ -- testing
+# THAT artifact is the whole point of running this phase locally, and
+# the first version instead demanded gh, printed a raw "command not
+# found", and then blamed a release that exists (2026-08-29). Priority:
+# local stage-4 output, then a previously fetched/hand-placed
+# boot-generic/, then gh; the sha256 check below guards all three.
+if [ -s out/4-generic/rel/vmlinuz-generic ] && [ -s out/4-generic/rel/KERNEL-GENERIC-SHA256 ]; then
+  cp out/4-generic/rel/vmlinuz-generic out/4-generic/rel/KERNEL-GENERIC-SHA256 boot-generic/
+  echo "  generic kernel: out/4-generic/rel (local stage-4 run)"
+elif [ -s boot-generic/vmlinuz-generic ]; then
+  echo "  generic kernel: boot-generic/ (cached or hand-placed)"
 elif command -v gh >/dev/null 2>&1; then
   gh release download 4/kernel-x86_64 -D boot-generic --clobber \
     || { echo "VERON-GENERIC-BOOT-SKIP  gh could not fetch 4/kernel-x86_64 (release missing or no auth)"; exit 0; }
+  echo "  generic kernel: 4/kernel-x86_64 release (gh)"
 else
-  echo "VERON-GENERIC-BOOT-SKIP  gh is not installed here and no cached boot-generic/vmlinuz-generic; the 4/kernel-x86_64 release itself is untested by this skip"
+  echo "VERON-GENERIC-BOOT-SKIP  no out/4-generic/rel kernel, no cached boot-generic/, and gh is not installed; nothing was tested by this skip"
   exit 0
 fi
 ( cd boot-generic && grep vmlinuz-generic KERNEL-GENERIC-SHA256 | sha256sum -c - )
