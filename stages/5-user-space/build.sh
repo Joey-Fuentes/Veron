@@ -1117,7 +1117,13 @@ fi
 # questions and both are wanted: the harness proves the packages
 # work under this kernel, this proves the machine comes up.
 system_fail=0
-if [ "${BOOT_SYSTEM:-}" = "true" ]; then
+# ACCEPTS 1 AND true, AND THE HISTORY IS THE REASON: the header and the
+# workflow both say BOOT_SYSTEM=1, this test said "true", so the
+# switch_root-into-dinit boot NEVER RAN ANYWHERE -- every CI run with
+# boot_system=true ticked printed "system not requested" one screen
+# after requesting it. Same species as the ADOPT_CHECKPOINT quoting
+# bug, found the same way: the first time someone read the output.
+if [ "${BOOT_SYSTEM:-}" = "true" ] || [ "${BOOT_SYSTEM:-}" = "1" ]; then
   echo ""
   echo "=== boot 2: switch_root into dinit ==="
   # 180 SECONDS WAS BEING SPENT IN FULL, EVERY RUN, DOING NOTHING.
@@ -1206,7 +1212,7 @@ fi
 # hide the harness result the same way in reverse.
 echo ""
 echo "  harness  $([ "$harness_fail" = 0 ] && echo OK || echo FAIL)"
-if [ "${BOOT_SYSTEM:-}" = "true" ]; then
+if [ "${BOOT_SYSTEM:-}" = "true" ] || [ "${BOOT_SYSTEM:-}" = "1" ]; then
   echo "  system   $([ "$system_fail" = 0 ] && echo OK || echo FAIL)"
 else
   echo "  system   not requested (boot_system=false)"
