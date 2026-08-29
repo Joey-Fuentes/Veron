@@ -29,6 +29,14 @@ crosschecked_against = []
 # killed the first -j3 run at object 1913; patch 0005 puts the identical
 # collector caps on exactly that list.
 #
+# 2026-08-29 EARLY MORNING, THE MODEL MET build.ninja: 535 commands carry
+# the collector caps, 527 carry -O1 -- the property patches LAND. The
+# -j2 kill was an ORDINARY dom/ bundle at 3.5 GiB (-O2, GCC 15.2) beside
+# a 2.8 GiB sibling: plain bundles range higher than the 3.0 the
+# ram_per_job comment assumed. Patch 0003 now caps the collector on ALL
+# WebCore bundles (JS ones additionally -O1); measured-in-the-wild ~40%
+# cuts put the worst pair near 4.5-5 GiB in 6.8 available.
+#
 # THE CI LINK FAILURE OF 2026-08-29 (undefined nameLiteral, CommonVM,
 # DOMWrapperWorld symbols after 210 min) was patch 0004's own defect, now
 # fixed IN the patch: bundle filenames hashed the directory while the
