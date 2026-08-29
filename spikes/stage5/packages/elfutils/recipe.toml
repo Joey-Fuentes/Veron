@@ -15,7 +15,16 @@ crosschecked_against = []
 # xz are optional decompressors for the same purpose and both are already in
 # this set, so declining them is a real choice rather than a constraint.
 build        = ["zlib"]
-link         = ["zlib"]
+# zstd IS DECLARED FOR THE SAME REASON bzlib AND lzma ARE PINNED OFF
+# below: configure probes for all three. The recipe's author pinned two
+# and the third bit on G3's first cross-machine run (2026-08-29) -- the
+# laptop's libelf carried ZSTD_compressStream2/ZSTD_decompress, CI's did
+# not, because zstd happened to be staged on one sysroot at build time
+# and not the other. Declared and forced ON rather than off: the kernel
+# modules this system ships are zstd-compressed, and libelf that can
+# read zstd-compressed sections is the useful variant -- everywhere,
+# identically.
+link         = ["zlib", "zstd"]
 runtime      = ["zlib"]
 # debuginfod IS THE ONE THAT MATTERS. --enable-debuginfod builds a client that
 # FETCHES DEBUG INFORMATION OVER HTTP, and libdebuginfod would then be linked
@@ -29,7 +38,7 @@ optional_off = ["debuginfod", "libdebuginfod", "nls", "demangler",
 configure_flags = ["CFLAGS=-g -O2 -Wno-error=discarded-qualifiers",
                    "--prefix=/usr", "--disable-debuginfod",
                    "--disable-libdebuginfod", "--disable-nls",
-                   "--without-bzlib", "--without-lzma", "--disable-static",
+                   "--without-bzlib", "--without-lzma", "--with-zstd", "--disable-static",
                    "--program-prefix=eu-"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["elfutils", "libelf"]
@@ -87,7 +96,7 @@ cwd  = "$S"
 # default; omitting them would quietly build elfutils unoptimised.
 run  = [["./configure", "--prefix=/usr", "--disable-debuginfod",
          "--disable-libdebuginfod", "--disable-nls", "--without-bzlib",
-         "--without-lzma", "--disable-static", "--program-prefix=eu-",
+         "--without-lzma", "--with-zstd", "--disable-static", "--program-prefix=eu-",
          "CFLAGS=-g -O2 -Wno-error=discarded-qualifiers"]]
 
 [[steps]]

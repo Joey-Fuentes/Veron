@@ -61,32 +61,32 @@ between this file and the recipes fails the run.
   39. dhcpcd
   40. dosfstools
   41. e2fsprogs
-  42. elfutils
-  43. flex
-  44. gmp
-  45. lcms2
-  46. libgpg-error
-  47. libidn2
-  48. libnl
-  49. libogg
-  50. libpng
-  51. libseccomp
-  52. libtasn1
-  53. libtool
-  54. libusb
-  55. libvpx
-  56. libyaml
-  57. nghttp2
-  58. npth
-  59. openssl
-  60. readline
-  61. tzdb
-  62. zstd
-  63. acpica
-  64. alsa-utils
-  65. automake
-  66. bash
-  67. curl
+  42. flex
+  43. gmp
+  44. lcms2
+  45. libgpg-error
+  46. libidn2
+  47. libnl
+  48. libogg
+  49. libpng
+  50. libseccomp
+  51. libtasn1
+  52. libtool
+  53. libusb
+  54. libvpx
+  55. libyaml
+  56. nghttp2
+  57. npth
+  58. openssl
+  59. readline
+  60. tzdb
+  61. zstd
+  62. acpica
+  63. alsa-utils
+  64. automake
+  65. bash
+  66. curl
+  67. elfutils
   68. freetype-bootstrap
   69. libarchive
   70. libassuan
@@ -1542,39 +1542,6 @@ package e2fsprogs 1.47.4
          argv ["cp", "build/e2fsprogs-1.47.4/e2fsprogs-1.47.4/misc/dumpe2fs.static", "dest/e2fsprogs/usr/sbin/dumpe2fs"]
 
 ======================================================================
-package elfutils 0.192
-  group        graphics-substrate
-  license      GPL-3.0-or-later AND LGPL-3.0-or-later
-  recipe-sha   22ca310a5c250990bbcf354f9fe41bca85fc07adfe3a3762266859d1575186a4
-
-  source
-    url        https://sourceware.org/pub/elfutils/0.192/elfutils-0.192.tar.bz2
-    sha256     616099beae24aba11f9b63d86ca6cc8d566d968b802391334c91df54eab416b4
-    signature  PGP signed by Mark Wielaard; not verified per-build -- the pinned sha256 is the result of that audit
-    correspond none
-
-  deps
-    build        zlib
-    link         zlib
-    runtime      zlib
-    optional_off bzip2, debuginfod, demangler, libdebuginfod, lzma, nls, static
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/elfutils-0.192
-         argv ["tar", "-xf", "dl/elfutils-0.192.tar.bz2", "-C", "build/elfutils-0.192"]
-    [02] configure
-         cwd  build/elfutils-0.192/elfutils-0.192
-         argv ["./configure", "--prefix=/usr", "--disable-debuginfod", "--disable-libdebuginfod", "--disable-nls", "--without-bzlib", "--without-lzma", "--disable-static", "--program-prefix=eu-", "CFLAGS=-g -O2 -Wno-error=discarded-qualifiers"]
-    [03] build
-         cwd  build/elfutils-0.192/elfutils-0.192
-         argv ["make", "-j1"]
-    [04] install
-         cwd  build/elfutils-0.192/elfutils-0.192
-         env  DESTDIR=dest/elfutils
-         argv ["make", "install"]
-
-======================================================================
 package flex 2.6.4
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
@@ -2407,6 +2374,39 @@ package curl 8.18.0
     [04] install
          cwd  build/curl-8.18.0/curl-8.18.0
          argv ["make", "DESTDIR=dest/curl", "install"]
+
+======================================================================
+package elfutils 0.192
+  group        graphics-substrate
+  license      GPL-3.0-or-later AND LGPL-3.0-or-later
+  recipe-sha   80fd4d57f043d217d031114cb495919e9cc4c165cffda6dd466699e75db5637a
+
+  source
+    url        https://sourceware.org/pub/elfutils/0.192/elfutils-0.192.tar.bz2
+    sha256     616099beae24aba11f9b63d86ca6cc8d566d968b802391334c91df54eab416b4
+    signature  PGP signed by Mark Wielaard; not verified per-build -- the pinned sha256 is the result of that audit
+    correspond none
+
+  deps
+    build        zlib
+    link         zlib, zstd
+    runtime      zlib
+    optional_off bzip2, debuginfod, demangler, libdebuginfod, lzma, nls, static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/elfutils-0.192
+         argv ["tar", "-xf", "dl/elfutils-0.192.tar.bz2", "-C", "build/elfutils-0.192"]
+    [02] configure
+         cwd  build/elfutils-0.192/elfutils-0.192
+         argv ["./configure", "--prefix=/usr", "--disable-debuginfod", "--disable-libdebuginfod", "--disable-nls", "--without-bzlib", "--without-lzma", "--with-zstd", "--disable-static", "--program-prefix=eu-", "CFLAGS=-g -O2 -Wno-error=discarded-qualifiers"]
+    [03] build
+         cwd  build/elfutils-0.192/elfutils-0.192
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/elfutils-0.192/elfutils-0.192
+         env  DESTDIR=dest/elfutils
+         argv ["make", "install"]
 
 ======================================================================
 package freetype-bootstrap 2.14.1
