@@ -17,7 +17,14 @@ crosschecked_against = []
 # rather than assumed -- libnl exists here for wpa_supplicant and nothing
 # else touches it.
 build        = ["pkgconf"]
-link         = ["elfutils"]
+# libcap IS DECLARED BECAUSE THE PROBE FOUND IT ONCE AND NOT THE OTHER
+# TIME. G3 cross-machine (2026-08-29): the laptop's ip carried
+# cap_set_proc/cap_get_flag/..., CI's did not -- configure autodetects
+# libcap from whatever the sysroot holds at that build's moment, and an
+# undeclared dependency is invisible to the package key, so identical
+# keys produced different bytes. Declared + forced on: deterministic,
+# and ip keeps capability support everywhere.
+link         = ["elfutils", "libcap"]
 runtime      = ["elfutils"]
 # iproute2 HAS NO --disable FLAGS. Its configure is a probe script: it
 # compiles a test program per feature and writes HAVE_x:=y into config.mk for
@@ -27,7 +34,7 @@ optional_off = ["libmnl", "libbpf", "selinux", "tirpc", "berkeley-db",
                 "libcap", "xtables", "ipset"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--libbpf_force=off"]
+configure_flags = ["--prefix=/usr", "--libbpf_force=off", "--libcap_force=on"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["iproute2"]
 deferral        = """
@@ -93,7 +100,7 @@ run  = [["tar", "-xf", "$DL/iproute2-6.18.0.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "configure"
 cwd  = "$S"
-run  = [["./configure", "--prefix=/usr", "--libbpf_force=off"]]
+run  = [["./configure", "--prefix=/usr", "--libbpf_force=off", "--libcap_force=on"]]
 
 [[steps]]
 name = "build"

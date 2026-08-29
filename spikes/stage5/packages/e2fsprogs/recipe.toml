@@ -49,6 +49,15 @@ configure_flags = [
     "--disable-fuse2fs",
     "--disable-e2scrub",
     "--disable-rpath",
+    # PINNED AFTER G3'S FIRST CROSS-MACHINE RUN (2026-08-29): CI's build
+    # shipped the bundled libuuid/uuidgen and libblkid; the laptop's
+    # configure found a uuid already staged in its sysroot -- e2fsprogs'
+    # OWN, restored from an earlier round -- and silently skipped
+    # building them: same recipe, different FILE SET. Auto-detection of
+    # an undeclared library is invisible to the package key. Enabled
+    # explicitly: the tools ship everywhere, identically.
+    "--enable-libuuid",
+    "--enable-libblkid",
 ]
 verification    = "none -- upstream 'make check' not run; guest test exercises mke2fs + resize2fs"
 packaged_as     = ["e2fsprogs"]
@@ -117,7 +126,7 @@ name = "configure"
 cwd  = "$S"
 run  = [["./configure", "--prefix=/usr", "--sbindir=/usr/sbin",
          "--disable-nls", "--disable-fuse2fs",
-         "--disable-e2scrub", "--disable-rpath"]]
+         "--disable-e2scrub", "--disable-rpath", "--enable-libuuid", "--enable-libblkid"]]
 
 [[steps]]
 name = "build"

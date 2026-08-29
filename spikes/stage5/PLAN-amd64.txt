@@ -88,26 +88,26 @@ between this file and the recipes fails the run.
   66. bash
   67. curl
   68. freetype-bootstrap
-  69. iproute2
-  70. libarchive
-  71. libassuan
-  72. libgcrypt
-  73. libksba
-  74. libvorbis
-  75. libxml2
-  76. nettle
-  77. nnn
-  78. ruby
-  79. sqlite
-  80. wpa_supplicant
-  81. git
-  82. libcap
-  83. libcap-ng
-  84. libhyphen
-  85. libtpms
-  86. python
-  87. ca-certificates
-  88. edk2-firmware
+  69. libarchive
+  70. libassuan
+  71. libgcrypt
+  72. libksba
+  73. libvorbis
+  74. libxml2
+  75. nettle
+  76. nnn
+  77. ruby
+  78. sqlite
+  79. wpa_supplicant
+  80. git
+  81. libcap
+  82. libcap-ng
+  83. libhyphen
+  84. libtpms
+  85. python
+  86. ca-certificates
+  87. edk2-firmware
+  88. iproute2
   89. markupsafe
   90. meson
   91. ninja
@@ -2442,38 +2442,6 @@ package freetype-bootstrap 2.14.1
          argv ["make", "DESTDIR=dest/freetype-bootstrap", "install"]
 
 ======================================================================
-package iproute2 6.18.0
-  group        network
-  license      GPL-2.0-only
-  recipe-sha   ef839e94dc33db62468caa2a8df129b11583614e20899284f47b36d7abbee4ab
-
-  source
-    url        https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.xz
-    sha256     6ba520e1975e4c50dc931eeae91ea37c198b8a173744885f8895b84325f9d456
-    signature  https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.sign
-    correspond none
-
-  deps
-    build        pkgconf
-    link         elfutils
-    runtime      elfutils
-    optional_off berkeley-db, ipset, libbpf, libcap, libmnl, selinux, tirpc, xtables
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/iproute2-6.18.0
-         argv ["tar", "-xf", "dl/iproute2-6.18.0.tar.xz", "-C", "build/iproute2-6.18.0"]
-    [02] configure
-         cwd  build/iproute2-6.18.0/iproute2-6.18.0
-         argv ["./configure", "--prefix=/usr", "--libbpf_force=off"]
-    [03] build
-         cwd  build/iproute2-6.18.0/iproute2-6.18.0
-         argv ["make", "-j1"]
-    [04] install
-         cwd  build/iproute2-6.18.0/iproute2-6.18.0
-         argv ["make", "install", "DESTDIR=dest/iproute2", "PREFIX=/usr", "SBINDIR=/usr/sbin"]
-
-======================================================================
 package libarchive 3.8.5
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
@@ -3197,6 +3165,38 @@ package edk2-firmware stable202608
          argv ["sh", "-c", "cd dest/edk2-firmware/usr/share/qemu && for f in OVMF.fd OVMF_CODE.fd OVMF_VARS.fd; do test -s $f || { echo VERON-OVMF-MISSING $f; exit 1; }; done && sha256sum OVMF*.fd && wc -c OVMF*.fd"]
 
 ======================================================================
+package iproute2 6.18.0
+  group        network
+  license      GPL-2.0-only
+  recipe-sha   858406c768729f62395c9546aefeffafa08e18fa4660c7c619b0003c497e2691
+
+  source
+    url        https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.xz
+    sha256     6ba520e1975e4c50dc931eeae91ea37c198b8a173744885f8895b84325f9d456
+    signature  https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.sign
+    correspond none
+
+  deps
+    build        pkgconf
+    link         elfutils, libcap
+    runtime      elfutils
+    optional_off berkeley-db, ipset, libbpf, libcap, libmnl, selinux, tirpc, xtables
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/iproute2-6.18.0
+         argv ["tar", "-xf", "dl/iproute2-6.18.0.tar.xz", "-C", "build/iproute2-6.18.0"]
+    [02] configure
+         cwd  build/iproute2-6.18.0/iproute2-6.18.0
+         argv ["./configure", "--prefix=/usr", "--libbpf_force=off", "--libcap_force=on"]
+    [03] build
+         cwd  build/iproute2-6.18.0/iproute2-6.18.0
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/iproute2-6.18.0/iproute2-6.18.0
+         argv ["make", "install", "DESTDIR=dest/iproute2", "PREFIX=/usr", "SBINDIR=/usr/sbin"]
+
+======================================================================
 package markupsafe 3.0.3
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
@@ -3327,7 +3327,7 @@ package packaging 26.3
 package python-setuptools 84.0.0
   group        build-substrate
   license      MIT
-  recipe-sha   6f0fc2425c5b73ad2f04778563516b79a8e276d459778d17d6005aefba7e9da1
+  recipe-sha   93b01308e1d9a3ed36cc8452740bdd52763c17a8530e94daef505badad788686
 
   source
     url        https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl
@@ -3345,15 +3345,19 @@ package python-setuptools 84.0.0
     [01] install
          cwd  build/python-setuptools-84.0.0
          argv ["sh", "-c", "mkdir -p dest/python-setuptools/usr/lib/python3.14/site-packages && python3 -m zipfile -e dl/setuptools-84.0.0-py3-none-any.whl dest/python-setuptools/usr/lib/python3.14/site-packages/"]
-    [02] importable-or-die
+    [02] bytecode
          cwd  build/python-setuptools-84.0.0
+         argv ["sh", "-c", "python3 -m compileall -q --invalidation-mode checked-hash -s dest/python-setuptools -p / dest/python-setuptools/usr/lib/python3.14/site-packages"]
+    [03] importable-or-die
+         cwd  build/python-setuptools-84.0.0
+         env  PYTHONDONTWRITEBYTECODE=1
          argv ["sh", "-c", "PYTHONPATH=dest/python-setuptools/usr/lib/python3.14/site-packages python3 -c 'import importlib.metadata as m; v=m.version(\"setuptools\"); assert v==\"84.0.0\", v; import setuptools; print(\"setuptools\", v)'"]
 
 ======================================================================
 package python-wheel 0.48.0
   group        build-substrate
   license      MIT
-  recipe-sha   897a47e75f2976a9af7945f722b625f514a81002f9ceb9c0208f6c67e2660b1e
+  recipe-sha   f718a37ddd82c84b56bd8b383cbc74cca02f5b40e6774c3f9ddae8615491b346
 
   source
     url        https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl
@@ -3371,8 +3375,12 @@ package python-wheel 0.48.0
     [01] install
          cwd  build/python-wheel-0.48.0
          argv ["sh", "-c", "mkdir -p dest/python-wheel/usr/lib/python3.14/site-packages && python3 -m zipfile -e dl/wheel-0.48.0-py3-none-any.whl dest/python-wheel/usr/lib/python3.14/site-packages/"]
-    [02] importable-or-die
+    [02] bytecode
          cwd  build/python-wheel-0.48.0
+         argv ["sh", "-c", "python3 -m compileall -q --invalidation-mode checked-hash -s dest/python-wheel -p / dest/python-wheel/usr/lib/python3.14/site-packages"]
+    [03] importable-or-die
+         cwd  build/python-wheel-0.48.0
+         env  PYTHONDONTWRITEBYTECODE=1
          argv ["sh", "-c", "PYTHONPATH=dest/python-wheel/usr/lib/python3.14/site-packages python3 -c 'import importlib.metadata as m; v=m.version(\"wheel\"); assert v==\"0.48.0\", v; import wheel; print(\"wheel\", v)'"]
 
 ======================================================================

@@ -53,8 +53,22 @@ cwd  = "$B"
 run  = [["sh", "-c", "mkdir -p $D/usr/lib/python3.14/site-packages && python3 -m zipfile -e $DL/setuptools-84.0.0-py3-none-any.whl $D/usr/lib/python3.14/site-packages/"]]
 
 [[steps]]
+name = "bytecode"
+cwd  = "$B"
+# DETERMINISTIC BYTECODE, WRITTEN ON PURPOSE. G3's first cross-machine run
+# (2026-08-29) found this package's .pyc files differing between CI and a
+# laptop -- the wheel ships none; the import check below was writing
+# __pycache__ into $D as a SIDE EFFECT, stamped with extraction-time
+# mtimes. checked-hash invalidation (PEP 552) embeds the source's hash
+# instead of its mtime, and -s/-p make the recorded path /usr/... rather
+# than the build tree's. The import check then runs with bytecode writing
+# OFF, so verification can never again alter what it verifies.
+run  = [["sh", "-c", "python3 -m compileall -q --invalidation-mode checked-hash -s $D -p / $D/usr/lib/python3.14/site-packages"]]
+
+[[steps]]
 name = "importable-or-die"
 cwd  = "$B"
+env  = { PYTHONDONTWRITEBYTECODE = "1" }
 run  = [["sh", "-c", "PYTHONPATH=$D/usr/lib/python3.14/site-packages python3 -c 'import importlib.metadata as m; v=m.version(\"setuptools\"); assert v==\"84.0.0\", v; import setuptools; print(\"setuptools\", v)'"]]
 [guest]
 test   = [["python3", "-c", "import importlib.metadata as m; print(m.version('setuptools'))"]]
