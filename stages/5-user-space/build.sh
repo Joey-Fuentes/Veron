@@ -898,8 +898,31 @@ python3 ../tools/veron --overlay ../packages-amd64 --sysroot ../sysroot loginkit
 # one directory too deep and the upload reported "No files were
 # found with the provided path". Third path bug of the same shape in
 # this one step.
-tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
-    -czf ../loginkit.tar.gz loginkit
+# DETERMINISTIC TAR WITHOUT GNU TAR. The first version ran
+#   tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner
+# which works on the CI runner and DIED ON VERON ITSELF: the laptop's
+# /usr/bin/tar is busybox, which knows none of those flags -- a
+# works-only-on-CI bug found the first time the image phase ran on the
+# OS it builds (2026-08-29). python3 is present wherever this project
+# runs at all, and tarfile writes the SAME BYTES on every machine:
+# sorted entries, mtime 0, uid/gid 0, gzip header mtime 0.
+python3 - <<'PYEOF'
+import tarfile, gzip, os, sys
+def norm(ti):
+    ti.uid = ti.gid = 0
+    ti.uname = ti.gname = ""
+    ti.mtime = 0
+    return ti
+paths = []
+for root, dirs, files in os.walk("loginkit"):
+    dirs.sort()
+    paths.append(root)
+    paths.extend(os.path.join(root, f) for f in sorted(files))
+with gzip.GzipFile("../loginkit.tar.gz", "wb", mtime=0) as gz:
+    with tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for p in paths:
+            t.add(p, recursive=False, filter=norm)
+PYEOF
 ls -la ../loginkit.tar.gz | sed 's/^/    /'
 printf '  loginkit.tar.gz: %s (every program plus the libraries it loads)\n' \
   "$(du -h ../loginkit.tar.gz | cut -f1)"
