@@ -69,6 +69,7 @@ fi
 
 
 phase_in() {
+rm -f "$ROOT/spikes/stage5/sysroot/.veron-stripped" 2>/dev/null || true
 
 # ---- KVM -- hardware virtualization when the runner has it; the CPU model stays qemu64 either way ----
 cd "$ROOT"
@@ -432,6 +433,12 @@ fi
 }
 
 phase_chain() {
+if [ -e "$ROOT/spikes/stage5/sysroot/.veron-stripped" ]; then
+  echo "VERON-SYSROOT-CONSUMED  phase_strip already ran against this sysroot;"
+  echo "  building over a stripped tree makes silently wrong packages"
+  echo "  (e2fsprogs, 2026-08-30). Run:  sh stages/5-user-space/build.sh in"
+  exit 2
+fi
 
 # ---- VERON-SEAL + build both packages ----
 cd "$ROOT"
@@ -1852,6 +1859,17 @@ fi
 phase_strip() {
 [ "$PARTIAL" != yes ] || { echo "  partial build: nothing to strip"; return 0; }
 qemu_shim
+# THE STRIP CONSUMES THE SYSROOT, AND NOW IT SAYS SO. Stripping mutates
+# the live sysroot in place: static archives (including glibc's libdl.a
+# and friends), cc1plus, headers -- gone. On a disposable CI runner that
+# is the last act; on a persistent laptop, the next chain built against
+# the gutted tree. elfutils failed LOUDLY there (cannot find -ldl,
+# 2026-08-29); e2fsprogs rebuilt SILENTLY WRONG in the same window --
+# dlopen probe failed, Libs.private came out empty, and resume preserved
+# the poisoned artifacts because the key cannot see strip-state. G3
+# caught it cross-machine a day later. The marker below turns the silent
+# poison into a loud refusal; phase_in removes it when it restores.
+touch "$ROOT/spikes/stage5/sysroot/.veron-stripped" 2>/dev/null || true
 
 # ---- Size the system, and name what nothing reaches ----
 cd "$ROOT"

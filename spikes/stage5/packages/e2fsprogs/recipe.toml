@@ -49,6 +49,14 @@ configure_flags = [
     "--disable-fuse2fs",
     "--disable-e2scrub",
     "--disable-rpath",
+    # KEY BUMPED 2026-08-30: this package rebuilt SILENTLY inside the
+    # strip-poisoned sysroot window (the run where elfutils died on
+    # -ldl), its dlopen probe failed against the eaten libdl.a, and
+    # ss.pc came out with an empty Libs.private -- G3 caught the whole
+    # package differing from CI by exactly that. Resume kept the
+    # poisoned artifacts because the key cannot see the sysroot's
+    # strip-state; this comment moves the key so the next chain
+    # rebuilds on the restored sysroot.
     # PINNED AFTER G3'S FIRST CROSS-MACHINE RUN (2026-08-29): CI's build
     # shipped the bundled libuuid/uuidgen and libblkid; the laptop's
     # configure found a uuid already staged in its sysroot -- e2fsprogs'
