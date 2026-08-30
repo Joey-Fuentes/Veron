@@ -88,9 +88,26 @@ def flatten_ledger(ledger, out, build_only):
     a duplicate-path check that reads a declared bootstrap as a conflict
     fails a correct build (run 86917062743, five freetype paths)."""
     lines = []
+    # ONE LIVE RECORD PER PACKAGE, NEWEST WINS. A machine that persists
+    # between runs keeps its ledger; a byte-changing rebuild then leaves
+    # the old record beside the new one, and flattening both records the
+    # same path twice with two hashes -- the trace failed on exactly that
+    # for days (2026-08-30, the setuptools .pyc set) while CI never could,
+    # because CI's ledger is born fresh every run. Superseded records are
+    # skipped and NAMED, not silently ignored: the ledger keeping history
+    # is fine, the flatten claiming two presents is not.
+    byname = {}
     for j in sorted(glob.glob(os.path.join(ledger, "*.json"))):
         with open(j) as f:
-            rec = json.load(f)
+            r = json.load(f)
+        n = r["name"]
+        if n in byname and os.path.getmtime(byname[n][0]) >= os.path.getmtime(j):
+            print("veron-trace-records: superseded record skipped: %s" % j)
+            continue
+        if n in byname:
+            print("veron-trace-records: superseded record skipped: %s" % byname[n][0])
+        byname[n] = (j, r)
+    for j, rec in (byname[k] for k in sorted(byname)):
         name = rec["name"]
         staged_only = name in build_only
         ftag, ltag = ("Fb", "Lb") if staged_only else ("F", "L")
