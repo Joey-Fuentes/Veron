@@ -69,6 +69,11 @@ runtime      = []
 optional_off = ["x11", "wayland", "xkbregistry", "docs", "bash-completion", "cool-uris", "tools", "libxml2"]
 
 [declared]
+# KEY BUMPED 2026-08-30, THE G3 FOSSIL FLUSH: three files plus
+# xkbcommon.pc differ cross-machine despite every optional feature
+# being pinned false below -- the signature of two historical builds,
+# not a live probe. Rebuilt on converged sysroots to prove it either
+# way.
 configure_flags = ["-Denable-x11=false", "-Denable-wayland=false",
                    "-Denable-xkbregistry=false", "-Denable-docs=false",
                    "-Denable-bash-completion=false", "-Denable-tools=false", "-Ddefault_library=both"]

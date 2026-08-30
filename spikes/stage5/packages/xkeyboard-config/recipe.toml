@@ -28,6 +28,11 @@ runtime      = []
 optional_off = ["nls", "non-latin-layouts-list", "xorg-rules-symlinks"]
 
 [declared]
+# KEY BUMPED 2026-08-30, AND THIS ONE IS CLOSED BY READING ALONE:
+# G3 found CI shipping the /usr/share/X11/xkb symlink that
+# -Dxorg-rules-symlinks=false below explicitly pins OFF. CI's artifact
+# simply predates the flag -- a checkpoint fossil, no probe involved.
+# The rebuild retires it everywhere.
 configure_flags = ["-Dnls=false", "-Dxorg-rules-symlinks=false"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["xkeyboard-config"]

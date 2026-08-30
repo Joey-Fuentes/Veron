@@ -27,6 +27,15 @@ runtime      = []
 optional_off = ["gpm", "libtool", "ada"]
 
 [declared]
+# KEY BUMPED 2026-08-30, THE G3 FOSSIL FLUSH: this recipe has not
+# changed in a long time, so both CI and the laptop should carry
+# identical checkpoint-restored copies -- and G3 found five files
+# differing anyway (tic, tput, tset, libncursesw.so, libncurses++w.a).
+# That signature means both sides hold builds from DIFFERENT historical
+# moments against different historical sysroots, preserved forever by
+# resume. This bump rebuilds it on the converged sysroots of 2026-08-30;
+# if the files still differ after that, the mechanism is live and earns
+# a strings dissection. If they converge, it was hysteresis.
 configure_flags = ["--with-pkg-config-libdir=/usr/lib/pkgconfig",
                    
   "--prefix=/usr", "--with-shared", "--without-debug", "--without-ada",

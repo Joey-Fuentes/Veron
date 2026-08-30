@@ -119,6 +119,11 @@ runtime      = []
 optional_off = ["rust", "docs", "guest-agent", "modules", "xkbcommon", "vnc", "gtk", "sdl-image", "opengl", "pa", "pipewire", "curl", "libssh", "gnutls", "nettle", "gcrypt", "auth-pam", "libusb", "seccomp", "curses", "png", "bzip2", "zstd", "libdw", "libudev", "debug-info", "install-blobs", "werror"]
 
 [declared]
+# KEY BUMPED 2026-08-30, THE G3 FOSSIL FLUSH: both system emulators
+# differ cross-machine despite the recipe declaring every dependency
+# and pinning several dozen features off. Two historical builds against
+# two historical sysroots is the likeliest story; rebuilt on the
+# converged sysroots of 2026-08-30 to separate fossil from mechanism.
 configure_flags = ["--prefix=/usr", "--static", "--target-list=aarch64-softmmu,x86_64-softmmu",
                    "--enable-kvm", "--enable-sdl", "--enable-slirp", "--enable-virtfs", "--enable-pixman", "--enable-tools", "--enable-fdt=system",
                    "--audio-drv-list=alsa",
