@@ -52,7 +52,17 @@ signature = "none -- the commit IS the provenance; the sha256 is of the tar we d
 crosschecked_against = []
 
 [deps]
-build        = ["meson", "ninja"]
+# xkeyboard-config IS DECLARED BECAUSE THE PROBE READS ITS .pc. G3's
+# evidence (2026-08-30): CI's xkbcommon.pc says xkb_root=/usr/share/
+# X11/xkb -- the built-in fallback -- while the laptop's says
+# /usr/share/xkeyboard-config-2 with the extension dirs filled in.
+# meson asks xkeyboard-config's pkg-config for the keymap root at
+# configure time and silently falls back when it is absent; CI built
+# before that package entered its sysroot. The fallback only WORKED
+# via the X11/xkb compat symlink the fossil xkeyboard-config shipped
+# -- two fossils holding each other up. Declared dep + explicit root:
+# the probe becomes a promise, on every machine, in every build order.
+build        = ["meson", "ninja", "xkeyboard-config"]
 link         = []
 runtime      = []
 # THREE OF THESE DEFAULT TO true AND EACH PULLS SOMETHING WE DO NOT HAVE.
@@ -69,7 +79,15 @@ runtime      = []
 optional_off = ["x11", "wayland", "xkbregistry", "docs", "bash-completion", "cool-uris", "tools", "libxml2"]
 
 [declared]
-configure_flags = ["-Denable-x11=false", "-Denable-wayland=false",
+# KEY BUMPED 2026-08-30: G3 finds three binaries plus xkbcommon.pc
+# differing cross-machine with every optional feature pinned false
+# below -- the fossil signature. Deterministic is the standard, so this
+# bump rebuilds it on the converged sysroots and accepts the cascade
+# (wlroots, the compositor stack, and wpewebkit follow). A survivor
+# after fresh rebuilds on both sides is a live mechanism and gets
+# pinned by evidence.
+configure_flags = ["-Dxkb-config-root=/usr/share/xkeyboard-config-2",
+                   "-Denable-x11=false", "-Denable-wayland=false",
                    "-Denable-xkbregistry=false", "-Denable-docs=false",
                    "-Denable-bash-completion=false", "-Denable-tools=false", "-Ddefault_library=both"]
 verification    = "none -- upstream suites are not run"
@@ -165,7 +183,7 @@ run  = [["tar", "-xf", "$DL/libxkbcommon-1.13.2.tar.gz", "-C", "$B"]]
 name = "setup"
 cwd  = "$S"
 run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
-         "-Denable-x11=false", "-Denable-wayland=false",
+         "-Dxkb-config-root=/usr/share/xkeyboard-config-2", "-Denable-x11=false", "-Denable-wayland=false",
          "-Denable-xkbregistry=false", "-Denable-docs=false",
          "-Denable-bash-completion=false", "-Denable-tools=false", "-Ddefault_library=both"]]
 

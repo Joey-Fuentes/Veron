@@ -27,6 +27,16 @@ runtime      = []
 optional_off = ["gpm", "libtool", "ada"]
 
 [declared]
+# KEY BUMPED 2026-08-30: G3 finds five files differing cross-machine
+# (tic, tput, tset, libncursesw.so, libncurses++w.a) on a recipe that
+# has not changed in a long time -- two historical builds against two
+# historical sysroots, preserved by resume. The user's standard is
+# deterministic, not declared-expected: this bump rebuilds it on the
+# converged sysroots, accepting the cascade it drags (llvm links
+# ncurses; mesa and the graphical world follow). If the files STILL
+# differ after both sides rebuild fresh, the survivor is a live
+# mechanism and gets dissected and pinned before this comment is
+# touched again.
 configure_flags = ["--with-pkg-config-libdir=/usr/lib/pkgconfig",
                    
   "--prefix=/usr", "--with-shared", "--without-debug", "--without-ada",
