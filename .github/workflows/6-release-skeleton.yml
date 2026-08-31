@@ -93,9 +93,49 @@ jobs:
           # success. Cancelled, not failed: a banked round is the 5-leg
           # working as designed, and a red X here would read as a stage-6
           # regression that never happened.
+          # A STEP CONCLUSION IS THE WRONG SIGNAL, AND READING IT COST A TAG.
+          #
+          # This asked whether stage 5's 'Publish the image' concluded
+          # `success`, on the stated belief that "only a publishing round
+          # drives the step to success". A stop_after round drove it to
+          # success too: its guard printed VERON-STAGE5-UNPUBLISHED and then
+          # `exit 0`, and exiting 0 IS success. So a round that published
+          # nothing passed this gate, stage 6 built from the STALE
+          # 5/latest-x86_64 still sitting there (rootfs 495c0184), and
+          # published image 38793df4 as release/68dec4c. The real payload
+          # (d9aab665) arrived minutes later, built 48f2b29, and was refused
+          # because the tag was already taken by an image no stage-5 run at
+          # that commit ever produced.
+          #
+          # Stage 5 now skips the step rather than exiting 0 from inside it,
+          # so the conclusion is `skipped` and this check would be correct.
+          # It is still not what should be ASKED. The question is not how the
+          # upstream job felt about itself; it is whether there is a payload
+          # here that this stage has not already released. That is answerable
+          # from the artifact, needs no cross-workflow introspection, and
+          # cannot be fooled by a guard's exit code.
           concl=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rid/jobs" --paginate \
                     --jq '[.jobs[].steps[] | select(.name == "Publish the image") | .conclusion] | first')
           echo "triggering run $rid -- 'Publish the image': ${concl:-absent}"
+          # THE PAYLOAD ITSELF, not the run that may or may not have made it.
+          # 5/latest-x86_64's IMAGE-SHA256 is one small asset; if it is the
+          # same one the last release consumed, there is nothing new to build
+          # whatever the upstream conclusion says.
+          new_rootfs=$(gh release view 5/latest-x86_64 --json assets \
+                         --jq '.assets[] | select(.name=="IMAGE-SHA256") | .name' 2>/dev/null || true)
+          if [ -n "$new_rootfs" ]; then
+            gh release download 5/latest-x86_64 -p IMAGE-SHA256 -D /tmp/s5 --clobber 2>/dev/null || true
+            now=$(cut -d' ' -f1 /tmp/s5/IMAGE-SHA256 2>/dev/null || echo unknown)
+            gh release download 6/latest -p INPUTS -D /tmp/s6 --clobber 2>/dev/null || true
+            was=$(awk '/^rootfs/{print $2}' /tmp/s6/INPUTS 2>/dev/null || echo none)
+            echo "  stage-5 payload now $now, last released against $was"
+            if [ "$now" = "$was" ]; then
+              echo "  same stage-5 payload as the current release -- nothing new to build; cancelling."
+              gh run cancel "$GITHUB_RUN_ID"
+              sleep 300
+              echo "cancellation did not land in five minutes"; exit 1
+            fi
+          fi
           if [ "${concl:-absent}" != "success" ]; then
             echo "that round banked or skipped -- no new stage-5 payload; cancelling this release."
             gh run cancel "$GITHUB_RUN_ID"
@@ -324,41 +364,73 @@ jobs:
           # succeeds (idempotent), different bytes fail loudly (a real
           # reproducibility violation, the thing actually worth catching).
           our_sha=$(awk '/\.img$/{print $1; exit}' out/6/SHA256SUMS)
-          if gh release view "release/$C7" >/dev/null 2>&1; then
-            echo "  release/$C7 already exists -- verifying byte-identity"
-            pub_line=$(gh release view "release/$C7" \
+          # THE TAG NAMES THE COMMIT, BUT THE IMAGE IS NOT A FUNCTION OF THE
+          # COMMIT ALONE, AND THAT IS WHAT BROKE release/68dec4c.
+          #
+          # `in` fetches the rootfs from 5/latest-x86_64 and the kernel from
+          # 4/kernel-x86_64 -- MOVING POINTERS that advance whenever an
+          # upstream stage republishes, with nothing here changing. So "a
+          # given commit must never ship DIFFERENT bytes" is not an invariant
+          # this workflow can hold: rebuild stage 4 with deterministic
+          # archives, stage 5 rebuilds on the new sysroot and republishes, and
+          # stage 6 at an UNCHANGED commit correctly produces a different
+          # image. The gate could not tell that apart from a reproducibility
+          # violation and called a correct rebuild a failure.
+          #
+          # So the comparison is keyed on the INPUTS as well. Both digests are
+          # already in hand from `in`; they go in the release as INPUTS and
+          # come back out for the compare:
+          #
+          #   inputs same, bytes same  -> idempotent re-upload, as before
+          #   inputs same, bytes differ -> a REAL reproducibility violation,
+          #                                which is the case worth catching
+          #                                and the only one that should fail
+          #   inputs differ            -> a different build; it gets its own
+          #                                tag rather than colliding
+          IN_SHA=$(sha256sum box6/in/rootfs/rootfs.img box6/in/kernel/vmlinuz-generic 2>/dev/null \
+                     | awk '{print $1}' | sha256sum | cut -c1-64)
+          IN7=${IN_SHA:0:7}
+          printf 'rootfs   %s\nkernel   %s\ninputs   %s\ncommit   %s\n' \
+            "$(sha256sum box6/in/rootfs/rootfs.img | cut -d' ' -f1)" \
+            "$(sha256sum box6/in/kernel/vmlinuz-generic 2>/dev/null | cut -d' ' -f1)" \
+            "$IN_SHA" "$GITHUB_SHA" > out/6/INPUTS
+          TAG="release/$C7-$IN7"
+          echo "  tag: $TAG  (commit $C7, inputs $IN7)"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "  $TAG already exists -- verifying byte-identity"
+            pub_line=$(gh release view "$TAG" \
               --json body --jq '.body' 2>/dev/null | grep -m1 "\.img " || true)
             # the authoritative published digest lives in the release's
             # SHA256SUMS asset; fetch it and compare the .img line.
             tmp=$(mktemp -d)
-            gh release download "release/$C7" -p SHA256SUMS -D "$tmp" --clobber 2>/dev/null || true
+            gh release download "$TAG" -p SHA256SUMS -D "$tmp" --clobber 2>/dev/null || true
             pub_sha=$(awk '/\.img$/{print $1; exit}' "$tmp/SHA256SUMS" 2>/dev/null || true)
             rm -rf "$tmp"
             if [ -n "$pub_sha" ] && [ "$pub_sha" != "$our_sha" ]; then
-              echo "  FAIL  commit $C7 already published DIFFERENT bytes:"
+              echo "  FAIL  same commit AND same inputs, DIFFERENT bytes:"
               echo "        published $pub_sha"
               echo "        rebuilt   $our_sha"
-              echo "        same commit must yield the same image -- refusing to"
+              echo "        identical inputs must yield the same image -- refusing to"
               echo "        overwrite an immutable release with different content."
               exit 1
             fi
             echo "  ok    rebuilt image matches the published release ($our_sha)"
             echo "  re-uploading assets (idempotent, --clobber)"
-            gh release upload "release/$C7" \
-              out/6/*.img.zst out/6/SHA256SUMS out/6/PACKED-BY out/6/BUDGET out/evidence.tar.gz --clobber
+            gh release upload "$TAG" \
+              out/6/*.img.zst out/6/SHA256SUMS out/6/INPUTS out/6/PACKED-BY out/6/BUDGET out/evidence.tar.gz --clobber
           else
-            echo "  release/$C7 is new -- creating it"
-            gh release create "release/$C7" \
-              --title "Veron release/$C7" \
+            echo "  $TAG is new -- creating it"
+            gh release create "$TAG" \
+              --title "Veron $TAG" \
               --notes "Consumer release at commit $GITHUB_SHA. Digests in SHA256SUMS; provenance on the repository's attestation page." \
-              out/6/*.img.zst out/6/SHA256SUMS out/6/PACKED-BY out/6/BUDGET out/evidence.tar.gz
+              out/6/*.img.zst out/6/SHA256SUMS out/6/INPUTS out/6/PACKED-BY out/6/BUDGET out/evidence.tar.gz
           fi
           gh release delete "6/latest" --yes 2>/dev/null || true
           git push --delete origin "6/latest" 2>/dev/null || true
           gh release create "6/latest" \
             --title "Veron -- latest consumer release" \
-            --notes "Moving pointer; the immutable record is release/$C7." \
-            out/6/*.img.zst out/6/SHA256SUMS out/6/PACKED-BY out/6/BUDGET out/evidence.tar.gz
+            --notes "Moving pointer; the immutable record is $TAG." \
+            out/6/*.img.zst out/6/SHA256SUMS out/6/INPUTS out/6/PACKED-BY out/6/BUDGET out/evidence.tar.gz
 
       - name: ATTEST -- provenance for everything published
         if: ${{ env.DRY_RUN != 'true' }}

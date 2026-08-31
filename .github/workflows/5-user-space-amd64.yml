@@ -365,7 +365,28 @@ jobs:
         # to close. Same `!= 'failure'` shape as the rest: a SKIPPED gate
         # (stop_after partial, build failed earlier) does not block -- only
         # a gate that RAN AND FAILED does.
+        # env.PARTIAL != 'yes' BELONGS HERE, NOT INSIDE THE SCRIPT.
+        #
+        # The guard existed and was correct about what it must not do -- it
+        # printed VERON-STAGE5-UNPUBLISHED and uploaded nothing. But it did
+        # that with `exit 0` INSIDE the step, so the step's CONCLUSION was
+        # `success`, and a conclusion is the only thing another workflow can
+        # read. Stage 6's chain gate reads exactly this step and says "only a
+        # publishing round drives the step named 'Publish the image' to
+        # success" -- which a banked round also does. So a stop_after round
+        # that published nothing triggered a release, stage 6 built from
+        # whatever 5/latest-x86_64 still held (a STALE rootfs, 495c0184), and
+        # burned release/68dec4c on an image no stage-5 run at that commit
+        # ever produced. The real payload arrived minutes later and was
+        # refused: the tag was taken.
+        #
+        # In the step's `if:` the conclusion is `skipped`, which is what the
+        # downstream gate is actually asking about. Lines 293-325 already gate
+        # every other system step this way; the PARTIAL comment predicted the
+        # one that would be missed would be "whichever publishes, because it
+        # is last," and it was.
         if: ${{ always()
+                && env.PARTIAL != 'yes'
                 && steps.build.outcome == 'success'
                 && steps.ledger.outcome != 'failure'
                 && steps.trace.outcome != 'failure'
@@ -388,11 +409,17 @@ jobs:
           # the step that writes to a release under names that claim to be the
           # x86_64 stage-5 system, and it must never do that for 81 packages
           # of 122.
+          # BELT AND BRACES, AND NOW IT CAN ONLY EVER BE BRACES. The step's
+          # `if:` above already skips a partial round, which is what makes
+          # the conclusion readable downstream. This stays because it keeps
+          # working if someone drops the `if:` -- but note it must never be
+          # the ONLY guard again: exiting 0 from inside a step reports
+          # success, and success is what stage 6 acts on.
           if [ "${PARTIAL:-no}" = "yes" ]; then
             echo "VERON-STAGE5-UNPUBLISHED  partial build (stop_after) --"
             echo "  a run that stopped early has not built a system and"
             echo "  cannot publish one. The checkpoint above is its output."
-            exit 0
+            exit 1
           fi
           [ -e rootfs.img ] || { echo "  no image was built"; exit 0; }
           R=../../..
