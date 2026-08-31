@@ -803,6 +803,21 @@ build_img() {
   # dejavu-fonts recipe), not shipped in the image, so clearing it
   # here restores reproducibility and ships exactly what was intended.
   rm -rf ../sysroot/var/cache/fontconfig
+  # AND REMOVE THE BUILD USER'S HOME, FOR THE SAME REASON AND BY THE SAME
+  # METHOD. The sandbox binds $HOME (bwrap --bind $HOME $HOME) and the
+  # smoke tests write into it: gstreamer leaves
+  # .cache/gstreamer-1.0/registry.x86_64.bin there. The directory is then
+  # NAMED AFTER WHOEVER BUILT: /home/runner on the CI runner, /home/veron
+  # on this laptop -- so the image could never reproduce across machines,
+  # and G3 found it exactly that way (2026-08-30, debugfs icheck/ncheck
+  # on the differing blocks, the same instrument that found the fontconfig
+  # cache). NO PACKAGE SHIPS /home: the search is empty across every
+  # installs.txt, and dinit.d/scripts/device-nodes says so in its own
+  # words -- "because /home is on the read-only image with a tmpfs
+  # overlay and nothing has created it" -- before creating /home/veron
+  # itself at boot. Deleting it here ships what was intended and nothing
+  # of the machine that happened to build it.
+  rm -rf ../sysroot/home
   /sbin/mke2fs -q -t ext4 -d ../sysroot \
     -U 00000000-0000-4000-8000-000000000001 \
     -E hash_seed=00000000-0000-4000-8000-000000000002 \
@@ -1968,6 +1983,21 @@ build_img() {
   # dejavu-fonts recipe), not shipped in the image, so clearing it
   # here restores reproducibility and ships exactly what was intended.
   rm -rf ../sysroot/var/cache/fontconfig
+  # AND REMOVE THE BUILD USER'S HOME, FOR THE SAME REASON AND BY THE SAME
+  # METHOD. The sandbox binds $HOME (bwrap --bind $HOME $HOME) and the
+  # smoke tests write into it: gstreamer leaves
+  # .cache/gstreamer-1.0/registry.x86_64.bin there. The directory is then
+  # NAMED AFTER WHOEVER BUILT: /home/runner on the CI runner, /home/veron
+  # on this laptop -- so the image could never reproduce across machines,
+  # and G3 found it exactly that way (2026-08-30, debugfs icheck/ncheck
+  # on the differing blocks, the same instrument that found the fontconfig
+  # cache). NO PACKAGE SHIPS /home: the search is empty across every
+  # installs.txt, and dinit.d/scripts/device-nodes says so in its own
+  # words -- "because /home is on the read-only image with a tmpfs
+  # overlay and nothing has created it" -- before creating /home/veron
+  # itself at boot. Deleting it here ships what was intended and nothing
+  # of the machine that happened to build it.
+  rm -rf ../sysroot/home
   /sbin/mke2fs -q -t ext4 -d ../sysroot \
     -U 00000000-0000-4000-8000-000000000001 \
     -E hash_seed=00000000-0000-4000-8000-000000000002 \
