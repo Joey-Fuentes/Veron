@@ -30,6 +30,33 @@
 #    resize_inode already being off for the same reason, and it is a real
 #    tradeoff rather than a free one: the image loses metadata checksumming.
 #    Re-enabling it needs a correct crc32c and is worth doing later.
+#
+# 5. OWNERSHIP IS THE BUILDER'S UID, AND IT REACHED EVERY INODE.
+#    `mke2fs -d` copies the tree with whatever uid/gid the build user
+#    happens to have -- 1000 on the laptop, 1001 on the CI runner. Every
+#    inode in the image then differs. G3 measured it on 2026-08-30: two
+#    images of provably identical trees (15,632 of 15,634 files equal by
+#    manifest, the two exceptions explained) differing in 310,832,411
+#    bytes, first diffs at 1037/1041 -- s_free_blocks_count and
+#    s_free_inodes_count -- then the group descriptors, then a third of
+#    the data area. The per-file manifest cannot see this: files.tsv
+#    records mode, not owner.
+#
+#    0/0 IS THE CORRECT VALUE, NOT MERELY A DETERMINISTIC ONE. A root
+#    filesystem is root-owned, and the sibling `veron rootfs` tar has
+#    always written uid/gid 0 explicitly for exactly this reason -- the
+#    image path simply never got the same treatment. Shipping the
+#    builder's uid was a defect in its own right, not only a
+#    reproducibility one: in a laptop-built image the unprivileged
+#    desktop user (uid 1000) owned /usr, and could rewrite the system's
+#    own binaries.
+#
+#    WHAT MUST NOT BE ROOT IS SET AT BOOT, BY DESIGN AND BY NECESSITY.
+#    The build runs unprivileged, so chown at build time is impossible --
+#    dinit.d/scripts/chrony-start says so in its own comment, having
+#    tried it -- and dinit.d/scripts/device-nodes chowns /home/veron,
+#    /run/labwc.log and /persist when the system starts. Normalising
+#    every inode here therefore removes nothing the running system needs.
 
 import os
 import re
@@ -89,11 +116,19 @@ def main(img, ts_epoch=946684800, ts_str="20000101000000"):
         print("  will invalidate s_checksum. Build with -O ^metadata_csum.")
 
     # 1. INODES FIRST. mke2fs -d stamps ctime/atime/mtime/crtime with wall
-    #    clock as it copies the tree. This must precede the superblock patch,
-    #    because debugfs updates s_wtime when it closes a write session.
+    #    clock as it copies the tree, and copies the build user's uid/gid
+    #    onto every path. This must precede the superblock patch, because
+    #    debugfs updates s_wtime when it closes a write session.
+    #
+    #    uid/gid ARE SET IN THE SAME PASS AND NOT A SECOND ONE, for the
+    #    ordering reason above: a separate session would re-dirty s_wtime
+    #    after the superblock had been fixed. Reserved and unallocated
+    #    inodes are included exactly as they already are for the times --
+    #    their fields are zero, so writing zero is a no-op.
     cmds = "".join(
         f"sif <{i}> ctime {ts_str}\nsif <{i}> atime {ts_str}\n"
         f"sif <{i}> mtime {ts_str}\nsif <{i}> crtime {ts_str}\n"
+        f"sif <{i}> uid 0\nsif <{i}> gid 0\n"
         for i in range(1, inodes + 1))
     p = subprocess.run([*debugfs, "-w", "-f", "/dev/stdin", img],
                        input=cmds, capture_output=True, text=True)
@@ -111,7 +146,8 @@ def main(img, ts_epoch=946684800, ts_str="20000101000000"):
                 f.write(struct.pack("<I", ts_epoch))
 
     after = sha(img)
-    print(f"  normalize-ext4: {inodes} inodes, {len(locs)} superblock copies")
+    print(f"  normalize-ext4: {inodes} inodes (times and uid/gid 0:0), "
+          f"{len(locs)} superblock copies")
     print(f"    before {before}")
     print(f"    after  {after}")
 
