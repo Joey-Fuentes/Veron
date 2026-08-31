@@ -109,6 +109,30 @@ jobs:
           python3 - <<'PY'
           import glob, hashlib, json, os, re, tomllib
           commit = os.environ.get("RELEASE_SHA") or os.environ.get("GITHUB_SHA", "unknown")
+          # THE TAG IS DISCOVERED, NOT RECONSTRUCTED.
+          #
+          # This built every download URL as release/<commit7>, which held
+          # only while that WAS the tag. Stage 6 now names the immutable
+          # record release/<commit7>-<inputs7>, because its image is not a
+          # function of its commit alone -- `in` pulls the rootfs and kernel
+          # from moving latest pointers, so one commit can legitimately build
+          # several different images. The moment that landed, every href on
+          # the page 404'd and the consumer gate caught it, which is the gate
+          # doing its job.
+          #
+          # releases-api.json is already fetched above, so the real tag is
+          # right here: the newest release whose tag starts with the commit's
+          # prefix. Reconstructing it from parts is what broke; reading it
+          # cannot drift again if the naming changes a third time.
+          _api = json.load(open("out/releases-api.json"))
+          _pfx = f"release/{commit[:7]}"
+          _tags = [r["tag_name"] for r in _api
+                   if r.get("tag_name", "").startswith(_pfx) and not r.get("draft")]
+          # newest first is the API's own order; fall back to the bare prefix
+          # so an older release published before the rename still resolves.
+          RELEASE_TAG = _tags[0] if _tags else _pfx
+          print(f"  release tag for {commit[:7]}: {RELEASE_TAG}"
+                + ("" if _tags else "  (no match in the API -- using the bare prefix)"))
           m = {"commit": commit, "generated": os.environ.get("GITHUB_RUN_ID", ""),
                "arches": {}, "developer": [], "upstream_releases": [],
                "licenses": {"packages": [], "firmware": None}}
@@ -123,7 +147,7 @@ jobs:
           for img in glob.glob("out/veron-*.img"):
               arch = os.path.basename(img).split("-")[1]
               m["arches"].setdefault(arch, {
-                  "release_tag": f"release/{commit[:7]}", "assets": [],
+                  "release_tag": RELEASE_TAG, "assets": [],
                   "kernels": {},
                   "attestation_url": "evidence.html"})
               z = img + ".zst"
@@ -375,11 +399,19 @@ jobs:
           # gate walks LIVE urls -- run 87030806805 walked this run's
           # card before this run's release existed). It joins both tags
           # here, after the gate has proven every advertised click.
+          # SAME TAG, READ THE SAME WAY. SITE resolved the real tag from the
+          # releases API and wrote it into the manifest; take it from there
+          # rather than rebuilding release/<commit7>, which is no longer the
+          # name stage 6 publishes under.
           C7=${RELEASE_SHA::7}
+          TAG=$(python3 -c "import json,sys; d=json.load(open('out/site/index.json')); \
+            a=d.get('arches') or {}; \
+            print(next((v.get('release_tag') for v in a.values() if v.get('release_tag')), 'release/$C7'))")
+          echo "  attaching index.json to $TAG"
           cp out/site/index.json out/index.json
-          gh release upload "release/$C7" out/index.json --clobber
+          gh release upload "$TAG" out/index.json --clobber
           gh release upload "6/latest" out/index.json --clobber
-          echo "index.json attached to release/$C7 and 6/latest"
+          echo "index.json attached to $TAG and 6/latest"
 
       - name: 'PAGES -- deploy the storefront'
         uses: actions/configure-pages@v5
