@@ -76,6 +76,23 @@ run  = [["tar", "-xf", "$DL/ncurses-6.6.tar.gz", "-C", "$B"]]
 [[steps]]
 name = "configure"
 cwd  = "$S"
+# THE ARCHIVER RECORDS THE BUILD USER, AND ONLY THIS PACKAGE'S DOES.
+# G3 cross-machine (2026-08-30) found usr/lib/libncurses++w.a as the one
+# static archive in the tree differing between CI and the laptop, while
+# every other package's .a agreed. `cmp -l` showed sixteen differing
+# bytes, all 61 vs 60 -- ASCII '1' against '0', the last digit of the
+# uid/gid fields in each ar member header (1001/1001 on the runner,
+# 1000/1000 on the laptop). Member names, sizes and contents were
+# identical: the objects were never in question, only who built them.
+#
+# WHY THIS PACKAGE ALONE: modern binutils ar is deterministic by
+# default, which is why nobody else's archives carry an owner, but
+# ncurses' configure probes for archiver flags and picks `-curvU`
+# first -- and U explicitly UNDOES deterministic mode. Pinning the
+# autoconf cache variable is what settles the probe: it short-circuits
+# AC_CACHE_CHECK entirely rather than racing its preference list. D is
+# the inverse flag: zero uid, gid and mtime in every member header.
+env  = { cf_cv_ar_flags = "-curvD", ARFLAGS = "-curvD" }
 run  = [["./configure", "--prefix=/usr", "--with-shared", "--without-debug",
          "--without-ada", "--enable-widec", "--enable-pc-files",
          "--without-normal",

@@ -474,7 +474,17 @@ unset MAKEFLAGS MFLAGS MAKELEVEL
 echo "  SIGPIPE: $(python3 -c 'import signal;print(signal.getsignal(signal.SIGPIPE))')"
 echo "  fd limit: $(ulimit -n)"
 
-bwrap --unshare-all --die-with-parent \
+# --uid 0 --gid 0, THE SAME TWO FLAGS STAGE 6's BOX ALREADY PASSES.
+# --unshare-all creates a user namespace but maps the caller's uid to
+# ITSELF, so every tool inside still sees the build user: getuid() is
+# 1001 on the CI runner and 1000 on the laptop. `ar` writes that number
+# into every member header, which is how glibc's libmvec.a and ncurses'
+# libncurses++w.a came to differ across machines by nothing but the last
+# digit of a uid (G3, 2026-08-30 -- 1096 differing bytes in libmvec.a,
+# every one 61 vs 60). Bubblewrap was never lying: it is a filesystem
+# and namespace wall, not an identity change. Mapping to 0 makes the
+# recorded identity a property of the build, not of who ran it.
+bwrap --unshare-all --die-with-parent --uid 0 --gid 0 \
   --new-session \
   --bind sysroot / \
   --bind "$PWD/build" /build --bind "$PWD/dest" /dest \

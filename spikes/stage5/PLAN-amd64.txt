@@ -820,7 +820,7 @@ package nasm 3.02
 package ncurses 6.6
   group        build-substrate
   license      MIT
-  recipe-sha   47f50eaa694d51dd73788fd80a607de6d8fb4587d8e4503fcc62bbf44f132d9e
+  recipe-sha   6af1f265a56f17df105c60c1b8e307ea093ef9725e292a942634cff965060712
 
   source
     url        https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz
@@ -840,6 +840,8 @@ package ncurses 6.6
          argv ["tar", "-xf", "dl/ncurses-6.6.tar.gz", "-C", "build/ncurses-6.6"]
     [02] configure
          cwd  build/ncurses-6.6/ncurses-6.6
+         env  ARFLAGS=-curvD
+         env  cf_cv_ar_flags=-curvD
          argv ["./configure", "--prefix=/usr", "--with-shared", "--without-debug", "--without-ada", "--enable-widec", "--enable-pc-files", "--without-normal", "--with-pkg-config-libdir=/usr/lib/pkgconfig"]
     [03] build
          cwd  build/ncurses-6.6/ncurses-6.6
