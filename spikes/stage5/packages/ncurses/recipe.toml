@@ -92,7 +92,12 @@ cwd  = "$S"
 # autoconf cache variable is what settles the probe: it short-circuits
 # AC_CACHE_CHECK entirely rather than racing its preference list. D is
 # the inverse flag: zero uid, gid and mtime in every member header.
-env  = { cf_cv_ar_flags = "-curvD", ARFLAGS = "-curvD" }
+# ONE VARIABLE, NOT TWO. Setting cf_cv_ar_flags AND ARFLAGS made ncurses
+# compose them: the c++ library link ran `ar -curvD -curvD ...` and ar
+# rejected the repeat (CI, 2026-08-31, rc=2 at libncurses++w.a). The
+# cache variable alone settles the probe; ARFLAGS was belt-and-braces
+# that turned out to be the belt tied twice.
+env  = { cf_cv_ar_flags = "-curvD" }
 run  = [["./configure", "--prefix=/usr", "--with-shared", "--without-debug",
          "--without-ada", "--enable-widec", "--enable-pc-files",
          "--without-normal",
