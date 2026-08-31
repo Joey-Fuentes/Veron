@@ -719,9 +719,24 @@ phase_chain() {
   # printed its usage. That cost a run, and the log gave no message
   # beyond the usage text because bwrap has nothing more specific to
   # say about "--setenv EVERY VERSION THE".
+  # --uid 0 --gid 0, THE SAME TWO FLAGS STAGES 5 AND 6 ALREADY PASS.
+  # --unshare-all creates a user namespace but maps the caller's uid to
+  # ITSELF, so getuid() inside is still 1001 on the runner and 1000 on a
+  # laptop. `ar` writes that number into every member header it creates,
+  # which is how fifteen static archives in the published sysroot came to
+  # differ across machines by nothing but the last digit of a uid. The
+  # archiver flag at rung 16 is the direct fix; this is the one that makes
+  # the box's recorded identity a property of the build rather than of who
+  # ran it, and it closes the same class everywhere else -- file ownership
+  # in anything tarred, cpio'd or ext4'd from inside here.
+  #
+  # SAFE UNDER bwrap's OWN RULES: with --unshare-user (implied by
+  # --unshare-all) a single uid may be mapped to any value in the new
+  # namespace, root inside included. It confers nothing on the host.
   bwrap \
     --unshare-all \
     --die-with-parent \
+    --uid 0 --gid 0 \
     --hostname veron \
     --setenv PATH /bin \
     --setenv HOME /work \
@@ -785,9 +800,12 @@ phase_chain() {
   echo "  sysroot entry point, as it exists on the host:"
   ls -ld "$BOX/work/lfs/usr/bin/sh" "$BOX/work/lfs/usr/bin/busybox" 2>&1 \
     | sed 's/^/    /'
+  # --uid 0 --gid 0: SEE PHASE A ABOVE. This is the box that matters most
+  # for it -- B1, B2 and B3 all create archives in here.
   bwrap \
     --unshare-all \
     --die-with-parent \
+    --uid 0 --gid 0 \
     --hostname veron \
     --new-session \
     --clearenv \
@@ -1108,7 +1126,30 @@ phase_pack() {
   for f in Image initramfs.cpio.gz; do
     [ -s "$BOX/out/$f" ] && cp "$BOX/out/$f" rel/ || { echo "  $BOX/out/$f is missing -- refusing to pack a partial release"; exit 1; }
   done
-  [ -s "$BOX/out/manifest.tsv" ] && cp "$BOX/out/manifest.tsv" rel/ || true
+  # THE MANIFEST IS TAKEN AFTER THE TRIM, NOT BEFORE IT.
+  #
+  # B8 hashes the sysroot as B8 leaves it. The trim above then deletes
+  # trees AND runs `strip --strip-debug` over three dozen executables,
+  # which rewrites their bytes. Copying B8's file into rel/ verbatim --
+  # which is what this line used to do -- shipped a manifest that did not
+  # describe the tarball beside it: on the 2026-08-30 amd64 artifact, 850
+  # entries named deleted files and 46 carried a pre-strip hash. Both
+  # records are wanted, so both are kept and neither is called by the
+  # other's name.
+  if [ -s "$BOX/out/manifest.tsv" ]; then
+    cp "$BOX/out/manifest.tsv" rel/manifest-b8.tsv
+    # HOST python3, like every other tools/*.py call in this file (the pins
+    # reader at the top of phase_in does the same). It hashes and compares;
+    # it writes nothing into the sysroot and contributes no artifact byte,
+    # so it sits with `du` and `sha256sum` outside the budget rather than
+    # inside it. The packer that DOES touch the artifact still runs in the
+    # box, via tools/pack-in-box.sh below.
+    python3 "$ROOT/tools/manifest-shipped.py" \
+      lfs rel/manifest-b8.tsv rel/manifest.tsv rel/manifest-reconcile.txt \
+      2>&1 | sed 's/^/    /'
+  else
+    echo "  no manifest.tsv -- the run did not reach B8"
+  fi
   cp "$OUT4/BUDGET" rel/BUDGET 2>/dev/null || true
   # ONE PACKER, IN THE BOX (tools/pack-in-box.sh): the trimmed sysroot's
   # own python writes the tar, this project's zstd compresses it, both

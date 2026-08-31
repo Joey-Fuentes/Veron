@@ -417,7 +417,34 @@ if [ "$B0" = ok ]; then
         # -Dcc=gcc. An earlier revision of this rung added -Doptimize and
         # -Dvendorprefix from nowhere -- rung 11.5 passes -Doptimize because
         # its perl is a static build for a musl box, which this is not.
+        # EVERYTHING Configure WOULD READ FROM THE HOST IS TOLD TO IT INSTEAD.
+        # PORTED FROM sysroot-amd64.sh, WHERE IT WAS PROVEN AND THIS COPY WAS
+        # MISSED. Without these, Configure records the box's hostname, its
+        # `uname -r`, the whole `uname -a` line, the builder's name and the
+        # build clock into config.h, Config_heavy.pl, perlbug and perlthanks
+        # -- four files that then differ between any two machines. Stage 5's
+        # perl recipe pins the same set for the same reason and is verified
+        # byte-stable against a recorded digest; this rung pins a superset of
+        # it. Three copies of this rung exist and only one had the fix, which
+        # is exactly how a fixed bug comes back on another arch.
+        #
+        # THE ARCH IN myuname IS riscv64 HERE, NOT x86_64. It is a declared
+        # constant either way, but a copied-across amd64 string would put a
+        # false machine name in a shipped config.h, and Configure's hints
+        # would be reading a lie about the box they are configuring for.
+        # osvers is a constant that still looks like a kernel version because
+        # the Linux hints file branches on it (old 2.x cases).
+        # TWO VALUES Configure COMPUTES REGARDLESS OF -D. cf_time is taken
+        # from `date` unconditionally, so the -D lands in config_args and is
+        # then overwritten; and an empty -Dmydomain= reads as "not set", so
+        # Configure looks the domain up. config.over is Configure's own
+        # override file, sourced after every value is decided and just before
+        # config.sh is written, so what it says is final.
+        printf "cf_time='Thu Jan  1 00:00:00 UTC 1970'\nmydomain='.veron'\n" > "$_d/config.over"
         ( cd "$_d" && ./Configure -des -Dprefix=/usr -Dcc=gcc \
+              -Dmyhostname=veron -Dmydomain= -Dosvers=7.1.5 -Dmyuname='Linux veron 7.1.5 riscv64' \
+              -Dcf_by=veron -Dcf_email=veron@veron -Dperladmin=veron@veron \
+              -Dcf_time='Thu Jan  1 00:00:00 UTC 1970' \
               > c.log 2>&1 && make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1 ) ;;
       openssl)
         # install_sw, NOT install: the full target builds documentation, which

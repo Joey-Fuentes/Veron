@@ -5561,6 +5561,31 @@ fi
 if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
   say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: binutils pass 2 configure"
   say "    (cwd: $(pwd))"
+  # --enable-deterministic-archives, AND THIS IS THE ONE THAT WAS MISSING.
+  #
+  # Rung 4 passes it. Rung 10 passes it. B3 passes it and explains at length
+  # why. THIS rung did not, and this is the `ar` that matters most: pass 2
+  # installs into $S/usr/bin, phase B runs with /tools/bin off PATH, so from
+  # B0 until B3 finishes its `make install` EVERY archive the system creates
+  # is written by this ar. That is B1's libperl.a, libfl.a and liby.a, B2's
+  # entire glibc (libc.a, libm-2.44.a, libmvec.a, libresolv.a,
+  # libBrokenLocale.a, libc_nonshared.a, libg.a) and B3's own libbfd.a,
+  # libopcodes.a, libctf.a, libctf-nobfd.a and libsframe.a -- fifteen
+  # archives, and exactly the fifteen that differed between the runner and
+  # the laptop. Everything from B4 up (libgcc.a, libstdc++.a, libsupc++.a,
+  # libitm.a, libatomic.a, libz.a, libelf.a, libpkgconf.a) was archived by
+  # B3's ar and has always matched.
+  #
+  # WHAT ACTUALLY DIFFERED, MEASURED RATHER THAN GUESSED. `ar tv` on the
+  # published sysroot reads `rw-r--r-- 1001/1001 ... Jan 1 00:00 1970` for
+  # all fifteen and `0/0` for the twelve above them. mtime is already 0 --
+  # SOURCE_DATE_EPOCH reaches the member timestamp -- and mode is a constant
+  # 644 under the fixed umask, so uid and gid are the ONLY live fields: 1001
+  # on the GitHub runner, 1000 on a Veron laptop. That is the whole delta,
+  # and it is the same fault stage 5 found in its own box on 2026-08-30.
+  #
+  # `D` zeroes uid, gid, mtime and mode together, so it fixes the observed
+  # difference and closes the other three before they are ever reached.
   "/work/src/$_bu/configure" \
     --prefix=/usr \
     --build="$_BUILD_TRIPLE" \
@@ -5569,6 +5594,7 @@ if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
     CXX_FOR_BUILD="$CHAIN_CXX -static -Wl,--no-eh-frame-hdr" \
     --disable-nls --enable-shared --enable-gprofng=no \
     --disable-werror --enable-64-bit-bfd --enable-new-dtags \
+    --enable-deterministic-archives \
     --enable-default-hash-style=gnu \
     > cfg.log 2>&1
   _r16=$?

@@ -6347,6 +6347,11 @@ fi
 if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
   say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: binutils pass 2 configure"
   say "    (cwd: $(pwd))"
+  # --enable-deterministic-archives -- SAME OMISSION, SAME FIX AS amd64.
+  # This ar owns every archive from B0 until B3 installs its own, so without
+  # `D` the builder's uid and gid land in fifteen member headers. Carried
+  # here as well so the two arches do not drift; see rungs-amd64.sh for the
+  # measurement.
   "/work/src/$_bu/configure" \
     --prefix=/usr \
     --build="$_BUILD_TRIPLE" \
@@ -6355,6 +6360,7 @@ if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
     CXX_FOR_BUILD="$CHAIN_CXX -static -Wl,--no-eh-frame-hdr" \
     --disable-nls --enable-shared --enable-gprofng=no \
     --disable-werror --enable-64-bit-bfd --enable-new-dtags \
+    --enable-deterministic-archives \
     --enable-default-hash-style=gnu \
     > cfg.log 2>&1
   _r16=$?
