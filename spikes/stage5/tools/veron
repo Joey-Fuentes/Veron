@@ -1124,6 +1124,38 @@ def step_context(s, rc):
         print(f"    (build log unavailable: {type(e).__name__})")
 
 
+def walk_tree(root):
+    """os.walk over a package tree that never asks the HOST what a symlink is.
+
+    THE LEDGER DISAGREED BETWEEN A LAPTOP AND A RUNNER FOR A PACKAGE WHOSE
+    DESTDIR WAS BYTE-IDENTICAL ON BOTH. xkeyboard-config installs
+    usr/share/X11/xkb -> /usr/share/xkeyboard-config-2, an ABSOLUTE target.
+    os.walk classifies an entry by following the link and stat-ing whatever
+    it points at on the machine running the walk:
+
+      on a Veron laptop, /usr/share/xkeyboard-config-2 EXISTS (the host is
+      Veron), so the link resolves to a directory, lands in dirnames, and a
+      loop that reads only filenames never sees it;
+
+      on an Ubuntu runner, the target does not exist, the link dangles, lands
+      in filenames, and is recorded.
+
+    Same bytes in dest/, two different records -- and every "fix" applied to
+    the recipe's flags or prefixes could not touch it, because the recipe was
+    never the variable. The host was. Eight walkers in this file read only
+    filenames; each had the bug, and install_listing is among them, so the
+    committed installs.txt files carry the same host-dependence.
+
+    A symlink is a symlink. lstat decides, and a link to a directory is
+    reported as an entry and never descended into.
+    """
+    for dirpath, dirnames, filenames in os.walk(root):
+        linked = [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]
+        for d in linked:
+            dirnames.remove(d)
+        yield dirpath, dirnames, filenames + linked
+
+
 def stage_into(destdir, sysroot):
     """Make an installed package visible to the ones built after it.
 
@@ -1159,7 +1191,7 @@ def stage_into(destdir, sysroot):
 
     n = 0
     seen = {}
-    for dirpath, _, files in os.walk(destdir):
+    for dirpath, _, files in walk_tree(destdir):
         rel = os.path.relpath(dirpath, destdir)
         target = sysroot if rel == "." else os.path.join(sysroot, rel)
         os.makedirs(target, exist_ok=True)
@@ -1427,7 +1459,7 @@ def linked_packages(destdir, provider, own, declared=frozenset()):
     next to the build that produced it.
     """
     linked, sysroot = set(), set()
-    for dirpath, _, files in os.walk(destdir):
+    for dirpath, _, files in walk_tree(destdir):
         for fn in files:
             p = os.path.join(dirpath, fn)
             if os.path.islink(p):
@@ -1655,7 +1687,7 @@ def cmd_build(a):
         # A SONAME CAN HAVE MORE THAN ONE PROVIDER, and this project has one
         # by construction: freetype and freetype-bootstrap are the same
         # tarball built twice, and both install libfreetype.so.6.
-        for dirpath, _, files in os.walk(d):
+        for dirpath, _, files in walk_tree(d):
             for fn in files:
                 fp = os.path.join(dirpath, fn)
                 if os.path.islink(fp):
@@ -2388,7 +2420,7 @@ def file_manifest(root):
     Symlinks carry an empty field rather than a number: see below.
     """
     out = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in walk_tree(root):
         dirnames.sort()
         for fn in sorted(filenames):
             full = os.path.join(dirpath, fn)
@@ -2865,7 +2897,7 @@ def cmd_linked(a):
         if not os.path.isdir(d):
             continue
         mine = []
-        for dirpath, _, files in os.walk(d):
+        for dirpath, _, files in walk_tree(d):
             for fn in files:
                 p = os.path.join(dirpath, fn)
                 # SET, NOT FIRST-WINS -- see resolve_provider(). freetype and
@@ -2984,7 +3016,7 @@ def install_prefixes(destdir, depth=3):
     been caught at.
     """
     out = set()
-    for dirpath, _, files in os.walk(destdir):
+    for dirpath, _, files in walk_tree(destdir):
         rel = os.path.relpath(dirpath, destdir)
         if rel == "." or not files:
             continue
@@ -3057,7 +3089,7 @@ def install_listing(destdir):
     depend on a file that may belong to another package.
     """
     lines = []
-    for dirpath, _, files in os.walk(destdir):
+    for dirpath, _, files in walk_tree(destdir):
         for fn in files:
             p = os.path.join(dirpath, fn)
             rel = os.path.relpath(p, destdir)
@@ -6483,7 +6515,7 @@ def cmd_reachable(a):
                     entry.add(ln.split("=", 1)[1].split()[0].lstrip("/"))
     # dinit command= -- what the init system starts
     dd = os.path.join(root, "etc/dinit.d")
-    for dirpath, _, files in os.walk(dd):
+    for dirpath, _, files in walk_tree(dd):
         for f in files:
             try:
                 for ln in open(os.path.join(dirpath, f), errors="replace"):

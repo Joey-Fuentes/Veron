@@ -26,17 +26,17 @@ WHAT IT WRITES into --out:
                     D <package> <dep>
 
   CHAIN           the seam facts, one per line: what stage 5 consumed from
-                  4/latest-x86_64 (sysroot, kernel, the digest of stage 4's
-                  own PROVENANCE), the tcc digest stage 4 received, and the
-                  committed stage-3 record it must agree with. The stage-5
+                  4/latest-x86_64 (sysroot, kernel), the tcc digest stage 4
+                  received, the committed stage-3 record it must agree with,
+                  and the generic kernel's artifact pins. The stage-5
                   IMAGE digest is deliberately absent: these records ride
                   inside that image, so the digest cannot (the IMAGE-SHA256
                   self-reference, again).
 
-  (stage-4's own PROVENANCE is NOT copied here. It is pinned by digest on
-  CHAIN's `stage4 provenance` line, exactly as sysroot.tar.zst and the kernel
-  are pinned without shipping: veron-trace never opens it, and a record of the
-  build that produced an input does not belong inside the output.)
+  (stage-4's own PROVENANCE is neither copied here nor pinned by digest. Its
+  ref-tcc and kernel lines are READ and become artifact pins; the file
+  itself is a document about the build, published beside the release, and a
+  digest of a document changed every image whenever its wording did.)
 
 Missing seam inputs (no dl-sysroot on a local run) write 'unknown' rather
 than failing: absence of a record is stated; only DISAGREEMENT between two
@@ -372,9 +372,12 @@ def boot_chain(records, generic_dir, initramfs):
                             put("generic modules", "%s %s" % (p[0], name))
                         else:
                             put("generic " + name, p[0])
-            gp = sha256_of(os.path.join(generic_dir, "PROVENANCE"))
-            if gp:
-                put("generic provenance", gp)
+            # NO `generic provenance` LINE. It was the sha256 of the generic
+            # kernel's PROVENANCE file -- a digest of a DOCUMENT ABOUT an
+            # artifact, not of the artifact. veron-trace never reads it, and a
+            # wording change in that document changed every image built after
+            # it. The artifact pins above are what the tracer checks; the
+            # document stays beside the release where it was published.
             print("veron-trace-records: boot chain -- generic kernel pins folded in")
         except OSError:
             print("veron-trace-records: boot chain -- no %s; generic pins "
@@ -441,7 +444,7 @@ def main():
     ns = flatten_substages(a.repo, a.out)
     np_ = flatten_ledger(a.ledger, a.out, set(a.build_only.split()))
 
-    sysroot_sha = kernel_sha = prov_sha = reftcc = "unknown"
+    sysroot_sha = kernel_sha = reftcc = "unknown"
     if a.stage4_dir:
         s4p = os.path.join(a.stage4_dir, "PROVENANCE")
         s4s = os.path.join(a.stage4_dir, "SYSROOT-SHA256")
@@ -455,8 +458,12 @@ def main():
         # record). Older releases predate the line; 'unknown' is the honest
         # value and --verify treats it as absent rather than as wrong.
         reftcc = seam_value(s4p, "ref-tcc") or "unknown"
-        prov_sha = sha256_of(s4p) or "unknown"
-        # THE DIGEST SHIPS; THE FILE DOES NOT.
+        # NO DIGEST OF THE PROVENANCE FILE. ref-tcc and kernel are READ out of
+        # it -- those are artifact pins and stay. Its own sha256 was a pin on
+        # a document: one sentence about where tcc had been fetched from
+        # ("out/3 local chain run" against "3/latest-x86_64 release") made
+        # two otherwise-identical images differ, and nothing reads the line.
+        # NEITHER THE FILE NOR ITS DIGEST SHIPS.
         #
         # This used to copy stage-4's PROVENANCE into the records verbatim, on
         # the reasoning that the coarse stage-4 interior edge is described
@@ -496,7 +503,6 @@ def main():
         # nothing is lost. The commit above identifies the build deterministically.
         f.write("stage4 sysroot %s\n" % sysroot_sha)
         f.write("stage4 kernel %s\n" % kernel_sha)
-        f.write("stage4 provenance %s\n" % prov_sha)
         f.write("stage4 ref-tcc %s\n" % reftcc)
         f.write("stage3 tcc-amd64 3/6/tcc-amd64 %s\n" % tcc3)
 
