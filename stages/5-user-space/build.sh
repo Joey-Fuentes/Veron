@@ -2118,15 +2118,29 @@ cd spikes/stage5
 # would be a leftover empty file and an empty directory at /run in the
 # shipped image -- the same leak as the eleven directories above, committed
 # while fixing it.
-# THE BOX INVOCATION REPORTS ITS OWN FAILURE. `set -e` kills a failing
-# command silently, and this one failed on a runner twice with NOTHING in the
-# log between the reachable list and ##[error] -- not even a bwrap message,
-# which bwrap normally writes to stderr itself. Two rounds spent guessing.
-# stderr is captured and echoed, the exit status is named, and the box is
-# probed for the one thing that differs from the read-only report box above:
-# a read-write bind of the sysroot with mount points created underneath it.
+# THE BOX INVOCATION IS TRACED, NOT GUESSED AT.
+#
+# Three rounds have now ended with this returning non-zero and saying
+# nothing: no stdout, no stderr, not even a bwrap message. The previous
+# attempt to report it had two faults of its own, and both are why that round
+# taught us nothing:
+#
+#   `if ! cmd; then _rc=$?` READS THE STATUS OF THE NEGATION, not of cmd, so
+#   it printed rc=0 for a command that had just failed. The status is now
+#   captured on its own line, immediately, before anything else can touch it.
+#
+#   THE SCRIPT RAN WITHOUT -x, so a silent failure stayed silent. It runs
+#   under `sh -x` now. The trace goes to a file rather than the log -- it is
+#   tens of thousands of lines -- and only the tail is printed, which is the
+#   part that names the failing line.
+#
+# stdout is captured separately too. It was empty last round, which is itself
+# the strange part: the script emits before it does anything substantial, so
+# either it died before its first echo or its output went somewhere else.
+# Keeping the two streams apart tells those cases apart.
 _sb=out/strip-box.err
-if ! bwrap --unshare-all --die-with-parent --uid 0 --gid 0 --hostname veron \
+_so=out/strip-box.out
+bwrap --unshare-all --die-with-parent --uid 0 --gid 0 --hostname veron \
   --bind sysroot / \
   --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
   --ro-bind "$PWD/tools/stage5-strip.sh" /run/stage5-strip.sh \
@@ -2135,34 +2149,42 @@ if ! bwrap --unshare-all --die-with-parent --uid 0 --gid 0 --hostname veron \
   --setenv STRIP_LOG /run/strip-out/strip.txt \
   --setenv LC_ALL C --setenv TZ UTC --setenv SOURCE_DATE_EPOCH 0 \
   --chdir / \
-  /bin/sh /run/stage5-strip.sh / 2>"$_sb"; then
-  _rc=$?
+  /bin/sh -x /run/stage5-strip.sh / >"$_so" 2>"$_sb"
+_rc=$?
+# THE STDOUT IS SHOWN EITHER WAY. On success it is the strip report the log
+# has always carried; on failure it is evidence.
+sed 's/^/  /' "$_so" 2>/dev/null
+if [ "$_rc" -ne 0 ]; then
   echo "VERON-STRIP-BOX-FAIL  rc=$_rc"
-  echo "  --- stderr from the box ---"
-  sed 's/^/    /' "$_sb" 2>/dev/null || echo "    (no stderr captured)"
-  echo "  --- what the box could see, probed the same way ---"
-  # EACH BIND CHECKED ON ITS OWN, so a failure names which one. The read-only
-  # report box above works on this runner, so bwrap itself is fine; what is
-  # untested is the read-write root and the two mounts under /run.
-  bwrap --unshare-all --die-with-parent --uid 0 --gid 0 --bind sysroot / \
-        --chdir / /bin/sh -c "echo '    rw-root      ok'" 2>&1 | sed 's/^/    /'
-  bwrap --unshare-all --die-with-parent --uid 0 --gid 0 --bind sysroot / \
-        --tmpfs /run --chdir / /bin/sh -c "echo '    tmpfs-run    ok'" 2>&1 | sed 's/^/    /'
-  bwrap --unshare-all --die-with-parent --uid 0 --gid 0 --bind sysroot / \
-        --tmpfs /run --ro-bind "$PWD/tools/stage5-strip.sh" /run/s.sh \
-        --chdir / /bin/sh -c "echo '    file-bind    ok'" 2>&1 | sed 's/^/    /'
-  bwrap --unshare-all --die-with-parent --uid 0 --gid 0 --bind sysroot / \
-        --tmpfs /run --bind "$PWD/out" /run/o \
-        --chdir / /bin/sh -c "echo '    out-bind     ok'" 2>&1 | sed 's/^/    /'
-  bwrap --unshare-all --die-with-parent --uid 0 --gid 0 --bind sysroot / \
-        --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run --chdir / \
-        /bin/sh -c "echo '    full-mounts  ok'" 2>&1 | sed 's/^/    /'
-  echo "  --- and the script itself, on the host, to separate box from script ---"
+  case "$_rc" in
+    126) echo "  rc 126: found but not executable" ;;
+    127) echo "  rc 127: not found -- the interpreter or the script" ;;
+    1[3-9][0-9]|2[0-5][0-9]) echo "  rc >128: killed by signal $((_rc - 128))" ;;
+  esac
+  echo "  --- stdout bytes: $(wc -c < "$_so" 2>/dev/null || echo 0),"\
+       "stderr bytes: $(wc -c < "$_sb" 2>/dev/null || echo 0) ---"
+  echo "  --- last 60 lines of the sh -x trace (the failing line is here) ---"
+  tail -60 "$_sb" 2>/dev/null | sed 's/^/    /' || echo "    (no trace captured)"
+  echo "  --- first 20 lines of the trace, to show how far setup got ---"
+  head -20 "$_sb" 2>/dev/null | sed 's/^/    /'
+  echo "  --- each bind on its own, to separate the box from the script ---"
+  for _t in "rw-root|--bind sysroot /" \
+            "tmpfs-run|--bind sysroot / --tmpfs /run" \
+            "file-bind|--bind sysroot / --tmpfs /run --ro-bind $PWD/tools/stage5-strip.sh /run/s.sh" \
+            "out-bind|--bind sysroot / --tmpfs /run --bind $PWD/out /run/o" \
+            "full-mounts|--bind sysroot / --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run"; do
+    _n=${_t%%|*}; _a=${_t#*|}
+    # shellcheck disable=SC2086
+    if bwrap --unshare-all --die-with-parent --uid 0 --gid 0 $_a --chdir / \
+         /bin/sh -c 'exit 0' 2>/dev/null; then echo "    $_n ok"
+    else echo "    $_n FAILED rc=$?"; fi
+  done
+  echo "  --- the script on the host, same tree, to separate box from script ---"
   STRIP_LOG=out/strip-host.txt sh tools/stage5-strip.sh sysroot 2>&1 \
     | tail -20 | sed 's/^/    /'
   exit 1
 fi
-sed 's/^/  /' "$_sb" 2>/dev/null; rm -f "$_sb"
+rm -f "$_sb" "$_so"
 
 # THE TRACE RECORDS LEARN WHAT THE STRIP JUST DID. packages.tsv
 # was written from pre-strip DESTDIRs and installed into this
