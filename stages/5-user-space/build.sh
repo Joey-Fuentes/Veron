@@ -2020,7 +2020,24 @@ echo "  === merged system, before stripping ==="
 # read-only here, so it would simply fail. `du -x` stays on one filesystem,
 # so the --proc, --dev and two --tmpfs mounts are skipped and only the
 # sysroot is measured.
-bwrap --unshare-all --die-with-parent --hostname veron \
+# --uid 0 --gid 0, BECAUSE THE SYSROOT IS ROOT-OWNED. Without them du runs
+# as the invoking user and cannot read /lost+found or /var/lib/chrony:
+# "Permission denied" twice and an apparent size of 9.4M against a real 2.3G.
+# A read-only report still has to be able to read.
+#
+# ONE BIND, AT /. A second bind under another name would need a mount point,
+# and bwrap CREATES a missing one -- in the source directory, which is
+# read-only here, so it would simply fail. du -x stays on one filesystem, so
+# the --proc, --dev and two --tmpfs mounts are skipped and only the sysroot
+# is measured.
+#
+# NO APOSTROPHES BELOW. The whole script is one single-quoted argument, and
+# an apostrophe in a comment (it was the word busybox-apostrophe-s) CLOSES
+# THE QUOTE: everything after it parsed as separate commands, which is how
+# `|| echo` became a syntax error on its own line and the next command came
+# out as `sed s/^/: File name too long`. sh -n does not catch it, because an
+# early-closed quote can still parse.
+bwrap --unshare-all --die-with-parent --hostname veron --uid 0 --gid 0 \
   --ro-bind sysroot / \
   --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
   --setenv PATH /usr/bin:/usr/sbin:/bin:/sbin \
@@ -2028,17 +2045,15 @@ bwrap --unshare-all --die-with-parent --hostname veron \
   /bin/sh -c '
     du -shx / | sed "s|^\([^ \t]*\).*|    total   \1\tsysroot|"
     echo "    largest directories:"
-    # NO CAP. This read `sort -rh | head -12`; the cap saved a dozen log lines
+    # No cap. This read sort -rh | head -12; the cap saved a dozen log lines
     # and cost a build when /usr grew a thirteenth directory. Print them all.
     du -shx /usr/* 2>/dev/null | sort -rh | sed "s|^|      |; s|\t/usr|\tsysroot/usr|"
     echo "    apparent vs on-disk (the gap is hardlinks):"
     printf "      on-disk  %s\n" "$(du -shx  / | cut -f1)"
-    # -b IS busybox\'s SPELLING OF APPARENT SIZE, and the box has no
-    # coreutils, so that is the du this always runs. Noted because the two
-    # spellings do NOT compose the same way: GNU\'s -b also forces
-    # --block-size=1 and overrides -h, so on a GNU du this prints bytes
-    # rather than a human figure. It degrades to a larger number in a log
-    # line; it cannot fail.
+    # -b is the busybox spelling of apparent size, and the box has no
+    # coreutils, so that is the du this always runs. On a GNU du -b also
+    # forces --block-size=1 and overrides -h, printing bytes: a larger
+    # number in a log line, not a failure.
     printf "      apparent %s\n" "$(du -shxb / | cut -f1)"
   ' || echo "    (size report unavailable)"
 
