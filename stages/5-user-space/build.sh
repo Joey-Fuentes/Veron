@@ -2140,6 +2140,7 @@ cd spikes/stage5
 # Keeping the two streams apart tells those cases apart.
 _sb=out/strip-box.err
 _so=out/strip-box.out
+_rc=0
 bwrap --unshare-all --die-with-parent --uid 0 --gid 0 --hostname veron \
   --bind sysroot / \
   --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
@@ -2149,8 +2150,16 @@ bwrap --unshare-all --die-with-parent --uid 0 --gid 0 --hostname veron \
   --setenv STRIP_LOG /run/strip-out/strip.txt \
   --setenv LC_ALL C --setenv TZ UTC --setenv SOURCE_DATE_EPOCH 0 \
   --chdir / \
-  /bin/sh -x /run/stage5-strip.sh / >"$_so" 2>"$_sb"
-_rc=$?
+  /bin/sh -x /run/stage5-strip.sh / >"$_so" 2>"$_sb" || _rc=$?
+# `|| _rc=$?` AND NOT A BARE COMMAND FOLLOWED BY _rc=$?. This script runs
+# under `set -eu`; a bare command that fails ends the script on that line and
+# the capture never executes -- which is exactly what happened on the fourth
+# round: the trace was written to out/strip-box.err, nothing printed it, and
+# the collect step does not gather it. The `||` arm is the one form errexit
+# leaves alone. The previous `if ! cmd` form suppressed errexit too but read
+# the negation's status, so rc always came back 0. Both faults are why four
+# rounds produced no diagnostic; the pattern was tested against a failing and
+# a succeeding command before this went in.
 # THE STDOUT IS SHOWN EITHER WAY. On success it is the strip report the log
 # has always carried; on failure it is evidence.
 sed 's/^/  /' "$_so" 2>/dev/null
