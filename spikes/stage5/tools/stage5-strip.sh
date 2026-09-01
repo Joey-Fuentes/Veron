@@ -37,6 +37,14 @@
 #   4. CHECK ELF MAGIC, NOT THE EXTENSION. A DESTDIR is full of scripts and
 #      data; strip on a shell script is an error per file and noise in a log.
 #
+# NO PIPELINE HERE CLOSES ITS INPUT EARLY. `cmd | head -N` is fine on a host
+# where SIGPIPE is fatal: the producer dies quietly. The GitHub runner leaves
+# SIGPIPE at SIG_IGN and the disposition is inherited through fork AND exec,
+# so the producer takes EPIPE, complains on stderr and exits non-zero instead.
+# `sed -n '1,Np'` reads to EOF and selects the same N lines without ever
+# closing the pipe. Where the cap was only shortening a report it is gone
+# entirely; where it selects (try up to twelve candidates) it stays.
+#
 # --strip-debug, NOT --strip-all. The symbol table stays, so a backtrace still
 # names functions; only DWARF goes. --strip-all on a shared library removes
 # symbols something may still need to link against, and the extra saving is
@@ -115,8 +123,19 @@ for cand in OWN "$(command -v strip 2>/dev/null || true)"; do
     # no probe at all, and the candidate is rejected for the tree's shape
     # rather than the tool's fitness. Caught exactly that way on a test tree
     # of 16 KB binaries.
+    # sed -n '1,12p' RATHER THAN head -12, AND THE CAP ITSELF STAYS.
+    #
+    # Twelve is a selection -- try up to twelve candidates -- not a report
+    # being shortened, so it is kept. What changes is that `head` CLOSES THE
+    # PIPE while find and sort are still writing thousands of paths, and the
+    # GitHub runner leaves SIGPIPE at SIG_IGN (actions/runner #2684; the
+    # driver resets it for its own children and documents why). sort then
+    # takes EPIPE instead of dying, prints "sort: standard output: Broken
+    # pipe" and exits non-zero. `sed -n` reads its input to EOF, so nothing
+    # upstream ever sees a closed pipe and the runner's disposition stops
+    # mattering.
     for probe in $(find "$ROOT/usr/bin" "$ROOT/usr/lib" -type f ! -type l \
-                        2>/dev/null | LC_ALL=C sort | head -12); do
+                        2>/dev/null | LC_ALL=C sort | sed -n '1,12p'); do
         head -c4 "$probe" 2>/dev/null | od -An -c 2>/dev/null \
             | grep -q 'E   L   F' || continue
         cp "$probe" "$ROOT/.strip-probe" 2>/dev/null || continue
@@ -389,7 +408,7 @@ find "$ROOT/usr/bin" "$ROOT/usr/sbin" "$ROOT/usr/libexec" "$ROOT/usr/lib" \
     # Recording still checks nlink, because a genuinely unshared file has
     # nothing to record.
     if [ -n "$ino" ]; then
-        prev=$(sed -n "s/^$ino //p" "$TMPINO" | head -1) || prev=""
+        prev=$(sed -n "s/^$ino //p" "$TMPINO" | sed -n '1p') || prev=""
         if [ -n "$prev" ] && [ -e "$prev" ]; then
             # AN if, NOT `ln ... && continue`. Under `set -e` an AND-list whose
             # last command fails takes the whole script down -- and inside a

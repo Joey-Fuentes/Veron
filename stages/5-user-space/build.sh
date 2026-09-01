@@ -893,7 +893,19 @@ build_img() {
   #
   # NOTHING IS LOST. The .py sources ship; the interpreter regenerates its
   # cache on the running system, into the tmpfs overlay where it belongs.
-  find ../sysroot -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+  # NO `-exec ... +` AND NO `|| true`, BOTH DELIBERATE.
+  #
+  # This runs on the host, and the host is Ubuntu on a runner and Veron here,
+  # so `find` is GNU on one leg and busybox on the other -- the same
+  # assumption that made `du --apparent-size` and `chmod --reference` fail on
+  # a laptop. `-exec ... +` is not something busybox find can be relied on
+  # for, and with `2>/dev/null || true` the failure would have been SILENT:
+  # the caches would simply have shipped again and the 107 differences come
+  # back looking unfixed. A read loop needs nothing beyond -print, and
+  # letting a real failure surface is the point.
+  find ../sysroot -type d -name __pycache__ -prune -print | while IFS= read -r _pc; do
+    rm -rf "$_pc"
+  done
   /sbin/mke2fs -q -t ext4 -d ../sysroot \
     -U 00000000-0000-4000-8000-000000000001 \
     -E hash_seed=00000000-0000-4000-8000-000000000002 \
@@ -1769,7 +1781,7 @@ if grep -aq "Service labwc process terminated" "$O/desktop-console.log"; then
   grep -aE "Service labwc|labwc" "$O/desktop-console.log" | head -6 | sed 's/^/    /'
   echo "  --- labwc's own log ---"
   sed -n '/---LABWC-LOG---/,/---SEAT-STATE---/p' "$O/desktop-console.log" \
-    | head -22 | sed 's/^/    /' || echo "    (not captured)"
+    | sed -n '1,22p' | sed 's/^/    /' || echo "    (not captured)"
   bad=1
 fi
 
@@ -1780,7 +1792,7 @@ fi
 if grep -aqE "Failed to load module|g_io_module_load" "$O/desktop-console.log"; then
   echo "  the wpe-platform-veron module did not load:"
   grep -aE "Failed to load module|undefined symbol" "$O/desktop-console.log" \
-    | head -4 | sed 's/^/    /'
+    | sed -n '1,4p' | sed 's/^/    /'
   bad=1
 fi
 
@@ -1790,7 +1802,7 @@ if grep -aE "process terminated with exit code" "$O/desktop-console.log" \
      | grep -av chrony | grep -aq .; then
   echo "  services exited nonzero:"
   grep -aE "process terminated with exit code" "$O/desktop-console.log" \
-    | grep -av chrony | head -6 | sed 's/^/    /'
+    | grep -av chrony | sed -n '1,6p' | sed 's/^/    /'
   bad=1
 fi
 
@@ -1984,13 +1996,51 @@ touch "$ROOT/spikes/stage5/sysroot/.veron-stripped" 2>/dev/null || true
 # ---- Size the system, and name what nothing reaches ----
 cd "$ROOT"
 cd spikes/stage5
+# THE SIZE REPORT RUNS IN THE BOX, ON THE SYSROOT'S OWN du.
+#
+# It used to run here, on the host, and "the host" is Ubuntu on a runner and
+# Veron on a laptop. That is not a choice anyone made -- it is the absence of
+# one, and it is the same defect as `chmod --reference` in stage5-strip.sh:
+# `du -sh --apparent-size` is GNU, busybox spells it -b, so the line had never
+# once run on a Veron laptop and under `set -eu` it ended the phase before the
+# strip was reached. Detecting which du is present would paper over it; there
+# is no coreutils package in this image, so IN THE BOX du is busybox on both
+# legs, always, and -b is simply correct.
+#
+# It also stops the report inheriting the runner's ignored SIGPIPE, which is
+# what turned `sort -rh | head -12` into a build failure the moment /usr grew
+# a thirteenth directory.
+#
+# READ-ONLY, because a report has no business writing: --ro-bind the sysroot,
+# --tmpfs /run so no mount point can be created in the tree, and no --uid
+# mapping needed since nothing is produced.
 echo "  === merged system, before stripping ==="
-du -sh sysroot | sed 's/^/    total   /'
-echo "    largest directories:"
-du -sh sysroot/usr/* 2>/dev/null | sort -rh | head -12 | sed 's/^/      /'
-echo "    apparent vs on-disk (the gap is hardlinks):"
-printf '      on-disk  %s\n' "$(du -sh sysroot | cut -f1)"
-printf '      apparent %s\n' "$(du -sh --apparent-size sysroot | cut -f1)"
+# ONE BIND, AT /. A second bind under another name would need a mount point,
+# and bwrap CREATES a missing one -- in the source directory, which is
+# read-only here, so it would simply fail. `du -x` stays on one filesystem,
+# so the --proc, --dev and two --tmpfs mounts are skipped and only the
+# sysroot is measured.
+bwrap --unshare-all --die-with-parent --hostname veron \
+  --ro-bind sysroot / \
+  --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
+  --setenv PATH /usr/bin:/usr/sbin:/bin:/sbin \
+  --setenv LC_ALL C --chdir / \
+  /bin/sh -c '
+    du -shx / | sed "s|^\([^ \t]*\).*|    total   \1\tsysroot|"
+    echo "    largest directories:"
+    # NO CAP. This read `sort -rh | head -12`; the cap saved a dozen log lines
+    # and cost a build when /usr grew a thirteenth directory. Print them all.
+    du -shx /usr/* 2>/dev/null | sort -rh | sed "s|^|      |; s|\t/usr|\tsysroot/usr|"
+    echo "    apparent vs on-disk (the gap is hardlinks):"
+    printf "      on-disk  %s\n" "$(du -shx  / | cut -f1)"
+    # -b IS busybox\'s SPELLING OF APPARENT SIZE, and the box has no
+    # coreutils, so that is the du this always runs. Noted because the two
+    # spellings do NOT compose the same way: GNU\'s -b also forces
+    # --block-size=1 and overrides -h, so on a GNU du this prints bytes
+    # rather than a human figure. It degrades to a larger number in a log
+    # line; it cannot fail.
+    printf "      apparent %s\n" "$(du -shxb / | cut -f1)"
+  ' || echo "    (size report unavailable)"
 
 # AND WHAT IS IN THERE THAT NOTHING RUNS. Declared edges alone were
 # too weak to trust -- they cannot see a shebang or a dlopen -- so
@@ -2157,7 +2207,19 @@ build_img() {
   #
   # NOTHING IS LOST. The .py sources ship; the interpreter regenerates its
   # cache on the running system, into the tmpfs overlay where it belongs.
-  find ../sysroot -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+  # NO `-exec ... +` AND NO `|| true`, BOTH DELIBERATE.
+  #
+  # This runs on the host, and the host is Ubuntu on a runner and Veron here,
+  # so `find` is GNU on one leg and busybox on the other -- the same
+  # assumption that made `du --apparent-size` and `chmod --reference` fail on
+  # a laptop. `-exec ... +` is not something busybox find can be relied on
+  # for, and with `2>/dev/null || true` the failure would have been SILENT:
+  # the caches would simply have shipped again and the 107 differences come
+  # back looking unfixed. A read loop needs nothing beyond -print, and
+  # letting a real failure surface is the point.
+  find ../sysroot -type d -name __pycache__ -prune -print | while IFS= read -r _pc; do
+    rm -rf "$_pc"
+  done
   /sbin/mke2fs -q -t ext4 -d ../sysroot \
     -U 00000000-0000-4000-8000-000000000001 \
     -E hash_seed=00000000-0000-4000-8000-000000000002 \

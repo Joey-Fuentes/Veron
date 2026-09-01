@@ -870,7 +870,11 @@ applet_set() {
   tr '\n' ' ' < /tmp/used.txt | fold -w 72 -s | sed 's/^/    /'
   echo
   echo "  --- by frequency, most-used first ---"
-  sort "$L" | uniq -c | sort -rn | head -25 | sed 's/^/    /'
+  # NO head: SAME SHAPE AS THE ONE THAT BROKE STAGE 5's STRIP PHASE. `head`
+  # closes the pipe while sort is still writing, and a runner that leaves
+  # SIGPIPE ignored turns that into a non-zero exit instead of a quiet death.
+  # This is a report; print it.
+  sort "$L" | uniq -c | sort -rn | sed 's/^/    /'
   echo
   echo "  --- compiled in but NEVER invoked ($((have - used))) ---"
   "$BB" --list | sort > /tmp/have.txt
@@ -879,7 +883,7 @@ applet_set() {
   echo "  --- as a busybox config ---"
   while read -r a; do
     printf '    CONFIG_%s=y\n' "$(echo "$a" | tr 'a-z-' 'A-Z_')"
-  done < /tmp/used.txt | head -60
+  done < /tmp/used.txt | sed -n '1,60p'
   echo
   echo "  READ THIS AS A FLOOR, NOT A SPEC. It records the applets the"
   echo "  paths that RAN invoked. A rung that failed early under-reports"
