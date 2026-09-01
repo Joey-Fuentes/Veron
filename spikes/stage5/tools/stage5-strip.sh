@@ -93,8 +93,30 @@ TMPERR=$(mktemp); TMPFAIL=$(mktemp); TMPINO=$(mktemp)
 trap 'rm -f "$TMPERR" "$TMPFAIL" "$TMPINO" "$ROOT/.strip-probe"' EXIT
 
 STRIP=""
+# STRIP_WRAP EXISTS TO REACH THE SYSROOT'S STRIP FROM OUTSIDE IT. It bwraps
+# $ROOT to / so /usr/bin/strip resolves to the tree's own binutils rather
+# than the host's. INSIDE THE BOX THERE IS NOTHING TO REACH: / already is the
+# tree and /usr/bin/strip already is its strip.
+#
+# THIS WAS THE FIVE-ROUND FAILURE, NAMED BY THE sh -x TRACE ON THE FIFTH:
+#
+#   + command -v bwrap                 <- succeeds: bubblewrap is a stage-5
+#                                         package, so the sysroot HAS bwrap
+#   + STRIP_WRAP='bwrap ... --bind  / ...'
+#                                  ^^ ROOT is empty in the box: --bind "" /
+#   + bwrap --die-with-parent --bind / ... /usr/bin/strip --strip-debug ...
+#   + rm -f ...                        <- the EXIT trap: try_strip died there
+#
+# A NESTED bwrap from inside an unprivileged user namespace, with no
+# --unshare-all of its own, cannot create mounts on the GitHub runner. It CAN
+# on a Veron laptop, which is the entire leg difference: the same code path
+# ran on both, and only one kernel let the inner bwrap through. Every bind
+# probe passed because none of them nest.
+#
+# ROOT="" after the trailing-slash normalisation is the honest signal that
+# the tree IS / -- there is no outer host to escape, so no wrapper.
 STRIP_WRAP=""
-if command -v bwrap >/dev/null 2>&1 && [ -x "$ROOT/usr/bin/strip" ]; then
+if [ -n "$ROOT" ] && command -v bwrap >/dev/null 2>&1 && [ -x "$ROOT/usr/bin/strip" ]; then
     STRIP_WRAP="bwrap --die-with-parent --bind $ROOT / --proc /proc --dev /dev --tmpfs /tmp --setenv PATH /usr/bin:/bin --chdir /"
 fi
 
