@@ -65,10 +65,32 @@ name = "unpack"
 cwd  = "$B"
 run  = [["tar", "-xf", "$DL/libtool-2.6.2.tar.xz", "-C", "$B"]]
 
+# lt_cv_sys_max_cmd_len IS DECLARED, NOT PROBED.
+#
+# configure derives it from the RUNNING PROCESS'S STACK LIMIT -- on Linux
+# libtool takes `ulimit -s` and divides -- and writes the number into the
+# generated /usr/bin/libtool as `max_cmd_len=`. bwrap inherits rlimits from
+# whoever invoked it, so the shipped script read 3145728 on the runner and
+# 1572864 on a laptop: the ONLY two differing lines in a 13,571-line file,
+# same size, same everything else. A same-size difference is invisible to a
+# metadata comparison, which is how it went unnoticed until every file in
+# both images was hashed.
+#
+# 1572864 IS 1.5 MiB AND THE VALUE IS A CEILING, NOT A CAPABILITY. libtool
+# uses it to decide when to split a command line into pieces; too small costs
+# an extra link invocation, too large risks E2BIG. The smaller of the two
+# observed values is the safe one -- it cannot exceed a limit the larger
+# machine would have allowed -- and it is what a Veron machine already
+# produces, so nothing about the current output changes on that side.
+#
+# Passed as a cache variable because that is configure's own mechanism for
+# "do not probe this, here is the answer": it is recorded in config.log and
+# in the plan's argv, so the number is auditable rather than mysterious.
 [[steps]]
 name = "configure"
 cwd  = "$S"
-run  = [["./configure", "--prefix=/usr", "--disable-static"]]
+run  = [["./configure", "--prefix=/usr", "--disable-static",
+         "lt_cv_sys_max_cmd_len=1572864"]]
 
 [[steps]]
 name = "build"

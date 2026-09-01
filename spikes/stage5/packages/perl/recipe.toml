@@ -73,13 +73,42 @@ run  = [["tar", "-xf", "$DL/perl-5.44.0.tar.gz", "-C", "$B"]]
 # cf_time, so every field is pinned explicitly via Configure's own -D overrides.
 # myuname is the one that hides -- it is `uname -a` output and carries the
 # hostname in two more places (myuname + the "Target system" comment).
+# TWO FIELDS THE -D FLAGS ABOVE DO NOT REACH, MEASURED ON THE SHIPPED IMAGE.
+#
+# The pins above are necessary and were not sufficient. Diffing a CI rootfs
+# against a local one named exactly two values, in six files:
+#
+#   osvers    "6.17.0-1022-azure" on the runner, "7.1.5" here -- `uname -r`,
+#             which bwrap's UTS namespace does not virtualise. It lands in
+#             config.h as #define OSVERS, in Config.pm and Config_heavy.pl as
+#             osvers=, and TWICE inside Errno.pm, which builds an architecture
+#             guard from "$Config{'archname'}-$Config{'osvers'}" and DIES at
+#             runtime unless the running kernel matches the build one. A
+#             shipped module refusing to load on a different kernel is a bug
+#             regardless of reproducibility.
+#
+#   cf_time   the wall clock. -Dcf_time is passed above and DOES NOTHING:
+#             Configure recomputes it after reading the -D values, so the two
+#             images carried 07:13:37 and 07:17:26 -- four minutes apart, the
+#             gap between the runs. It reaches perlbug and perlthanks through
+#             $config_tag1, config.h through "Configuration time", and
+#             Config_heavy.pl twice.
+#
+# config.over IS CONFIGURE'S OWN OVERRIDE FILE, sourced after every value is
+# decided and immediately before config.sh is written, so what it says is
+# final. Stage 4's perl rung found this first and fixed it there; this recipe
+# builds the perl that actually SHIPS -- build_only excludes a package from
+# files.tsv but not from the image, because stage_into copies every DESTDIR
+# into the sysroot and the image is made from the sysroot.
+#
+# mydomain is pinned for the same reason stage 4 pins it: an empty -Dmydomain=
+# reads as "not set", so Configure looks the domain up and gets ".(none)" on
+# one host and a search domain on another.
 [[steps]]
 name = "configure"
 cwd  = "$S"
-run  = [["./Configure", "-des", "-Dprefix=/usr", "-Dman1dir=none", "-Dman3dir=none",
-          "-Dcf_by=veron", "-Dcf_email=veron@veron.build", "-Dperladmin=veron@veron.build",
-          "-Dmyhostname=veron", "-Dcf_time=Thu Jan  1 00:00:00 UTC 1970",
-          "-Dmyuname=veron"]]
+why  = "writing Configure's own override file is not an argv"
+shell = "set -eu; printf \"cf_time='Thu Jan  1 00:00:00 UTC 1970'\\nmydomain='.veron'\\n\" > config.over; ./Configure -des -Dprefix=/usr -Dman1dir=none -Dman3dir=none -Dcf_by=veron -Dcf_email=veron@veron.build -Dperladmin=veron@veron.build -Dmyhostname=veron -Dmydomain= -Dosvers=7.1.5 -Dcf_time='Thu Jan  1 00:00:00 UTC 1970' -Dmyuname=veron; echo '--- pinned values as Configure recorded them ---'; grep -E \"^(cf_time|cf_by|osvers|myhostname|mydomain|myuname)=\" config.sh"
 
 [[steps]]
 name = "build"

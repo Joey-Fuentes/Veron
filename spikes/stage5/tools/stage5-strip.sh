@@ -44,6 +44,31 @@
 set -eu
 
 ROOT=${1:?usage: stage5-strip.sh <sysroot>}
+# A TRAILING SLASH IS STRIPPED, WHICH IS WHAT MAKES "/" A LEGAL ARGUMENT.
+#
+# This script is now run INSIDE the box with the sysroot bound at /, so that
+# every tool it reaches for -- chmod, mv, find, stat, od -- is the sysroot's
+# and not the host's. That means ROOT arrives as "/", and two things depend
+# on the form it takes:
+#
+#   ${f#$ROOT} BUILDS THE PATH THE EXCLUSION LIST MATCHES, and those patterns
+#   are absolute (/usr/lib/ld-*.so*, /usr/bin/strip). With ROOT="/" the
+#   expansion yields "usr/bin/strip", nothing matches, and the script strips
+#   ld.so and the running strip -- the two failures its own comments describe
+#   as destroying the tree. With ROOT="" it yields "/usr/bin/strip" and the
+#   patterns match exactly as they always did.
+#
+#   $ROOT/usr/bin/strip still resolves: "" + "/usr/bin/strip".
+#
+# Binding the tree a second time at /sysroot would also have worked and was
+# the wrong answer: bwrap CREATES a missing mount point, and since / is a
+# read-write bind of the real directory, that mkdir lands in the sysroot and
+# ships. The eleven empty directories already sitting at the root of the
+# image -- dest, dl, logs, packages, policy, tools, build, in, out, src --
+# are exactly that, left by the main build box.
+ROOT=${ROOT%/}
+# The existence check needs a path; "" is the root directory.
+[ -d "${ROOT:-/}" ] || { echo "  no such tree: ${1}"; exit 1; }
 LOG=${STRIP_LOG:-/dev/null}
 
 # KILOBYTES, NOT MEGABYTES, AND THE GUARD AT THE FOOT IS WHY. `du -sm` rounds
@@ -54,7 +79,7 @@ LOG=${STRIP_LOG:-/dev/null}
 sz() { du -sk "$1" 2>/dev/null | cut -f1; }
 emit() { echo "$1"; [ "$LOG" = /dev/null ] || echo "$1" >> "$LOG"; }
 
-[ -d "$ROOT" ] || { emit "  no such tree: $ROOT"; exit 1; }
+# (the tree's existence was checked above, before emit() had a log path)
 
 TMPERR=$(mktemp); TMPFAIL=$(mktemp); TMPINO=$(mktemp)
 trap 'rm -f "$TMPERR" "$TMPFAIL" "$TMPINO" "$ROOT/.strip-probe"' EXIT
@@ -162,7 +187,23 @@ do_strip() {
         "$STRIP" --strip-debug -o "$tmp" "$f" || { rm -f "$tmp"; return 1; }
     fi
     [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
-    chmod --reference="$f" "$tmp" 2>/dev/null || chmod 0755 "$tmp"
+    # THE MODE IS READ AND REAPPLIED NUMERICALLY. `chmod --reference` IS GNU
+    # ONLY.
+    #
+    # busybox chmod has no --reference, so on a Veron laptop that call failed
+    # and the `|| chmod 0755` fallback ran for EVERY file -- turning 0644
+    # objects into 0755 executables. 53 paths in the shipped image: crt1.o,
+    # crti.o, crtn.o and the rest of the crt set, usr/lib/gcc's internal
+    # objects, libgcc_s.so.1, libnettle, libhogweed and ruby's gems. The
+    # runner has GNU coreutils on PATH, so it kept the modes and the two legs
+    # disagreed on which of them was right; the stage-4 sysroot says 0644, so
+    # the fallback was wrong and had been silently doing all the work.
+    #
+    # `stat -c%a` exists in busybox and coreutils alike. The 0755 default now
+    # applies only if stat itself fails, which is what the original fallback
+    # was for and never got to be.
+    _m=$(stat -c%a "$f" 2>/dev/null || echo 755)
+    chmod "$_m" "$tmp"
     mv -f "$tmp" "$f"
 }
 
@@ -187,9 +228,9 @@ strip_available || { emit "VERON-STRIP-NONE"; exit 1; }
 # estimates.
 trim_cat() {   # $1 = label, rest = find predicates
     label=$1; shift
-    b=$(sz "$ROOT")
-    find "$ROOT" "$@" -delete 2>/dev/null || true
-    a=$(sz "$ROOT")
+    b=$(sz "${ROOT:-/}")
+    find "${ROOT:-/}" "$@" -delete 2>/dev/null || true
+    a=$(sz "${ROOT:-/}")
     printf '    %-22s %6d MB\n' "$label" "$(( (b - a) / 1024 ))"
 }
 
@@ -209,12 +250,12 @@ if [ "${VERON_TRIM:-1}" = 1 ]; then
     # these are probably unnecessary too -- but the log is quiet, that is
     # absence of evidence rather than proof, and 36 MB is not worth gambling
     # the one build capability this image is meant to keep.
-    b=$(sz "$ROOT")
-    find "$ROOT" -type f -name '*.a' \
+    b=$(sz "${ROOT:-/}")
+    find "${ROOT:-/}" -type f -name '*.a' \
          ! -name 'libc.a' ! -name 'libm.a' ! -name 'libm-*.a' \
          ! -name 'libgcc.a' ! -name 'libc_nonshared.a' \
          -delete 2>/dev/null || true
-    a=$(sz "$ROOT")
+    a=$(sz "${ROOT:-/}")
     printf '    %-22s %6d MB\n' "static archives (.a)" "$(( (b - a) / 1024 ))"
 
     # THE C++ BACK-END AND THE LTO BACK-END.
@@ -258,7 +299,7 @@ if [ "${VERON_TRIM:-1}" = 1 ]; then
     # are exactly what this removes. A user who wants that starts from the
     # seed. Kernels are the supported case.
     if [ -n "${PKGDIRS:-}" ]; then
-        b=$(sz "$ROOT")
+        b=$(sz "${ROOT:-/}")
         for pd in $PKGDIRS; do
             [ -d "$pd" ] || continue
             for il in "$pd"/*/installs.txt; do
@@ -271,7 +312,7 @@ if [ "${VERON_TRIM:-1}" = 1 ]; then
         # EMPTY DIRECTORIES LEFT BEHIND ARE NOISE IN THE MANIFEST, not a size
         # problem -- removed only where nothing remains.
         find "$ROOT/usr/include" -mindepth 1 -type d -empty -delete 2>/dev/null || true
-        a=$(sz "$ROOT")
+        a=$(sz "${ROOT:-/}")
         printf '    %-22s %6d MB\n' "package headers" "$(( (b - a) / 1024 ))"
     else
         printf '    %-22s %6s\n' "package headers" "skipped (no PKGDIRS)"
@@ -287,7 +328,7 @@ if [ "${VERON_TRIM:-1}" = 1 ]; then
     emit ""
 fi
 
-before=$(sz "$ROOT")
+before=$(sz "${ROOT:-/}")
 count=0
 
 # EXECUTABLES AND SHARED LIBRARIES BOTH. stage 4 walks bin/sbin/libexec; the
@@ -392,7 +433,7 @@ done
 # script vanished".
 echo "  walk complete"
 
-after=$(sz "$ROOT")
+after=$(sz "${ROOT:-/}")
 nfail=$(wc -l < "$TMPFAIL" 2>/dev/null || echo 0)
 
 emit "  stripped: $((before / 1024)) MB -> $((after / 1024)) MB  ($(( (before - after) / 1024 )) MB / $((before - after)) KB removed)"

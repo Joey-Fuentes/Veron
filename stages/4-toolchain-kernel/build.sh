@@ -1157,6 +1157,44 @@ phase_pack() {
   # to the same bytes as a runner once the bundle carries our zstd.
   sh "$ROOT/tools/pack-in-box.sh" lfs rel/sysroot.tar.zst --record rel/PACKED-BY lfs
   sha256sum rel/sysroot.tar.zst | tee rel/SYSROOT-SHA256
+
+  # rel/PROVENANCE, WRITTEN HERE SO A LAPTOP PRODUCES ONE TOO.
+  #
+  # This record was generated only by the workflow, so `out/4/rel` from a
+  # local run had none. Stage 5 consumes it -- veron-trace-records reads
+  # ref-tcc and the record's own digest out of it and SHIPS BOTH IN THE IMAGE
+  # -- so a local stage 5 fabricated a one-line stand-in and four trace
+  # records in the shipped rootfs disagreed with CI's for no reason except
+  # which machine ran stage 4. Same seam, same file, both legs.
+  #
+  # THE FIELDS THAT VARY PER RUN ARE NOT HERE, AND THAT IS THE POINT. The
+  # workflow's copy carries `run` and `built`; this one does not, because this
+  # file is consumed INTO A REPRODUCIBLE IMAGE and /etc/veron-release already
+  # learned that lesson -- VERON_BUILD_DATE and VERON_RUN_ID were removed from
+  # it when they made two runs of the same commit produce different images.
+  # The release's own PROVENANCE, published beside the tarball, still carries
+  # them: they belong to the build, not to the system it produced.
+  #
+  # `commit` is resolved the way stage 5 resolves it, so the two agree.
+  _c="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
+  {
+    echo "arch     x86_64"
+    echo "triplet  x86_64-veron-linux-gnu"
+    echo "commit   ${_c}"
+    echo "sysroot  $(cut -d' ' -f1 rel/SYSROOT-SHA256)"
+    echo "kernel   $(sha256sum rel/Image | cut -d' ' -f1)"
+    echo "initrd   $(sha256sum rel/initramfs.cpio.gz | cut -d' ' -f1)"
+    echo
+    echo "built by stages/4-toolchain-kernel/build.sh"
+    echo "from tcc, through gcc 4.7.4 and 10.2.0, in a box holding"
+    echo "busybox and tcc and nothing else. The tcc is tcc-amd64"
+    echo "from the 3/latest-x86_64 contract -- there is no host"
+    echo "compiler anywhere in this lineage:"
+    echo "  self-assembler -> pico-c -> micro-c -> tcc-arm64"
+    echo "  -> tcc-arm64-to-amd64 -> tcc-amd64 -> this sysroot"
+    [ -f in/4/PROVENANCE ] && { echo; sed 's/^/  /' in/4/PROVENANCE; }
+  } > rel/PROVENANCE
+  echo "  rel/PROVENANCE: $(wc -l < rel/PROVENANCE) lines, commit ${_c}"
   printf '  sysroot.tar.zst: %s (from %s MB of files)\n' "$(du -h rel/sysroot.tar.zst | cut -f1)" "$after"
   rm -rf "$OUT4/lfs"; mv lfs "$OUT4/lfs"
   cp -a rel "$OUT4/rel"

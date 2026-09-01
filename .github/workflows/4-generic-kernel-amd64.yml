@@ -79,15 +79,17 @@ jobs:
           # rel/ was made by `generic.sh pack`; this step adds provenance and uploads
           cp -a box4g/rel rel
           set -a; . stages/4-toolchain-kernel/pins.env; set +a
-          { echo "The generic kernel: linux-$KERNEL, the pinned tarball's own"
-            echo "defconfig plus veron-generic.fragment (committed, gated),"
-            echo "EFI-stub boot gated under OVMF: LoadOptions -> cmdline -> root=PARTUUID,"
-            echo "built by the stage-4 toolchain from 4/latest-x86_64:"
-            echo "  sysroot $(cut -d' ' -f1 in/4/SYSROOT-SHA256)"
-            echo "Boot-gated: squashfs + loop + overlay on machine #0."
-            echo "commit $GITHUB_SHA"
-            echo "run    $GITHUB_RUN_ID"
-          } > rel/PROVENANCE
+          # PROVENANCE IS WRITTEN BY generic.sh NOW. It existed only here, so a
+          # laptop's out/4-generic/rel had none -- and stage 5 HASHES it into
+          # the CHAIN record it ships inside the rootfs, so the line was
+          # present on one leg and absent on the other. `run` moves to
+          # BUILD-RUN for the same reason it did in stage 4: it changes every
+          # rebuild, and this digest ends up inside a reproducible image.
+          { echo "run      ${GITHUB_RUN_ID}"
+            echo "built    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "workflow .github/workflows/4-generic-kernel-amd64.yml"
+          } > rel/BUILD-RUN
+          [ -s rel/PROVENANCE ] || { echo "FAIL: generic.sh did not write rel/PROVENANCE"; exit 1; }
           cat rel/KERNEL-GENERIC-SHA256
           gh release create 4/kernel-x86_64 --title 'Veron generic kernel (x86_64)' \
             --notes 'The second stage-4 kernel: generic hardware, owned config, seed-true toolchain. Consumed by stage 6 for the live ISO.' \

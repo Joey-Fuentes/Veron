@@ -244,25 +244,28 @@ jobs:
           # PROVENANCE, BECAUSE THE TAG MOVES. Someone holding a download a
           # month from now needs to know which commit produced it, and the
           # tag alone cannot tell them.
+          # PROVENANCE IS WRITTEN BY build.sh NOW, NOT HERE.
+          #
+          # This block existed only in the workflow, so a laptop's out/4/rel
+          # had no PROVENANCE at all -- and stage 5 CONSUMES it, folding its
+          # ref-tcc line and its own digest into records it ships inside the
+          # rootfs. A local stage 5 fabricated a 74-byte stand-in against
+          # CI's 1060 bytes, and four trace files in the image disagreed
+          # across machines for no reason but that. One generator, in
+          # build.sh, and both legs get the identical file.
+          #
+          # run AND built MOVED OUT OF IT. They vary every run, and this file
+          # ends up INSIDE a reproducible image; /etc/veron-release already
+          # dropped VERON_BUILD_DATE and VERON_RUN_ID when they made two runs
+          # of the same commit produce different images. Nothing is lost --
+          # they are recorded beside the release in BUILD-RUN, and the release
+          # page and the attestation carry them as well.
           {
-            echo "arch     x86_64"
-            echo "triplet  x86_64-veron-linux-gnu"
-            echo "commit   ${GITHUB_SHA}"
             echo "run      ${GITHUB_RUN_ID}"
             echo "built    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "sysroot  $(cut -d' ' -f1 rel/SYSROOT-SHA256)"
-            echo "kernel   $(sha256sum rel/Image | cut -d' ' -f1)"
-            echo "initrd   $(sha256sum rel/initramfs.cpio.gz | cut -d' ' -f1)"
-            echo
-            echo "built by .github/workflows/4-toolchain-kernel-amd64.yml"
-            echo "from tcc, through gcc 4.7.4 and 10.2.0, in a box holding"
-            echo "busybox and tcc and nothing else. The tcc is tcc-amd64"
-            echo "from the 3/latest-x86_64 contract -- there is no host"
-            echo "compiler anywhere in this lineage:"
-            echo "  self-assembler -> pico-c -> micro-c -> tcc-arm64"
-            echo "  -> tcc-arm64-to-amd64 -> tcc-amd64 -> this sysroot"
-            [ -f in/4/PROVENANCE ] && { echo; sed 's/^/  /' in/4/PROVENANCE; }
-          } > rel/PROVENANCE
+            echo "workflow .github/workflows/4-toolchain-kernel-amd64.yml"
+          } > rel/BUILD-RUN
+          [ -s rel/PROVENANCE ] || { echo "FAIL: build.sh did not write rel/PROVENANCE"; exit 1; }
           ls -l rel/ | sed 's/^/    /'
 
           gh release create "$TAG" --title 'Veron stage 4 (x86_64)' \

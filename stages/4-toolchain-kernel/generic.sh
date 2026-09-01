@@ -412,6 +412,34 @@ phase_pack() {
   sh "$ROOT/tools/pack-in-box.sh" "$G/lfs" "rel/modules-$KERNEL-generic.tar.zst" --record rel/PACKED-BY build/staging
   ( cd rel && sha256sum vmlinuz-generic config-generic veron-boot.efi "modules-$KERNEL-generic.tar.zst" ) > rel/KERNEL-GENERIC-SHA256
   cat rel/KERNEL-GENERIC-SHA256
+
+  # rel/PROVENANCE, WRITTEN HERE AND NOT ONLY IN THE WORKFLOW.
+  #
+  # Stage 5 reads this file: veron-trace-records hashes it and writes
+  # "generic provenance <sha>" into the CHAIN record that ships inside the
+  # rootfs. It existed only on the runner, so a local stage 5 had nothing to
+  # hash and the line was simply ABSENT from the image on one leg and present
+  # on the other -- the same gap stage 4's own PROVENANCE had.
+  #
+  # NO run ID AND NO CLOCK. The workflow's version carried `run
+  # $GITHUB_RUN_ID`, which would make this digest -- and therefore the shipped
+  # CHAIN -- change on every generic-kernel rebuild even at a fixed commit.
+  # Those belong beside the release, in BUILD-RUN, not inside the image.
+  { echo "The generic kernel: linux-$KERNEL, the pinned tarball's own"
+    echo "defconfig plus veron-generic.fragment (committed, gated),"
+    echo "EFI-stub boot gated under OVMF: LoadOptions -> cmdline -> root=PARTUUID,"
+    echo "built by the stage-4 toolchain from 4/latest-x86_64:"
+    # in/4 IS THE CI PATH AND out/4/rel THE LOCAL ONE, AND BOTH HOLD THE SAME
+    # NUMBER: the digest of sysroot.tar.zst. CI downloads the release into
+    # in/4; a laptop consumes its own out/4/rel. Reading whichever exists
+    # keeps this line identical rather than merely present.
+    echo "  sysroot $( { cut -d' ' -f1 "$ROOT/in/4/SYSROOT-SHA256" \
+                       || cut -d' ' -f1 "$ROOT/out/4/rel/SYSROOT-SHA256" \
+                       || echo unknown ; } 2>/dev/null | head -1)"
+    echo "Boot-gated: squashfs + loop + overlay on machine #0."
+    echo "commit ${GITHUB_SHA:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
+  } > rel/PROVENANCE
+  echo "  rel/PROVENANCE: $(wc -l < rel/PROVENANCE) lines"
   rm -rf "$OUTG/rel"; cp -a rel "$OUTG/rel"
   echo "  out/4-generic/rel: $(ls "$OUTG/rel" | tr '\n' ' ')"
   cd "$ROOT"

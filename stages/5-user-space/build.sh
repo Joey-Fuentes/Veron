@@ -122,9 +122,34 @@ rm -rf spikes/stage5/sysroot; mkdir -p spikes/stage5/sysroot boot dl-sysroot
 if [ -d out/4/lfs ] && [ -s out/4/boot/Image ]; then
   cp -a out/4/lfs/. spikes/stage5/sysroot/
   cp out/4/boot/Image boot/Image
-  got=$(cd out/4/lfs && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
-  echo "$got  sysroot (out/4/lfs, content digest)" > dl-sysroot/SYSROOT-SHA256
-  printf 'kernel   %s\n' "$(sha256sum boot/Image | cut -d' ' -f1)" > dl-sysroot/PROVENANCE
+  # THE SAME QUANTITY CI RECORDS, NOT A DIFFERENT ONE THAT HAPPENS TO BE
+  # AVAILABLE.
+  #
+  # This branch used to compute a content digest over out/4/lfs while the
+  # release branch below reads the digest OF THE TARBALL. Two correct numbers
+  # for two different things -- and SYSROOT_SHA is the checkpoint key AND is
+  # copied into the image's CHAIN record, so the two legs could never agree on
+  # a line that describes an input they share byte for byte. Stage 4 writes
+  # rel/SYSROOT-SHA256 on a local run too, so prefer it and fall back to the
+  # content digest only when an older out/4 has no rel/.
+  if [ -s out/4/rel/SYSROOT-SHA256 ]; then
+    got=$(awk '{print $1}' out/4/rel/SYSROOT-SHA256)
+    cp out/4/rel/SYSROOT-SHA256 dl-sysroot/SYSROOT-SHA256
+  else
+    got=$(cd out/4/lfs && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+    echo "$got  sysroot (out/4/lfs, content digest -- no rel/SYSROOT-SHA256)" > dl-sysroot/SYSROOT-SHA256
+  fi
+  # THE REAL PROVENANCE WHEN STAGE 4 WROTE ONE. The fabricated one-line
+  # stand-in here left the tracer with 'unknown' for ref-tcc and a 74-byte
+  # stand-in against CI's 1060-byte record, so the tracer read 'unknown' for
+  # ref-tcc and hashed a different file into CHAIN -- four records in the
+  # shipped image disagreeing for no reason but which branch of this `if` ran.
+  # The file itself is NOT shipped; CHAIN pins it by digest.
+  if [ -s out/4/rel/PROVENANCE ]; then
+    cp out/4/rel/PROVENANCE dl-sysroot/PROVENANCE
+  else
+    printf 'kernel   %s\n' "$(sha256sum boot/Image | cut -d' ' -f1)" > dl-sysroot/PROVENANCE
+  fi
   echo "    sysroot: out/4/lfs (local stage-4 run); kernel: out/4/boot/Image"
   echo "VERON-ENTRY-OK  $got"
   setenv SYSROOT_SHA "$got"
@@ -327,7 +352,21 @@ if [ -s dest/.veron-checkpoint ] && \
   echo "  local checkpoint marker matches this sysroot -- resuming from dest/ ($(ls dest | wc -l) package dir(s)), not downloading 5/ckpt-x86_64"
 elif gh release download 5/ckpt-x86_64 --pattern 'dest.tar.zst' \
      --dir . 2>/dev/null; then
-  tar --zstd -xf dest.tar.zst && rm -f dest.tar.zst
+  # -p, AND WITHOUT IT THE CHECKPOINT IS NOT CONTENT-PRESERVING.
+  #
+  # This extraction runs ON THE RUNNER as the unprivileged build user, not in
+  # the box. GNU tar as non-root applies the umask unless told otherwise, so
+  # every restored file lost its group-write bit: 0664 -> 0644 and 0775 ->
+  # 0755. It cost 246 of the 425 differences between a CI image and a local
+  # one, all of them under site-packages/mesonbuild -- meson is installed by
+  # `cp -a` from its extracted sdist, which is the only package here whose
+  # modes come from a tarball rather than from `make install` setting them
+  # explicitly, so it was the only one with a group-write bit to lose.
+  #
+  # The restored dest/ was not the dest/ that was banked, and the checkpoint
+  # key could not notice: the key covers base, policy, recipe-sha and dep
+  # keys, none of which is a mode.
+  tar --zstd -xpf dest.tar.zst && rm -f dest.tar.zst
   python3 -c 'import json;m=json.load(open("dest/.veron-checkpoint"));print("  downloaded a checkpoint holding",len(m["keys"]),"package(s)")'
   # A CHECKPOINT FROM A DIFFERENT SYSROOT IS DISCARDED HERE RATHER
   # THAN REFUSED LATER. veron build --resume die()s when the marker's
@@ -618,8 +657,16 @@ cd spikes/stage5
 # "how was this file compiled" then answers OFFLINE, on the
 # machine asking, in the exact words that ran -- kept true by the
 # plan --check gate above.
+# --commit, BECAUSE THE TRACER HAS NO FALLBACK AND build.sh DOES.
+# veron-trace-records defaults --commit to $GITHUB_SHA or the literal string
+# 'unknown', so every local run wrote "stage5 commit unknown" into the CHAIN
+# record shipped in the image -- the one record whose job is to say which
+# commit built the machine. $COMMIT is resolved at the top of this script from
+# GITHUB_SHA, falling back to `git rev-parse HEAD`, which is exactly the value
+# /etc/veron-release already carries.
 python3 ../../tools/veron-trace-records \
   --repo ../.. --ledger ledger \
+  --commit "$COMMIT" \
   --stage4-dir ../../dl-sysroot \
   --build-only "$(python3 tools/veron --overlay packages-amd64 build-only-names)" \
   --plan-commands PLAN-amd64.txt \
@@ -828,6 +875,25 @@ build_img() {
   # itself at boot. Deleting it here ships what was intended and nothing
   # of the machine that happened to build it.
   rm -rf ../sysroot/home
+  # REMOVE __pycache__ BEFORE IMAGING, FOR THE SAME REASON AS THE TWO ABOVE.
+  #
+  # Python writes bytecode next to the source on FIRST IMPORT, so a build that
+  # runs meson -- which is every build -- leaves __pycache__ scattered through
+  # site-packages, and the merged tree carries it into the image. 107 of the
+  # 425 CI-versus-local differences were exactly these: 63 under mesonbuild,
+  # 19 under mako, 14 under packaging, 11 under glib-2.0/codegen, and all 100
+  # differing lines in the shipped extra.tsv were the same files being
+  # recorded as unattributed extras.
+  #
+  # THEY COULD NOT BE REPRODUCIBLE EVEN BETWEEN TWO RUNS OF THIS MACHINE. A
+  # .pyc header stores the source file's mtime and size; the interpreter
+  # rewrites the file whenever they disagree. Shipping them means shipping a
+  # timestamp, which is what /etc/veron-release already dropped
+  # VERON_BUILD_DATE for.
+  #
+  # NOTHING IS LOST. The .py sources ship; the interpreter regenerates its
+  # cache on the running system, into the tmpfs overlay where it belongs.
+  find ../sysroot -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
   /sbin/mke2fs -q -t ext4 -d ../sysroot \
     -U 00000000-0000-4000-8000-000000000001 \
     -E hash_seed=00000000-0000-4000-8000-000000000002 \
@@ -1286,7 +1352,26 @@ mkdir -p boot-generic
 # local stage-4 output, then a previously fetched/hand-placed
 # boot-generic/, then gh; the sha256 check below guards all three.
 if [ -s out/4-generic/rel/vmlinuz-generic ] && [ -s out/4-generic/rel/KERNEL-GENERIC-SHA256 ]; then
+  # EMPTIED ONLY ON THE BRANCH THAT REFILLS IT, so the "cached or hand-placed"
+  # branch below still has something to find.
+  #
+  # This branch copied its files OVER whatever was already here and left every
+  # other file alone, so a KERNEL-GENERIC-SHA256 or a modules tarball from an
+  # earlier generic build survived a rebuild and kept feeding stale digests
+  # into the CHAIN record shipped in the image. A runner starts empty every
+  # time; a laptop never does, and that asymmetry is this whole class of
+  # difference.
+  rm -rf boot-generic && mkdir -p boot-generic
   cp out/4-generic/rel/vmlinuz-generic out/4-generic/rel/KERNEL-GENERIC-SHA256 boot-generic/
+  # PROVENANCE AND THE MODULES TOO, BECAUSE THE TRACER READS THEM.
+  # `gh release download 4/kernel-x86_64` on the release branch below fetches
+  # the WHOLE release; this branch copied two files, so boot_chain() found no
+  # PROVENANCE and omitted the "generic provenance" line from the CHAIN record
+  # on local runs only. Copy whatever stage 4 produced, so the two branches
+  # hand the tracer the same seam.
+  for _g in PROVENANCE modules-*.tar.zst; do
+    [ -e "out/4-generic/rel/$_g" ] && cp "out/4-generic/rel/$_g" boot-generic/
+  done
   echo "  generic kernel: out/4-generic/rel (local stage-4 run)"
 elif [ -s boot-generic/vmlinuz-generic ]; then
   echo "  generic kernel: boot-generic/ (cached or hand-placed)"
@@ -1931,7 +2016,53 @@ cd spikes/stage5
 # veron-stage5-test is a shell script, so strip skips it by
 # extension -- but the packages it exercises are what is being
 # stripped, which is the point of running it again below.
-STRIP_LOG=out/strip.txt sh tools/stage5-strip.sh sysroot
+# THE STRIP RUNS IN THE BOX, ON THE SYSROOT'S OWN TOOLS.
+#
+# It used to run on the HOST: `sh tools/stage5-strip.sh sysroot`, with only
+# the strip BINARY wrapped in bwrap. Everything around it -- chmod, mv, find,
+# stat, od, the ELF probe -- was whatever the host happened to provide, and
+# the artifact it rewrites is the shipped image. That is how `chmod
+# --reference` came to behave one way on a runner with GNU coreutils and
+# another on a Veron laptop with busybox, silently setting 53 files to 0755.
+# Fixing that one call would leave the rest of the script equally
+# host-dependent; the probe alone picks its strip candidate by walking the
+# tree with the host's `find`.
+#
+# THE SYSROOT IS BOUND TWICE, ON PURPOSE. At / so PATH=/usr/bin resolves to
+# the sysroot's coreutils and its own binutils strip, and at /sysroot so the
+# script's ROOT is a real prefix. ROOT=/ would look tidier and would BREAK
+# THE EXCLUSION LIST: those patterns are absolute (/usr/lib/ld-*.so*,
+# /usr/bin/strip), `${f#$ROOT}` with ROOT=/ yields a relative path, nothing
+# would match, and the script would strip ld.so and the running strip -- the
+# two failures its own comments describe as destroying the tree. Both mounts
+# are the same directory, so writes through either land in the same place.
+#
+# --uid 0 --gid 0 as everywhere else, so no builder identity reaches the
+# modes it is about to preserve.
+# THE SYSROOT IS BOUND AT / AND NOWHERE ELSE, AND THE SCRIPT IS FED "/".
+# Binding it a second time under another name would need a mount point, and
+# bwrap CREATES a missing one -- inside a read-write bind of the real
+# directory, so the mkdir would persist and ship. The eleven empty
+# directories already at the root of the image (dest, dl, logs, packages,
+# policy, tools, build, in, out, src) are exactly that, left by the main
+# build box. The script normalises a trailing slash so ROOT="/" behaves.
+#
+# THE SCRIPT AND THE LOG COME IN THROUGH A tmpfs ON /run. bwrap applies its
+# arguments in order, so --tmpfs /run lands first and the two mount points
+# under it are created in that tmpfs, not in the sysroot. Without it they
+# would be a leftover empty file and an empty directory at /run in the
+# shipped image -- the same leak as the eleven directories above, committed
+# while fixing it.
+bwrap --unshare-all --die-with-parent --uid 0 --gid 0 --hostname veron \
+  --bind sysroot / \
+  --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
+  --ro-bind "$PWD/tools/stage5-strip.sh" /run/stage5-strip.sh \
+  --bind "$PWD/out" /run/strip-out \
+  --setenv PATH /usr/bin:/usr/sbin:/bin:/sbin \
+  --setenv STRIP_LOG /run/strip-out/strip.txt \
+  --setenv LC_ALL C --setenv TZ UTC --setenv SOURCE_DATE_EPOCH 0 \
+  --chdir / \
+  /bin/sh /run/stage5-strip.sh /
 
 # THE TRACE RECORDS LEARN WHAT THE STRIP JUST DID. packages.tsv
 # was written from pre-strip DESTDIRs and installed into this
@@ -2008,6 +2139,25 @@ build_img() {
   # itself at boot. Deleting it here ships what was intended and nothing
   # of the machine that happened to build it.
   rm -rf ../sysroot/home
+  # REMOVE __pycache__ BEFORE IMAGING, FOR THE SAME REASON AS THE TWO ABOVE.
+  #
+  # Python writes bytecode next to the source on FIRST IMPORT, so a build that
+  # runs meson -- which is every build -- leaves __pycache__ scattered through
+  # site-packages, and the merged tree carries it into the image. 107 of the
+  # 425 CI-versus-local differences were exactly these: 63 under mesonbuild,
+  # 19 under mako, 14 under packaging, 11 under glib-2.0/codegen, and all 100
+  # differing lines in the shipped extra.tsv were the same files being
+  # recorded as unattributed extras.
+  #
+  # THEY COULD NOT BE REPRODUCIBLE EVEN BETWEEN TWO RUNS OF THIS MACHINE. A
+  # .pyc header stores the source file's mtime and size; the interpreter
+  # rewrites the file whenever they disagree. Shipping them means shipping a
+  # timestamp, which is what /etc/veron-release already dropped
+  # VERON_BUILD_DATE for.
+  #
+  # NOTHING IS LOST. The .py sources ship; the interpreter regenerates its
+  # cache on the running system, into the tmpfs overlay where it belongs.
+  find ../sysroot -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
   /sbin/mke2fs -q -t ext4 -d ../sysroot \
     -U 00000000-0000-4000-8000-000000000001 \
     -E hash_seed=00000000-0000-4000-8000-000000000002 \

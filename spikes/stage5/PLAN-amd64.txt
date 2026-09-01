@@ -915,7 +915,7 @@ package perl 5.44.0
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
   license      Artistic-1.0-Perl OR GPL-1.0-or-later
-  recipe-sha   b70441b1603752905f63528532b39b4ee0f535efdd6e6c61b420b07716525349
+  recipe-sha   a6f66fc7cbaeaa7bb7f00a1b80941e5f9af1500d5630b9ba095d286be4abf074
 
   source
     url        https://www.cpan.org/src/5.0/perl-5.44.0.tar.gz
@@ -935,7 +935,8 @@ package perl 5.44.0
          argv ["tar", "-xf", "dl/perl-5.44.0.tar.gz", "-C", "build/perl-5.44.0"]
     [02] configure
          cwd  build/perl-5.44.0/perl-5.44.0
-         argv ["./Configure", "-des", "-Dprefix=/usr", "-Dman1dir=none", "-Dman3dir=none", "-Dcf_by=veron", "-Dcf_email=veron@veron.build", "-Dperladmin=veron@veron.build", "-Dmyhostname=veron", "-Dcf_time=Thu Jan  1 00:00:00 UTC 1970", "-Dmyuname=veron"]
+         SHELL (declared) why=writing Configure's own override file is not an argv
+         | set -eu; printf "cf_time='Thu Jan  1 00:00:00 UTC 1970'\nmydomain='.veron'\n" > config.over; ./Configure -des -Dprefix=/usr -Dman1dir=none -Dman3dir=none -Dcf_by=veron -Dcf_email=veron@veron.build -Dperladmin=veron@veron.build -Dmyhostname=veron -Dmydomain= -Dosvers=7.1.5 -Dcf_time='Thu Jan  1 00:00:00 UTC 1970' -Dmyuname=veron; echo '--- pinned values as Configure recorded them ---'; grep -E "^(cf_time|cf_by|osvers|myhostname|mydomain|myuname)=" config.sh
     [03] build
          cwd  build/perl-5.44.0/perl-5.44.0
          argv ["make", "-j1"]
@@ -1871,7 +1872,7 @@ package libtool 2.6.2
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
   license      GPL-2.0-or-later
-  recipe-sha   d35c073930b701af91539734677f37796f600a87c374f148ef4f2dd641479e5f
+  recipe-sha   8093de88dec1904718ca7891a62341fb7325cc45cfc78c1858ec505cd798fe31
 
   source
     url        https://ftp.gnu.org/gnu/libtool/libtool-2.6.2.tar.xz
@@ -1891,7 +1892,7 @@ package libtool 2.6.2
          argv ["tar", "-xf", "dl/libtool-2.6.2.tar.xz", "-C", "build/libtool-2.6.2"]
     [02] configure
          cwd  build/libtool-2.6.2/libtool-2.6.2
-         argv ["./configure", "--prefix=/usr", "--disable-static"]
+         argv ["./configure", "--prefix=/usr", "--disable-static", "lt_cv_sys_max_cmd_len=1572864"]
     [03] build
          cwd  build/libtool-2.6.2/libtool-2.6.2
          argv ["make", "-j1"]

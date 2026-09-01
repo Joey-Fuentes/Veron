@@ -32,7 +32,9 @@ if [ -x "$ROOT/out/3/x86_64/tcc-amd64" ]; then
 fi
 if [ "$got" = "$want" ]; then
   cp "$ROOT/out/3/x86_64/tcc-amd64" "$IN/ref-tcc"
-  SRC="out/3/x86_64 (local chain run)"
+  # SRC IS THE SAME SENTENCE ON BOTH LEGS. See the note at $IN/PROVENANCE.
+  SRC="3/6/tcc-amd64, verified against stages/3-micro-c/substages-amd64.toml"
+  WHENCE="out/3/x86_64 (local chain run)"
 else
   echo "  fetching the contract from the 3/latest-x86_64 release"
   for f in tcc-amd64 ARTIFACT-SHA256 substages.toml; do
@@ -58,7 +60,8 @@ else
     echo "  attestation: gh not on this host -- digest + records only"
   fi
   cp "$IN/rel-tcc-amd64" "$IN/ref-tcc"
-  SRC="3/latest-x86_64 release (digests + records + attestation verified)"
+  SRC="3/6/tcc-amd64, verified against stages/3-micro-c/substages-amd64.toml"
+  WHENCE="3/latest-x86_64 release (digests + records + attestation verified)"
 fi
 chmod 0755 "$IN/ref-tcc"
 got=$(sha256sum "$IN/ref-tcc" | cut -d' ' -f1)
@@ -76,6 +79,22 @@ while [ "$_i" -lt "$_phnum" ]; do
 [ -d "$ROOT/in/3/tcc-src" ] || sh stages/3-micro-c/build.sh in
 [ -f "$ROOT/in/3/tcc-src/tcc.c" ] || { echo "FAIL: no tcc source tree"; exit 1; }
 
+# THE source LINE DESCRIBES THE ARTIFACT, NOT THE TRANSPORT THAT DELIVERED IT.
+#
+# It used to read "out/3/x86_64 (local chain run)" here and "3/latest-x86_64
+# release (digests + records + attestation verified)" on a runner. This file is
+# embedded verbatim in stage 4's rel/PROVENANCE, which stage 5 HASHES into the
+# CHAIN record it ships inside the rootfs -- so one sentence about WHERE THE
+# FILE WAS FETCHED FROM changed a digest inside two images that were otherwise
+# byte-identical.
+#
+# THE BYTES WERE NEVER IN QUESTION. `ref-tcc` above is the digest, checked
+# against the committed record on both paths before this file is written; a
+# local out/3 and the release deliver the same tcc or the gate above fails.
+# So the record now states the thing that is true of the artifact, and the
+# route is printed to the log as WHENCE, where a person debugging a fetch can
+# see it and a shipped image cannot.
+echo "  fetched via: $WHENCE"
 {
   echo "ref-tcc     $got"
   echo "source      $SRC"

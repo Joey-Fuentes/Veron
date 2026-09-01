@@ -33,9 +33,10 @@ WHAT IT WRITES into --out:
                   inside that image, so the digest cannot (the IMAGE-SHA256
                   self-reference, again).
 
-  stage4-PROVENANCE   the consumed stage-4 record, verbatim, because the
-                  coarse stage-4 interior edge is described there and hiding
-                  the primary text behind a summary would be backwards.
+  (stage-4's own PROVENANCE is NOT copied here. It is pinned by digest on
+  CHAIN's `stage4 provenance` line, exactly as sysroot.tar.zst and the kernel
+  are pinned without shipping: veron-trace never opens it, and a record of the
+  build that produced an input does not belong inside the output.)
 
 Missing seam inputs (no dl-sysroot on a local run) write 'unknown' rather
 than failing: absence of a record is stated; only DISAGREEMENT between two
@@ -45,7 +46,6 @@ import argparse
 import glob
 import json
 import os
-import shutil
 import sys
 import tomllib
 
@@ -456,8 +456,29 @@ def main():
         # value and --verify treats it as absent rather than as wrong.
         reftcc = seam_value(s4p, "ref-tcc") or "unknown"
         prov_sha = sha256_of(s4p) or "unknown"
-        if os.path.exists(s4p):
-            shutil.copy(s4p, os.path.join(a.out, "stage4-PROVENANCE"))
+        # THE DIGEST SHIPS; THE FILE DOES NOT.
+        #
+        # This used to copy stage-4's PROVENANCE into the records verbatim, on
+        # the reasoning that the coarse stage-4 interior edge is described
+        # there and a summary would hide the primary text. But veron-trace --
+        # the tool these records exist for, and the only reader on a flashed
+        # machine -- opens CHAIN, commands.tsv, extra.tsv, packages.tsv,
+        # stripped.tsv and substages.tsv. It never opens this one; it prints a
+        # sentence pointing at it and nothing more. It was the only record in
+        # the image that nothing read.
+        #
+        # AND IT IS A RECORD OF A BUILD, NOT OF A SYSTEM. It describes the
+        # stage-4 artifact this image was assembled from, which is published
+        # beside that artifact where it belongs. Carrying it inside meant the
+        # image changed whenever an upstream record's wording did -- which is
+        # exactly how a sentence about WHERE tcc was fetched from ("out/3
+        # local chain run" against "3/latest-x86_64 release") made two
+        # otherwise identical images differ.
+        #
+        # `stage4 provenance <sha>` below still pins it, the same way
+        # `stage4 sysroot` pins sysroot.tar.zst and `stage4 kernel` pins the
+        # kernel -- neither of which ships either. Anyone holding the release
+        # can check the file against the digest the image carries.
 
     if a.plan_commands:
         plan_commands(a.plan_commands, a.out)

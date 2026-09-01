@@ -61,53 +61,53 @@ between this file and the recipes fails the run.
   39. dhcpcd
   40. dosfstools
   41. e2fsprogs
-  42. elfutils
-  43. flex
-  44. gmp
-  45. lcms2
-  46. libgpg-error
-  47. libidn2
-  48. libnl
-  49. libogg
-  50. libpng
-  51. libseccomp
-  52. libtasn1
-  53. libtool
-  54. libusb
-  55. libvpx
-  56. libyaml
-  57. nghttp2
-  58. npth
-  59. openssl
-  60. readline
-  61. tzdb
-  62. zstd
-  63. acpica
-  64. alsa-utils
-  65. automake
-  66. bash
-  67. curl
+  42. flex
+  43. gmp
+  44. lcms2
+  45. libgpg-error
+  46. libidn2
+  47. libnl
+  48. libogg
+  49. libpng
+  50. libseccomp
+  51. libtasn1
+  52. libtool
+  53. libusb
+  54. libvpx
+  55. libyaml
+  56. nghttp2
+  57. npth
+  58. openssl
+  59. readline
+  60. tzdb
+  61. zstd
+  62. acpica
+  63. alsa-utils
+  64. automake
+  65. bash
+  66. curl
+  67. elfutils
   68. freetype-bootstrap
-  69. iproute2
-  70. libarchive
-  71. libassuan
-  72. libgcrypt
-  73. libksba
-  74. libvorbis
-  75. libxml2
-  76. nettle
-  77. nnn
-  78. ruby
-  79. sqlite
-  80. wpa_supplicant
-  81. git
-  82. libcap
-  83. libcap-ng
-  84. libhyphen
-  85. libtpms
-  86. python
-  87. ca-certificates
-  88. edk2-firmware
+  69. libarchive
+  70. libassuan
+  71. libgcrypt
+  72. libksba
+  73. libvorbis
+  74. libxml2
+  75. nettle
+  76. nnn
+  77. ruby
+  78. sqlite
+  79. wpa_supplicant
+  80. git
+  81. libcap
+  82. libcap-ng
+  83. libhyphen
+  84. libtpms
+  85. python
+  86. ca-certificates
+  87. edk2-firmware
+  88. iproute2
   89. markupsafe
   90. meson
   91. ninja
@@ -811,7 +811,7 @@ package nasm 3.02
 package ncurses 6.6
   group        build-substrate
   license      MIT
-  recipe-sha   47f50eaa694d51dd73788fd80a607de6d8fb4587d8e4503fcc62bbf44f132d9e
+  recipe-sha   4874c2be909324b57eb4313b901ebf2d0f3c757b5c371042239bbe006f772fb3
 
   source
     url        https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz
@@ -831,6 +831,7 @@ package ncurses 6.6
          argv ["tar", "-xf", "dl/ncurses-6.6.tar.gz", "-C", "build/ncurses-6.6"]
     [02] configure
          cwd  build/ncurses-6.6/ncurses-6.6
+         env  cf_cv_ar_flags=-curvD
          argv ["./configure", "--prefix=/usr", "--with-shared", "--without-debug", "--without-ada", "--enable-widec", "--enable-pc-files", "--without-normal", "--with-pkg-config-libdir=/usr/lib/pkgconfig"]
     [03] build
          cwd  build/ncurses-6.6/ncurses-6.6
@@ -902,7 +903,7 @@ package perl 5.44.0
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
   license      Artistic-1.0-Perl OR GPL-1.0-or-later
-  recipe-sha   b70441b1603752905f63528532b39b4ee0f535efdd6e6c61b420b07716525349
+  recipe-sha   a6f66fc7cbaeaa7bb7f00a1b80941e5f9af1500d5630b9ba095d286be4abf074
 
   source
     url        https://www.cpan.org/src/5.0/perl-5.44.0.tar.gz
@@ -922,7 +923,8 @@ package perl 5.44.0
          argv ["tar", "-xf", "dl/perl-5.44.0.tar.gz", "-C", "build/perl-5.44.0"]
     [02] configure
          cwd  build/perl-5.44.0/perl-5.44.0
-         argv ["./Configure", "-des", "-Dprefix=/usr", "-Dman1dir=none", "-Dman3dir=none", "-Dcf_by=veron", "-Dcf_email=veron@veron.build", "-Dperladmin=veron@veron.build", "-Dmyhostname=veron", "-Dcf_time=Thu Jan  1 00:00:00 UTC 1970", "-Dmyuname=veron"]
+         SHELL (declared) why=writing Configure's own override file is not an argv
+         | set -eu; printf "cf_time='Thu Jan  1 00:00:00 UTC 1970'\nmydomain='.veron'\n" > config.over; ./Configure -des -Dprefix=/usr -Dman1dir=none -Dman3dir=none -Dcf_by=veron -Dcf_email=veron@veron.build -Dperladmin=veron@veron.build -Dmyhostname=veron -Dmydomain= -Dosvers=7.1.5 -Dcf_time='Thu Jan  1 00:00:00 UTC 1970' -Dmyuname=veron; echo '--- pinned values as Configure recorded them ---'; grep -E "^(cf_time|cf_by|osvers|myhostname|mydomain|myuname)=" config.sh
     [03] build
          cwd  build/perl-5.44.0/perl-5.44.0
          argv ["make", "-j1"]
@@ -1471,7 +1473,7 @@ package dosfstools 4.2
 package e2fsprogs 1.47.4
   group        system
   license      GPL-2.0
-  recipe-sha   2e1dee34ae35a91cae12b0c13cc1b412d42c6b11ac8efa62df2362b2c450245c
+  recipe-sha   40ad4db996b8334e33776d089da772dd07798ccf469baac0c15eacb71aa25508
 
   source
     url        https://downloads.sourceforge.net/project/e2fsprogs/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.gz
@@ -1491,7 +1493,7 @@ package e2fsprogs 1.47.4
          argv ["tar", "-xf", "dl/e2fsprogs-1.47.4.tar.gz", "-C", "build/e2fsprogs-1.47.4"]
     [02] configure
          cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
-         argv ["./configure", "--prefix=/usr", "--sbindir=/usr/sbin", "--disable-nls", "--disable-fuse2fs", "--disable-e2scrub", "--disable-rpath"]
+         argv ["./configure", "--prefix=/usr", "--sbindir=/usr/sbin", "--disable-nls", "--disable-fuse2fs", "--disable-e2scrub", "--disable-rpath", "--enable-libuuid", "--enable-libblkid"]
     [03] build
          cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
          argv ["make", "-j1"]
@@ -1528,39 +1530,6 @@ package e2fsprogs 1.47.4
     [14] install
          cwd  build/e2fsprogs-1.47.4/e2fsprogs-1.47.4
          argv ["cp", "build/e2fsprogs-1.47.4/e2fsprogs-1.47.4/misc/dumpe2fs.static", "dest/e2fsprogs/usr/sbin/dumpe2fs"]
-
-======================================================================
-package elfutils 0.192
-  group        graphics-substrate
-  license      GPL-3.0-or-later AND LGPL-3.0-or-later
-  recipe-sha   22ca310a5c250990bbcf354f9fe41bca85fc07adfe3a3762266859d1575186a4
-
-  source
-    url        https://sourceware.org/pub/elfutils/0.192/elfutils-0.192.tar.bz2
-    sha256     616099beae24aba11f9b63d86ca6cc8d566d968b802391334c91df54eab416b4
-    signature  PGP signed by Mark Wielaard; not verified per-build -- the pinned sha256 is the result of that audit
-    correspond none
-
-  deps
-    build        zlib
-    link         zlib
-    runtime      zlib
-    optional_off bzip2, debuginfod, demangler, libdebuginfod, lzma, nls, static
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/elfutils-0.192
-         argv ["tar", "-xf", "dl/elfutils-0.192.tar.bz2", "-C", "build/elfutils-0.192"]
-    [02] configure
-         cwd  build/elfutils-0.192/elfutils-0.192
-         argv ["./configure", "--prefix=/usr", "--disable-debuginfod", "--disable-libdebuginfod", "--disable-nls", "--without-bzlib", "--without-lzma", "--disable-static", "--program-prefix=eu-", "CFLAGS=-g -O2 -Wno-error=discarded-qualifiers"]
-    [03] build
-         cwd  build/elfutils-0.192/elfutils-0.192
-         argv ["make", "-j1"]
-    [04] install
-         cwd  build/elfutils-0.192/elfutils-0.192
-         env  DESTDIR=dest/elfutils
-         argv ["make", "install"]
 
 ======================================================================
 package flex 2.6.4
@@ -1891,7 +1860,7 @@ package libtool 2.6.2
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
   license      GPL-2.0-or-later
-  recipe-sha   d35c073930b701af91539734677f37796f600a87c374f148ef4f2dd641479e5f
+  recipe-sha   8093de88dec1904718ca7891a62341fb7325cc45cfc78c1858ec505cd798fe31
 
   source
     url        https://ftp.gnu.org/gnu/libtool/libtool-2.6.2.tar.xz
@@ -1911,7 +1880,7 @@ package libtool 2.6.2
          argv ["tar", "-xf", "dl/libtool-2.6.2.tar.xz", "-C", "build/libtool-2.6.2"]
     [02] configure
          cwd  build/libtool-2.6.2/libtool-2.6.2
-         argv ["./configure", "--prefix=/usr", "--disable-static"]
+         argv ["./configure", "--prefix=/usr", "--disable-static", "lt_cv_sys_max_cmd_len=1572864"]
     [03] build
          cwd  build/libtool-2.6.2/libtool-2.6.2
          argv ["make", "-j1"]
@@ -2397,6 +2366,43 @@ package curl 8.18.0
          argv ["make", "DESTDIR=dest/curl", "install"]
 
 ======================================================================
+package elfutils 0.192
+  group        graphics-substrate
+  license      GPL-3.0-or-later AND LGPL-3.0-or-later
+  recipe-sha   ae1c090fc6297f14e5b92e10df03fd246d5de3ea07cd5c67bdd31eb7cd4e5dec
+
+  source
+    url        https://sourceware.org/pub/elfutils/0.192/elfutils-0.192.tar.bz2
+    sha256     616099beae24aba11f9b63d86ca6cc8d566d968b802391334c91df54eab416b4
+    signature  PGP signed by Mark Wielaard; not verified per-build -- the pinned sha256 is the result of that audit
+    correspond none
+
+  deps
+    build        zlib
+    link         zlib, zstd
+    runtime      zlib
+    optional_off bzip2, debuginfod, demangler, libdebuginfod, lzma, nls, static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/elfutils-0.192
+         argv ["tar", "-xf", "dl/elfutils-0.192.tar.bz2", "-C", "build/elfutils-0.192"]
+    [02] glibc-compat-stubs
+         cwd  build/elfutils-0.192
+         argv ["sh", "-c", "mkdir -p build/elfutils-0.192/glibc-stubs && for l in dl pthread rt util anl; do printf '!<arch>\n' > build/elfutils-0.192/glibc-stubs/lib$l.a; done"]
+    [03] configure
+         cwd  build/elfutils-0.192/elfutils-0.192
+         argv ["./configure", "--prefix=/usr", "--disable-debuginfod", "--disable-libdebuginfod", "--disable-nls", "--without-bzlib", "--without-lzma", "--with-zstd", "--without-libarchive", "--disable-static", "--program-prefix=eu-", "CFLAGS=-g -O2 -Wno-error=discarded-qualifiers"]
+    [04] build
+         cwd  build/elfutils-0.192/elfutils-0.192
+         env  LIBRARY_PATH=build/elfutils-0.192/glibc-stubs
+         argv ["make", "-j1"]
+    [05] install
+         cwd  build/elfutils-0.192/elfutils-0.192
+         env  DESTDIR=dest/elfutils
+         argv ["make", "install"]
+
+======================================================================
 package freetype-bootstrap 2.14.1
   group        text-rendering
   build-only   yes -- staged for later packages, not installed into the image
@@ -2428,38 +2434,6 @@ package freetype-bootstrap 2.14.1
     [04] install
          cwd  build/freetype-bootstrap-2.14.1/freetype-2.14.1
          argv ["make", "DESTDIR=dest/freetype-bootstrap", "install"]
-
-======================================================================
-package iproute2 6.18.0
-  group        network
-  license      GPL-2.0-only
-  recipe-sha   ef839e94dc33db62468caa2a8df129b11583614e20899284f47b36d7abbee4ab
-
-  source
-    url        https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.xz
-    sha256     6ba520e1975e4c50dc931eeae91ea37c198b8a173744885f8895b84325f9d456
-    signature  https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.sign
-    correspond none
-
-  deps
-    build        pkgconf
-    link         elfutils
-    runtime      elfutils
-    optional_off berkeley-db, ipset, libbpf, libcap, libmnl, selinux, tirpc, xtables
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/iproute2-6.18.0
-         argv ["tar", "-xf", "dl/iproute2-6.18.0.tar.xz", "-C", "build/iproute2-6.18.0"]
-    [02] configure
-         cwd  build/iproute2-6.18.0/iproute2-6.18.0
-         argv ["./configure", "--prefix=/usr", "--libbpf_force=off"]
-    [03] build
-         cwd  build/iproute2-6.18.0/iproute2-6.18.0
-         argv ["make", "-j1"]
-    [04] install
-         cwd  build/iproute2-6.18.0/iproute2-6.18.0
-         argv ["make", "install", "DESTDIR=dest/iproute2", "PREFIX=/usr", "SBINDIR=/usr/sbin"]
 
 ======================================================================
 package libarchive 3.8.5
@@ -3182,6 +3156,38 @@ package edk2-firmware stable202608
          argv ["sh", "-c", "test -s dest/edk2-firmware/usr/share/qemu/QEMU_EFI.fd && sha256sum dest/edk2-firmware/usr/share/qemu/QEMU_EFI.fd && wc -c dest/edk2-firmware/usr/share/qemu/QEMU_EFI.fd"]
 
 ======================================================================
+package iproute2 6.18.0
+  group        network
+  license      GPL-2.0-only
+  recipe-sha   858406c768729f62395c9546aefeffafa08e18fa4660c7c619b0003c497e2691
+
+  source
+    url        https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.xz
+    sha256     6ba520e1975e4c50dc931eeae91ea37c198b8a173744885f8895b84325f9d456
+    signature  https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.sign
+    correspond none
+
+  deps
+    build        pkgconf
+    link         elfutils, libcap
+    runtime      elfutils
+    optional_off berkeley-db, ipset, libbpf, libcap, libmnl, selinux, tirpc, xtables
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/iproute2-6.18.0
+         argv ["tar", "-xf", "dl/iproute2-6.18.0.tar.xz", "-C", "build/iproute2-6.18.0"]
+    [02] configure
+         cwd  build/iproute2-6.18.0/iproute2-6.18.0
+         argv ["./configure", "--prefix=/usr", "--libbpf_force=off", "--libcap_force=on"]
+    [03] build
+         cwd  build/iproute2-6.18.0/iproute2-6.18.0
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/iproute2-6.18.0/iproute2-6.18.0
+         argv ["make", "install", "DESTDIR=dest/iproute2", "PREFIX=/usr", "SBINDIR=/usr/sbin"]
+
+======================================================================
 package markupsafe 3.0.3
   group        build-substrate
   build-only   yes -- staged for later packages, not installed into the image
@@ -3312,7 +3318,7 @@ package packaging 26.3
 package python-setuptools 84.0.0
   group        build-substrate
   license      MIT
-  recipe-sha   6f0fc2425c5b73ad2f04778563516b79a8e276d459778d17d6005aefba7e9da1
+  recipe-sha   93b01308e1d9a3ed36cc8452740bdd52763c17a8530e94daef505badad788686
 
   source
     url        https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl
@@ -3330,15 +3336,19 @@ package python-setuptools 84.0.0
     [01] install
          cwd  build/python-setuptools-84.0.0
          argv ["sh", "-c", "mkdir -p dest/python-setuptools/usr/lib/python3.14/site-packages && python3 -m zipfile -e dl/setuptools-84.0.0-py3-none-any.whl dest/python-setuptools/usr/lib/python3.14/site-packages/"]
-    [02] importable-or-die
+    [02] bytecode
          cwd  build/python-setuptools-84.0.0
+         argv ["sh", "-c", "python3 -m compileall -q --invalidation-mode checked-hash -s dest/python-setuptools -p / dest/python-setuptools/usr/lib/python3.14/site-packages"]
+    [03] importable-or-die
+         cwd  build/python-setuptools-84.0.0
+         env  PYTHONDONTWRITEBYTECODE=1
          argv ["sh", "-c", "PYTHONPATH=dest/python-setuptools/usr/lib/python3.14/site-packages python3 -c 'import importlib.metadata as m; v=m.version(\"setuptools\"); assert v==\"84.0.0\", v; import setuptools; print(\"setuptools\", v)'"]
 
 ======================================================================
 package python-wheel 0.48.0
   group        build-substrate
   license      MIT
-  recipe-sha   897a47e75f2976a9af7945f722b625f514a81002f9ceb9c0208f6c67e2660b1e
+  recipe-sha   f718a37ddd82c84b56bd8b383cbc74cca02f5b40e6774c3f9ddae8615491b346
 
   source
     url        https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl
@@ -3356,8 +3366,12 @@ package python-wheel 0.48.0
     [01] install
          cwd  build/python-wheel-0.48.0
          argv ["sh", "-c", "mkdir -p dest/python-wheel/usr/lib/python3.14/site-packages && python3 -m zipfile -e dl/wheel-0.48.0-py3-none-any.whl dest/python-wheel/usr/lib/python3.14/site-packages/"]
-    [02] importable-or-die
+    [02] bytecode
          cwd  build/python-wheel-0.48.0
+         argv ["sh", "-c", "python3 -m compileall -q --invalidation-mode checked-hash -s dest/python-wheel -p / dest/python-wheel/usr/lib/python3.14/site-packages"]
+    [03] importable-or-die
+         cwd  build/python-wheel-0.48.0
+         env  PYTHONDONTWRITEBYTECODE=1
          argv ["sh", "-c", "PYTHONPATH=dest/python-wheel/usr/lib/python3.14/site-packages python3 -c 'import importlib.metadata as m; v=m.version(\"wheel\"); assert v==\"0.48.0\", v; import wheel; print(\"wheel\", v)'"]
 
 ======================================================================
@@ -5999,7 +6013,7 @@ package veron-pinentry 1.0
 package wpewebkit 2.52.5
   group        browser
   license      LGPL-2.1-or-later AND BSD-2-Clause
-  recipe-sha   1a1a6c4ea29253b6e4e40327658ad318dbbba715ef9864437d0fc1d8d5c89e4a
+  recipe-sha   0991949d1e6c70d6bd06171b4d6b53cd7c4d50442e982a451aa57ec77045802a
 
   source
     url        https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz
@@ -6013,13 +6027,21 @@ package wpewebkit 2.52.5
     runtime      bubblewrap, cairo, fontconfig, freetype, glib, glib-networking, gst-libav, gst-plugins-bad, gst-plugins-base, gst-plugins-good, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libseccomp, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, sqlite, wayland, zlib
     optional_off atk, avif, documentation, encrypted-media, gamepad, gstreamer-gl, introspection, journald-log, jpegxl, libbacktrace, media-stream, pdfjs, speech-synthesis, sysprof-capture, webdriver, woff2
 
+  patches (applied after unpack, in this order)
+    0001-unified-bundle-size-knob.patch
+    0002-generated-serializers-low-mem.patch
+    0003-bindings-bundles-ggc-caps.patch
+    0004-sparse-js-binding-bundles.patch
+    0005-jsc-jit-giants-ggc-caps.patch
+
   commands (literal; this is exactly what runs)
     [01] unpack
          cwd  build/wpewebkit-2.52.5
          argv ["tar", "-xf", "dl/wpewebkit-2.52.5.tar.xz", "-C", "build/wpewebkit-2.52.5"]
     [02] configure
          cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DPORT=WPE", "-DENABLE_JOURNALD_LOG=OFF", "-DENABLE_INTROSPECTION=OFF", "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_GAMEPAD=OFF", "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_WEBDRIVER=OFF", "-DENABLE_MEDIA_STREAM=OFF", "-DENABLE_BUBBLEWRAP_SANDBOX=ON", "-DUSE_LIBHYPHEN=ON", "-DENABLE_PDFJS=OFF", "-DUSE_SYSTEM_MALLOC=ON", "-DENABLE_XSLT=OFF", "-DENABLE_WPE_PLATFORM=ON", "-DENABLE_WPE_LEGACY_API=OFF", "-DENABLE_WPE_PLATFORM_DRM=ON", "-DENABLE_WPE_PLATFORM_WAYLAND=ON", "-DENABLE_WPE_PLATFORM_HEADLESS=ON", "-DUSE_WOFF2=OFF", "-DUSE_LIBBACKTRACE=OFF", "-DUSE_SYSPROF_CAPTURE=OFF", "-DENABLE_MINIBROWSER=ON", "-DCMAKE_SKIP_INSTALL_RPATH=ON", "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy", "-DUSE_ATK=OFF", "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF", "-DUSE_GSTREAMER_GL=OFF"]
+         env  WEBKIT_NINJA_LINK_MAX=1
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DPORT=WPE", "-DENABLE_JOURNALD_LOG=OFF", "-DENABLE_INTROSPECTION=OFF", "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_GAMEPAD=OFF", "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_WEBDRIVER=OFF", "-DENABLE_MEDIA_STREAM=OFF", "-DENABLE_BUBBLEWRAP_SANDBOX=ON", "-DUSE_LIBHYPHEN=ON", "-DENABLE_PDFJS=OFF", "-DUSE_SYSTEM_MALLOC=ON", "-DENABLE_XSLT=OFF", "-DENABLE_WPE_PLATFORM=ON", "-DENABLE_WPE_LEGACY_API=OFF", "-DENABLE_WPE_PLATFORM_DRM=ON", "-DENABLE_WPE_PLATFORM_WAYLAND=ON", "-DENABLE_WPE_PLATFORM_HEADLESS=ON", "-DUSE_WOFF2=OFF", "-DUSE_LIBBACKTRACE=OFF", "-DUSE_SYSPROF_CAPTURE=OFF", "-DENABLE_MINIBROWSER=ON", "-DCMAKE_SKIP_INSTALL_RPATH=ON", "-DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy", "-DUSE_ATK=OFF", "-DUSE_AVIF=OFF", "-DUSE_JPEGXL=OFF", "-DUSE_GSTREAMER_GL=OFF", "-DCMAKE_C_FLAGS_RELEASE=-O2 -DNDEBUG", "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG"]
     [03] build
          cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
          argv ["ninja", "-C", "_b", "-j4"]
