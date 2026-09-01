@@ -121,11 +121,21 @@ def compare_one(img_a, img_b, path, work, args):
             sys.stdout.write("  " + l if l.endswith("\n") else "  " + l + "\n")
     else:
         groups = Counter(group_of(l[1:]) for l in diff)
-        print("\n  differing lines grouped by leading path:")
-        for g, n in groups.most_common(15):
+        # EVERY GROUP. This was most_common(15), which silently dropped the
+        # tail of the breakdown -- the same cap img-compare carried and for
+        # the same bad reason. The grouping IS the summary; truncating it
+        # leaves the reader to rebuild it from the lines below.
+        print("\n  differing lines grouped by leading path (%d):" % len(groups))
+        for g, n in sorted(groups.items(), key=lambda kv: (-kv[1], kv[0])):
             print("    %-52s %d" % (g, n))
-        print("\n  first %d:" % min(args.sample, len(diff)))
-        for l in diff[:args.sample]:
+        # The line sample IS capped, because a 30,000-line diff is not a
+        # summary -- but it says what it is holding back rather than trailing
+        # off, and --sample 0 prints all of them.
+        shown = len(diff) if args.sample <= 0 else min(args.sample, len(diff))
+        print("\n  showing %d of %d differing line(s)%s:"
+              % (shown, len(diff),
+                 "" if shown == len(diff) else "  (--sample 0 for all)"))
+        for l in (diff if args.sample <= 0 else diff[:args.sample]):
             sys.stdout.write("    " + (l if l.endswith("\n") else l + "\n"))
     return 1
 
@@ -136,7 +146,8 @@ def main():
     ap.add_argument("paths", nargs="+")
     ap.add_argument("--grep", help="only consider lines matching this regex")
     ap.add_argument("--exclude", help="ignore differing lines matching this regex")
-    ap.add_argument("--sample", type=int, default=20, help="differing lines to show")
+    ap.add_argument("--sample", type=int, default=20,
+                    help="differing lines to show; 0 for all")
     ap.add_argument("--keep", help="keep the dumped files in this directory")
     a = ap.parse_args()
 

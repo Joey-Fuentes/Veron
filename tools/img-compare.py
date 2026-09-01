@@ -359,11 +359,14 @@ def main():
     tops = {}
     for _, p, _, _ in problems:
         tops.setdefault("/".join(p.split("/")[:3]), set()).add(p)
-    print("  differing paths by location:")
-    for t, ps in sorted(tops.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:15]:
+    # EVERY LOCATION, NOT THE TOP FIFTEEN. An earlier version capped this and
+    # printed "... and 5 more location(s)", which on a twenty-line list hides
+    # a quarter of the answer to save five lines and sends the reader back
+    # into the detail to reconstruct what was withheld. The cap was there for
+    # no reason; a summary that omits part of the summary is not one.
+    print("  differing paths by location (%d):" % len(tops))
+    for t, ps in sorted(tops.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         print("    %-52s %5d" % (t, len(ps)))
-    if len(tops) > 15:
-        print("    ... and %d more location(s)" % (len(tops) - 15))
     print()
 
     if summary_only:
