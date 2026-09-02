@@ -323,6 +323,30 @@ jobs:
               else
                 echo "  no desktop artifact on stage-5 run $s5_run (aged out past retention?)"
               fi
+            # THE MAINTENANCE JOURNEY: stage 6's gate boots the release, arms
+            # the flasher, drops into maintenance mode -- the system copied to
+            # RAM, persist backed up, the boot device released as a writable
+            # target -- and photographs each step. A run ARTIFACT of the
+            # 6-release run, whose id this job already resolves above for
+            # its log; fetched the same way the desktop evidence is.
+            if [ -n "$rel_run" ]; then
+              murl=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$rel_run/artifacts" \
+                       --jq '.artifacts[] | select(.name=="maintenance-gate") | .archive_download_url' \
+                       2>/dev/null | head -1)
+              if [ -n "$murl" ]; then
+                mkdir -p "$B/maintenance"
+                gh api "$murl" > "$B/maintenance/m.zip" 2>/dev/null || true
+                if [ -s "$B/maintenance/m.zip" ]; then
+                  ( cd "$B/maintenance" && unzip -o m.zip >/dev/null 2>&1 && rm -f m.zip )
+                  echo "  captured the maintenance-gate screenshots + serial (6-release run $rel_run)"
+                else
+                  rm -rf "$B/maintenance"
+                  echo "  maintenance-gate artifact present but download failed (run $rel_run)"
+                fi
+              else
+                echo "  no maintenance-gate artifact on 6-release run $rel_run (gate not run, or aged out)"
+              fi
+            fi
             fi
             python3 tools/evidence-page.py "$B" out/site/evidence.html
             echo "  evidence page rendered from this release's bundle"

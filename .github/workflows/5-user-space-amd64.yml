@@ -309,10 +309,26 @@ jobs:
           NET_TEST: ${{ inputs.net_test && '1' || '' }}
           STOP_AFTER: ${{ inputs.stop_after }}
         run: sh stages/5-user-space/build.sh boot
+      # THE NAME THE EVIDENCE PAGE LOOKS FOR, AND ALL THREE FILES IT SHOWS.
+      # 4a29b3c8 (2026-08-26) rewrote this step to `desktop-screenshot` with
+      # only the PNGs and if-no-files-found: ignore; 6-pages.yml, written a
+      # week earlier against the original name, kept asking for
+      # veron-stage5-desktop-* and reported "aged out past retention?" on
+      # every build since -- the wrong diagnosis for a rename. Restored as
+      # it was: the run-id-suffixed name, the two screenshots AND the
+      # console log the page renders, and `warn` so a run that captured
+      # nothing says so.
       - name: Upload the desktop screenshot
         if: ${{ always() && steps.boot.outcome == 'success' && inputs.boot_system }}
         uses: actions/upload-artifact@v4
-        with: { name: desktop-screenshot, path: spikes/stage5/out/desktop*.png, retention-days: 14, if-no-files-found: ignore }
+        with:
+          name: veron-stage5-desktop-amd64-${{ github.run_id }}
+          path: |
+            spikes/stage5/out/desktop.png
+            spikes/stage5/out/desktop-minibrowser.png
+            spikes/stage5/out/desktop-console.log
+          retention-days: 14
+          if-no-files-found: warn
       - name: 'STAGE 5: size, strip, rebuild the image, re-verify it boots'
         id: strip
         if: ${{ always() && steps.image.outcome == 'success' && env.PARTIAL != 'yes' }}

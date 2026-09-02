@@ -185,6 +185,43 @@ def desktop_block(bundle):
     return "".join(parts)
 
 
+def maintenance_block(bundle):
+    """Render the stage-6 maintenance gate: the flasher, then maintenance mode.
+
+    Six frames come in; two are shown. 01 is the flasher as a person first
+    sees it. 03 is maintenance mode active -- the system running from RAM,
+    persist backed up, the boot device itself listed as a writable target.
+    02-flasher-armed is captured mid-transition and is black; the 02a/02m
+    frames are the same window between two clicks. The serial log is the
+    gate's own narration and is shown in full."""
+    before = embed_image(bundle, "maintenance/01-flasher-normal.png")
+    after = embed_image(bundle, "maintenance/03-flasher-maintenance.png")
+    serial = read_text(bundle, "maintenance/maintenance-serial.log")
+    if not (before or after or serial):
+        return ""
+    parts = ['<div class="desktop"><h3>Maintenance mode, unmocked</h3>'
+             '<p class="desc">The release booted, the flasher opened, and the '
+             'machine dropped into maintenance mode: the running system copied '
+             'into RAM, persist backed up, and the device it booted from '
+             'released as a writable target -- the one thing a normal boot '
+             'must never allow. Photographed before and after.</p>']
+    if before:
+        parts.append('<figure><img src="%s" alt="Veron flasher, normal mode">'
+                     '<figcaption>the flasher as booted: the boot device is not '
+                     'a target</figcaption></figure>' % before)
+    if after:
+        parts.append('<figure><img src="%s" alt="Veron flasher in maintenance mode">'
+                     '<figcaption>maintenance mode active: running from RAM, the '
+                     'boot device now listed as writable</figcaption></figure>'
+                     % after)
+    if serial:
+        parts.append('<details class="log"><summary>maintenance serial '
+                     '(%d lines)</summary><pre>%s</pre></details>'
+                     % (serial.count("\n") + 1, esc(serial)))
+    parts.append('</div>')
+    return "".join(parts)
+
+
 def boot_serial_block(bundle):
     """Render the stage-6 boot serial: the published image booting in qemu."""
     serial = read_text(bundle, "boot-serial.log")
@@ -241,7 +278,7 @@ def render(bundle, out_path):
         if label.startswith("5-"):
             extra = desktop_block(bundle)
         elif label.startswith("6-"):
-            extra = boot_serial_block(bundle)
+            extra = boot_serial_block(bundle) + maintenance_block(bundle)
 
         sections.append(
             '<section class="stage">'
