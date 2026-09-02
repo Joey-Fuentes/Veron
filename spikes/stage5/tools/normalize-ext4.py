@@ -133,7 +133,32 @@ def main(img, ts_epoch=946684800, ts_str="20000101000000"):
     p = subprocess.run([*debugfs, "-w", "-f", "/dev/stdin", img],
                        input=cmds, capture_output=True, text=True)
     if p.returncode != 0:
-        print(f"  debugfs inode pass rc={p.returncode}")
+        # A FAILED NORMALISATION IS FATAL, AND IT SAYS WHY.
+        #
+        # This printed the return code and CARRIED ON. The built static
+        # debugfs aborted (rc=-6, SIGABRT) on the GitHub runner on two runs
+        # in a row; its stderr -- the one line that would have named the
+        # cause -- was captured here and discarded, and an image whose
+        # inodes were never normalised was built, hashed and compared as if
+        # the pass had run. Two consecutive builds on the same runner then
+        # disagreed by 67,867 bytes and VERON-IMAGE-REPRO-DIFF fired for the
+        # first time ever, one layer away from where the fault was.
+        #
+        # A normaliser that did not normalise has no image to hand back.
+        sig = -p.returncode if p.returncode < 0 else None
+        print(f"  debugfs inode pass FAILED rc={p.returncode}"
+              + (f" (killed by signal {sig})" if sig else ""))
+        print(f"  debugfs: {debugfs[0]}")
+        err = (p.stderr or "").strip().splitlines()
+        out = (p.stdout or "").strip().splitlines()
+        print("  --- stderr (%d line(s), last 20) ---" % len(err))
+        for ln in err[-20:]:
+            print("    " + ln)
+        print("  --- stdout (%d line(s), last 5) ---" % len(out))
+        for ln in out[-5:]:
+            print("    " + ln)
+        sys.exit("normalize-ext4: inode pass did not complete -- refusing to "
+                 "hand back an unnormalised image")
 
     # 2. SUPERBLOCKS LAST, ALL COPIES, WRITTEN DIRECTLY. `ssv` only reaches
     #    the primary, and going through debugfs would re-stamp s_wtime again.
