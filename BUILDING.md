@@ -54,42 +54,115 @@ sh tools/fetch-tools.sh
 `git clean -fxd` deletes every untracked file. That includes downloaded
 sources under `dl/`, which will be fetched again by the `in` phases.
 
-## Stage 1 — self-assembly
+## Stages 1–3 — the trunk
 
-The stage-1 binaries are committed. This stage verifies them; it builds
-nothing new.
+Stages 1 through 3 execute aarch64 binaries. On an aarch64 host they run
+natively; on x86_64 they run under `qemu-aarch64-static`. Their hermetic
+phases run inside the box via `stages/box.sh`, which supplies a busybox and
+that runner and nothing else; the `in` phases are the only ones that touch
+the network and run outside the box.
+
+**The box's busybox.** CI has no tools bundle on the trunk runners, so every
+trunk workflow first runs `sh tools/airlock-busybox.sh`, which builds
+busybox from the pinned tarball with the host's C compiler into
+`box/tools/busybox`. A laptop that ran `fetch-tools.sh` already has
+`veron-tools/busybox`, which the box prefers; the airlock step is not
+needed and is listed below only so the CI sequence is complete.
+
+**Ubuntu hosts only.** CI lifts AppArmor's user-namespace restriction
+before any box runs: `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.
+Without it `bwrap --unshare-all` fails with `RTM_NEWADDR: Operation not
+permitted`. A Veron host does not have this restriction.
+
+These are the commands CI runs, in the order it runs them.
+
+### Stage 1 — self-assembly
+
+The stage-1 binaries are committed. CI runs three gates over them:
 
 ```sh
-sh stages/1-self-assembly/roundtrip.sh
+sh stages/1-self-assembly/rebaseline.sh airlock
+git diff --exit-code -- stages/1-self-assembly/*.s0
+sh stages/box.sh stages/1-self-assembly/rebaseline.sh verify
 ```
 
-See `stages/1-self-assembly/README.md`.
+The first re-translates the `.s` sources to `.s0` and the `git diff`
+requires the committed translations to match. The second derives the
+committed binaries again from the committed spike pair -- no host
+toolchain -- inside the box, and compares.
 
-## Stage 2 — pico-c
+The third gate, `./stages/1-self-assembly/roundtrip.sh`, round-trips the
+binaries through two pinned disassemblers (GNU binutils 2.47 built from
+source, LLVM 22.1.8 prebuilt) and requires source and binary to agree
+under both. CI runs it on every change under `stages/1-self-assembly/`.
+Its own header calls it optional locally: it needs a network fetch, about
+fifteen minutes cold, and a host C compiler; nothing downstream reads its
+output. Run it when you want the deeper proof. Note that on 2026-09-02 the
+LLVM tarball GitHub served did not match the pin in `PINS.sha256`; that is
+an open item against the pin, not against the build.
+
+### Stage 2 — pico-c
 
 ```sh
-sh stages/2-pico-c/verify.sh
+sh stages/box.sh stages/2-pico-c/verify.sh
 ```
 
-Produces `out/2/aarch64/pico-c` and `out/2/aarch64/pico-c-assembler`, which
-stage 3 reads. Stages 2 and 3 execute aarch64 binaries: on an aarch64 host
-they run natively; on x86_64 they run under `qemu-aarch64-static`, which the
-tools bundle provides.
+Rebuilds `pico-c-assembler` and `pico-c` through the committed stage-1
+pair and requires the hashes recorded in `stages/2-pico-c/substages.toml`.
+Produces `out/2/aarch64/pico-c-assembler` and `out/2/aarch64/pico-c`, which
+stage 3 reads. Publishes nothing; CI attests the outputs.
 
-## Stage 3 — micro-c and tcc
+### Stage 3 — micro-c and tcc
+
+Two scripts, two workflows, two releases.
+
+`build.sh` runs the native aarch64 chain -- pico-c compiles micro-c, pico-c
+builds M1 and hex2, micro-c compiles tcc, M1 and hex2 link it -- and
+produces `tcc-arm64`:
 
 ```sh
 sh stages/3-micro-c/build.sh in
-sh stages/3-micro-c/build.sh chain
+sh stages/box.sh stages/3-micro-c/build.sh chain
 ```
 
-Produces `out/3/x86_64/tcc-amd64`, the compiler stage 4 starts from. Its
-digest must match the committed record in
-`stages/3-micro-c/substages-amd64.toml`; the chain fails if it does not.
+Produces `out/3/aarch64/micro-c`, `M1`, `hex2`, `tcc-arm64`, and the
+run-emitted `substages.toml`. CI publishes `tcc-arm64`, `substages.toml`
+and `ARTIFACT-SHA256` as `3/latest-aarch64`.
 
-If `out/3` is absent, stage 4's `in` fetches the same `tcc-amd64` from the
-`3/latest-x86_64` release and checks it against the same record. Either
-route yields identical bytes or stage 4 refuses to start.
+`cross-amd64.sh` carries it across: from `tcc-arm64`, through
+`tcc-arm64-to-amd64`, to `tcc-amd64`, with musl built by hand and no `make`:
+
+```sh
+sh stages/3-micro-c/cross-amd64.sh in
+sh stages/box.sh stages/3-micro-c/cross-amd64.sh chain
+cat out/box/BUDGET
+```
+
+Produces `out/3/x86_64/tcc-amd64`, `tcc-arm64-to-amd64`, `substages.toml`,
+the sysroot fixtures, and `x86_64-libtcc1.a`. Its records must match the
+committed `stages/3-micro-c/substages-amd64.toml`; the chain fails if they
+do not. CI publishes `tcc-amd64`, `tcc-arm64-to-amd64`, `substages.toml`
+and `ARTIFACT-SHA256` as `3/latest-x86_64`.
+
+CI then proves the cross-built compiler on a plain x86_64 runner by
+compiling and running a program with it. On an x86_64 host that proof runs
+directly:
+
+```sh
+cd ~/Veron && rm -rf /tmp/t42 && mkdir /tmp/t42 && cd /tmp/t42
+X=~/Veron/out/3/x86_64
+mkdir sys && tar -xzf $X/sys-x86_64.tar.gz -C sys
+printf 'int main() { return 42; }\n' > t.c
+$X/tcc-amd64 -o t -static -nostdinc -nostdlib -Isys/sys-x86_64/include \
+  sys/sys-x86_64/lib/crt1.o sys/sys-x86_64/lib/crti.o t.c \
+  sys/sys-x86_64/lib/libc.a $X/x86_64-libtcc1.a sys/sys-x86_64/lib/crtn.o
+./t; echo "exit=$?   (want 42)"
+```
+
+Stage 4's `in` consumes `out/3/x86_64/tcc-amd64` when present. If `out/3`
+is absent it fetches the same file from `3/latest-x86_64` and checks it
+against the same committed record. Either route yields identical bytes or
+stage 4 refuses to start.
 
 ## Stage 4 — toolchain and kernel
 
@@ -186,6 +259,30 @@ attachments and refuses to pack if the consumer path does not reach init.
 Each stage's release carries the same record files the local build writes.
 The comparison is the same shape at every stage: fetch the release's small
 records, `diff` them, and only if a digest differs go into the payload.
+
+### Stages 1–3
+
+Stage 1 publishes nothing: `rebaseline.sh verify` compares the derived
+binaries against the committed ones, which are the artifact. Stage 2
+publishes nothing: `verify.sh` compares against the hashes committed in
+`stages/2-pico-c/substages.toml`.
+
+Stage 3 publishes two releases, each with an `ARTIFACT-SHA256`:
+
+```sh
+cd ~/Veron
+rm -rf /tmp/ci3 && mkdir -p /tmp/ci3
+R=https://github.com/Joey-Fuentes/Veron/releases/download
+curl -fsSL -o /tmp/ci3/aarch64.sha "$R/3/latest-aarch64/ARTIFACT-SHA256"
+curl -fsSL -o /tmp/ci3/x86_64.sha  "$R/3/latest-x86_64/ARTIFACT-SHA256"
+( cd out/3/aarch64 && sha256sum -c /tmp/ci3/aarch64.sha )
+( cd out/3/x86_64  && sha256sum -c /tmp/ci3/x86_64.sha )
+```
+
+`sha256sum -c` checks each named file in the local output directory
+against the digest CI published. Every line must say `OK`: `tcc-arm64` and
+`substages.toml` for aarch64; `tcc-amd64`, `tcc-arm64-to-amd64` and
+`substages.toml` for x86_64.
 
 ### Stage 4
 
