@@ -18,9 +18,28 @@ HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/.." && pwd)"
 SYS="$1"; OUT="$2"; shift 2
 Z=""
 ZPROV=""
-for c in "${VERON_TOOLS:-/nonexistent}/zstd" "$ROOT/veron-tools/zstd" /usr/bin/zstd; do
+# THE zstd THIS BUILD MADE COMES FIRST. dest/zstd is a sibling of the sysroot
+# being packed, present on both legs after chain, and static (the publish
+# step's static_or_die checks exactly this binary before bundling it). The
+# bundle is that same binary from an EARLIER run; the runner has none until
+# publish creates one, so every CI pack fell through to /usr/bin/zstd --
+# Ubuntu's -- while a laptop with a bundle from fetch-tools used ours.
+# PACKED-BY said so in its own words: "(system, ...)" on one leg,
+# "(veron-tools bundle, ...)" on the other, same tar hash, different archive.
+# Same defect and same fix as mke2fs: the tool that lays the artifact is the
+# one this build produced, and the record names it.
+#
+# stage 4 packs its lfs tree through this script too; it has no dest/zstd
+# sibling and falls through to the bundle exactly as before.
+_built="$(dirname "$SYS")/dest/zstd/usr/bin/zstd"
+for c in "$_built" "${VERON_TOOLS:-/nonexistent}/zstd" "$ROOT/veron-tools/zstd" /usr/bin/zstd; do
   [ -x "$c" ] || continue; Z="$c"
-  case "$c" in "$ROOT/veron-tools/"*) ZPROV="veron-tools bundle";; /usr/bin/*) ZPROV="system";; *) ZPROV="VERON_TOOLS";; esac; break
+  case "$c" in
+    "$_built")               ZPROV="built (dest/zstd)";;
+    "$ROOT/veron-tools/"*)   ZPROV="veron-tools bundle";;
+    /usr/bin/*)              ZPROV="system";;
+    *)                       ZPROV="VERON_TOOLS";;
+  esac; break
 done
 [ -n "$Z" ] || { echo "pack-in-box: no zstd (VERON_TOOLS, veron-tools/, /usr/bin)"; exit 1; }
 ZD="$(mktemp -d "$ROOT/box-pack.XXXXXX")"; cp "$Z" "$ZD/zstd"; chmod 755 "$ZD/zstd"

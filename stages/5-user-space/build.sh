@@ -2480,6 +2480,12 @@ fi
 # matched. --mtime=@0 pins it; the rest match stage 4 exactly.
 # ONE PACKER, IN THE BOX: the merged system's own python and this project's
 # zstd (tools/pack-in-box.sh), recorded in PACKED-BY. Level 10, as before.
+# PACKED-BY DESCRIBES THIS PACK, NOT EVERY PACK SINCE THE LAST git clean.
+# pack-in-box appends, so a laptop that runs pack repeatedly accumulates a
+# line per run -- eleven lines against the release's two, and the real
+# difference buried under nine of stale history. Truncated here, once, before
+# the two lines this run writes.
+: > PACKED-BY
 sh "$ROOT/tools/pack-in-box.sh" "$ROOT/spikes/stage5/sysroot" rootfs.img.tar.zst -l 10 --record PACKED-BY -f rootfs.img
 printf '  rootfs.img.tar.zst (stripped): %s\n' "$(du -h rootfs.img.tar.zst | cut -f1)"
 # THE FULL IMAGE TOO, WHEN THE STRIP RAN. A run where stripping was
