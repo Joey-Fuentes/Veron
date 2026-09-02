@@ -84,7 +84,12 @@ LOG=${STRIP_LOG:-/dev/null}
 # reports the same size before and after -- and the "removed nothing" check
 # then fails a run that worked. Caught on a 2 MB test tree where both files
 # demonstrably shrank and the script reported VERON-STRIP-NOTHING.
-sz() { du -sk "$1" 2>/dev/null | cut -f1; }
+# -x, BECAUSE INSIDE THE BOX $ROOT IS / AND / HAS MOUNTS UNDER IT. Without it
+# du walked --proc, --dev and the two --tmpfs mounts and reported the tree at
+# 14559 MB on a laptop and 7846 MB on the runner -- neither of which is the
+# 1873 MB sysroot, and different from each other, in a log line meant to say
+# how much the strip removed. One filesystem, the one the tree is on.
+sz() { du -skx "$1" 2>/dev/null | cut -f1; }
 emit() { echo "$1"; [ "$LOG" = /dev/null ] || echo "$1" >> "$LOG"; }
 
 # (the tree's existence was checked above, before emit() had a log path)
@@ -176,8 +181,15 @@ for cand in OWN "$(command -v strip 2>/dev/null || true)"; do
             emit "  strip: the sysroot's own /usr/bin/strip, under bwrap (probed OK)"
         else
             STRIP="$cand"
-            emit "  strip: $cand (probed OK)"
-            emit "         NOTE: a HOST tool is rewriting artifact bytes."
+            # INSIDE THE BOX ROOT IS EMPTY AND $cand IS THE TREE'S OWN strip --
+            # the note would call it a host tool, which is the opposite of the
+            # truth and of why the box exists. Say which it is.
+            if [ -z "$ROOT" ]; then
+                emit "  strip: $cand -- the tree's own binutils, running inside the box (probed OK)"
+            else
+                emit "  strip: $cand (probed OK)"
+                emit "         NOTE: a HOST tool is rewriting artifact bytes."
+            fi
         fi
         break
     fi

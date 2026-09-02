@@ -68,6 +68,41 @@ if [ -z "${SSL_CERT_FILE:-}" ]; then
 fi
 
 
+# THE e2fsprogs THAT LAYS THE IMAGE IS THE ONE THIS BUILD MADE, ON BOTH LEGS.
+#
+# The e2fsprogs recipe builds mke2fs.static, debugfs.static and friends for
+# exactly one reason, in its own words: "mke2fs must run THE SAME WAY on the
+# CI host that lays the image and on Veron" (ruled 2026-08-18). And
+# normalize-ext4 carries a _veron_tool() switch that prefers the built tool
+# when VERON_ROOTFS is set. Neither was ever wired in. build_img called
+# /sbin/mke2fs, which is Ubuntu's 1.47.0 on the runner and Veron's own 1.47.4
+# on a laptop; VERON_ROOTFS was set nowhere, so normalize-ext4 used the host
+# debugfs too. Two byte-identical trees, laid out by two different programs:
+# 114 blocks differed, all placement, every one of them explained before a
+# single readdir question is even reachable.
+#
+# DEFINED AT TOP LEVEL, NOT INSIDE A PHASE. The first cut put this in front
+# of build_img, which is defined INSIDE phase_image -- so `build.sh strip`
+# alone, which defines its own build_img in phase_strip, never saw it:
+# "veron_mke2fs: command not found", on both legs, after the image phase had
+# already used it successfully. A shell function exists once its definition
+# has executed, and a phase's body only executes when that phase runs.
+#
+# ORDER OF PREFERENCE, AND WHY. dest/e2fsprogs first: it is the artifact of
+# THIS run, static, and present on both legs after chain. veron-tools/ next:
+# the same binary, published from a previous run, for a leg that restored
+# rather than built. The host last, and NAMED when it is used, because a
+# host tool laying the image is the thing this exists to stop.
+veron_mke2fs() {
+  # cwd is spikes/stage5/out when build_img runs (hence -d ../sysroot).
+  for c in ../dest/e2fsprogs/usr/sbin/mke2fs "$ROOT/veron-tools/mke2fs"; do
+    [ -x "$c" ] && { echo "$c"; return 0; }
+  done
+  echo "  WARNING: no built mke2fs (dest/e2fsprogs or veron-tools) -- using the HOST's /sbin/mke2fs" >&2
+  echo /sbin/mke2fs
+}
+
+
 phase_in() {
 rm -f "$ROOT/spikes/stage5/sysroot/.veron-stripped" 2>/dev/null || true
 
@@ -846,33 +881,6 @@ cd spikes/stage5/out
 # differed. The image is normalised afterwards instead; see
 # tools/normalize-ext4.py for the byte offsets and the reasoning.
 SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
-# THE e2fsprogs THAT LAYS THE IMAGE IS THE ONE THIS BUILD MADE, ON BOTH LEGS.
-#
-# The e2fsprogs recipe builds mke2fs.static, debugfs.static and friends for
-# exactly one reason, in its own words: "mke2fs must run THE SAME WAY on the
-# CI host that lays the image and on Veron" (ruled 2026-08-18). And
-# normalize-ext4 carries a _veron_tool() switch that prefers the built tool
-# when VERON_ROOTFS is set. Neither was ever wired in. build_img called
-# /sbin/mke2fs, which is Ubuntu's 1.47.0 on the runner and Veron's own 1.47.4
-# on a laptop; VERON_ROOTFS was set nowhere, so normalize-ext4 used the host
-# debugfs too. Two byte-identical trees, laid out by two different programs:
-# 114 blocks differed, all placement, every one of them explained before a
-# single readdir question is even reachable.
-#
-# ORDER OF PREFERENCE, AND WHY. dest/e2fsprogs first: it is the artifact of
-# THIS run, static, and present on both legs after chain. veron-tools/ next:
-# the same binary, published from a previous run, for a leg that restored
-# rather than built. The host last, and NAMED when it is used, because a
-# host tool laying the image is the thing this exists to stop.
-veron_mke2fs() {
-  # cwd is spikes/stage5/out when build_img runs (hence -d ../sysroot).
-  for c in ../dest/e2fsprogs/usr/sbin/mke2fs "$ROOT/veron-tools/mke2fs"; do
-    [ -x "$c" ] && { echo "$c"; return 0; }
-  done
-  echo "  WARNING: no built mke2fs (dest/e2fsprogs or veron-tools) -- using the HOST's /sbin/mke2fs" >&2
-  echo /sbin/mke2fs
-}
-
 build_img() {
   rm -f "$1"
   # REMOVE THE FONTCONFIG CACHE BEFORE IMAGING. The VERON-STAGE5-OK
