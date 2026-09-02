@@ -307,6 +307,12 @@ The empty directories are Veron proper and are written against the invariants. `
 
 > **Note:** the `stages/` line above reflects [`AGENTS.md`](./AGENTS.md) §4, which numbers the ladder 0–5 with the flavor fork between 3 and 4. [`ARCHITECTURE.md`](./ARCHITECTURE.md) §2 currently numbers it 1–7 with no fork line. The two disagree and the disagreement is unresolved — treat neither as canonical until it is.
 
+## Building it yourself
+
+`BUILDING.md` is the stage-1-through-6 sequence for a machine you own, with
+the comparison against what CI publishes. Followed on 2026-09-01, it produced
+the same `veron-x86_64-<sha7>.img.zst` byte for byte as GitHub Actions.
+
 ## Where to start reading
 
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — the founding design: ladder, fork, audit criteria, trust boundary

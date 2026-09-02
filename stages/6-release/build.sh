@@ -63,6 +63,19 @@ box() { # args... -- run inside the released system (read-only as /); this
     "$@"
 }
 
+# TLS FOR THE FETCH'S PYTHON, the same way stage 5 does it (2026-08-26).
+# The image's OpenSSL looks for /etc/ssl/cert.pem; ca-certificates installs
+# /etc/ssl/certs/ca-certificates.crt and nothing links the two, so on a
+# Veron host python's default context verified nothing and every firmware
+# route failed with CERTIFICATE_VERIFY_FAILED. curl was built pointing at
+# the bundle and never noticed. Named here; the image-level fix is a
+# cert.pem link, which belongs to the package that owns /etc/ssl.
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+  for _ca in /etc/ssl/cert.pem /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+    [ -s "$_ca" ] && { export SSL_CERT_FILE="$_ca"; break; }
+  done
+fi
+
 fetch_release() { # tag file dest -- curl from the release; gh attestation when gh is here
   local tag="$1" f="$2" d="$3"
   mkdir -p "$d"
