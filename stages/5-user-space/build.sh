@@ -846,6 +846,33 @@ cd spikes/stage5/out
 # differed. The image is normalised afterwards instead; see
 # tools/normalize-ext4.py for the byte offsets and the reasoning.
 SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
+# THE e2fsprogs THAT LAYS THE IMAGE IS THE ONE THIS BUILD MADE, ON BOTH LEGS.
+#
+# The e2fsprogs recipe builds mke2fs.static, debugfs.static and friends for
+# exactly one reason, in its own words: "mke2fs must run THE SAME WAY on the
+# CI host that lays the image and on Veron" (ruled 2026-08-18). And
+# normalize-ext4 carries a _veron_tool() switch that prefers the built tool
+# when VERON_ROOTFS is set. Neither was ever wired in. build_img called
+# /sbin/mke2fs, which is Ubuntu's 1.47.0 on the runner and Veron's own 1.47.4
+# on a laptop; VERON_ROOTFS was set nowhere, so normalize-ext4 used the host
+# debugfs too. Two byte-identical trees, laid out by two different programs:
+# 114 blocks differed, all placement, every one of them explained before a
+# single readdir question is even reachable.
+#
+# ORDER OF PREFERENCE, AND WHY. dest/e2fsprogs first: it is the artifact of
+# THIS run, static, and present on both legs after chain. veron-tools/ next:
+# the same binary, published from a previous run, for a leg that restored
+# rather than built. The host last, and NAMED when it is used, because a
+# host tool laying the image is the thing this exists to stop.
+veron_mke2fs() {
+  # cwd is spikes/stage5/out when build_img runs (hence -d ../sysroot).
+  for c in ../dest/e2fsprogs/usr/sbin/mke2fs "$ROOT/veron-tools/mke2fs"; do
+    [ -x "$c" ] && { echo "$c"; return 0; }
+  done
+  echo "  WARNING: no built mke2fs (dest/e2fsprogs or veron-tools) -- using the HOST's /sbin/mke2fs" >&2
+  echo /sbin/mke2fs
+}
+
 build_img() {
   rm -f "$1"
   # REMOVE THE FONTCONFIG CACHE BEFORE IMAGING. The VERON-STAGE5-OK
@@ -906,12 +933,18 @@ build_img() {
   find ../sysroot -type d -name __pycache__ -prune -print | while IFS= read -r _pc; do
     rm -rf "$_pc"
   done
-  /sbin/mke2fs -q -t ext4 -d ../sysroot \
+  _mk=$(veron_mke2fs)
+  echo "  mke2fs: $_mk ($("$_mk" -V 2>&1 | head -1))"
+  "$_mk" -q -t ext4 -d ../sysroot \
     -U 00000000-0000-4000-8000-000000000001 \
     -E hash_seed=00000000-0000-4000-8000-000000000002 \
     -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
     -m 0 -b 4096 "$1" "${SZ}M"
-  python3 ../tools/normalize-ext4.py "$1"
+  # VERON_ROOTFS points normalize-ext4 at the built debugfs (its own
+  # _veron_tool switch, unused until now), so the normaliser and the
+  # formatter are the same e2fsprogs. ../dest/e2fsprogs is a DESTDIR (cwd
+  # is out/): its usr/sbin/debugfs is the static one.
+  VERON_ROOTFS=../dest/e2fsprogs python3 ../tools/normalize-ext4.py "$1"
   # DECLARED TRANSFORMATION, not a silent fixup: rewrites the three
   # superblock timestamps and every inode's times, with debugfs so
   # the checksums are recomputed rather than left wrong.
@@ -1340,22 +1373,20 @@ if [ "$harness_fail" != 0 ] || [ "$system_fail" != 0 ]; then
 fi
 
 cd "$ROOT"
-# THE GENERIC KERNEL IS RESOLVED BEFORE THE BOOT_SYSTEM GATE, NOT INSIDE IT.
-#
-# This block lived under `if [ -n "$BOOT_SYSTEM" ]`, so boot-generic/ was
-# only populated on a run that asked for the generic boot test. CI sets
-# BOOT_SYSTEM=1; a laptop does not. veron-trace-records then reads
-# boot-generic/KERNEL-GENERIC-SHA256 in phase_strip to write the `generic`
-# lines of CHAIN -- and one of those, `generic vmlinuz-generic`, is READ BY
-# veron-trace on the flashed machine: it hashes /vmlinuz-generic on the boot
-# partition against that pin, which is how the running system proves grub
-# loaded the kernel the build recorded. So the image's own provenance record
-# depended on whether anyone asked for a boot test: five lines present on
-# CI's image, absent on a laptop's, identical trees otherwise.
-#
-# Two facts were wearing one flag: WHETHER TO BOOT under the generic kernel,
-# and WHETHER TO RESOLVE it. The record needs the second regardless of the
-# first. The resolution now runs unconditionally; only the boot stays gated.
+if [ -n "${BOOT_SYSTEM:-}" ]; then
+
+# ---- Boot the image under the GENERIC kernel ----
+cd "$ROOT"
+# THE SECOND KERNEL MEETS THE USER SPACE. 4/kernel-x86_64 is the
+# generic kernel (owned config, same seed-true toolchain); the image
+# must run under it before it may publish, because that pairing --
+# this image, that kernel -- is what stage 6 puts on the ISO and
+# what bare metal boots. Same image, same initramfs, same harness;
+# only -kernel changes. The mdev/hotplug work in veron-system is
+# exercised HERE, where CONFIG_UEVENT_HELPER exists, not under the
+# minimal kernel, where it does not.
+O=spikes/stage5/out
+[ -s "$O/initramfs.cpio.gz" ] || { echo "VERON-GENERIC-BOOT-SKIP  no initramfs"; exit 0; }
 mkdir -p boot-generic
 # THE LOCAL BUILD OUTRANKS THE DOWNLOAD, the same priority generic.sh
 # gives the sysroot (out/4/lfs before 4/latest-x86_64). A machine that
@@ -1397,21 +1428,6 @@ else
   echo "VERON-GENERIC-BOOT-SKIP  no out/4-generic/rel kernel, no cached boot-generic/, and gh is not installed; nothing was tested by this skip"
   exit 0
 fi
-
-if [ -n "${BOOT_SYSTEM:-}" ]; then
-
-# ---- Boot the image under the GENERIC kernel ----
-cd "$ROOT"
-# THE SECOND KERNEL MEETS THE USER SPACE. 4/kernel-x86_64 is the
-# generic kernel (owned config, same seed-true toolchain); the image
-# must run under it before it may publish, because that pairing --
-# this image, that kernel -- is what stage 6 puts on the ISO and
-# what bare metal boots. Same image, same initramfs, same harness;
-# only -kernel changes. The mdev/hotplug work in veron-system is
-# exercised HERE, where CONFIG_UEVENT_HELPER exists, not under the
-# minimal kernel, where it does not.
-O=spikes/stage5/out
-[ -s "$O/initramfs.cpio.gz" ] || { echo "VERON-GENERIC-BOOT-SKIP  no initramfs"; exit 0; }
 ( cd boot-generic && grep vmlinuz-generic KERNEL-GENERIC-SHA256 | sha256sum -c - )
 set +e
 timeout 900 qemu-system-x86_64 \
@@ -2318,12 +2334,18 @@ build_img() {
   find ../sysroot -type d -name __pycache__ -prune -print | while IFS= read -r _pc; do
     rm -rf "$_pc"
   done
-  /sbin/mke2fs -q -t ext4 -d ../sysroot \
+  _mk=$(veron_mke2fs)
+  echo "  mke2fs: $_mk ($("$_mk" -V 2>&1 | head -1))"
+  "$_mk" -q -t ext4 -d ../sysroot \
     -U 00000000-0000-4000-8000-000000000001 \
     -E hash_seed=00000000-0000-4000-8000-000000000002 \
     -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
     -m 0 -b 4096 "$1" "${SZ}M"
-  python3 ../tools/normalize-ext4.py "$1"
+  # VERON_ROOTFS points normalize-ext4 at the built debugfs (its own
+  # _veron_tool switch, unused until now), so the normaliser and the
+  # formatter are the same e2fsprogs. ../dest/e2fsprogs is a DESTDIR (cwd
+  # is out/): its usr/sbin/debugfs is the static one.
+  VERON_ROOTFS=../dest/e2fsprogs python3 ../tools/normalize-ext4.py "$1"
 }
 # KEEP THE FULL IMAGE. Everything above -- the guest tests, the
 # desktop screenshot, the two-instance DHCP run -- was measured
