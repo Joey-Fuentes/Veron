@@ -1385,20 +1385,27 @@ if [ "$harness_fail" != 0 ] || [ "$system_fail" != 0 ]; then
 fi
 
 cd "$ROOT"
-if [ -n "${BOOT_SYSTEM:-}" ]; then
-
-# ---- Boot the image under the GENERIC kernel ----
-cd "$ROOT"
-# THE SECOND KERNEL MEETS THE USER SPACE. 4/kernel-x86_64 is the
-# generic kernel (owned config, same seed-true toolchain); the image
-# must run under it before it may publish, because that pairing --
-# this image, that kernel -- is what stage 6 puts on the ISO and
-# what bare metal boots. Same image, same initramfs, same harness;
-# only -kernel changes. The mdev/hotplug work in veron-system is
-# exercised HERE, where CONFIG_UEVENT_HELPER exists, not under the
-# minimal kernel, where it does not.
-O=spikes/stage5/out
-[ -s "$O/initramfs.cpio.gz" ] || { echo "VERON-GENERIC-BOOT-SKIP  no initramfs"; exit 0; }
+# THE GENERIC KERNEL IS RESOLVED BEFORE THE BOOT_SYSTEM GATE, NOT INSIDE IT.
+#
+# This block lived under `if [ -n "$BOOT_SYSTEM" ]`, so boot-generic/ was
+# only populated on a run that asked for the generic boot test. CI sets
+# BOOT_SYSTEM=1; a laptop does not. veron-trace-records then reads
+# boot-generic/KERNEL-GENERIC-SHA256 in phase_strip to write the `generic`
+# lines of CHAIN -- and one of those, `generic vmlinuz-generic`, is READ BY
+# veron-trace on the flashed machine: it hashes /vmlinuz-generic on the boot
+# partition against that pin. So the image's own provenance record depended
+# on whether anyone asked for a boot test: four lines present on CI's image,
+# absent on a laptop's, identical trees otherwise.
+#
+# Two facts were wearing one flag: WHETHER TO BOOT under the generic kernel,
+# and WHETHER TO RESOLVE it. The resolution now runs unconditionally; only
+# the boot stays gated.
+#
+# HOISTED TWICE. This landed in ao (2026-09-01) and was lost in ap the same
+# night: ap was built from the tree before ao and overwrote build.sh, and
+# every tarball after inherited the loss. The next clean local build found
+# CHAIN four lines short again. If it is ever absent, `ls boot-generic/`
+# after `build.sh boot` is the check.
 mkdir -p boot-generic
 # THE LOCAL BUILD OUTRANKS THE DOWNLOAD, the same priority generic.sh
 # gives the sysroot (out/4/lfs before 4/latest-x86_64). A machine that
@@ -1440,6 +1447,21 @@ else
   echo "VERON-GENERIC-BOOT-SKIP  no out/4-generic/rel kernel, no cached boot-generic/, and gh is not installed; nothing was tested by this skip"
   exit 0
 fi
+
+if [ -n "${BOOT_SYSTEM:-}" ]; then
+
+# ---- Boot the image under the GENERIC kernel ----
+cd "$ROOT"
+# THE SECOND KERNEL MEETS THE USER SPACE. 4/kernel-x86_64 is the
+# generic kernel (owned config, same seed-true toolchain); the image
+# must run under it before it may publish, because that pairing --
+# this image, that kernel -- is what stage 6 puts on the ISO and
+# what bare metal boots. Same image, same initramfs, same harness;
+# only -kernel changes. The mdev/hotplug work in veron-system is
+# exercised HERE, where CONFIG_UEVENT_HELPER exists, not under the
+# minimal kernel, where it does not.
+O=spikes/stage5/out
+[ -s "$O/initramfs.cpio.gz" ] || { echo "VERON-GENERIC-BOOT-SKIP  no initramfs"; exit 0; }
 ( cd boot-generic && grep vmlinuz-generic KERNEL-GENERIC-SHA256 | sha256sum -c - )
 set +e
 timeout 900 qemu-system-x86_64 \
