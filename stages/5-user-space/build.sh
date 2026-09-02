@@ -948,11 +948,15 @@ build_img() {
     -E hash_seed=00000000-0000-4000-8000-000000000002 \
     -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
     -m 0 -b 4096 "$1" "${SZ}M"
-  # VERON_ROOTFS points normalize-ext4 at the built debugfs (its own
-  # _veron_tool switch, unused until now), so the normaliser and the
-  # formatter are the same e2fsprogs. ../dest/e2fsprogs is a DESTDIR (cwd
-  # is out/): its usr/sbin/debugfs is the static one.
-  VERON_ROOTFS=../dest/e2fsprogs python3 ../tools/normalize-ext4.py "$1"
+  # VERON_ROOTFS IS THE SYSROOT, NOT dest/e2fsprogs. normalize-ext4 runs the
+  # built debugfs INSIDE a box rooted there, because the static debugfs
+  # dlopens readline through libss and a static glibc dlopen loads the
+  # HOST's ld.so -- Ubuntu's, on a runner, which aborted it:
+  #   Fatal glibc error: rtld_static_init.c:90 (__rtld_static_init):
+  #   assertion failed: guard_sym != NULL
+  # The box gives it Veron's loader. mke2fs above dlopens nothing and runs
+  # on the host as the static binary it is.
+  VERON_ROOTFS=../sysroot python3 ../tools/normalize-ext4.py "$1"
   # DECLARED TRANSFORMATION, not a silent fixup: rewrites the three
   # superblock timestamps and every inode's times, with debugfs so
   # the checksums are recomputed rather than left wrong.
@@ -2349,11 +2353,15 @@ build_img() {
     -E hash_seed=00000000-0000-4000-8000-000000000002 \
     -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
     -m 0 -b 4096 "$1" "${SZ}M"
-  # VERON_ROOTFS points normalize-ext4 at the built debugfs (its own
-  # _veron_tool switch, unused until now), so the normaliser and the
-  # formatter are the same e2fsprogs. ../dest/e2fsprogs is a DESTDIR (cwd
-  # is out/): its usr/sbin/debugfs is the static one.
-  VERON_ROOTFS=../dest/e2fsprogs python3 ../tools/normalize-ext4.py "$1"
+  # VERON_ROOTFS IS THE SYSROOT, NOT dest/e2fsprogs. normalize-ext4 runs the
+  # built debugfs INSIDE a box rooted there, because the static debugfs
+  # dlopens readline through libss and a static glibc dlopen loads the
+  # HOST's ld.so -- Ubuntu's, on a runner, which aborted it:
+  #   Fatal glibc error: rtld_static_init.c:90 (__rtld_static_init):
+  #   assertion failed: guard_sym != NULL
+  # The box gives it Veron's loader. mke2fs above dlopens nothing and runs
+  # on the host as the static binary it is.
+  VERON_ROOTFS=../sysroot python3 ../tools/normalize-ext4.py "$1"
 }
 # KEEP THE FULL IMAGE. Everything above -- the guest tests, the
 # desktop screenshot, the two-instance DHCP run -- was measured

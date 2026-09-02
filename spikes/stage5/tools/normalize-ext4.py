@@ -65,19 +65,59 @@ import subprocess
 import sys
 import os
 def _veron_tool(name):
-    """The BUILT e2fsprogs tool (ruled 2026-08-18), returned as an argv
-    PREFIX. The built binaries are dynamic for the Veron sysroot, so a CI
-    host are STATIC (recipe: no --enable-elf-shlibs), so they run directly here
-    and on Veron alike -- one path, no loader. When VERON_ROOTFS is set we
-    use the built tool; else the host one. Returned as an argv prefix that
-    callers splice in.
+    """The BUILT e2fsprogs tool, as an argv PREFIX, run INSIDE THE BOX.
+
+    THE .static BUILD IS NOT STATIC ENOUGH TO RUN ON A FOREIGN HOST, AND THE
+    RUNNER SAID SO IN ONE LINE:
+
+        Fatal glibc error: rtld_static_init.c:90 (__rtld_static_init):
+        assertion failed: guard_sym != NULL
+
+    __rtld_static_init is what a static glibc binary does when it calls
+    dlopen: it loads the HOST's dynamic loader to service the request.
+    debugfs links libss, and libss dlopens readline; mke2fs links neither and
+    runs anywhere. On a GitHub runner the host loader is Ubuntu's glibc 2.39
+    and lacks the symbol Veron's static 2.44 expects, so debugfs aborted with
+    SIGABRT on every run that used it. On a Veron laptop the host loader IS
+    Veron's, so it worked, and nothing noticed for as long as VERON_ROOTFS
+    was never set.
+
+    So the tool runs where its loader lives: bwrap with the sysroot bound at
+    /, the image's directory bound in, uid 0. Same box the strip runs in.
+    VERON_ROOTFS names the SYSROOT (not a package DESTDIR) for that reason --
+    the box needs /lib64/ld-linux and the libraries, not just the binary.
+
+    Returned as a prefix ending in the in-box tool path; the caller passes
+    the image as _boxed(img), which is the same file at its in-box name.
     """
     r = os.environ.get("VERON_ROOTFS", "")
-    if r:
-        cand = os.path.join(r, "usr/sbin", name)
-        if os.path.exists(cand):
-            return [cand]   # static binary: runs directly, like on Veron
+    if r and os.path.exists(os.path.join(r, "usr/sbin", name)):
+        return ["bwrap", "--unshare-all", "--die-with-parent", "--uid", "0", "--gid", "0",
+                "--ro-bind", os.path.abspath(r), "/",
+                # --tmpfs /run BEFORE the bind under it: bwrap creates a
+                # missing mount point in the parent, and the parent is a
+                # read-only bind of the sysroot. Same trap the strip box hit.
+                "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run",
+                "--bind", os.path.abspath(os.getcwd()), "/run/out",
+                "--setenv", "PATH", "/usr/sbin:/usr/bin:/sbin:/bin",
+                "--setenv", "LC_ALL", "C", "--setenv", "TZ", "UTC",
+                "--chdir", "/run/out",
+                "/usr/sbin/" + name]
     return [tool(name)]     # host fallback keeps the /usr/sbin resolution
+
+
+def _boxed(img):
+    """The image path as the box sees it. The caller's cwd is bound at
+    /run/out; an image outside it cannot be reached and is refused rather than
+    silently pointed at the wrong file."""
+    if not os.environ.get("VERON_ROOTFS", ""):
+        return img
+    rel = os.path.relpath(os.path.abspath(img), os.getcwd())
+    if rel.startswith(".."):
+        sys.exit(f"normalize-ext4: {img} is outside the working directory "
+                 f"bound into the box")
+    return "/run/out/" + rel
+
 
 SB_OFFSET = 1024
 # s_mtime, s_wtime, s_lastcheck, s_mkfs_time
@@ -104,7 +144,7 @@ def main(img, ts_epoch=946684800, ts_str="20000101000000"):
     debugfs, dumpe2fs = _veron_tool("debugfs"), _veron_tool("dumpe2fs")
     before = sha(img)
 
-    info = subprocess.run([*dumpe2fs, img], capture_output=True, text=True).stdout
+    info = subprocess.run([*dumpe2fs, _boxed(img)], capture_output=True, text=True).stdout
     m = re.search(r"^Block size:\s+(\d+)", info, re.M)
     n = re.search(r"^Inode count:\s+(\d+)", info, re.M)
     if not m or not n:
@@ -130,7 +170,7 @@ def main(img, ts_epoch=946684800, ts_str="20000101000000"):
         f"sif <{i}> mtime {ts_str}\nsif <{i}> crtime {ts_str}\n"
         f"sif <{i}> uid 0\nsif <{i}> gid 0\n"
         for i in range(1, inodes + 1))
-    p = subprocess.run([*debugfs, "-w", "-f", "/dev/stdin", img],
+    p = subprocess.run([*debugfs, "-w", "-f", "/dev/stdin", _boxed(img)],
                        input=cmds, capture_output=True, text=True)
     if p.returncode != 0:
         # A FAILED NORMALISATION IS FATAL, AND IT SAYS WHY.
